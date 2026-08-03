@@ -15,7 +15,7 @@ interface AgentGraphDao {
     suspend fun loadById(id: String): AgentGraphEntity?
 
     @Query("SELECT id, name FROM agent_graphs ORDER BY updated_at DESC")
-    suspend fun loadNames(): List<Pair<String, String>>
+    suspend fun loadNames(): List<GraphName>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(graph: AgentGraphEntity)
@@ -29,3 +29,8 @@ interface AgentGraphDao {
     @Query("DELETE FROM agent_graphs")
     suspend fun clearAll()
 }
+
+data class GraphName(
+    val id: String,
+    val name: String
+)
