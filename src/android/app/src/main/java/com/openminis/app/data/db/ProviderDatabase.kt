@@ -34,12 +34,14 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ProviderModelGroupEntity::class,
         ProviderAgentLoopIdEntity::class,
         ProviderConfigMetaEntity::class,
+        AgentGraphEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 abstract class ProviderDatabase : RoomDatabase() {
     abstract fun providerConfigDao(): ProviderConfigDao
+    abstract fun agentGraphDao(): AgentGraphDao
 
     companion object {
         @Volatile
@@ -74,6 +76,26 @@ abstract class ProviderDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * [T-agent-graph] Add agent_graphs table for multi-agent graph persistence.
+         */
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS agent_graphs (
+                        id TEXT PRIMARY KEY NOT NULL,
+                        name TEXT NOT NULL,
+                        version INTEGER NOT NULL,
+                        json_config TEXT NOT NULL,
+                        created_at INTEGER NOT NULL,
+                        updated_at INTEGER NOT NULL
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS idx_agent_graphs_name ON agent_graphs(name)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS idx_agent_graphs_updated ON agent_graphs(updated_at DESC)")
+            }
+        }
+
         fun getInstance(context: Context): ProviderDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -81,7 +103,7 @@ abstract class ProviderDatabase : RoomDatabase() {
                     ProviderDatabase::class.java,
                     "provider.db",
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                     .build()
                     .also { INSTANCE = it }
             }

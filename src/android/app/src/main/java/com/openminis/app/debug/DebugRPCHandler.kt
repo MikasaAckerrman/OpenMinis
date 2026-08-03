@@ -195,6 +195,13 @@ class DebugRPCHandler(private val context: Context) {
                 handleMinisConfigExec(params)
             }
 
+            // Agent Graph methods
+            "agent.graph.list" -> handleAgentGraphList(params)
+            "agent.graph.get" -> handleAgentGraphGet(params)
+            "agent.graph.run" -> handleAgentGraphRun(params)
+            "agent.graph.trace" -> handleAgentGraphTrace(params)
+            "agent.graph.validate" -> handleAgentGraphValidate(params)
+
             else -> throw RPCException(-32601, "Method not found: $method. Call 'rpc.discover' to list available methods.")
         }
     }
@@ -1182,6 +1189,137 @@ class DebugRPCHandler(private val context: Context) {
                 com.openminis.app.config.ConfigBridge.auditList(limit, null)
             }
             else -> throw RPCException(-32602, "Unknown subcommand '$sub'")
+        }
+    }
+
+    // ── Agent Graph Handlers ────────────────────────────────────────────────
+
+    private suspend fun handleAgentGraphList(params: JSONObject): JSONObject {
+        val app = context.applicationContext as com.openminis.app.MinisApp
+        val graphs = app.providerRepository.listAgentGraphs()
+        val arr = JSONArray()
+        for (graph in graphs) {
+            arr.put(JSONObject().apply {
+                put("id", graph.id)
+                put("name", graph.name)
+                put("version", graph.version)
+                put("nodeCount", graph.nodes.size)
+                put("edgeCount", graph.edges.size)
+            })
+        }
+        return JSONObject().put("graphs", arr)
+    }
+
+    private suspend fun handleAgentGraphGet(params: JSONObject): JSONObject {
+        val id = params.optString("id", "").takeIf { it.isNotEmpty() }
+            ?: throw RPCException(-32602, "Missing required parameter: id")
+        val app = context.applicationContext as com.openminis.app.MinisApp
+        val graph = app.providerRepository.loadAgentGraph(id)
+            ?: throw RPCException(-32602, "Graph not found: $id")
+        return JSONObject().apply {
+            put("id", graph.id)
+            put("name", graph.name)
+            put("version", graph.version)
+            put("nodes", JSONArray(graph.nodes.map { node ->
+                JSONObject().apply {
+                    put("id", node.id)
+                    put("role", node.role.name)
+                    put("systemPrompt", node.systemPrompt)
+                    put("allowedTools", JSONArray(node.allowedTools))
+                    put("modelEntryId", node.modelEntryId)
+                    put("maxTurns", node.maxTurns)
+                    put("thinkingLevel", node.thinkingLevel?.name)
+                    put("temperature", node.temperature)
+                }
+            }))
+            put("edges", JSONArray(graph.edges.map { edge ->
+                JSONObject().apply {
+                    put("from", edge.from)
+                    put("to", edge.to)
+                    put("type", edge.type.name)
+                    put("condition", edge.condition)
+                }
+            }))
+            put("entryNodeId", graph.entryNodeId)
+            put("exitNodeIds", JSONArray(graph.exitNodeIds))
+            put("config", JSONObject().apply {
+                put("maxParallelNodes", graph.config.maxParallelNodes)
+                put("defaultTimeoutMs", graph.config.defaultTimeoutMs)
+                put("artifactDir", graph.config.artifactDir)
+                put("enableTracing", graph.config.enableTracing)
+            })
+        }
+    }
+
+    private suspend fun handleAgentGraphRun(params: JSONObject): Any {
+        val graphId = params.optString("graphId", "").takeIf { it.isNotEmpty() }
+            ?: throw RPCException(-32602, "Missing required parameter: graphId")
+        val input = params.optString("input", "").takeIf { it.isNotEmpty() }
+            ?: throw RPCException(-32602, "Missing required parameter: input")
+        val taskId = params.optString("taskId", "").takeIf { it.isNotEmpty() }
+
+        val app = context.applicationContext as com.openminis.app.MinisApp
+        val result = com.openminis.app.offload.AgentGraphRunner.run(
+            context = context,
+            graphId = graphId,
+            input = input,
+            taskId = taskId,
+        )
+
+        return JSONObject().apply {
+            put("taskId", result.taskId)
+            put("status", result.status.name)
+            put("artifacts", JSONObject(result.artifacts))
+            put("trace", JSONArray(result.trace.map { event ->
+                JSONObject().apply {
+                    put("timestamp", event.timestamp)
+                    put("nodeId", event.nodeId)
+                    put("role", event.role.name)
+                    put("action", event.action)
+                    put("details", event.details)
+                }
+            }))
+            result.error?.let { put("error", it) }
+        }
+    }
+
+    private suspend fun handleAgentGraphTrace(params: JSONObject): JSONObject {
+        val taskId = params.optString("taskId", "").takeIf { it.isNotEmpty() }
+            ?: throw RPCException(-32602, "Missing required parameter: taskId")
+        val traceFile = java.io.File("/var/minis/offloads/agent_graph_${taskId}.json")
+        if (!traceFile.exists()) {
+            throw RPCException(-32602, "Trace not found for taskId: $taskId")
+        }
+        val traceJson = traceFile.readText()
+        val trace = JSONArray(traceJson)
+        return JSONObject().apply {
+            put("taskId", taskId)
+            put("trace", trace)
+        }
+    }
+
+    private suspend fun handleAgentGraphValidate(params: JSONObject): JSONObject {
+        val graphId = params.optString("graphId", "").takeIf { it.isNotEmpty() }
+        val configJson = params.optJSONObject("config")
+
+        val app = context.applicationContext as com.openminis.app.MinisApp
+        val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; encodeDefaults = true }
+
+        val graph: com.openminis.app.data.model.AgentGraph
+        if (graphId.isNotEmpty()) {
+            val loaded = app.providerRepository.loadAgentGraph(graphId)
+                ?: throw RPCException(-32602, "Graph not found: $graphId")
+            graph = loaded
+        } else if (configJson != null) {
+            graph = json.decodeFromString<com.openminis.app.data.model.AgentGraph>(configJson.toString())
+        } else {
+            throw RPCException(-32602, "Either graphId or config must be provided")
+        }
+
+        val errors = graph.validate()
+        return JSONObject().apply {
+            put("valid", errors.isEmpty())
+            put("errors", JSONArray(errors))
         }
     }
 }

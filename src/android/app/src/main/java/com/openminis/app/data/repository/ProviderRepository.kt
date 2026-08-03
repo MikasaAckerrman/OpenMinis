@@ -2158,4 +2158,100 @@ class ProviderRepository(private val context: Context) {
         val bits = obj.optInt("modalityOverride", 0)
         return modalityListsFromBitfield(bits)
     }
+
+    // ============================================================
+    // Agent Graph Methods
+    // ============================================================
+
+    private val graphRepo: AgentGraphRepository by lazy { AgentGraphRepository(context) }
+
+    suspend fun saveAgentGraph(graph: AgentGraph) {
+        val errors = graph.validate()
+        if (errors.isNotEmpty()) {
+            throw IllegalArgumentException("Invalid graph: ${errors.joinToString(", ")}")
+        }
+        graphRepo.saveGraph(graph)
+        // Also update in-memory config
+        synchronized(configLock) {
+            val config = _config.value
+            val updatedGraphs = config.agentGraphs.toMutableList()
+            val idx = updatedGraphs.indexOfFirst { it.id == graph.id }
+            if (idx >= 0) updatedGraphs[idx] = graph else updatedGraphs.add(graph)
+            _config.value = config.copy(agentGraphs = updatedGraphs, revision = config.revision + 1)
+        }
+    }
+
+    suspend fun loadAgentGraph(id: String): AgentGraph? = graphRepo.loadGraph(id)
+
+    suspend fun listAgentGraphs(): List<AgentGraph> = graphRepo.listGraphs()
+
+    suspend fun deleteAgentGraph(id: String) {
+        graphRepo.deleteGraph(id)
+        synchronized(configLock) {
+            val config = _config.value
+            _config.value = config.copy(
+                agentGraphs = config.agentGraphs.filter { it.id != id },
+                revision = config.revision + 1,
+            )
+        }
+    }
+
+    suspend fun listAgentGraphNames(): List<Pair<String, String>> = graphRepo.listGraphNames()
+
+    fun getGraphRepo(): AgentGraphRepository = graphRepo
+
+    // ============================================================
+    // Agent Role → ModelEntry Resolution (using agent.keys)
+    // ============================================================
+
+    companion object {
+        private const val ROLE_TO_KEY = mapOf(
+            "planner" to "planner",
+            "analyst" to "analyst",
+            "architect" to "architect",
+            "coder" to "coder",
+            "reviewer" to "reviewer",
+            "tester" to "tester",
+        )
+    }
+
+    /**
+     * Resolve a ModelEntry for an agent role using agent.keys env var references.
+     * Returns the first enabled ModelEntry from the provider instance referenced
+     * by the role's agent key. Falls back to the first available entry if not configured.
+     */
+    suspend fun resolveModelEntryForRole(role: String): ModelEntry? {
+        awaitConfigLoaded()
+        val config = _config.value
+        val keyName = ROLE_TO_KEY[role.lowercase()] ?: return null
+        val envVarRef = envVarRepository?.getAgentKey(keyName) ?: return null
+        // envVarRef is like "$$AGENT_PLANNER_KEY" — extract the env var name
+        val envVarName = envVarRef.removePrefix("$$").removePrefix("$")
+        // Find provider instance that uses this env var (by convention, the apiKey field contains the $$ ref)
+        val instance = config.instances.firstOrNull { inst ->
+            val apiKey = try { getApiKey(inst.id) } catch (_: Exception) { null }
+            apiKey?.contains(envVarName) == true
+        } ?: return null
+        // Return first enabled entry for this instance
+        return config.modelEntries.firstOrNull { it.providerInstanceId == instance.id && !it.isHidden }
+    }
+
+    /**
+     * Get all role→entry mappings for a graph's nodes.
+     * Used by AgentGraphRunner to resolve modelEntryId from node.modelRole.
+     */
+    suspend fun resolveModelEntriesForRoles(roles: List<String>): Map<String, ModelEntry> {
+        val result = mutableMapOf<String, ModelEntry>()
+        for (role in roles) {
+            resolveModelEntryForRole(role)?.let { result[role] = it }
+        }
+        return result
+    }
+
+    // Reference to EnvVarRepository (set by MinisApp after creation)
+    private var envVarRepository: EnvVarRepository? = null
+
+    fun setEnvVarRepository(repo: EnvVarRepository) {
+        envVarRepository = repo
+    }
 }

@@ -293,4 +293,9 @@ data class ProviderConfig(
     // @Transient: revision is in-memory only, never persisted to prefs
     // or iCloud sync.
     @kotlinx.serialization.Transient var revision: Long = 0L,
+
+    // [T-agent-graph] Multi-agent graph configurations. New field with
+    // default empty list — kotlinx.serialization fills missing key with
+    // default, so existing configs round-trip cleanly.
+    val agentGraphs: MutableList<AgentGraph> = mutableListOf(),
 )

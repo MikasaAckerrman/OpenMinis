@@ -769,6 +769,54 @@ object DebugMethodRegistry {
             returns = "{sessionId, deleted}",
             example = ex("sessionId" to "6D0F…", "confirm" to true),
         ),
+
+        // ============ AGENT GRAPH METHODS ============
+        MethodSpec(
+            name = "agent.graph.list",
+            description = "List all configured agent graphs.",
+            params = emptyList(),
+            returns = "{graphs:[{id, name, version, nodeCount, edgeCount}]}",
+            example = JSONObject(),
+        ),
+        MethodSpec(
+            name = "agent.graph.get",
+            description = "Get a graph configuration by ID.",
+            params = listOf(
+                ParamSpec("id", "string", required = true, description = "Graph ID."),
+            ),
+            returns = "{id, name, version, nodes:[...], edges:[...], entryNodeId, exitNodeIds, config:{...}}",
+            example = ex("id" to "coding_v4"),
+        ),
+        MethodSpec(
+            name = "agent.graph.run",
+            description = "Execute an agent graph with the given input.",
+            params = listOf(
+                ParamSpec("graphId", "string", required = true, description = "Graph ID to execute."),
+                ParamSpec("input", "string", required = true, description = "Initial task input (JSON or plain text)."),
+                ParamSpec("taskId", "string", required = false, description = "Optional custom task ID (generated if omitted)."),
+            ),
+            returns = "{taskId, status, artifacts:{path:content}, trace:[...], error?}",
+            example = ex("graphId" to "coding_v4", "input" to "{\"task\": \"Add login endpoint\"}"),
+        ),
+        MethodSpec(
+            name = "agent.graph.trace",
+            description = "Get the execution trace for a completed task.",
+            params = listOf(
+                ParamSpec("taskId", "string", required = true, description = "Task ID from agent.graph.run."),
+            ),
+            returns = "{taskId, trace:[...]}",
+            example = ex("taskId" to "TASK-042"),
+        ),
+        MethodSpec(
+            name = "agent.graph.validate",
+            description = "Validate a graph configuration without executing.",
+            params = listOf(
+                ParamSpec("graphId", "string", required = false, description = "Graph ID to validate (if omitted, validates the provided config)."),
+                ParamSpec("config", "object", required = false, description = "Inline graph config to validate (JSON)."),
+            ),
+            returns = "{valid, errors:[]}",
+            example = ex("graphId" to "coding_v4"),
+        ),
     )
 
     private fun encode(method: MethodSpec): JSONObject {

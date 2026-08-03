@@ -287,6 +287,8 @@ class MinisApp : Application(), ImageLoaderFactory {
         chatRepository = ChatRepository(database.chatDao())
         providerRepository = ProviderRepository(this)
         envVarRepository = EnvVarRepository(this)
+        // Wire EnvVarRepository into ProviderRepository for agent.keys resolution
+        providerRepository.setEnvVarRepository(envVarRepository)
         skillRepository = SkillRepository(this)
         mcpRepository = MCPRepository(this)
         memoryRepository = MemoryRepository(java.io.File(filesDir, "minis-global/memory"))

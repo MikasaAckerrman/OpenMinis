@@ -172,4 +172,41 @@ class EnvVarRepository(private val context: Context) {
             Log.e(TAG, "Failed to load metadata: ${e.message}")
         }
     }
+
+    // -- Agent Keys (isolated namespace for agent role API keys) --
+
+    private const val AGENT_KEY_PREFIX = "agent_key_"
+
+    /**
+     * Get the env var reference for an agent role.
+     * Returns the $$ENV_VAR_NAME string, or null if not set.
+     */
+    fun getAgentKey(role: String): String? {
+        val key = "${AGENT_KEY_PREFIX}${role.lowercase()}"
+        return encryptedPrefs.getString(key, null)
+    }
+
+    /**
+     * Set the env var reference for an agent role.
+     * Value should be like "$$AGENT_PLANNER_KEY" or empty to clear.
+     */
+    fun setAgentKey(role: String, envVarRef: String?) {
+        val key = "${AGENT_KEY_PREFIX}${role.lowercase()}"
+        if (envVarRef == null || envVarRef.isBlank()) {
+            encryptedPrefs.edit().remove(key).apply()
+        } else {
+            encryptedPrefs.edit().putString(key, envVarRef.trim()).apply()
+        }
+    }
+
+    /**
+     * Get all agent keys as a map.
+     */
+    fun getAllAgentKeys(): Map<String, String> {
+        val result = mutableMapOf<String, String>()
+        for (role in setOf("planner", "analyst", "architect", "coder", "reviewer", "tester")) {
+            getAgentKey(role)?.let { result[role] = it }
+        }
+        return result
+    }
 }

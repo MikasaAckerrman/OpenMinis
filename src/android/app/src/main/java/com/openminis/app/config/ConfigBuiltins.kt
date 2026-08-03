@@ -1,6 +1,8 @@
 package com.openminis.app.config
 
 import android.content.Context
+import com.openminis.app.config.collections.AgentKeysCollection
+import com.openminis.app.config.collections.AgentSettingsCollection
 import com.openminis.app.config.collections.EnvVarsCollection
 import com.openminis.app.service.DynamicIslandSupport
 import com.openminis.app.config.collections.GroupsCollection
@@ -545,6 +547,8 @@ internal object ConfigBuiltins {
         r.register(ModelsCollection(providerRepo))
         r.register(GroupsCollection(providerRepo))
         r.register(EnvVarsCollection(envVarRepo))
+        r.register(AgentKeysCollection(envVarRepo, providerRepo))
+        r.register(AgentSettingsCollection(context, providerRepo))
 
         val isoFormatter = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
             timeZone = TimeZone.getTimeZone("UTC")
