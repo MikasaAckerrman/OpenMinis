@@ -140,9 +140,7 @@ tasks.named("preBuild") { dependsOn(copyBashismRules) }
 // output so Gradle re-runs this when the skill changes but skips it otherwise.
 val stageDebugSkillAssets by tasks.registering(Exec::class) {
     val script = rootProject.file("../../scripts/gen_debug_skill_android.sh")
-    val skillDir = rootProject.file("../../.claude/skills/debug-server")
     onlyIf { script.exists() }
-    inputs.dir(skillDir).optional()
     inputs.file(script).optional()
     outputs.dir(layout.projectDirectory.dir("src/debug/assets/debug-skill"))
     commandLine("bash", script.absolutePath)
