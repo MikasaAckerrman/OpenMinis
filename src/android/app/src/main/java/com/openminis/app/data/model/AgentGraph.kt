@@ -1,6 +1,5 @@
 package com.openminis.app.data.model
 
-import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import java.util.UUID
 

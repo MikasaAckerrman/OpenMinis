@@ -68,6 +68,32 @@ android {
         }
     }
 
+    // [T-stable-debug-signing] Pin the debug signing key.
+    //
+    // AGP otherwise auto-generates a debug keystore under ~/.android, which is
+    // a FRESH key on every CI runner. Two consecutive CI builds are then signed
+    // by different keys, and Android refuses to install one over the other
+    // ("App not installed") — the only way through is uninstalling first, which
+    // wipes every chat, provider and setting.
+    //
+    // A committed debug key makes CI builds upgrade in place. It signs debug
+    // builds only and confers no privilege: the password is the well-known
+    // Android debug default and the certificate is self-signed. Release signing
+    // is untouched.
+    signingConfigs {
+        getByName("debug") {
+            val shared = file("keystore/minis-debug.keystore")
+            if (shared.exists()) {
+                storeFile = shared
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+            // Absent (e.g. a shallow checkout) -> fall through to AGP's default,
+            // so a local build still works, it just will not upgrade over a CI one.
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true

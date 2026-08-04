@@ -17,12 +17,6 @@ interface AgentGraphDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(graph: AgentGraphEntity)
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsertAll(graphs: List<AgentGraphEntity>)
-
     @Query("DELETE FROM agent_graphs WHERE id = :id")
     suspend fun deleteById(id: String)
-
-    @Query("DELETE FROM agent_graphs")
-    suspend fun clearAll()
 }

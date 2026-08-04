@@ -86,12 +86,6 @@ interface ChatDao {
     )
     suspend fun listAgentRunSessions(runId: String): List<ChatSessionEntity>
 
-    @Query(
-        "SELECT * FROM sessions WHERE agent_run_id = :runId AND is_agent_showcase = 0 " +
-            "ORDER BY created_at ASC"
-    )
-    fun observeAgentRunSessions(runId: String): Flow<List<ChatSessionEntity>>
-
     /**
      * Tag a session as belonging to an agent run. Called right after the session
      * is created, before the first prompt, so it never appears in the main list.

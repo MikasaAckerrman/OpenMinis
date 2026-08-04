@@ -4,13 +4,16 @@ import com.openminis.app.data.model.AgentNode
 import com.openminis.app.tools.AgentTools
 
 /**
- * [T-agent-graph] Per-agent tool allowlist helpers.
+ * [T-agent-graph] Per-agent tool allowlist: validation and prompt text.
  *
- * The actual ENFORCEMENT happens one layer down: [AgentTools.makeAgentTools]
- * filters the tool schema by the allowlist stored in
- * [com.openminis.app.tools.AgentToolPolicyStore], so a tool the node may not
- * use never reaches the model. This object only validates the config and
- * renders it for the system prompt.
+ * The actual ENFORCEMENT lives elsewhere, in two layers:
+ *  - [AgentTools.makeAgentTools] filters the schema by the allowlist stored in
+ *    [com.openminis.app.tools.AgentToolPolicyStore], so a forbidden tool never
+ *    reaches the model;
+ *  - ChatViewModel.executeTool refuses a call that slipped through anyway.
+ *
+ * This object only answers "is this allowlist well-formed" and "how do I tell
+ * the agent what it has".
  */
 object ToolAllowlistEnforcer {
 
@@ -29,19 +32,6 @@ object ToolAllowlistEnforcer {
             if (normalized == "memory") return@filter false
             AgentTools.canonicalToolName(raw) !in AgentTools.ALL_TOOL_NAMES
         }
-
-    /** Whether [tool] is permitted for [node]. Empty allowlist = everything. */
-    fun isAllowed(node: AgentNode, tool: String): Boolean {
-        if (node.allowedTools.isEmpty()) return true
-        val target = AgentTools.canonicalToolName(tool)
-        return node.allowedTools.any { raw ->
-            if (raw.trim().lowercase() == "memory") {
-                target == "memory_write" || target == "memory_get"
-            } else {
-                AgentTools.canonicalToolName(raw) == target
-            }
-        }
-    }
 
     /** Human-readable allowlist for the node's system prompt. */
     fun formatAllowlist(node: AgentNode): String {

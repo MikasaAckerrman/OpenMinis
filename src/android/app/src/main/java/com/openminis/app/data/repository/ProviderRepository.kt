@@ -2265,12 +2265,8 @@ class ProviderRepository(private val context: Context) {
         }
     }
 
-    suspend fun listAgentGraphNames(): List<Pair<String, String>> = graphRepo.listGraphNames()
-
-    /**
-     * Synchronous wrapper for listAgentGraphNames.
-     */
-    fun listAgentGraphNamesSync(): List<Pair<String, String>> = graphRepo.listGraphNamesSync()
+    suspend fun listAgentGraphNames(): List<Pair<String, String>> =
+        listAgentGraphs().map { it.id to it.name }
 
     /**
      * [T-agent-graph-builtin] Insert the shipped graphs if absent.
@@ -2429,18 +2425,6 @@ class ProviderRepository(private val context: Context) {
                 else putString(KEY_AGENT_DEFAULT_ENTRY, value)
             }.apply()
         }
-
-    /**
-     * Get all role→entry mappings for a graph's nodes.
-     * Used by AgentGraphRunner to resolve modelEntryId from node.modelRole.
-     */
-    suspend fun resolveModelEntriesForRoles(roles: List<String>): Map<String, ModelEntry> {
-        val result = mutableMapOf<String, ModelEntry>()
-        for (role in roles) {
-            resolveModelEntryForRole(role)?.let { result[role] = it }
-        }
-        return result
-    }
 
     // Reference to EnvVarRepository (set by MinisApp after creation)
     private var envVarRepository: EnvVarRepository? = null

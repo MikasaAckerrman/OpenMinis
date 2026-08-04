@@ -84,18 +84,6 @@ internal object AgentSessionManager {
         )
     }
 
-    /**
-     * Read the last assistant reply text from [sessionId], or null.
-     */
-    suspend fun lastAssistantText(
-        context: Context,
-        sessionId: String,
-    ): String? = withContext(Dispatchers.IO) {
-        val app = context.applicationContext as com.openminis.app.MinisApp
-        val msgs = app.chatRepository.dao.loadMessages(sessionId)
-        msgs.lastOrNull { it.role == "assistant" }?.let { extractText(it.partsJson) }
-    }
-
     /** Delete a session and its messages. */
     suspend fun deleteSession(
         context: Context,
@@ -104,22 +92,5 @@ internal object AgentSessionManager {
         AgentToolPolicyStore.clearPolicy(sessionId)
         val app = context.applicationContext as com.openminis.app.MinisApp
         app.chatRepository.deleteSession(sessionId)
-    }
-
-    /** Concatenate the `text` parts of a persisted message's parts JSON. */
-    private fun extractText(partsJson: String): String {
-        return try {
-            val arr = org.json.JSONArray(partsJson)
-            val sb = StringBuilder()
-            for (i in 0 until arr.length()) {
-                val part = arr.optJSONObject(i) ?: continue
-                if (part.optString("type") == "text") {
-                    sb.append(part.optString("text"))
-                }
-            }
-            sb.toString()
-        } catch (_: Exception) {
-            ""
-        }
     }
 }

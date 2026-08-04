@@ -64,16 +64,4 @@ class AgentGraphRepository(private val context: Context) {
      * Synchronous wrapper for deleteGraph.
      */
     fun deleteGraphSync(id: String) = runBlocking { deleteGraph(id) }
-
-    /**
-     * Get graph names for UI display.
-     */
-    suspend fun listGraphNames(): List<Pair<String, String>> = withContext(Dispatchers.IO) {
-        dao.loadAll().map { it.id to it.name }
-    }
-
-    /**
-     * Synchronous wrapper for listGraphNames.
-     */
-    fun listGraphNamesSync(): List<Pair<String, String>> = runBlocking { listGraphNames() }
 }

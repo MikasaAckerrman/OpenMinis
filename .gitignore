@@ -26,6 +26,14 @@ render.experimental.xml
 # Keystore files
 *.jks
 *.keystore
+# ...except the shared DEBUG keystore. AGP's auto-generated debug key lives in
+# ~/.android and is therefore DIFFERENT on every CI runner, so consecutive CI
+# builds are signed by different keys and Android refuses to install one over
+# the other ("App not installed") unless you uninstall first — which wipes all
+# chats and settings. Committing one fixed debug key makes CI builds upgrade in
+# place. It signs debug builds only and grants no privilege; the release
+# signingConfig is unaffected.
+!src/android/app/keystore/minis-debug.keystore
 
 # Google Services (e.g. APIs or Firebase)
 google-services.json
