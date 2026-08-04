@@ -48,7 +48,7 @@ class AgentKeysCollection(
     }
 
     override fun add(payload: ConfigValue): String {
-        throw ConfigError.InvalidValue("Use \`minis-config set agent.keys.<role>=...\`")
+        throw ConfigError.InvalidValue("Use minis-config set agent.keys.<role>=...")
     }
 
     override fun remove(id: String) {

@@ -10,6 +10,7 @@ import com.openminis.app.data.db.ProviderDatabase
 import com.openminis.app.data.db.compositeEntryKey
 import com.openminis.app.data.db.toProviderConfig
 import com.openminis.app.data.db.toSnapshot
+import com.openminis.app.data.model.AgentGraph
 import com.openminis.app.data.model.ImageEndpointMode
 import com.openminis.app.data.model.LLMModel
 import com.openminis.app.data.model.ModelEntry
