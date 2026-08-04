@@ -125,7 +125,18 @@ class GraphsCollection(
             val type = runCatching { EdgeType.valueOf(typeStr) }.getOrNull()
                 ?: throw ConfigError.InvalidValue("Unknown edge type: $typeStr")
             val condition = (eObj["condition"] as? ConfigValue.Str)?.value
-            
+            // Reject an unparseable condition at save time. ConditionEvaluator
+            // fails closed on bad syntax, so a typo would silently disable the
+            // branch — visible only as a mysteriously skipped node mid-run.
+            if (!com.openminis.app.offload.ConditionEvaluator.isSyntaxValid(condition)) {
+                throw ConfigError.InvalidValue(
+                    "Edge $from -> $to has an unparseable condition: '$condition'. " +
+                        "Supported: complexity >= L2 | status == COMPLETE | " +
+                        "verdict contains APPROVED | deliverables contains <text> | always, " +
+                        "joined by &&"
+                )
+            }
+
             edges.add(com.openminis.app.data.model.AgentEdge(from = from, to = to, type = type, condition = condition))
         }
 

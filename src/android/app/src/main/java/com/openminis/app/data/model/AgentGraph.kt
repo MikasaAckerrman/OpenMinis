@@ -206,6 +206,18 @@ data class GraphConfig(
     val retryPolicy: RetryPolicy = RetryPolicy(),
     val artifactDir: String = "/var/minis/workspace",
     val enableTracing: Boolean = true,
+
+    /**
+     * [T-agent-graph-memory] Token budget for the DIGESTED upstream context a
+     * node receives (its direct predecessors' handoffs are always included in
+     * full on top of this).
+     *
+     * Without a budget, context grows quadratically with pipeline length — the
+     * last node would receive every earlier handoff verbatim. 4000 is roughly
+     * 16 KB of digest, which comfortably holds one line per node for graphs far
+     * larger than this one, while capping the worst case.
+     */
+    val contextBudgetTokens: Int = 4000,
 )
 
 @Serializable

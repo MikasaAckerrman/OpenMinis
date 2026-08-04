@@ -517,14 +517,23 @@ internal object AgentGraphRunner {
                 }
                 .distinct()
 
-            var found = 0
-            for (pid in predIds) {
-                val h = state.handoffMap[pid] ?: continue
-                found++
-                sb.appendLine("--- HANDOFF FROM ${h.from.name} (node $pid) ---")
-                sb.appendLine(HandoffValidator.buildHandoff(h))
-                sb.appendLine()
-            }
+            // [T-agent-graph-memory] Direct input verbatim, older steps as a
+            // digest under a per-role budget. Pasting every upstream handoff in
+            // full would make token cost grow quadratically with pipeline
+            // length for text most nodes never refer to.
+            val budget = ContextBudget.budgetFor(node.role, graph.config.contextBudgetTokens)
+            val older = state.handoffMap.entries
+                .filter { it.key !in predIds }
+                .map { it.key to it.value }
+            val upstream = ContextBudget.buildUpstreamContext(
+                directPredecessorIds = predIds,
+                handoffs = state.handoffMap,
+                olderHandoffs = older,
+                budgetTokens = budget,
+            )
+            sb.append(upstream)
+            if (upstream.isNotEmpty()) sb.appendLine()
+            val found = predIds.count { state.handoffMap.containsKey(it) }
 
             // Surface predecessors that were stopped, so this node does not
             // silently assume their work exists.
@@ -631,6 +640,23 @@ internal object AgentGraphRunner {
                     ready.add(targetRuntimeId)
                 } else {
                     state.nodeStatus[targetRuntimeId] = NodeStatus.SKIPPED
+                    // Record WHY. A skipped node with no explanation is
+                    // indistinguishable from a bug in the routing.
+                    val why = incoming
+                        .filter { it.type == EdgeType.CONDITIONAL }
+                        .mapNotNull { inEdge ->
+                            runtimeIdsOf(inEdge.from).firstNotNullOfOrNull { pid ->
+                                state.handoffMap[pid]?.let { h ->
+                                    evaluateConditionExplained(inEdge.condition, h).explanation
+                                }
+                            }
+                        }
+                        .joinToString("; ")
+                        .ifBlank { "no predecessor COMPLETED" }
+                    val targetRole = graph.nodes.find { it.id == edge.to }?.role
+                    if (targetRole != null) {
+                        addTrace(state, targetRuntimeId, targetRole, "SKIPPED", why)
+                    }
                 }
             }
         }
@@ -638,16 +664,17 @@ internal object AgentGraphRunner {
     }
 
     /** Evaluate a simple condition string against handoff data. */
-    private fun evaluateCondition(condition: String?, handoff: Handoff): Boolean {
-        if (condition == null || condition.isBlank()) return true
-        // Simple evaluation: check if handoff.status matches
-        // Could be extended with SpEL or similar
-        return when {
-            condition.contains("status ==") -> condition.contains(handoff.status.name)
-            condition.contains("verdict ==") -> handoff.deliverables.any { it.contains("APPROVED") }
-            else -> true
-        }
-    }
+    private fun evaluateCondition(condition: String?, handoff: Handoff): Boolean =
+        ConditionEvaluator.evaluate(condition, handoff).matched
+
+    /**
+     * Same as [evaluateCondition] but keeps the reason, so a skipped branch
+     * shows up in the trace as "why" rather than a silent absence.
+     */
+    private fun evaluateConditionExplained(
+        condition: String?,
+        handoff: Handoff,
+    ): ConditionEvaluator.Result = ConditionEvaluator.evaluate(condition, handoff)
 
     /** Handle handoff parse failure. */
     private fun handleParseFailure(execContext: ExecutionContext, node: AgentNode, response: String) {
