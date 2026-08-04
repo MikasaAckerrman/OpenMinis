@@ -82,7 +82,11 @@ fun StorageManagementScreen(
                 shellSize = directorySize(File(context.filesDir, "alpine-rootfs"))
                 dbSize = databaseSize(context)
 
-                val allSessions = chatDao.listSessions()
+                // [T-agent-graph-showcase] listAllSessionsIncludingAgents, not
+                // listSessions: worker sessions of an agent run are hidden from
+                // the chat list but they DO occupy disk. A storage screen that
+                // under-reports the real usage is worse than no screen.
+                val allSessions = chatDao.listAllSessionsIncludingAgents()
                 val sessionsDir = File(context.filesDir, "minis-sessions")
                 val mediaDir = File(context.filesDir, "media")
 

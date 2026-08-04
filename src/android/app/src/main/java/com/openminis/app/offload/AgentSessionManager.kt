@@ -35,15 +35,27 @@ internal object AgentSessionManager {
      * [allowedTools] is registered in [AgentToolPolicyStore] before the caller
      * gets a chance to send a prompt, so the very first turn already sees the
      * restricted tool schema. Pass an empty list for "no restriction".
+     *
+     * [agentRunId] and [agentRole], when given, tag the session as a worker of
+     * a multi-agent run. Tagged sessions are hidden from the main chat list —
+     * an eight-node run would otherwise add eight untitled chats for one
+     * request. Tagging happens BEFORE the first prompt so the session never
+     * flickers into the list.
      */
     suspend fun createAndBindSession(
         context: Context,
         modelEntryId: String,
         allowedTools: List<String> = emptyList(),
+        agentRunId: String? = null,
+        agentRole: String? = null,
     ): String = withContext(Dispatchers.IO) {
         val sessionId = HeadlessChatRunner.ensureSession(context, null)
         HeadlessChatRunner.applyModelOverride(context, sessionId, modelEntryId, null)
         AgentToolPolicyStore.setPolicy(sessionId, allowedTools)
+        if (agentRunId != null && agentRole != null) {
+            val app = context.applicationContext as com.openminis.app.MinisApp
+            app.chatRepository.dao.markAsAgentWorker(sessionId, agentRunId, agentRole)
+        }
         sessionId
     }
 

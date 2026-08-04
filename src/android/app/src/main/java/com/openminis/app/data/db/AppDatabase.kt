@@ -14,7 +14,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         CompactMarkerEntity::class,
         WebAppShortcutEntity::class,
     ],
-    version = 10,
+    version = 11,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -163,6 +163,26 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * [T-agent-graph-showcase] Group multi-agent worker sessions under a
+         * single showcase session so a 8-node run adds ONE row to the chat list
+         * instead of eight.
+         *
+         * Additive nullable columns plus one INTEGER DEFAULT 0: existing rows
+         * read as "not part of any agent run", which is correct for every chat
+         * that existed before this feature.
+         */
+        val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE sessions ADD COLUMN agent_run_id TEXT")
+                db.execSQL("ALTER TABLE sessions ADD COLUMN agent_role TEXT")
+                db.execSQL("ALTER TABLE sessions ADD COLUMN is_agent_showcase INTEGER NOT NULL DEFAULT 0")
+                // The chat list filters on agent_run_id on every render, and the
+                // child list looks up by it — worth an index even at small N.
+                db.execSQL("CREATE INDEX IF NOT EXISTS idx_sessions_agent_run ON sessions(agent_run_id)")
+            }
+        }
+
         val MIGRATION_3_4 = object : Migration(3, 4) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 // sessions: add iOS-parity columns
@@ -200,7 +220,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "minis.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11)
                     .build()
                     .also { INSTANCE = it }
             }

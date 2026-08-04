@@ -105,6 +105,18 @@ class ChatRepository(internal val dao: ChatDao) {
     }
 
     suspend fun deleteSession(id: String) {
+        // [T-agent-graph-showcase] Deleting a run's showcase must take its worker
+        // sessions with it. They are hidden from the list, so a user who deletes
+        // the only visible row would otherwise leave N orphans they can never see
+        // or remove — a slow leak of rows.
+        val session = dao.getSession(id)
+        val runId = session?.agentRunId
+        if (session?.isAgentShowcase == 1 && runId != null) {
+            for (worker in dao.listAgentRunSessions(runId)) {
+                dao.deleteMessages(worker.id)
+                dao.deleteSession(worker.id)
+            }
+        }
         dao.deleteMessages(id)
         dao.deleteSession(id)
     }

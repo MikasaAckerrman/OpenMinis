@@ -25,4 +25,28 @@ data class ChatSessionEntity(
     // ("OFF"/"LOW"/"MEDIUM"/"HIGH"/"XHIGH") and represents an explicit user
     // choice that survives cold-start.
     @ColumnInfo(name = "thinking_override") val thinkingOverride: String? = null,
+
+    /**
+     * [T-agent-graph-showcase] Non-null when this session belongs to a
+     * multi-agent run: the value is the run's taskId. The main chat list hides
+     * these; the showcase session for that taskId links to them.
+     *
+     * Why a column and not a naming convention on `source`: `source` already
+     * carries provenance ("shortcut", "share", "debug") and overloading it
+     * would make "which run did this belong to" unanswerable in SQL.
+     */
+    @ColumnInfo(name = "agent_run_id") val agentRunId: String? = null,
+
+    /**
+     * The agent role that owns this session, e.g. "SENIOR_IMPLEMENTER". Lets the
+     * child list show WHO each session is instead of a row of untitled chats.
+     */
+    @ColumnInfo(name = "agent_role") val agentRole: String? = null,
+
+    /**
+     * True (1) for the single showcase session of a run — the one the user reads.
+     * It aggregates progress from the worker sessions and IS visible in the main
+     * list, standing in for the whole run.
+     */
+    @ColumnInfo(name = "is_agent_showcase") val isAgentShowcase: Int = 0,
 )

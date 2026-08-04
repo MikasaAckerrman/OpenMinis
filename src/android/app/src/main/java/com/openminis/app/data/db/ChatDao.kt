@@ -56,11 +56,59 @@ data class SessionTailRow(
 @Dao
 interface ChatDao {
     // Sessions
-    @Query("SELECT * FROM sessions ORDER BY updated_at DESC")
+    //
+    // [T-agent-graph-showcase] The two list queries hide multi-agent WORKER
+    // sessions: a run creates one session per agent role, and surfacing all of
+    // them would bury the user's own chats. The run's showcase session carries
+    // the same agent_run_id but is_agent_showcase = 1, so it stays visible and
+    // stands in for the whole run. Keeping the run id on BOTH means deleting the
+    // showcase can find and remove its workers.
+    @Query(
+        "SELECT * FROM sessions WHERE agent_run_id IS NULL OR is_agent_showcase = 1 " +
+            "ORDER BY updated_at DESC"
+    )
     fun observeSessions(): Flow<List<ChatSessionEntity>>
 
-    @Query("SELECT * FROM sessions ORDER BY updated_at DESC")
+    @Query(
+        "SELECT * FROM sessions WHERE agent_run_id IS NULL OR is_agent_showcase = 1 " +
+            "ORDER BY updated_at DESC"
+    )
     suspend fun listSessions(): List<ChatSessionEntity>
+
+    /** Every session, including agent workers. For diagnostics and cleanup. */
+    @Query("SELECT * FROM sessions ORDER BY updated_at DESC")
+    suspend fun listAllSessionsIncludingAgents(): List<ChatSessionEntity>
+
+    /** Worker sessions of one run (excludes the showcase), oldest first. */
+    @Query(
+        "SELECT * FROM sessions WHERE agent_run_id = :runId AND is_agent_showcase = 0 " +
+            "ORDER BY created_at ASC"
+    )
+    suspend fun listAgentRunSessions(runId: String): List<ChatSessionEntity>
+
+    @Query(
+        "SELECT * FROM sessions WHERE agent_run_id = :runId AND is_agent_showcase = 0 " +
+            "ORDER BY created_at ASC"
+    )
+    fun observeAgentRunSessions(runId: String): Flow<List<ChatSessionEntity>>
+
+    /**
+     * Tag a session as belonging to an agent run. Called right after the session
+     * is created, before the first prompt, so it never appears in the main list.
+     */
+    @Query(
+        "UPDATE sessions SET agent_run_id = :runId, agent_role = :role WHERE id = :id"
+    )
+    suspend fun markAsAgentWorker(id: String, runId: String, role: String)
+
+    /**
+     * Mark a session as the readable face of [runId]. It keeps the run id (so the
+     * workers are findable on delete) but stays visible in the list.
+     */
+    @Query(
+        "UPDATE sessions SET agent_run_id = :runId, is_agent_showcase = 1 WHERE id = :id"
+    )
+    suspend fun markAsAgentShowcase(id: String, runId: String)
 
     @Query("SELECT * FROM sessions WHERE id = :id")
     suspend fun getSession(id: String): ChatSessionEntity?
@@ -227,8 +275,14 @@ interface ChatDao {
     """)
     suspend fun updateLastAssistantError(sessionId: String, errorInfo: String?)
 
-    // Pinned sessions first, then by updated_at
-    @Query("SELECT * FROM sessions ORDER BY CASE WHEN pinned_at IS NOT NULL THEN 0 ELSE 1 END, pinned_at DESC, updated_at DESC")
+    // Pinned sessions first, then by updated_at.
+    // [T-agent-graph-showcase] Same worker filter as observeSessions: an agent
+    // run's worker sessions must not surface here either, or the list this feeds
+    // would show them despite the main list hiding them.
+    @Query(
+        "SELECT * FROM sessions WHERE agent_run_id IS NULL OR is_agent_showcase = 1 " +
+            "ORDER BY CASE WHEN pinned_at IS NOT NULL THEN 0 ELSE 1 END, pinned_at DESC, updated_at DESC"
+    )
     fun observeSessionsSorted(): Flow<List<ChatSessionEntity>>
 
     // Compact markers — session-scoped archival summaries. "Append-only": rows

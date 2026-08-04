@@ -36,7 +36,17 @@ internal object AgentGraphRunner {
         val taskId: String,
         val artifactDir: String,
         val input: String,
-        val sessionMap: MutableMap<String, String> = mutableMapOf(), // nodeId -> sessionId
+        val sessionMap: MutableMap<String, String> = mutableMapOf(), // runtimeId -> sessionId
+        /**
+         * [T-agent-graph-role-session] runtime-id -> sessionId is not enough when
+         * a plan is split into sequential steps for the SAME role: step 2 should
+         * remember what step 1 did. Nodes that opt in via `sessionGroup` share a
+         * session keyed here, so their history accumulates while OTHER roles stay
+         * isolated — the test designer still never sees the implementation.
+         */
+        val sessionByGroup: MutableMap<String, String> = mutableMapOf(),
+        /** The single user-visible session narrating this run, or null. */
+        var showcaseId: String? = null,
         val handoffMap: MutableMap<String, Handoff> = mutableMapOf(), // nodeId -> handoff received
         val artifactIndex: MutableMap<String, String> = mutableMapOf(), // path -> content
         val trace: MutableList<TraceEvent> = mutableListOf(),
@@ -133,10 +143,40 @@ internal object AgentGraphRunner {
             }
         }
 
+        // [T-agent-graph-showcase] One readable session narrating the run. Worker
+        // sessions stay hidden; this is what the user opens. Created before the
+        // first node so the very first "started" line has somewhere to land.
+        state.showcaseId = AgentRunShowcase.create(
+            context = context,
+            taskId = taskId,
+            graphName = graph.name,
+            input = input,
+            nodeCount = graph.nodes.size,
+            runtimeCount = runtimeCount,
+        )
+
         val execContext = ExecutionContext(state, context, providerRepo, json)
 
         // Execute graph
         val result = executeGraph(execContext)
+
+        AgentRunShowcase.noteFinish(
+            context = context,
+            showcaseId = state.showcaseId,
+            status = result.status.name,
+            nodeStatuses = state.nodeStatus.mapValues { it.value.name },
+            artifactDir = artifactDir,
+            artifactCount = result.artifacts.size,
+            scopeViolations = state.scopeViolations,
+        )
+
+        // Tool policies are keyed by session id in a process-wide map. Without
+        // this the map grows by one entry per node per run and never shrinks —
+        // small, but a leak that also means a deleted session's policy lingers
+        // and could apply to a recycled id.
+        for (sid in state.sessionMap.values + state.sessionByGroup.values) {
+            com.openminis.app.tools.AgentToolPolicyStore.clearPolicy(sid)
+        }
 
         // Write trace
         if (graph.config.enableTracing) {
@@ -357,12 +397,36 @@ internal object AgentGraphRunner {
         // the tool schema is already restricted on the FIRST turn. This is a
         // real barrier, not advice in the prompt: a tool absent from the schema
         // cannot be called at all.
-        val sessionId = state.sessionMap[runtimeId]
-            ?: AgentSessionManager.createAndBindSession(
-                context = context,
-                modelEntryId = modelEntryId,
-                allowedTools = node.allowedTools,
-            ).also { state.sessionMap[runtimeId] = it }
+        // [T-agent-graph-role-session] When the node declares a sessionGroup,
+        // every node in that group shares one session and therefore one history
+        // — that is how step 3 of a staged plan knows what steps 1-2 wrote.
+        // Otherwise the session is per runtime id, keeping replicas and roles
+        // isolated from each other.
+        val sessionKey = node.sessionGroup.ifBlank { runtimeId }
+        val sessionStore = if (node.sessionGroup.isBlank()) state.sessionMap else state.sessionByGroup
+        val existingSession = sessionStore[sessionKey]
+        val sessionId = existingSession ?: AgentSessionManager.createAndBindSession(
+            context = context,
+            modelEntryId = modelEntryId,
+            allowedTools = node.allowedTools,
+            agentRunId = state.taskId,
+            agentRole = node.role.name,
+        ).also { sessionStore[sessionKey] = it }
+        if (existingSession != null && node.sessionGroup.isNotBlank()) {
+            addTrace(
+                state, runtimeId, node.role, "SESSION",
+                "reusing session of group '${node.sessionGroup}' — earlier steps are in its history",
+            )
+        }
+
+        AgentRunShowcase.noteStart(
+            context = context,
+            showcaseId = state.showcaseId,
+            role = node.role,
+            runtimeId = runtimeId,
+            replicaInfo = if (node.replicas > 1) "${replicaIndex + 1}/${node.replicas}" else null,
+            model = modelEntryId.take(24),
+        )
 
         // Build system prompt with role + tool allowlist + scope contract
         val systemPrompt = buildSystemPrompt(node, state, replicaIndex)
@@ -404,6 +468,10 @@ internal object AgentGraphRunner {
             ?: run {
                 state.nodeStatus[runtimeId] = NodeStatus.FAILED
                 addTrace(state, runtimeId, node.role, "FAILED", "All attempts exhausted")
+                AgentRunShowcase.noteFailure(
+                    context, state.showcaseId, node.role,
+                    "no valid reply after $maxAttempts attempt(s)",
+                )
                 return
             }
 
@@ -446,6 +514,9 @@ internal object AgentGraphRunner {
         when (val verdict = ScopeGuard.check(node, handoff, finalResponse)) {
             is ScopeGuard.Verdict.OutOfScope -> {
                 addTrace(state, runtimeId, node.role, "OUT_OF_SCOPE", verdict.reason)
+                AgentRunShowcase.noteOutOfScope(
+                    context, state.showcaseId, node.role, verdict.reason,
+                )
                 state.nodeStatus[runtimeId] = NodeStatus.OUT_OF_SCOPE
                 // Keep the handoff for the trace, but do NOT let successors
                 // consume it — an out-of-scope artifact is not a deliverable.
@@ -486,6 +557,13 @@ internal object AgentGraphRunner {
         }
 
         addTrace(state, runtimeId, node.role, "HANDOFF", "Status: ${handoff.status}, To: ${handoff.to}")
+        AgentRunShowcase.noteHandoff(
+            context = context,
+            showcaseId = state.showcaseId,
+            role = node.role,
+            runtimeId = runtimeId,
+            handoff = handoff,
+        )
     }
 
     /** Build system prompt for an agent node. */
@@ -646,7 +724,7 @@ internal object AgentGraphRunner {
      * the parallel review block (4 reviewers -> auditor) work: the auditor
      * waits for all four instead of starting on the first one.
      */
-    private fun queueSuccessors(execContext: ExecutionContext, completedRuntimeId: String): List<String> {
+    private suspend fun queueSuccessors(execContext: ExecutionContext, completedRuntimeId: String): List<String> {
         val state = execContext.state
         val graph = state.graph
         val ready = mutableListOf<String>()
@@ -715,6 +793,9 @@ internal object AgentGraphRunner {
                     val targetRole = graph.nodes.find { it.id == edge.to }?.role
                     if (targetRole != null) {
                         addTrace(state, targetRuntimeId, targetRole, "SKIPPED", why)
+                        AgentRunShowcase.noteSkipped(
+                            execContext.context, state.showcaseId, targetRole, why,
+                        )
                     }
                 }
             }

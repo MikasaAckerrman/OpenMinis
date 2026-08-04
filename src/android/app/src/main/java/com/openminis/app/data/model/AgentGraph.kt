@@ -85,6 +85,20 @@ data class AgentNode(
      *    "modules listed SECOND in the ownership map"]
      */
     val shardHint: List<String> = emptyList(),
+
+    /**
+     * [T-agent-graph-role-session] Nodes sharing a `sessionGroup` run in ONE
+     * chat session, so their history accumulates.
+     *
+     * This is what makes a staged plan work: `implementer_step1`..`step5` all set
+     * `sessionGroup = "impl"`, so step 3 remembers what steps 1-2 already wrote
+     * instead of rediscovering it from a handoff summary. Roles NOT in the group
+     * keep their own session, which preserves the isolation the pipeline depends
+     * on — the reviewer must not watch the code being written.
+     *
+     * Empty (default) = this node gets its own session, as before.
+     */
+    val sessionGroup: String = "",
 ) {
     val isValid: Boolean
         get() = role != AgentRole.ORCHESTRATOR || id == "orchestrator"
@@ -184,6 +198,18 @@ data class AgentGraph(
             // A node must declare either an explicit entry or a role to resolve.
             if (node.modelEntryId.isBlank() && node.modelRole.isBlank()) {
                 errors.add("Node '${node.id}': needs modelEntryId or modelRole")
+            }
+            // replicas + sessionGroup is a contradiction: replicas exist to run
+            // in ISOLATED sessions on disjoint shards, a sessionGroup exists to
+            // SHARE one session. Together, N replicas would interleave turns in
+            // one history and each would see the others' partial work — exactly
+            // the confusion sharding is meant to prevent.
+            if (node.replicas > 1 && node.sessionGroup.isNotBlank()) {
+                errors.add(
+                    "Node '${node.id}': replicas=${node.replicas} cannot be combined with " +
+                        "sessionGroup='${node.sessionGroup}' — replicas need isolated sessions. " +
+                        "For a staged plan use several nodes sharing a sessionGroup instead."
+                )
             }
             // mayDelegateTo pointing at a role no node implements is a dead end.
             val presentRoles = nodes.map { it.role }.toSet()

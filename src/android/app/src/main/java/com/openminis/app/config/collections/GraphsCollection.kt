@@ -96,6 +96,7 @@ class GraphsCollection(
             val shardHint = (nObj["shardHint"] as? ConfigValue.Arr)?.value
                 ?.mapNotNull { (it as? ConfigValue.Str)?.value }
                 ?: emptyList()
+            val sessionGroup = (nObj["sessionGroup"] as? ConfigValue.Str)?.value ?: ""
 
             nodes.add(AgentNode(
                 id = id,
@@ -111,6 +112,7 @@ class GraphsCollection(
                 mayDelegateTo = mayDelegateTo,
                 replicas = replicas,
                 shardHint = shardHint,
+                sessionGroup = sessionGroup,
             ))
         }
 
@@ -224,6 +226,7 @@ class GraphsCollection(
                         "mayDelegateTo" to ConfigValue.Arr(node.mayDelegateTo.map { ConfigValue.Str(it.name) }),
                         "replicas" to ConfigValue.Int(node.replicas),
                         "shardHint" to ConfigValue.Arr(node.shardHint.map { ConfigValue.Str(it) }),
+                        "sessionGroup" to ConfigValue.Str(node.sessionGroup),
                     ))
                 })
             },
