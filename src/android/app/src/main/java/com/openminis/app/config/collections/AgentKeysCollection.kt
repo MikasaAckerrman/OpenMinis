@@ -8,6 +8,7 @@ import com.openminis.app.config.ConfigSchema
 import com.openminis.app.config.ConfigValue
 import com.openminis.app.config.fields.ClosureField
 import com.openminis.app.data.repository.EnvVarRepository
+import com.openminis.app.data.repository.ProviderRepository
 
 /**
  * Agent Keys — изолированное пространство для API ключей агентов.
@@ -23,7 +24,7 @@ import com.openminis.app.data.repository.EnvVarRepository
  */
 class AgentKeysCollection(
     private val envVarRepo: EnvVarRepository,
-    private val providerRepo: com.openminis.app.data.repository.ProviderRepository,
+    private val providerRepo: ProviderRepository,
 ) : ConfigCollection {
 
     override val basePath: String get() = "agent.keys"
@@ -47,12 +48,14 @@ class AgentKeysCollection(
     }
 
     override fun add(payload: ConfigValue): String {
-        throw ConfigError.UnsupportedOperation("Use `minis-config set agent.keys.<role>=...`")
+        throw ConfigError.InvalidValue("Use \`minis-config set agent.keys.<role>=...\`")
     }
 
     override fun remove(id: String) {
-        throw ConfigError.UnsupportedOperation("Cannot remove built-in agent key slots")
+        throw ConfigError.InvalidValue("Cannot remove built-in agent key slots")
     }
+
+    override val addPayloadSchema: ConfigSchema get() = ConfigSchema.Json
 
     private fun keyField(role: String): ConfigField =
         ClosureField(

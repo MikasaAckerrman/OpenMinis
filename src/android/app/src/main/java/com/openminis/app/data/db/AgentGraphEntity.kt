@@ -22,7 +22,18 @@ data class AgentGraphEntity(
         json.decodeFromString<AgentGraph>(jsonConfig)
 
     companion object {
-        fun fromDomain(graph: AgentGraph, json: Json = Json { ignoreUnknownKeys = true; encodeDefaults = true }): AgentGraphEntity {
+        fun fromDomain(graph: AgentGraph, json: kotlinx.serialization.json.Json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; encodeDefaults = true }): AgentGraphEntity {
+            return AgentGraphEntity(
+                id = graph.id,
+                name = graph.name,
+                version = graph.version,
+                jsonConfig = json.encodeToString(graph),
+                createdAt = System.currentTimeMillis(),
+                updatedAt = System.currentTimeMillis(),
+            )
+        }
+
+        fun toEntity(graph: AgentGraph, json: kotlinx.serialization.json.Json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; encodeDefaults = true }): AgentGraphEntity {
             return AgentGraphEntity(
                 id = graph.id,
                 name = graph.name,

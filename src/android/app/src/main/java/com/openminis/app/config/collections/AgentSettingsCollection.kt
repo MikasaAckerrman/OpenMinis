@@ -47,6 +47,16 @@ class AgentSettingsCollection(
         }
     }
 
+    override fun add(payload: ConfigValue): String {
+        throw ConfigError.InvalidValue("Cannot add agent settings — use minis-config set")
+    }
+
+    override fun remove(id: String) {
+        throw ConfigError.InvalidValue("Cannot remove agent settings")
+    }
+
+    override val addPayloadSchema: ConfigSchema get() = ConfigSchema.Json
+
     private val prefs: SharedPreferences by lazy {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
@@ -60,7 +70,6 @@ class AgentSettingsCollection(
             key = KEY_AUTO_ROUTE,
             defaultValue = false,
             risk = ConfigRisk.NORMAL,
-            revertable = true,
         )
 
     private fun defaultGraphField(): ConfigField =
@@ -74,7 +83,6 @@ class AgentSettingsCollection(
             reader = { ConfigValue.Str(prefs.getString(KEY_DEFAULT_GRAPH, "coding_v4")) },
             writer = { v ->
                 val s = (v as? ConfigValue.Str)?.value?.trim() ?: ""
-                // Validate graph exists
                 val graph = providerRepo.loadAgentGraph(s)
                 if (graph == null && s.isNotEmpty()) {
                     throw ConfigError.InvalidValue("Graph not found: $s")
@@ -95,7 +103,6 @@ class AgentSettingsCollection(
             writer = { v ->
                 val s = (v as? ConfigValue.Str)?.value?.trim() ?: ""
                 if (s.isNotEmpty()) {
-                    // Validate entry exists
                     val entry = providerRepo.config.value.modelEntries.find { it.id == s }
                     if (entry == null) {
                         throw ConfigError.InvalidValue("Model entry not found: $s")
@@ -104,4 +111,11 @@ class AgentSettingsCollection(
                 prefs.edit().putString(KEY_AUTO_ROUTE_MODEL, s).apply()
             },
         )
+
+    companion object {
+        private const val PREFS_NAME = "agent_settings_prefs"
+        private const val KEY_AUTO_ROUTE = "auto_route_enabled"
+        private const val KEY_DEFAULT_GRAPH = "default_graph_id"
+        private const val KEY_AUTO_ROUTE_MODEL = "auto_route_model_entry_id"
+    }
 }

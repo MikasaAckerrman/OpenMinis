@@ -20,7 +20,7 @@ class AgentGraphRepository(private val context: Context) {
      * Save or update an agent graph.
      */
     suspend fun saveGraph(graph: AgentGraph) = withContext(Dispatchers.IO) {
-        dao.upsert(graph.toEntity())
+        dao.upsert(com.openminis.app.data.db.AgentGraphEntity.toEntity(graph))
     }
 
     /**
