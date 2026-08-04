@@ -30,7 +30,7 @@ class AgentKeysCollection(
     override val basePath: String get() = "agent.keys"
     override val displayName: String get() = "Agent API Keys"
     override val description: String get() =
-        "Per-role API key references (as $$ENV_VAR). Used by AgentGraphRunner to resolve model entries. " +
+        "Per-role API key references (as \$\$ENV_VAR). Used by AgentGraphRunner to resolve model entries. " +
         "Keys: planner, analyst, architect, coder, reviewer, tester."
     override val addable: Boolean get() = false
     override val removable: Boolean get() = false

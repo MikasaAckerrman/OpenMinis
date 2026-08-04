@@ -28,10 +28,10 @@ class GraphsCollection(
     override val risk: ConfigRisk get() = ConfigRisk.SENSITIVE
     override val addPayloadSchema: ConfigSchema get() = ConfigSchema.Json
 
-    override fun childIds(): List<String> = repo.listAgentGraphs().map { it.id }
+    override fun childIds(): List<String> = repo.config.value.agentGraphs.map { it.id }
 
     override fun fields(forId: String): List<ConfigField> {
-        val graph = repo.loadAgentGraph(forId)
+        val graph = repo.config.value.agentGraphs.firstOrNull { it.id == forId }
         if (graph == null) return emptyList()
         return listOf(
             nameField(forId),
@@ -121,11 +121,11 @@ class GraphsCollection(
     }
 
     override fun remove(id: String) {
-        if (repo.loadAgentGraph(id) == null) throw ConfigError.UnknownPath("graphs.$id")
+        if (repo.config.value.agentGraphs.none { it.id == id }) throw ConfigError.UnknownPath("graphs.$id")
         repo.deleteAgentGraph(id)
     }
 
-    private fun graph(id: String): AgentGraph? = repo.loadAgentGraph(id)
+    private fun graph(id: String): AgentGraph? = repo.config.value.agentGraphs.firstOrNull { it.id == id }
 
     private fun mutate(id: String, apply: (AgentGraph) -> Unit) {
         val g = graph(id) ?: throw ConfigError.UnknownPath("graphs.$id")

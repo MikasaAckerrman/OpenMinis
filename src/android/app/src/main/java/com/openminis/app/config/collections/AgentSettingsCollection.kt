@@ -29,13 +29,6 @@ class AgentSettingsCollection(
     override val removable: Boolean get() = false
     override val risk: ConfigRisk get() = ConfigRisk.NORMAL
 
-    companion object {
-        private const val PREFS_NAME = "agent_settings_prefs"
-        private const val KEY_AUTO_ROUTE = "auto_route_enabled"
-        private const val KEY_DEFAULT_GRAPH = "default_graph_id"
-        private const val KEY_AUTO_ROUTE_MODEL = "auto_route_model_entry_id"
-    }
-
     override fun childIds(): List<String> = listOf("autoRoute", "defaultGraph", "autoRouteModel")
 
     override fun fields(forId: String): List<ConfigField> {
@@ -80,7 +73,7 @@ class AgentSettingsCollection(
             valueSchema = ConfigSchema.Str(maxLength = 200),
             risk = ConfigRisk.NORMAL,
             revertable = true,
-            reader = { ConfigValue.Str(prefs.getString(KEY_DEFAULT_GRAPH, "coding_v4")) },
+            reader = { ConfigValue.Str(prefs.getString(KEY_DEFAULT_GRAPH, "coding_v4") ?: "coding_v4") },
             writer = { v ->
                 val s = (v as? ConfigValue.Str)?.value?.trim() ?: ""
                 val graph = providerRepo.loadAgentGraph(s)
@@ -99,7 +92,7 @@ class AgentSettingsCollection(
             valueSchema = ConfigSchema.Str(maxLength = 200),
             risk = ConfigRisk.NORMAL,
             revertable = true,
-            reader = { ConfigValue.Str(prefs.getString(KEY_AUTO_ROUTE_MODEL, "")) },
+            reader = { ConfigValue.Str(prefs.getString(KEY_AUTO_ROUTE_MODEL, "") ?: "") },
             writer = { v ->
                 val s = (v as? ConfigValue.Str)?.value?.trim() ?: ""
                 if (s.isNotEmpty()) {
