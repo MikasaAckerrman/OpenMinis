@@ -42,9 +42,59 @@ data class AgentNode(
     val maxTurns: Int = 10,
     val thinkingLevel: ThinkingLevel? = null,
     val temperature: Float? = null,
+
+    /**
+     * [T-agent-graph-scope] The ONE artifact type this node is allowed to
+     * produce. Surfaced verbatim in the system prompt and used by the scope
+     * guard: if the handoff's deliverables do not look like this artifact,
+     * the run is stopped instead of letting the node quietly do a neighbour's
+     * job. Free-form on purpose — a closed enum would need a code change for
+     * every new pipeline shape.
+     *
+     * Example: "architecture design document", "production code diff",
+     * "test files", "review findings list".
+     */
+    val ownedArtifact: String = "",
+
+    /**
+     * Roles this node may address in `TO:`. Empty = anyone (the graph's edges
+     * still decide the actual route; this only constrains what the node is
+     * told it may request). Keeping it explicit is what stops a thinker from
+     * inventing a handoff to an agent that does not exist in the graph.
+     */
+    val mayDelegateTo: List<AgentRole> = emptyList(),
+
+    /**
+     * [T-agent-graph-parallel] How many independent instances of this node to
+     * run at once. >1 spawns `id#1`, `id#2`, … each with its OWN session, so
+     * their contexts never mix. Combined with [shardHint] this is how two
+     * implementers split the work instead of duplicating it.
+     *
+     * Sessions being separate is also why per-role API keys matter: N replicas
+     * of a coder node hit N independent provider instances, spreading spend.
+     */
+    val replicas: Int = 1,
+
+    /**
+     * Per-replica scope, injected as "YOUR SHARD" in the prompt. Index i gets
+     * `shardHint[i]`. Without this two replicas receive identical prompts and
+     * write the same file twice.
+     *
+     * Example for replicas=2:
+     *   ["modules listed FIRST in the ownership map",
+     *    "modules listed SECOND in the ownership map"]
+     */
+    val shardHint: List<String> = emptyList(),
 ) {
     val isValid: Boolean
         get() = role != AgentRole.ORCHESTRATOR || id == "orchestrator"
+
+    /** Replica ids this node expands to. Single-replica nodes keep their id. */
+    fun replicaIds(): List<String> =
+        if (replicas <= 1) listOf(id) else (1..replicas).map { "$id#$it" }
+
+    /** Shard text for replica [index] (0-based), or "" when unsharded. */
+    fun shardFor(index: Int): String = shardHint.getOrElse(index) { "" }
 }
 
 @Serializable
@@ -107,6 +157,44 @@ data class AgentGraph(
         if (dfs(entryNodeId)) {
             errors.add("Graph contains cycles (not allowed for SEQUENTIAL/PARALLEL edges)")
         }
+
+        // Duplicate ids would make status/session maps collide silently.
+        nodes.groupBy { it.id }.filterValues { it.size > 1 }.keys.forEach {
+            errors.add("Duplicate node id '$it'")
+        }
+
+        // A '#' in a config id collides with the replica suffix scheme
+        // (`implementer#1`), which would make runtime ids ambiguous.
+        nodes.filter { it.id.contains('#') }.forEach {
+            errors.add("Node id '${it.id}' must not contain '#' — reserved for replica suffixes")
+        }
+
+        for (node in nodes) {
+            if (node.replicas < 1) {
+                errors.add("Node '${node.id}': replicas must be >= 1, got ${node.replicas}")
+            }
+            // Replicas without shards get identical prompts and duplicate work.
+            if (node.replicas > 1 && node.shardHint.size < node.replicas) {
+                errors.add(
+                    "Node '${node.id}': replicas=${node.replicas} needs ${node.replicas} " +
+                        "shardHint entries (has ${node.shardHint.size}) — otherwise every " +
+                        "replica receives the same prompt and duplicates the work"
+                )
+            }
+            // A node must declare either an explicit entry or a role to resolve.
+            if (node.modelEntryId.isBlank() && node.modelRole.isBlank()) {
+                errors.add("Node '${node.id}': needs modelEntryId or modelRole")
+            }
+            // mayDelegateTo pointing at a role no node implements is a dead end.
+            val presentRoles = nodes.map { it.role }.toSet()
+            node.mayDelegateTo.filterNot { it in presentRoles }.forEach { missing ->
+                errors.add(
+                    "Node '${node.id}': mayDelegateTo lists $missing, but no node in " +
+                        "this graph has that role"
+                )
+            }
+        }
+
         return errors
     }
 }

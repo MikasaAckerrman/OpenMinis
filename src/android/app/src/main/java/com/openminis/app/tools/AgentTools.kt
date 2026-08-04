@@ -46,6 +46,32 @@ object AgentTools {
         else -> raw.trim()
     }
 
+    /**
+     * Whether [toolName] is permitted by [allowedTools]. Empty/null allowlist
+     * means unrestricted. Shared by the schema filter in [makeAgentTools] and
+     * the executor-level check in ChatViewModel, so both agree on aliases.
+     */
+    fun isToolPermitted(toolName: String, allowedTools: List<String>?): Boolean {
+        val allow = expandAllowlist(allowedTools) ?: return true
+        return canonicalToolName(toolName) in allow
+    }
+
+    /**
+     * Resolve an allowlist to canonical names, or null when unrestricted.
+     * `memory` expands to both memory halves.
+     */
+    fun expandAllowlist(allowedTools: List<String>?): Set<String>? =
+        allowedTools
+            ?.takeIf { it.isNotEmpty() }
+            ?.flatMap { raw ->
+                if (raw.trim().lowercase() == "memory") {
+                    listOf("memory_write", "memory_get")
+                } else {
+                    listOf(canonicalToolName(raw))
+                }
+            }
+            ?.toSet()
+
     fun makeAgentTools(
         supportsImageInput: Boolean = true,
         // [T-memory-toggle-gates-injection-and-tools-android] When the
@@ -67,17 +93,7 @@ object AgentTools {
          */
         allowedTools: List<String>? = null,
     ): List<AgentToolDefinition> {
-        val allow: Set<String>? = allowedTools
-            ?.takeIf { it.isNotEmpty() }
-            ?.flatMap { raw ->
-                // `memory` is a convenience shorthand for the pair.
-                if (raw.trim().lowercase() == "memory") {
-                    listOf("memory_write", "memory_get")
-                } else {
-                    listOf(canonicalToolName(raw))
-                }
-            }
-            ?.toSet()
+        val allow = expandAllowlist(allowedTools)
 
         fun permitted(name: String): Boolean = allow == null || name in allow
 

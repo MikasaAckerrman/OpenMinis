@@ -83,6 +83,20 @@ class GraphsCollection(
                 ?.let { runCatching { com.openminis.app.data.model.ThinkingLevel.valueOf(it) }.getOrNull() }
             val temperature = (nObj["temperature"] as? ConfigValue.Double)?.value?.toFloat()
             
+            // [T-agent-graph-scope] Scope + parallelism fields.
+            val ownedArtifact = (nObj["ownedArtifact"] as? ConfigValue.Str)?.value ?: ""
+            val mayDelegateTo = (nObj["mayDelegateTo"] as? ConfigValue.Arr)?.value
+                ?.mapNotNull { (it as? ConfigValue.Str)?.value }
+                ?.map { raw ->
+                    runCatching { AgentRole.valueOf(raw) }.getOrNull()
+                        ?: throw ConfigError.InvalidValue("Unknown role in mayDelegateTo: $raw")
+                }
+                ?: emptyList()
+            val replicas = (nObj["replicas"] as? ConfigValue.Int)?.value ?: 1
+            val shardHint = (nObj["shardHint"] as? ConfigValue.Arr)?.value
+                ?.mapNotNull { (it as? ConfigValue.Str)?.value }
+                ?: emptyList()
+
             nodes.add(AgentNode(
                 id = id,
                 role = role,
@@ -93,6 +107,10 @@ class GraphsCollection(
                 maxTurns = maxTurns,
                 thinkingLevel = thinkingLevel,
                 temperature = temperature,
+                ownedArtifact = ownedArtifact,
+                mayDelegateTo = mayDelegateTo,
+                replicas = replicas,
+                shardHint = shardHint,
             ))
         }
 
@@ -191,6 +209,10 @@ class GraphsCollection(
                         "maxTurns" to ConfigValue.Int(node.maxTurns),
                         "thinkingLevel" to ConfigValue.Str(node.thinkingLevel?.name ?: ""),
                         "temperature" to ConfigValue.Double(node.temperature?.toDouble() ?: 0.0),
+                        "ownedArtifact" to ConfigValue.Str(node.ownedArtifact),
+                        "mayDelegateTo" to ConfigValue.Arr(node.mayDelegateTo.map { ConfigValue.Str(it.name) }),
+                        "replicas" to ConfigValue.Int(node.replicas),
+                        "shardHint" to ConfigValue.Arr(node.shardHint.map { ConfigValue.Str(it) }),
                     ))
                 })
             },

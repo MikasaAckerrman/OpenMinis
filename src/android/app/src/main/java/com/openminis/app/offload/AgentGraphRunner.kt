@@ -43,9 +43,11 @@ internal object AgentGraphRunner {
         /** Nodes already enqueued or started — guards against double-dispatch
          *  when a fan-in node's predecessors finish at different times. */
         val dispatched: MutableSet<String> = mutableSetOf(),
+        /** nodeId -> why the scope guard rejected its handoff. */
+        val scopeViolations: MutableMap<String, String> = mutableMapOf(),
     )
 
-    enum class NodeStatus { PENDING, RUNNING, COMPLETED, FAILED, BLOCKED, SKIPPED }
+    enum class NodeStatus { PENDING, RUNNING, COMPLETED, FAILED, BLOCKED, SKIPPED, OUT_OF_SCOPE }
 
     data class ExecutionContext(
         val state: GraphState,
@@ -99,7 +101,10 @@ internal object AgentGraphRunner {
 
         // Initialize all nodes as PENDING
         for (node in graph.nodes) {
-            state.nodeStatus[node.id] = NodeStatus.PENDING
+            // Replicated nodes get one status slot per replica.
+            for (rid in node.replicaIds()) {
+                state.nodeStatus[rid] = NodeStatus.PENDING
+            }
         }
 
         val execContext = ExecutionContext(state, context, providerRepo, json)
@@ -119,13 +124,37 @@ internal object AgentGraphRunner {
     }
 
     /** Main graph execution loop. */
+    /**
+     * [T-agent-graph-parallel] Runtime ids differ from config ids when a node
+     * has replicas: `implementer` with replicas=2 runs as `implementer#1` and
+     * `implementer#2`. Everything downstream (status, sessions, handoffs) keys
+     * off the RUNTIME id so the two never share state; this resolves back to
+     * the config node plus the replica's 0-based index for sharding.
+     */
+    private fun resolveRuntimeNode(
+        graph: AgentGraph,
+        runtimeId: String,
+    ): Pair<AgentNode, Int>? {
+        val hash = runtimeId.lastIndexOf('#')
+        if (hash < 0) {
+            val node = graph.nodes.find { it.id == runtimeId } ?: return null
+            return node to 0
+        }
+        val baseId = runtimeId.substring(0, hash)
+        val idx = runtimeId.substring(hash + 1).toIntOrNull() ?: return null
+        val node = graph.nodes.find { it.id == baseId } ?: return null
+        return node to (idx - 1)
+    }
+
     private suspend fun executeGraph(execContext: ExecutionContext): GraphRunResult {
         val state = execContext.state
         val graph = state.graph
 
-        // Queue of ready node IDs
+        // Queue of ready node IDs (runtime ids — see resolveRuntimeNode)
         val readyQueue = java.util.concurrent.ConcurrentLinkedQueue<String>()
-        readyQueue.add(graph.entryNodeId)
+        val entry = graph.nodes.find { it.id == graph.entryNodeId }
+        // Entry may itself be replicated; enqueue every replica.
+        readyQueue.addAll(entry?.replicaIds() ?: listOf(graph.entryNodeId))
 
         // Track running nodes for parallelism limit
         val runningJobs = mutableMapOf<String, Job>()
@@ -135,10 +164,14 @@ internal object AgentGraphRunner {
             // nothing is left to run. `all {}` on an empty list is true, so a
             // graph without exitNodeIds ends as soon as the queue drains —
             // which is the desired behaviour (it just runs to exhaustion).
-            val exitsSettled = graph.exitNodeIds.all { id ->
+            val exitRuntimeIds = graph.exitNodeIds.flatMap { cid ->
+                graph.nodes.find { it.id == cid }?.replicaIds() ?: listOf(cid)
+            }
+            val exitsSettled = exitRuntimeIds.all { id ->
                 when (state.nodeStatus[id]) {
                     NodeStatus.COMPLETED, NodeStatus.FAILED,
-                    NodeStatus.BLOCKED, NodeStatus.SKIPPED -> true
+                    NodeStatus.BLOCKED, NodeStatus.SKIPPED,
+                    NodeStatus.OUT_OF_SCOPE -> true
                     else -> false
                 }
             }
@@ -154,7 +187,7 @@ internal object AgentGraphRunner {
 
             // Nothing ready, nothing running, exits unsettled → stuck.
             if (readyQueue.isEmpty() && runningJobs.isEmpty()) {
-                val incompleteExits = graph.exitNodeIds.filter { state.nodeStatus[it] != NodeStatus.COMPLETED }
+                val incompleteExits = exitRuntimeIds.filter { state.nodeStatus[it] != NodeStatus.COMPLETED }
                 return GraphRunResult(
                     taskId = state.taskId,
                     status = RunStatus.FAILED,
@@ -167,7 +200,7 @@ internal object AgentGraphRunner {
             // Start next ready node (respect maxParallelNodes)
             while (readyQueue.isNotEmpty() && runningJobs.size < graph.config.maxParallelNodes) {
                 val nodeId = readyQueue.poll() ?: break
-                val node = graph.nodes.find { it.id == nodeId } ?: continue
+                val (node, replicaIndex) = resolveRuntimeNode(graph, nodeId) ?: continue
                 if (state.nodeStatus[nodeId] != NodeStatus.PENDING) continue
                 // Guard against double-dispatch: a fan-in node can be queued by
                 // several predecessors. `dispatched` is the single source of truth
@@ -175,7 +208,7 @@ internal object AgentGraphRunner {
                 if (!state.dispatched.add(nodeId)) continue
 
                 val job = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
-                    executeNode(execContext, node)
+                    executeNode(execContext, node, nodeId, replicaIndex)
                 }
                 runningJobs[nodeId] = job
             }
@@ -200,9 +233,16 @@ internal object AgentGraphRunner {
         }
 
         // Determine final status
-        val finalStatus = if (graph.exitNodeIds.all { state.nodeStatus[it] == NodeStatus.COMPLETED }) {
+        val allExitRuntimeIds = graph.exitNodeIds.flatMap { cid ->
+            graph.nodes.find { it.id == cid }?.replicaIds() ?: listOf(cid)
+        }
+        // A scope violation anywhere means the chain of custody broke — report
+        // ESCALATED rather than SUCCESS even if the exit nodes finished.
+        val finalStatus = if (state.scopeViolations.isNotEmpty()) {
+            RunStatus.ESCALATED
+        } else if (allExitRuntimeIds.all { state.nodeStatus[it] == NodeStatus.COMPLETED }) {
             RunStatus.SUCCESS
-        } else if (graph.exitNodeIds.any { state.nodeStatus[it] == NodeStatus.COMPLETED }) {
+        } else if (allExitRuntimeIds.any { state.nodeStatus[it] == NodeStatus.COMPLETED }) {
             RunStatus.PARTIAL
         } else {
             RunStatus.FAILED
@@ -217,14 +257,23 @@ internal object AgentGraphRunner {
     }
 
     /** Execute a single agent node. */
-    private suspend fun executeNode(execContext: ExecutionContext, node: AgentNode) {
+    private suspend fun executeNode(
+        execContext: ExecutionContext,
+        node: AgentNode,
+        runtimeId: String = node.id,
+        replicaIndex: Int = 0,
+    ) {
         val state = execContext.state
         val graph = state.graph
         val context = execContext.context
         val providerRepo = execContext.providerRepo
 
-        state.nodeStatus[node.id] = NodeStatus.RUNNING
-        addTrace(state, node.id, node.role, "START", "Node execution started")
+        state.nodeStatus[runtimeId] = NodeStatus.RUNNING
+        addTrace(
+            state, runtimeId, node.role, "START",
+            if (node.replicas > 1) "replica ${replicaIndex + 1}/${node.replicas} started"
+            else "Node execution started",
+        )
 
         // Resolve model entry: prefer modelRole (via agent.keys), fallback to modelEntryId
         val modelEntryId = if (node.modelRole.isNotBlank()) {
@@ -249,18 +298,18 @@ internal object AgentGraphRunner {
         // the tool schema is already restricted on the FIRST turn. This is a
         // real barrier, not advice in the prompt: a tool absent from the schema
         // cannot be called at all.
-        val sessionId = state.sessionMap[node.id]
+        val sessionId = state.sessionMap[runtimeId]
             ?: AgentSessionManager.createAndBindSession(
                 context = context,
                 modelEntryId = modelEntryId,
                 allowedTools = node.allowedTools,
-            ).also { state.sessionMap[node.id] = it }
+            ).also { state.sessionMap[runtimeId] = it }
 
-        // Build system prompt with role + tool allowlist
-        val systemPrompt = buildSystemPrompt(node, state)
+        // Build system prompt with role + tool allowlist + scope contract
+        val systemPrompt = buildSystemPrompt(node, state, replicaIndex)
 
         // Build user message with handoff from predecessors + input
-        val userMessage = buildUserMessage(node, state)
+        val userMessage = buildUserMessage(node, state, runtimeId)
 
         // Send to model
         var response: String? = null
@@ -269,7 +318,7 @@ internal object AgentGraphRunner {
 
         while (attempts < maxAttempts && response == null) {
             attempts++
-            addTrace(state, node.id, node.role, "ATTEMPT", "Attempt $attempts/$maxAttempts")
+            addTrace(state, runtimeId, node.role, "ATTEMPT", "Attempt $attempts/$maxAttempts")
 
             val promptResult = AgentSessionManager.sendAndWait(
                 context = context,
@@ -282,7 +331,7 @@ internal object AgentGraphRunner {
             if (promptResult.status == "Completed" && promptResult.responseText != null) {
                 response = promptResult.responseText
             } else if (graph.config.retryPolicy.retryOn.contains(promptResult.status)) {
-                addTrace(state, node.id, node.role, "RETRY", "Status: ${promptResult.status}, waiting ${graph.config.retryPolicy.backoffMs}ms")
+                addTrace(state, runtimeId, node.role, "RETRY", "Status: ${promptResult.status}, waiting ${graph.config.retryPolicy.backoffMs}ms")
                 kotlinx.coroutines.delay(graph.config.retryPolicy.backoffMs)
             } else {
                 // Non-retryable error
@@ -294,15 +343,15 @@ internal object AgentGraphRunner {
         // local val so the compiler can smart-cast it to non-null below.
         var finalResponse: String = response
             ?: run {
-                state.nodeStatus[node.id] = NodeStatus.FAILED
-                addTrace(state, node.id, node.role, "FAILED", "All attempts exhausted")
+                state.nodeStatus[runtimeId] = NodeStatus.FAILED
+                addTrace(state, runtimeId, node.role, "FAILED", "All attempts exhausted")
                 return
             }
 
         // Validate handoff
         var validation = HandoffValidator.validateResponse(finalResponse)
         if (!validation.isValid) {
-            addTrace(state, node.id, node.role, "INVALID_HANDOFF", validation.message)
+            addTrace(state, runtimeId, node.role, "INVALID_HANDOFF", validation.message)
             // One corrective round-trip: tell the model exactly what was wrong.
             val retryMessage =
                 "Your previous response was invalid: ${validation.message}\n\n" +
@@ -331,9 +380,28 @@ internal object AgentGraphRunner {
                 return
             }
 
+        // [T-agent-graph-scope] Scope guard. The prompt tells the node what it
+        // owns; this verifies the instruction held. A node that produced a
+        // neighbour's artifact is stopped here rather than poisoning the chain
+        // with work that bypassed the agent meant to do it.
+        when (val verdict = ScopeGuard.check(node, handoff, finalResponse)) {
+            is ScopeGuard.Verdict.OutOfScope -> {
+                addTrace(state, runtimeId, node.role, "OUT_OF_SCOPE", verdict.reason)
+                state.nodeStatus[runtimeId] = NodeStatus.OUT_OF_SCOPE
+                // Keep the handoff for the trace, but do NOT let successors
+                // consume it — an out-of-scope artifact is not a deliverable.
+                state.scopeViolations[runtimeId] = verdict.reason
+                return
+            }
+            is ScopeGuard.Verdict.Suspicious -> {
+                addTrace(state, runtimeId, node.role, "SCOPE_WARNING", verdict.reason)
+            }
+            ScopeGuard.Verdict.Ok -> Unit
+        }
+
         // Store handoff
-        state.handoffMap[node.id] = handoff
-        state.nodeStatus[node.id] = when (handoff.status) {
+        state.handoffMap[runtimeId] = handoff
+        state.nodeStatus[runtimeId] = when (handoff.status) {
             HandoffStatus.COMPLETE -> NodeStatus.COMPLETED
             HandoffStatus.BLOCKED -> NodeStatus.BLOCKED
             HandoffStatus.NEEDS_CLARIFICATION -> NodeStatus.BLOCKED
@@ -353,73 +421,151 @@ internal object AgentGraphRunner {
 
         // If COMPLETE with deliverables, also save the handoff itself
         if (handoff.status == HandoffStatus.COMPLETE) {
-            val handoffPath = "${state.artifactDir}/${node.id}_handoff.md"
+            val handoffPath = "${state.artifactDir}/${runtimeId}_handoff.md"
             File(handoffPath).writeText(HandoffValidator.buildHandoff(handoff))
             state.artifactIndex[handoffPath] = HandoffValidator.buildHandoff(handoff)
         }
 
-        addTrace(state, node.id, node.role, "HANDOFF", "Status: ${handoff.status}, To: ${handoff.to}")
+        addTrace(state, runtimeId, node.role, "HANDOFF", "Status: ${handoff.status}, To: ${handoff.to}")
     }
 
     /** Build system prompt for an agent node. */
-    private fun buildSystemPrompt(node: AgentNode, state: GraphState): String {
+    private fun buildSystemPrompt(
+        node: AgentNode,
+        state: GraphState,
+        replicaIndex: Int = 0,
+    ): String {
         val roleName = node.role.name.replace("_", " ")
         val toolList = ToolAllowlistEnforcer.formatAllowlist(node)
+        val scope = ScopeGuard.scopeContract(node, replicaIndex)
+        val delegates = if (node.mayDelegateTo.isEmpty()) {
+            "Set TO: to whichever role the work must reach next."
+        } else {
+            "TO: must be one of ${node.mayDelegateTo.joinToString(", ") { it.name }}."
+        }
+
         return """
             You are the $roleName agent in a multi-agent coding pipeline.
-            
+            You are NOT a general assistant. You do one job and hand off.
+
+            $scope
+
             $toolList
-            
-            Your system instructions:
+            A tool absent from your schema is not merely discouraged — it is
+            unavailable. If you need something outside your tools, that is a
+            signal the work belongs to another agent: hand off, do not improvise.
+
+            YOUR INSTRUCTIONS:
             ${node.systemPrompt}
-            
-            CRITICAL: You MUST follow the Unified Handoff Protocol. Every response must end with a valid handoff block:
+
+            BEFORE YOU ANSWER, verify all three:
+              1. Is the artifact I am about to produce the one MY role owns?
+                 If no — stop and hand off with STATUS: BLOCKED.
+              2. Am I about to do work that belongs to a later agent because it
+                 seemed faster? If yes — stop. Speed is not the goal; an
+                 independent chain of custody is.
+              3. Did I receive everything I need? If no — do NOT guess or
+                 invent it. Return STATUS: NEEDS_CLARIFICATION and say exactly
+                 what is missing.
+
+            HANDOFF PROTOCOL — mandatory, no prose after the block:
             === HANDOFF START ===
             FROM: ${node.role.name}
-            TO: [Next Agent Role]
+            TO: [role]
             TASK_ID: ${state.taskId}
             STATUS: COMPLETE | BLOCKED | NEEDS_CLARIFICATION
             DELIVERABLES:
-            - [list of artifacts]
+            - [concrete artifacts you produced — file paths where applicable]
             SUCCESS_CRITERIA_MET:
-            - [what you verified]
+            - [what you actually verified, not what you assume]
             REMAINING_RISKS_OR_OPEN_QUESTIONS:
-            - [any risks]
+            - [anything you could not confirm]
             NEXT_REQUIRED_ACTION:
-            [one clear sentence]
+            [one sentence: what the receiving agent must do]
             === HANDOFF END ===
-            
-            Do NOT include any text after the handoff block.
+
+            FROM: must read exactly ${node.role.name}. $delegates
+            STATUS: COMPLETE requires a non-empty DELIVERABLES list.
+            A handoff that misstates FROM, or ships an artifact this role does
+            not own, is rejected by the engine and the run stops. The scope
+            contract is enforced in code, not on trust.
         """.trimIndent()
     }
 
     /** Build user message with context from predecessors. */
-    private fun buildUserMessage(node: AgentNode, state: GraphState): String {
+    private fun buildUserMessage(
+        node: AgentNode,
+        state: GraphState,
+        runtimeId: String = node.id,
+    ): String {
         val sb = StringBuilder()
-        
-        if (node.id == state.graph.entryNodeId) {
-            sb.appendLine("TASK: ${state.input}")
-            sb.appendLine("")
-            sb.appendLine("You are the first agent. Begin your work.")
+        val graph = state.graph
+
+        sb.appendLine("ORIGINAL TASK: ${state.input}")
+        sb.appendLine()
+
+        if (node.id == graph.entryNodeId) {
+            sb.appendLine("You are the first agent in this run. Begin your part.")
         } else {
-            // Collect handoffs from all predecessor nodes
-            val preds = state.graph.edges.filter { it.to == node.id }
-            for (pred in preds) {
-                val predHandoff = state.handoffMap[pred.from]
-                if (predHandoff != null) {
-                    sb.appendLine("HANDOFF FROM ${predHandoff.from.name}:")
-                    sb.appendLine(HandoffValidator.buildHandoff(predHandoff))
-                    sb.appendLine("")
+            // Predecessors are CONFIG ids; a replicated predecessor contributes
+            // one handoff per replica, so expand before looking them up.
+            val predIds = graph.edges
+                .filter { it.to == node.id }
+                .flatMap { edge ->
+                    graph.nodes.find { it.id == edge.from }?.replicaIds()
+                        ?: listOf(edge.from)
                 }
+                .distinct()
+
+            var found = 0
+            for (pid in predIds) {
+                val h = state.handoffMap[pid] ?: continue
+                found++
+                sb.appendLine("--- HANDOFF FROM ${h.from.name} (node $pid) ---")
+                sb.appendLine(HandoffValidator.buildHandoff(h))
+                sb.appendLine()
             }
-            
-            if (sb.isEmpty()) {
-                sb.appendLine("TASK: ${state.input}")
-                sb.appendLine("")
-                sb.appendLine("No predecessor handoffs found. Begin work based on task.")
+
+            // Surface predecessors that were stopped, so this node does not
+            // silently assume their work exists.
+            val blocked = predIds.filter { pid ->
+                state.nodeStatus[pid] == NodeStatus.OUT_OF_SCOPE ||
+                    state.nodeStatus[pid] == NodeStatus.FAILED
+            }
+            if (blocked.isNotEmpty()) {
+                sb.appendLine("--- UPSTREAM PROBLEMS ---")
+                for (pid in blocked) {
+                    val why = state.scopeViolations[pid] ?: "node failed"
+                    sb.appendLine("$pid: ${state.nodeStatus[pid]} — $why")
+                }
+                sb.appendLine(
+                    "Do NOT compensate by doing their work. If their artifact is " +
+                        "required for yours, return STATUS: BLOCKED."
+                )
+                sb.appendLine()
+            }
+
+            if (found == 0) {
+                sb.appendLine(
+                    "No predecessor handoff reached you. Do NOT invent the missing " +
+                        "input — return STATUS: NEEDS_CLARIFICATION naming what is absent."
+                )
+                sb.appendLine()
             }
         }
-        
+
+        // Sibling awareness for replicas: knowing the split exists is what
+        // stops two coders from writing the same file.
+        if (node.replicas > 1) {
+            val siblings = node.replicaIds().filter { it != runtimeId }
+            sb.appendLine("--- PARALLEL SIBLINGS ---")
+            sb.appendLine(
+                "You run alongside ${siblings.size} sibling(s): ${siblings.joinToString(", ")}. " +
+                    "Each owns a different shard. Touch only yours."
+            )
+            sb.appendLine()
+        }
+
         return sb.toString()
     }
 
@@ -432,45 +578,63 @@ internal object AgentGraphRunner {
      * the parallel review block (4 reviewers -> auditor) work: the auditor
      * waits for all four instead of starting on the first one.
      */
-    private fun queueSuccessors(execContext: ExecutionContext, completedNodeId: String): List<String> {
+    private fun queueSuccessors(execContext: ExecutionContext, completedRuntimeId: String): List<String> {
         val state = execContext.state
         val graph = state.graph
         val ready = mutableListOf<String>()
 
         fun terminal(id: String): Boolean = when (state.nodeStatus[id]) {
             NodeStatus.COMPLETED, NodeStatus.FAILED,
-            NodeStatus.BLOCKED, NodeStatus.SKIPPED -> true
+            NodeStatus.BLOCKED, NodeStatus.SKIPPED,
+            NodeStatus.OUT_OF_SCOPE -> true
             else -> false
         }
 
-        for (edge in graph.edges.filter { it.from == completedNodeId }) {
-            val targetId = edge.to
-            if (targetId in state.dispatched) continue
+        /** Runtime ids a config node expands to. */
+        fun runtimeIdsOf(configId: String): List<String> =
+            graph.nodes.find { it.id == configId }?.replicaIds() ?: listOf(configId)
 
-            val incoming = graph.edges.filter { it.to == targetId }
-            // Wait until every predecessor settled.
-            if (!incoming.all { terminal(it.from) }) continue
+        // Edges are declared between CONFIG ids; map the finished replica back.
+        val completedConfigId = resolveRuntimeNode(graph, completedRuntimeId)?.first?.id
+            ?: completedRuntimeId
 
-            // CONDITIONAL edges gate on the predecessor's handoff.
+        for (edge in graph.edges.filter { it.from == completedConfigId }) {
+            val incoming = graph.edges.filter { it.to == edge.to }
+
+            // Fan-in over REPLICAS too: a node waits for every replica of every
+            // predecessor. Without this the auditor would start after one of
+            // two implementer replicas, reviewing half the work.
+            val allPredRuntimeIds = incoming.flatMap { runtimeIdsOf(it.from) }.distinct()
+            if (!allPredRuntimeIds.all { terminal(it) }) continue
+
+            // At least one predecessor must have COMPLETED, and CONDITIONAL
+            // edges must have their condition hold on that predecessor.
             val satisfied = incoming.any { inEdge ->
-                val predOk = state.nodeStatus[inEdge.from] == NodeStatus.COMPLETED
-                when (inEdge.type) {
-                    EdgeType.CONDITIONAL -> {
-                        val handoff = state.handoffMap[inEdge.from]
-                        predOk && handoff != null && evaluateCondition(inEdge.condition, handoff)
+                runtimeIdsOf(inEdge.from).any { predRuntimeId ->
+                    val predOk = state.nodeStatus[predRuntimeId] == NodeStatus.COMPLETED
+                    when (inEdge.type) {
+                        EdgeType.CONDITIONAL -> {
+                            val h = state.handoffMap[predRuntimeId]
+                            predOk && h != null && evaluateCondition(inEdge.condition, h)
+                        }
+                        else -> predOk
                     }
-                    else -> predOk
                 }
             }
 
-            if (satisfied) {
-                state.nodeStatus[targetId] = NodeStatus.PENDING
-                ready.add(targetId)
-            } else {
-                state.nodeStatus[targetId] = NodeStatus.SKIPPED
+            // Activate (or skip) every replica of the target.
+            for (targetRuntimeId in runtimeIdsOf(edge.to)) {
+                if (targetRuntimeId in state.dispatched) continue
+                if (terminal(targetRuntimeId)) continue
+                if (satisfied) {
+                    state.nodeStatus[targetRuntimeId] = NodeStatus.PENDING
+                    ready.add(targetRuntimeId)
+                } else {
+                    state.nodeStatus[targetRuntimeId] = NodeStatus.SKIPPED
+                }
             }
         }
-        return ready
+        return ready.distinct()
     }
 
     /** Evaluate a simple condition string against handoff data. */

@@ -7114,6 +7114,21 @@ class ChatViewModel(
         assistantId: String,
         currentText: String,
     ): ToolExecutionResult {
+        // [T-agent-graph] Second line of defence for the per-agent allowlist.
+        // The primary barrier is schema-level: a tool absent from
+        // AgentTools.makeAgentTools never reaches the model. This check catches
+        // the residual cases — a model replaying a tool name from earlier
+        // history, or a provider that ignores the schema — and refuses at the
+        // executor instead of silently doing the work.
+        val policy = com.openminis.app.tools.AgentToolPolicyStore.policyFor(sessionId)
+        if (policy != null && !com.openminis.app.tools.AgentTools.isToolPermitted(name, policy)) {
+            return ToolExecutionResult(
+                "Tool '$name' is not in this agent's allowlist (${policy.joinToString(", ")}). " +
+                    "Stay within your role's scope; if the task genuinely needs it, hand off.",
+                false,
+            )
+        }
+
         // T330: tri-state permission gating moved into the offload IPC
         // handler (OffloadGate). The CLIs land there whether the LLM
         // emitted a named tool call or a raw shell command, so the gate
