@@ -66,6 +66,17 @@ class GraphsCollection(
             val modelEntryId = (nObj["modelEntryId"] as? ConfigValue.Str)?.value ?: ""
             val modelRole = (nObj["modelRole"] as? ConfigValue.Str)?.value ?: ""
             val allowedTools = (nObj["allowedTools"] as? ConfigValue.Arr)?.value?.mapNotNull { (it as? ConfigValue.Str)?.value } ?: emptyList()
+            // Reject unknown tool names at config time. A silent typo would
+            // otherwise hand the node an allowlist that matches nothing —
+            // and since an empty-after-filter schema is indistinguishable
+            // from "no tools", the agent would fail with no explanation.
+            val unknown = com.openminis.app.offload.ToolAllowlistEnforcer.unknownTools(allowedTools)
+            if (unknown.isNotEmpty()) {
+                throw ConfigError.InvalidValue(
+                    "Unknown tool(s) for node '$id': ${unknown.joinToString(", ")}. " +
+                        "Valid: ${com.openminis.app.offload.ToolAllowlistEnforcer.ALL_TOOLS.sorted().joinToString(", ")}, memory"
+                )
+            }
             val maxTurns = (nObj["maxTurns"] as? ConfigValue.Int)?.value ?: 10
             val thinkingLevel = (nObj["thinkingLevel"] as? ConfigValue.Str)?.value
                 ?.takeIf { it.isNotBlank() }

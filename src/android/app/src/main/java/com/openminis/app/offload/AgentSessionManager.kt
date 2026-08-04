@@ -3,6 +3,7 @@ package com.openminis.app.offload
 import android.content.Context
 import com.openminis.app.data.model.ThinkingLevel
 import com.openminis.app.debug.HeadlessChatRunner
+import com.openminis.app.tools.AgentToolPolicyStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -30,13 +31,19 @@ internal object AgentSessionManager {
      * the real binding is applied by `applyModelOverride`, which takes the
      * ENTRY uuid. Passing null to ensureSession lets it pick any visible
      * entry as a placeholder — applyModelOverride immediately overwrites it.
+     *
+     * [allowedTools] is registered in [AgentToolPolicyStore] before the caller
+     * gets a chance to send a prompt, so the very first turn already sees the
+     * restricted tool schema. Pass an empty list for "no restriction".
      */
     suspend fun createAndBindSession(
         context: Context,
         modelEntryId: String,
+        allowedTools: List<String> = emptyList(),
     ): String = withContext(Dispatchers.IO) {
         val sessionId = HeadlessChatRunner.ensureSession(context, null)
         HeadlessChatRunner.applyModelOverride(context, sessionId, modelEntryId, null)
+        AgentToolPolicyStore.setPolicy(sessionId, allowedTools)
         sessionId
     }
 
@@ -82,6 +89,7 @@ internal object AgentSessionManager {
         context: Context,
         sessionId: String,
     ) = withContext(Dispatchers.IO) {
+        AgentToolPolicyStore.clearPolicy(sessionId)
         val app = context.applicationContext as com.openminis.app.MinisApp
         app.chatRepository.deleteSession(sessionId)
     }

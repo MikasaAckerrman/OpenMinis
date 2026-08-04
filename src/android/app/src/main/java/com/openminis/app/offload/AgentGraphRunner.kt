@@ -244,9 +244,17 @@ internal object AgentGraphRunner {
         // Get or create session for this node.
         // NOTE: not `getOrPut { … }` — the initializer lambda is NOT an inline
         // suspend context, so calling a suspend fun inside it fails to compile.
+        //
+        // [T-agent-graph] node.allowedTools is handed to the session manager so
+        // the tool schema is already restricted on the FIRST turn. This is a
+        // real barrier, not advice in the prompt: a tool absent from the schema
+        // cannot be called at all.
         val sessionId = state.sessionMap[node.id]
-            ?: AgentSessionManager.createAndBindSession(context, modelEntryId)
-                .also { state.sessionMap[node.id] = it }
+            ?: AgentSessionManager.createAndBindSession(
+                context = context,
+                modelEntryId = modelEntryId,
+                allowedTools = node.allowedTools,
+            ).also { state.sessionMap[node.id] = it }
 
         // Build system prompt with role + tool allowlist
         val systemPrompt = buildSystemPrompt(node, state)

@@ -1,58 +1,56 @@
 package com.openminis.app.offload
 
 import com.openminis.app.data.model.AgentNode
+import com.openminis.app.tools.AgentTools
 
 /**
- * Enforces per-agent tool allowlists.
- * Tool names match the minis CLI/tools available:
- * - shell, file_read, file_write, file_edit, browser
- * - sessions, model_use, config, memory, android_*
+ * [T-agent-graph] Per-agent tool allowlist helpers.
+ *
+ * The actual ENFORCEMENT happens one layer down: [AgentTools.makeAgentTools]
+ * filters the tool schema by the allowlist stored in
+ * [com.openminis.app.tools.AgentToolPolicyStore], so a tool the node may not
+ * use never reaches the model. This object only validates the config and
+ * renders it for the system prompt.
  */
 object ToolAllowlistEnforcer {
 
-    /** All known tool names in the system. */
-    val ALL_TOOLS = setOf(
-        "shell", "shell_execute",
-        "file_read", "file_write", "file_edit",
-        "browser", "browser_use",
-        "sessions", "minis-sessions-cli",
-        "model_use", "minis-model-use",
-        "config", "minis-config",
-        "memory", "memory_write", "memory_get",
-        "android_alarm", "android_calendar", "android_clipboard",
-        "android_contacts", "android_device", "android_location",
-        "android_notification", "android_open", "android_photos",
-        "android_player", "android_speak", "android_speech",
-        "android_weather", "android_shizuku_cli", "android_a11y_cli",
-    )
+    /** Canonical tool names available to an agent node. */
+    val ALL_TOOLS: Set<String> get() = AgentTools.ALL_TOOL_NAMES
 
-    /** Check if a tool is allowed for a given node. */
+    /**
+     * Validate an allowlist from a graph config. Returns the names that do not
+     * map onto a real tool, so the caller can reject the graph with a useful
+     * message instead of silently granting nothing.
+     */
+    fun unknownTools(allowedTools: List<String>): List<String> =
+        allowedTools.filter { raw ->
+            val normalized = raw.trim().lowercase()
+            // `memory` is shorthand for both memory halves.
+            if (normalized == "memory") return@filter false
+            AgentTools.canonicalToolName(raw) !in AgentTools.ALL_TOOL_NAMES
+        }
+
+    /** Whether [tool] is permitted for [node]. Empty allowlist = everything. */
     fun isAllowed(node: AgentNode, tool: String): Boolean {
-        if (node.allowedTools.isEmpty()) return true // empty = all allowed (backward compat)
-        val normalized = normalizeToolName(tool)
-        return node.allowedTools.any { normalizeToolName(it) == normalized }
+        if (node.allowedTools.isEmpty()) return true
+        val target = AgentTools.canonicalToolName(tool)
+        return node.allowedTools.any { raw ->
+            if (raw.trim().lowercase() == "memory") {
+                target == "memory_write" || target == "memory_get"
+            } else {
+                AgentTools.canonicalToolName(raw) == target
+            }
+        }
     }
 
-    /** Filter a response to remove disallowed tool calls. */
-    fun filterResponse(response: String, allowedTools: List<String>): String {
-        if (allowedTools.isEmpty()) return response
-        // This would parse tool calls from the response and filter them
-        // For now, we rely on the model respecting the system prompt
-        return response
-    }
-
-    /** Normalize tool name variants. */
-    private fun normalizeToolName(name: String): String {
-        return name.lowercase()
-            .replace("_", "-")
-            .replace("minis-", "")
-            .replace("android-", "")
-            .replace("cli", "")
-    }
-
-    /** Get the allowlist as a formatted string for system prompts. */
+    /** Human-readable allowlist for the node's system prompt. */
     fun formatAllowlist(node: AgentNode): String {
-        if (node.allowedTools.isEmpty()) return "All tools available"
-        return "Allowed tools: ${node.allowedTools.joinToString(", ")}"
+        if (node.allowedTools.isEmpty()) return "All tools available."
+        val resolved = node.allowedTools.flatMap { raw ->
+            if (raw.trim().lowercase() == "memory") listOf("memory_write", "memory_get")
+            else listOf(AgentTools.canonicalToolName(raw))
+        }.distinct()
+        return "Tools available to you (the schema contains ONLY these): " +
+            resolved.joinToString(", ")
     }
 }

@@ -11,6 +11,41 @@ import com.openminis.app.data.model.AgentToolParam
  */
 object AgentTools {
 
+    /**
+     * [T-agent-graph] Canonical tool names, so a caller can express an
+     * allowlist without hardcoding strings. Kept in one place because the
+     * graph config (`allowedTools` on an AgentNode) is written by users and
+     * validated against this set.
+     */
+    val ALL_TOOL_NAMES: Set<String> = setOf(
+        "shell_execute",
+        FileReadTool.NAME,
+        FileWriteTool.NAME,
+        FileEditTool.NAME,
+        ReadImageTool.NAME,
+        "browser_use",
+        "memory_write",
+        "memory_get",
+    )
+
+    /**
+     * Accept the loose aliases people naturally write in a graph JSON
+     * (`shell`, `browser`, `memory`) and map them onto the real tool names.
+     * Unknown input passes through unchanged so validation can reject it.
+     */
+    fun canonicalToolName(raw: String): String = when (raw.trim().lowercase()) {
+        "shell", "shell_execute", "shell-execute" -> "shell_execute"
+        "file_read", "file-read", "read" -> FileReadTool.NAME
+        "file_write", "file-write", "write" -> FileWriteTool.NAME
+        "file_edit", "file-edit", "edit" -> FileEditTool.NAME
+        "read_image", "read-image", "image" -> ReadImageTool.NAME
+        "browser", "browser_use", "browser-use" -> "browser_use"
+        "memory_write", "memory-write" -> "memory_write"
+        "memory_get", "memory-get" -> "memory_get"
+        // `memory` alone means both halves; callers expand it before this point.
+        else -> raw.trim()
+    }
+
     fun makeAgentTools(
         supportsImageInput: Boolean = true,
         // [T-memory-toggle-gates-injection-and-tools-android] When the
@@ -20,18 +55,45 @@ object AgentTools {
         // attempt those calls. Mirrors the iOS gate at
         // AIChatViewModel.makeAgentTools(memoryEnabled:).
         memoryEnabled: Boolean = true,
-    ): List<AgentToolDefinition> = buildList {
-        add(shellExecuteDefinition())
-        add(FileReadTool.definition())
-        add(FileWriteTool.definition())
-        add(FileEditTool.definition())
-        if (supportsImageInput) {
-            add(ReadImageTool.definition())
-        }
-        add(browserUseDefinition())
-        if (memoryEnabled) {
-            add(memoryWriteDefinition())
-            add(memoryGetDefinition())
+        /**
+         * [T-agent-graph] Per-session tool allowlist. null or empty = every
+         * tool (existing behaviour, all normal chat sessions). When non-empty,
+         * ONLY the listed tools reach the model's schema — a multi-agent node
+         * with `allowedTools: [file_read, shell]` physically cannot call
+         * file_write, instead of merely being told not to in its prompt.
+         *
+         * Aliases are accepted (`shell`, `browser`, `memory`); see
+         * [canonicalToolName]. `memory` expands to both memory halves.
+         */
+        allowedTools: List<String>? = null,
+    ): List<AgentToolDefinition> {
+        val allow: Set<String>? = allowedTools
+            ?.takeIf { it.isNotEmpty() }
+            ?.flatMap { raw ->
+                // `memory` is a convenience shorthand for the pair.
+                if (raw.trim().lowercase() == "memory") {
+                    listOf("memory_write", "memory_get")
+                } else {
+                    listOf(canonicalToolName(raw))
+                }
+            }
+            ?.toSet()
+
+        fun permitted(name: String): Boolean = allow == null || name in allow
+
+        return buildList {
+            if (permitted("shell_execute")) add(shellExecuteDefinition())
+            if (permitted(FileReadTool.NAME)) add(FileReadTool.definition())
+            if (permitted(FileWriteTool.NAME)) add(FileWriteTool.definition())
+            if (permitted(FileEditTool.NAME)) add(FileEditTool.definition())
+            if (supportsImageInput && permitted(ReadImageTool.NAME)) {
+                add(ReadImageTool.definition())
+            }
+            if (permitted("browser_use")) add(browserUseDefinition())
+            if (memoryEnabled) {
+                if (permitted("memory_write")) add(memoryWriteDefinition())
+                if (permitted("memory_get")) add(memoryGetDefinition())
+            }
         }
     }
 

@@ -739,9 +739,17 @@ class ChatViewModel(
      * the user flips /memory mid-session without forcing a VM rebuild.
      * The cost is negligible — [AgentTools.makeAgentTools] just builds a
      * fixed list of definition objects, no I/O.
+     *
+     * [T-agent-graph] Also consults [AgentToolPolicyStore]: a session created
+     * for a multi-agent graph node carries an allowlist, and only those tools
+     * reach the model's schema. Normal chats have no policy registered, so
+     * `policyFor` returns null and the full set is used — unchanged behaviour.
      */
     private val agentTools: List<AgentToolDefinition>
-        get() = AgentTools.makeAgentTools(memoryEnabled = _memoryEnabled.value)
+        get() = AgentTools.makeAgentTools(
+            memoryEnabled = _memoryEnabled.value,
+            allowedTools = com.openminis.app.tools.AgentToolPolicyStore.policyFor(sessionId),
+        )
 
     /**
      * Per-session loop detector. Reset alongside [agentHistory] whenever the
