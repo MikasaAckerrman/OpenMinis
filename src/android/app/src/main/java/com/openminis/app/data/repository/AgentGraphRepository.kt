@@ -5,6 +5,7 @@ import com.openminis.app.data.db.AgentGraphDao
 import com.openminis.app.data.db.ProviderDatabase
 import com.openminis.app.data.model.AgentGraph
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 
 /**
@@ -24,11 +25,21 @@ class AgentGraphRepository(private val context: Context) {
     }
 
     /**
+     * Synchronous wrapper for saveGraph.
+     */
+    fun saveGraphSync(graph: AgentGraph) = runBlocking { saveGraph(graph) }
+
+    /**
      * Load a graph by ID.
      */
     suspend fun loadGraph(id: String): AgentGraph? = withContext(Dispatchers.IO) {
         dao.loadById(id)?.toDomain()
     }
+
+    /**
+     * Synchronous wrapper for loadGraph.
+     */
+    fun loadGraphSync(id: String): AgentGraph? = runBlocking { loadGraph(id) }
 
     /**
      * List all graphs.
@@ -38,6 +49,11 @@ class AgentGraphRepository(private val context: Context) {
     }
 
     /**
+     * Synchronous wrapper for listGraphs.
+     */
+    fun listGraphsSync(): List<AgentGraph> = runBlocking { listGraphs() }
+
+    /**
      * Delete a graph by ID.
      */
     suspend fun deleteGraph(id: String) = withContext(Dispatchers.IO) {
@@ -45,9 +61,19 @@ class AgentGraphRepository(private val context: Context) {
     }
 
     /**
+     * Synchronous wrapper for deleteGraph.
+     */
+    fun deleteGraphSync(id: String) = runBlocking { deleteGraph(id) }
+
+    /**
      * Get graph names for UI display.
      */
     suspend fun listGraphNames(): List<Pair<String, String>> = withContext(Dispatchers.IO) {
         dao.loadAll().map { it.id to it.name }
     }
+
+    /**
+     * Synchronous wrapper for listGraphNames.
+     */
+    fun listGraphNamesSync(): List<Pair<String, String>> = runBlocking { listGraphNames() }
 }

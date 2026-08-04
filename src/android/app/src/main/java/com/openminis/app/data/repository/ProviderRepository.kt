@@ -2181,9 +2181,38 @@ class ProviderRepository(private val context: Context) {
         }
     }
 
+    /**
+     * Synchronous wrapper for saveAgentGraph.
+     */
+    fun saveAgentGraphSync(graph: AgentGraph) {
+        val errors = graph.validate()
+        if (errors.isNotEmpty()) {
+            throw IllegalArgumentException("Invalid graph: ${errors.joinToString(", ")}")
+        }
+        graphRepo.saveGraphSync(graph)
+        // Also update in-memory config
+        synchronized(configLock) {
+            val config = _config.value
+            val updatedGraphs = config.agentGraphs.toMutableList()
+            val idx = updatedGraphs.indexOfFirst { it.id == graph.id }
+            if (idx >= 0) updatedGraphs[idx] = graph else updatedGraphs.add(graph)
+            _config.value = config.copy(agentGraphs = updatedGraphs, revision = config.revision + 1)
+        }
+    }
+
     suspend fun loadAgentGraph(id: String): AgentGraph? = graphRepo.loadGraph(id)
 
+    /**
+     * Synchronous wrapper for loadAgentGraph.
+     */
+    fun loadAgentGraphSync(id: String): AgentGraph? = graphRepo.loadGraphSync(id)
+
     suspend fun listAgentGraphs(): List<AgentGraph> = graphRepo.listGraphs()
+
+    /**
+     * Synchronous wrapper for listAgentGraphs.
+     */
+    fun listAgentGraphsSync(): List<AgentGraph> = graphRepo.listGraphsSync()
 
     suspend fun deleteAgentGraph(id: String) {
         graphRepo.deleteGraph(id)
@@ -2196,7 +2225,26 @@ class ProviderRepository(private val context: Context) {
         }
     }
 
+    /**
+     * Synchronous wrapper for deleteAgentGraph.
+     */
+    fun deleteAgentGraphSync(id: String) {
+        graphRepo.deleteGraphSync(id)
+        synchronized(configLock) {
+            val config = _config.value
+            _config.value = config.copy(
+                agentGraphs = config.agentGraphs.filter { it.id != id },
+                revision = config.revision + 1,
+            )
+        }
+    }
+
     suspend fun listAgentGraphNames(): List<Pair<String, String>> = graphRepo.listGraphNames()
+
+    /**
+     * Synchronous wrapper for listAgentGraphNames.
+     */
+    fun listAgentGraphNamesSync(): List<Pair<String, String>> = graphRepo.listGraphNamesSync()
 
     fun getGraphRepo(): AgentGraphRepository = graphRepo
 

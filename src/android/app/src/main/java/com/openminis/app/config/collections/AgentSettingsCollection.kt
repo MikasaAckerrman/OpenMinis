@@ -76,7 +76,8 @@ class AgentSettingsCollection(
             reader = { ConfigValue.Str(prefs.getString(KEY_DEFAULT_GRAPH, "coding_v4") ?: "coding_v4") },
             writer = { v ->
                 val s = (v as? ConfigValue.Str)?.value?.trim() ?: ""
-                val graph = providerRepo.loadAgentGraph(s)
+                // Validate graph exists - use synchronous config access
+                val graph = providerRepo.config.value.agentGraphs.firstOrNull { it.id == s }
                 if (graph == null && s.isNotEmpty()) {
                     throw ConfigError.InvalidValue("Graph not found: $s")
                 }
@@ -96,6 +97,7 @@ class AgentSettingsCollection(
             writer = { v ->
                 val s = (v as? ConfigValue.Str)?.value?.trim() ?: ""
                 if (s.isNotEmpty()) {
+                    // Validate entry exists - use synchronous config access
                     val entry = providerRepo.config.value.modelEntries.find { it.id == s }
                     if (entry == null) {
                         throw ConfigError.InvalidValue("Model entry not found: $s")

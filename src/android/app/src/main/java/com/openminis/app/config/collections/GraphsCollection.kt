@@ -116,21 +116,21 @@ class GraphsCollection(
             ),
         )
 
-        repo.saveAgentGraph(graph)
+        repo.saveAgentGraphSync(graph)
         return graph.id
     }
 
     override fun remove(id: String) {
-        if (repo.config.value.agentGraphs.none { it.id == id }) throw ConfigError.UnknownPath("graphs.$id")
-        repo.deleteAgentGraph(id)
+        if (repo.loadAgentGraphSync(id) == null) throw ConfigError.UnknownPath("graphs.$id")
+        repo.deleteAgentGraphSync(id)
     }
 
-    private fun graph(id: String): AgentGraph? = repo.config.value.agentGraphs.firstOrNull { it.id == id }
+    private fun graph(id: String): AgentGraph? = repo.loadAgentGraphSync(id)
 
     private fun mutate(id: String, apply: (AgentGraph) -> Unit) {
         val g = graph(id) ?: throw ConfigError.UnknownPath("graphs.$id")
         apply(g)
-        repo.saveAgentGraph(g)
+        repo.saveAgentGraphSync(g)
     }
 
     private fun nameField(id: String): ConfigField =
