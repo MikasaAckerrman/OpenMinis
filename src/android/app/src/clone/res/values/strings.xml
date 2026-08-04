@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  [T-clone-variant] Launcher label for the side-by-side test install.
+
+  A buildType source set overrides src/main, so app_name resolves to this in
+  the clone and stays "Minis" everywhere else. Doing it here rather than via
+  resValue() avoids a duplicate-resource error, since app_name already exists
+  in src/main/res/values/strings.xml.
+-->
+<resources>
+    <string name="app_name">Minis Clone</string>
+</resources>

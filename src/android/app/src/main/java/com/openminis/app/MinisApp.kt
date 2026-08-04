@@ -428,7 +428,10 @@ class MinisApp : Application(), ImageLoaderFactory {
             )
         }
 
-        NativeOffloadServer.start(RootfsManager.getInstance(this).rootfsDir)
+        // [T-clone-variant] Pass applicationId so the abstract socket name is
+        // per-install: the namespace is device-global, and the clone variant
+        // would otherwise fail to bind and lose its whole sandbox.
+        NativeOffloadServer.start(RootfsManager.getInstance(this).rootfsDir, packageName)
 
         // Initialize session activity tracker for foreground service management
         SessionActivityTracker.init(this)
@@ -497,7 +500,15 @@ class MinisApp : Application(), ImageLoaderFactory {
             override fun onActivityStarted(activity: Activity) {
                 val wasBackgrounded = foregroundActivityCount == 0
                 foregroundActivityCount++
-                if (wasBackgrounded) _isAppForegroundFlow.value = true
+                if (wasBackgrounded) {
+                    _isAppForegroundFlow.value = true
+                    com.openminis.app.logging.AppLogger.info(
+                        "BgDiag",
+                        "app -> FOREGROUND, active sessions=" +
+                            com.openminis.app.service.SessionActivityTracker
+                                .activeSessions.value.size,
+                    )
+                }
                 // T298: as soon as the app transitions background → foreground,
                 // clear any task-completed notifications still in the tray.
                 // The user is back in front of the app — there's no point
@@ -546,6 +557,16 @@ class MinisApp : Application(), ImageLoaderFactory {
                 foregroundActivityCount = (foregroundActivityCount - 1).coerceAtLeast(0)
                 if (foregroundActivityCount == 0) {
                     _isAppForegroundFlow.value = false
+                    // [T-background-diag] Timestamp the moment we go background.
+                    // Correlating it with a later onCleared / FGS onDestroy shows
+                    // HOW LONG the OS tolerated us — seconds points at an OEM
+                    // power manager, minutes at ordinary memory pressure.
+                    com.openminis.app.logging.AppLogger.info(
+                        "BgDiag",
+                        "app -> BACKGROUND, active sessions=" +
+                            com.openminis.app.service.SessionActivityTracker
+                                .activeSessions.value.size,
+                    )
                     // [T-android-config-confirm-timeout] The user switched away
                     // while a config-confirm dialog may still be showing — nudge
                     // them so they can come back before the 120s timeout.
@@ -602,12 +623,20 @@ class MinisApp : Application(), ImageLoaderFactory {
             },
         )
 
-        // Debug server: only start in debug builds (NEVER in release)
+        // Debug server: only start in debug builds (NEVER in release).
+        //
+        // [T-clone-variant] The port is derived from applicationId so the clone
+        // can run at the same time as the primary install. Two servers on one
+        // port means the second bind fails and that install becomes untestable —
+        // and the failure is easy to misread as "the clone is broken".
+        //   primary: 5321   clone: 5322
         if (BuildConfig.DEBUG) {
+            val rpcPort = if (packageName.endsWith(".clone")) 5322 else 5321
             try {
-                com.openminis.app.debug.DebugServer(this).start()
+                com.openminis.app.debug.DebugServer(this, rpcPort).start()
+                Log.i("MinisApp", "debug RPC server on 127.0.0.1:$rpcPort ($packageName)")
             } catch (e: Exception) {
-                Log.w("MinisApp", "Failed to start debug server: ${e.message}")
+                Log.w("MinisApp", "Failed to start debug server on $rpcPort: ${e.message}")
             }
         }
 

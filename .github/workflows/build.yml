@@ -63,11 +63,25 @@ jobs:
           cd src/android
           ./gradlew :app:assembleDebug --no-daemon -Dorg.gradle.jvmargs="-Xmx4g"
 
+      # [T-clone-variant] Side-by-side install (com.openminis.app.clone) for
+      # testing a build without touching the install that holds real chats.
+      - name: Build Clone APK
+        run: |
+          cd src/android
+          ./gradlew :app:assembleClone --no-daemon -Dorg.gradle.jvmargs="-Xmx4g"
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: app-debug-apk
           path: src/android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 7
+
+      - name: Upload Clone APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-clone-apk
+          path: src/android/app/build/outputs/apk/clone/app-clone.apk
           retention-days: 7
 
       - name: Auto-push version bump (if [quick] and not workflow_dispatch)

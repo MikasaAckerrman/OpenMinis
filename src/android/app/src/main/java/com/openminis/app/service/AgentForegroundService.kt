@@ -63,10 +63,31 @@ class AgentForegroundService : Service() {
                 putExtra(EXTRA_SESSION_COUNT, sessionCount)
                 putExtra(EXTRA_TOOL_STATUS, toolStatus)
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+            // [T-background-diag] startForegroundService THROWS from the
+            // background on Android 12+ (ForegroundServiceStartNotAllowedException).
+            // It was uncaught, so a start attempted while the app was already
+            // backgrounded took down the caller silently and the service never
+            // came up — indistinguishable from "the OS killed us" in the logs.
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+                com.openminis.app.logging.AppLogger.info(
+                    "BgDiag",
+                    "FGS start requested sessions=$sessionCount status='$toolStatus'",
+                )
+            } catch (e: Exception) {
+                // Most likely ForegroundServiceStartNotAllowedException: the app
+                // is in the background and has no exemption. Worth an explicit
+                // line, because the visible symptom is "work stopped" with no
+                // other clue.
+                com.openminis.app.logging.AppLogger.error(
+                    "BgDiag",
+                    "FGS start REFUSED (${e.javaClass.simpleName}): ${e.message} — " +
+                        "background work will not be protected for this turn",
+                )
             }
         }
 
@@ -268,6 +289,24 @@ class AgentForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        // [T-background-diag] Distinguish an orderly stop from an OS kill.
+        // If sessions were still active here, the system reclaimed the service
+        // rather than us stopping it — that is the signature of an aggressive
+        // OEM power manager, and it is what to check against the device's
+        // battery-optimisation settings.
+        val active = SessionActivityTracker.activeSessions.value.size
+        if (active > 0) {
+            com.openminis.app.logging.AppLogger.error(
+                "BgDiag",
+                "FGS onDestroy with $active session(s) STILL ACTIVE — the service " +
+                    "was reclaimed, not stopped by us. Check battery optimisation / " +
+                    "auto-launch for this app.",
+            )
+        } else {
+            com.openminis.app.logging.AppLogger.info(
+                "BgDiag", "FGS onDestroy, no active sessions (orderly stop)",
+            )
+        }
         releaseWakeLock()
         try {
             overlayController?.hide()

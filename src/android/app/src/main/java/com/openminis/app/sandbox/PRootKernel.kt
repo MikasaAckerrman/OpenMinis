@@ -154,7 +154,7 @@ object PRootKernel {
         // Start the native_offload server so the proot extension can reach it
         // over the abstract unix socket. Handlers must have been registered
         // via NativeOffloadServer.register() before this point.
-        NativeOffloadServer.start(rootfsManager.rootfsDir)
+        NativeOffloadServer.start(rootfsManager.rootfsDir, context.packageName)
 
         // Materialize stub binaries inside the rootfs for each handler so
         // /bin/sh's PATH search succeeds and triggers an execve the extension

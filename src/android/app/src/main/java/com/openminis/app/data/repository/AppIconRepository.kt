@@ -29,12 +29,21 @@ object AppIconRepository {
     private const val TAG = "AppIconRepository"
     private const val PREFS = "app_icon_prefs"
     private const val KEY_SELECTED_ID = "selected_icon_id"
-    private const val PACKAGE_NAME = "com.openminis.app"
+
+    /**
+     * [T-clone-variant] Alias class names are relative to the MANIFEST namespace
+     * (com.openminis.app), which does NOT change when applicationId does — a
+     * variant like com.openminis.app.clone still declares
+     * com.openminis.app.MainActivityIconAuto. Deriving these from packageName
+     * would therefore point at a class that does not exist in the variant and
+     * make icon switching throw.
+     */
+    private const val MANIFEST_NAMESPACE = "com.openminis.app"
 
     enum class Variant(val id: String, val aliasClass: String) {
-        Auto("auto", "$PACKAGE_NAME.MainActivityIconAuto"),
-        ClassicLight("classic_light", "$PACKAGE_NAME.MainActivityIconLight"),
-        ClassicDark("classic_dark", "$PACKAGE_NAME.MainActivityIconDark"),
+        Auto("auto", "$MANIFEST_NAMESPACE.MainActivityIconAuto"),
+        ClassicLight("classic_light", "$MANIFEST_NAMESPACE.MainActivityIconLight"),
+        ClassicDark("classic_dark", "$MANIFEST_NAMESPACE.MainActivityIconDark"),
         ;
 
         companion object {

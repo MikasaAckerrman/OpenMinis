@@ -153,7 +153,7 @@ First-run: enable "Minis" under Settings → Accessibility, then `service ping`.
                 val svc = MinisAccessibilityService.getInstance()
                 val data = JSONObject()
                     .put("running", svc != null)
-                    .put("serviceName", MinisAccessibilityService.SERVICE_ID)
+                    .put("serviceName", MinisAccessibilityService.serviceId(context))
                     .put("capabilities", JSONArray().apply {
                         put("retrieveWindowContent"); put("performGestures"); put("watchEvents")
                     })

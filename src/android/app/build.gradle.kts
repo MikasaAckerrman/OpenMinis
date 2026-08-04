@@ -111,6 +111,36 @@ android {
             )
             signingConfig = signingConfigs.getByName("debug")
         }
+
+        // [T-clone-variant] A side-by-side install for testing.
+        //
+        // Different applicationId means Android treats it as a separate app:
+        // own data directory, own icon, installable ALONGSIDE the primary one.
+        // That is what lets a new build be exercised without touching the
+        // install that holds real chats — the alternative was uninstalling,
+        // which is how data got lost in the first place.
+        //
+        // initWith(debug) inherits debuggable, so the RPC server and `run-as`
+        // work here too, and the shared signing key applies.
+        create("clone") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".clone"
+            versionNameSuffix = "-clone"
+            // BuildConfig.DEBUG is false for any buildType other than `debug`,
+            // even one that inherits from it — AGP derives it from the type
+            // NAME. The RPC server (127.0.0.1:5321) and the minis-debug offload
+            // handler are gated on BuildConfig.DEBUG, so without this the clone
+            // would install fine and then be untestable: no agent.graph.* calls.
+            // isDebuggable stays true via initWith, so `run-as` works either way.
+            isDebuggable = true
+            buildConfigField("boolean", "DEBUG", "true")
+            // The launcher label comes from src/clone/res/values/strings.xml,
+            // NOT resValue: app_name already exists in src/main/res, and
+            // resValue would collide with it ("duplicate resource").
+            // matchingFallbacks: this buildType is not declared by any library
+            // dependency, so consumers must fall back to debug.
+            matchingFallbacks += listOf("debug")
+        }
     }
 
     compileOptions {
@@ -129,6 +159,19 @@ android {
 
     androidResources {
         noCompress += listOf("tar.gz", "proot-aarch64")
+    }
+
+    // [T-clone-variant] The clone shares debug's generated assets.
+    //
+    // gen_debug_skill_android.sh writes into src/debug/assets/debug-skill, and a
+    // buildType source set is named after the type — so `clone` would not see it
+    // and GET /skill would 404 despite the server running. Pointing clone at the
+    // same directory keeps ONE generated copy instead of duplicating the script's
+    // output per variant.
+    sourceSets {
+        getByName("clone") {
+            assets.srcDirs("src/debug/assets")
+        }
     }
 
     testOptions {
@@ -179,8 +222,13 @@ val stageDebugSkillAssets by tasks.registering(Exec::class) {
     outputs.dir(layout.projectDirectory.dir("src/debug/assets/debug-skill"))
     commandLine("bash", script.absolutePath)
 }
-tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") && it.name.contains("Debug") }
-    .configureEach { dependsOn(stageDebugSkillAssets) }
+// [T-clone-variant] Also wire the `clone` variant: it carries the debug server
+// (BuildConfig.DEBUG forced true), so GET /skill must have something to serve.
+// Release variants stay excluded — that is the point of the src/debug source set.
+tasks.matching {
+    it.name.startsWith("merge") && it.name.endsWith("Assets") &&
+        (it.name.contains("Debug") || it.name.contains("Clone"))
+}.configureEach { dependsOn(stageDebugSkillAssets) }
 
 dependencies {
     // Compose BOM

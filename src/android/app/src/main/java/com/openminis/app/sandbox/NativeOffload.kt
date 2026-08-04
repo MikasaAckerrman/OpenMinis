@@ -52,12 +52,38 @@ fun interface NativeOffloadHandler {
 
 object NativeOffloadServer {
     private const val TAG = "NativeOffloadServer"
-    private const val SOCKET_NAME = "native-offload"
     private const val MAGIC_REQ = 0x46464F4E  // 'N' 'O' 'F' 'F' little-endian
     private const val MAGIC_RSP = 0x52464F4E  // 'N' 'O' 'F' 'R'
     private const val VERSION = 1
 
-    const val socketName: String = SOCKET_NAME
+    /**
+     * [T-clone-variant] The abstract Unix socket namespace is DEVICE-GLOBAL, not
+     * per-app. A hardcoded name meant a second install of Minis (the clone
+     * variant) could not bind it, and its entire sandbox — every shell_execute,
+     * minis-config and offload CLI — would silently fail.
+     *
+     * Deriving the name from applicationId gives each variant its own socket.
+     * The name is already passed to proot dynamically via
+     * `--native-offload=<name>:<handlers>`, so nothing else needs to change.
+     */
+    @Volatile
+    private var resolvedSocketName: String = "native-offload"
+
+    val socketName: String get() = resolvedSocketName
+
+    /**
+     * Bind the socket name to this install. Called from [start]; separate so a
+     * test can set it without opening a socket.
+     */
+    private fun resolveSocketName(applicationId: String) {
+        // "native-offload" for the primary install keeps compatibility with any
+        // stub or script that assumed the old fixed name; variants get a suffix.
+        resolvedSocketName = if (applicationId == "com.openminis.app") {
+            "native-offload"
+        } else {
+            "native-offload-${applicationId.substringAfterLast('.')}"
+        }
+    }
 
     private val handlers = ConcurrentHashMap<String, NativeOffloadHandler>()
     private val counter = AtomicLong(0)
@@ -76,9 +102,10 @@ object NativeOffloadServer {
     }
 
     @Synchronized
-    fun start(rootfsDir: File) {
+    fun start(rootfsDir: File, applicationId: String = "com.openminis.app") {
         rootfsTmpDir = File(rootfsDir, "tmp")
         if (serverSocket != null) return
+        resolveSocketName(applicationId)
 
         // T287-followup: bind with bounded retry. Linux abstract sockets are
         // freed by the kernel only after the owning process is fully reaped —
@@ -92,14 +119,14 @@ object NativeOffloadServer {
         // 100-300ms window.
         val s = bindWithRetry()
             ?: throw java.io.IOException(
-                "failed to bind abstract socket '$SOCKET_NAME' after retries — " +
+                "failed to bind abstract socket '$resolvedSocketName' after retries — " +
                 "previous process holding the namespace?",
             )
         serverSocket = s
         acceptThread = thread(name = "native-offload-accept", isDaemon = true) {
             runAcceptLoop(s)
         }
-        Log.i(TAG, "listening on abstract socket '$SOCKET_NAME' " +
+        Log.i(TAG, "listening on abstract socket '$resolvedSocketName' " +
             "handlers=${handlers.keys.sorted()} tmpDir=${rootfsTmpDir?.absolutePath}")
     }
 
@@ -109,7 +136,7 @@ object NativeOffloadServer {
         for ((attempt, delay) in delays.withIndex()) {
             if (delay > 0) Thread.sleep(delay)
             try {
-                return LocalServerSocket(SOCKET_NAME)
+                return LocalServerSocket(resolvedSocketName)
             } catch (e: java.io.IOException) {
                 Log.w(TAG, "bind attempt ${attempt + 1}/${delays.size} failed: ${e.message}")
             }

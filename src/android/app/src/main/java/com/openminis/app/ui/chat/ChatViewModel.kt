@@ -9340,6 +9340,19 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
 
     override fun onCleared() {
         super.onCleared()
+        // [T-background-diag] The single most important line for diagnosing
+        // background kills: streamJob lives in viewModelScope, so onCleared
+        // means any in-flight agent work is ALREADY cancelled. If this appears
+        // while a task was running, the OS reclaimed the Activity and the
+        // foreground service kept the PROCESS alive but not the coroutine.
+        val wasStreaming = _isStreaming.value
+        val active = SessionActivityTracker.isActive(activeSessionId)
+        AppLogger.warning(
+            "BgDiag",
+            "ChatViewModel.onCleared sid=$activeSessionId streaming=$wasStreaming " +
+                "trackerActive=$active — viewModelScope is cancelled, so any " +
+                "in-flight agent loop for this session stops HERE",
+        )
         // Tear down whichever shell was actually serving this VM. Terminate
         // both ids when the rename happened, since a draft shell may still
         // linger if the agent ran a tool before `ensureSession()`.
