@@ -76,21 +76,29 @@ android {
     // ("App not installed") — the only way through is uninstalling first, which
     // wipes every chat, provider and setting.
     //
-    // A committed debug key makes CI builds upgrade in place. It signs debug
-    // builds only and confers no privilege: the password is the well-known
-    // Android debug default and the certificate is self-signed. Release signing
-    // is untouched.
+    // A committed debug key makes CI builds upgrade in place, and lets you roll
+    // BACK to an older build too (same key, so `adb install -r` is accepted).
+    // It signs debug builds only and confers no privilege: the password is the
+    // well-known Android debug default and the certificate is self-signed.
     signingConfigs {
         getByName("debug") {
-            val shared = file("keystore/minis-debug.keystore")
+            // rootProject is src/android, so the app module is one level down.
+            val shared = rootProject.file("app/keystore/minis-debug.keystore")
             if (shared.exists()) {
                 storeFile = shared
                 storePassword = "android"
                 keyAlias = "androiddebugkey"
                 keyPassword = "android"
+                logger.lifecycle("[signing] debug key: ${shared.absolutePath}")
+            } else {
+                // Fail loudly rather than silently falling back to a per-machine
+                // key: a silent fallback is exactly the bug this block fixes, and
+                // it only shows up later as "App not installed" plus data loss.
+                logger.error(
+                    "[signing] MISSING ${shared.absolutePath} — this build will use " +
+                        "AGP's per-machine debug key and will NOT install over a CI build."
+                )
             }
-            // Absent (e.g. a shallow checkout) -> fall through to AGP's default,
-            // so a local build still works, it just will not upgrade over a CI one.
         }
     }
 
