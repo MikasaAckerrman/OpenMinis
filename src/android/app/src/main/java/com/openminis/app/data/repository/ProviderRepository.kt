@@ -102,6 +102,9 @@ class ProviderRepository(private val context: Context) {
         /** [T-newchat-default-model-fallback-android] Global last-used model entry id. */
         private const val KEY_LAST_USED_ENTRY = "lastUsedModelEntryId"
 
+        /** [T-agent-graph] Shared model entry for agent roles without their own key. */
+        private const val KEY_AGENT_DEFAULT_ENTRY = "agentDefaultModelEntryId"
+
         /**
          * [T-android-provider-voice] Normalize a base URL for shadow-voice
          * cross-instance de-dup: lowercased, trailing "/" and "/v1" stripped.
@@ -220,6 +223,15 @@ class ProviderRepository(private val context: Context) {
                 ensureVoiceTemplateModels()
             } catch (e: Exception) {
                 android.util.Log.w("ProviderRepo", "[Voice] ensureVoiceTemplateModels failed: ${e.message}")
+            }
+            // [T-agent-graph-builtin] Seed the shipped agent graphs so
+            // `agent.graph.list` is never empty on a fresh install. Runs after
+            // the config load because seeding writes to provider.db, and a
+            // failure here must not take the whole load path down.
+            try {
+                seedBuiltinGraphs()
+            } catch (e: Exception) {
+                android.util.Log.w("ProviderRepo", "[AgentGraph] seedBuiltinGraphs failed: ${e.message}")
             }
         }
     }
@@ -2260,6 +2272,46 @@ class ProviderRepository(private val context: Context) {
      */
     fun listAgentGraphNamesSync(): List<Pair<String, String>> = graphRepo.listGraphNamesSync()
 
+    /**
+     * [T-agent-graph-builtin] Insert the shipped graphs if absent.
+     *
+     * Insert-if-missing rather than overwrite: a user who edited `builtin_full`
+     * keeps their edits across app updates. To get the shipped version back they
+     * delete the graph and restart. Overwriting on every launch would silently
+     * throw away their work, which is the worse failure.
+     */
+    suspend fun seedBuiltinGraphs() {
+        val existing = try {
+            graphRepo.listGraphs().map { it.id }.toSet()
+        } catch (e: Exception) {
+            android.util.Log.w("ProviderRepo", "[AgentGraph] seed: cannot list graphs: ${e.message}")
+            return
+        }
+        for (graph in com.openminis.app.offload.BuiltinGraphs.all()) {
+            if (graph.id in existing) continue
+            val errors = graph.validate()
+            if (errors.isNotEmpty()) {
+                // A broken built-in is a programming error, not a user problem.
+                // Log loudly and skip rather than crashing startup.
+                android.util.Log.e(
+                    "ProviderRepo",
+                    "[AgentGraph] built-in '${graph.id}' is invalid, NOT seeded: ${errors.joinToString("; ")}",
+                )
+                continue
+            }
+            try {
+                graphRepo.saveGraph(graph)
+                android.util.Log.i(
+                    "ProviderRepo",
+                    "[AgentGraph] seeded '${graph.id}' (${graph.nodes.size} nodes, " +
+                        "${graph.nodes.sumOf { it.replicas }} runtime)",
+                )
+            } catch (e: Exception) {
+                android.util.Log.w("ProviderRepo", "[AgentGraph] seed '${graph.id}' failed: ${e.message}")
+            }
+        }
+    }
+
     // ============================================================
     // Agent Role → ModelEntry Resolution (using agent.keys)
     // ============================================================
@@ -2269,21 +2321,114 @@ class ProviderRepository(private val context: Context) {
      * Returns the first enabled ModelEntry from the provider instance referenced
      * by the role's agent key. Falls back to the first available entry if not configured.
      */
-    suspend fun resolveModelEntryForRole(role: String): ModelEntry? {
+    /**
+     * Resolve a ModelEntry for an agent role, with a fallback chain that makes a
+     * graph runnable BEFORE the user has configured anything per-role.
+     *
+     * Order:
+     *  1. `agent.keys.<role>` -> the provider instance whose apiKey carries that
+     *     env-var reference. This is the configured path: one key per role, so
+     *     N replicas of a coder node spread spend across N provider instances.
+     *  2. `agent.defaultModelEntry` — an explicit single entry for every role.
+     *  3. The agent-loop entries (what `minis-model-use` already sees), then any
+     *     visible entry, then the last-used one.
+     *
+     * Steps 2-3 exist so a first test run works with the single provider the
+     * user already has. Without them every node fails with
+     * "modelRole not resolved" and the graph cannot be exercised at all — which
+     * is a terrible first experience for a feature whose point is to be tried.
+     *
+     * [resolutionLog] receives one line explaining which step won, so a
+     * surprising model choice is diagnosable from the trace instead of guessed.
+     */
+    suspend fun resolveModelEntryForRole(
+        role: String,
+        resolutionLog: ((String) -> Unit)? = null,
+    ): ModelEntry? {
         awaitConfigLoaded()
         val config = _config.value
-        val keyName = ROLE_TO_KEY[role.lowercase()] ?: return null
-        val envVarRef = envVarRepository?.getAgentKey(keyName) ?: return null
-        // envVarRef is like "$$AGENT_PLANNER_KEY" — strip the reference prefix
-        val envVarName = envVarRef.trimStart('$')
-        // Find provider instance whose stored apiKey carries that env-var reference
-        val instance = config.instances.firstOrNull { inst ->
-            val apiKey = try { loadApiKey(inst.id) } catch (_: Exception) { null }
-            apiKey?.contains(envVarName) == true
-        } ?: return null
-        // Return first visible entry for this instance
-        return config.modelEntries.firstOrNull { it.providerInstanceId == instance.id && !it.isHidden }
+
+        // 1. Per-role key (the configured path).
+        val keyName = ROLE_TO_KEY[role.lowercase()]
+        if (keyName != null) {
+            val envVarRef = envVarRepository?.getAgentKey(keyName)
+            if (!envVarRef.isNullOrBlank()) {
+                val envVarName = envVarRef.trimStart('$')
+                val instance = config.instances.firstOrNull { inst ->
+                    if (!inst.isEnabled) return@firstOrNull false
+                    val apiKey = try { loadApiKey(inst.id) } catch (_: Exception) { null }
+                    apiKey?.contains(envVarName) == true
+                }
+                if (instance != null) {
+                    val entry = config.modelEntries.firstOrNull {
+                        it.providerInstanceId == instance.id && !it.isHidden
+                    }
+                    if (entry != null) {
+                        resolutionLog?.invoke(
+                            "role '$role' -> agent.keys.$keyName -> instance '${instance.label}' " +
+                                "-> entry ${entry.model.displayName}"
+                        )
+                        return entry
+                    }
+                    resolutionLog?.invoke(
+                        "role '$role': agent.keys.$keyName matched instance " +
+                            "'${instance.label}', but it has no visible model entry"
+                    )
+                } else {
+                    resolutionLog?.invoke(
+                        "role '$role': agent.keys.$keyName = '$envVarRef', but no enabled " +
+                            "provider uses that env var — falling back"
+                    )
+                }
+            }
+        }
+
+        // 2. Explicit shared default.
+        val explicit = agentDefaultModelEntryId
+        if (!explicit.isNullOrBlank()) {
+            val entry = config.modelEntries.firstOrNull { it.id == explicit && !it.isHidden }
+            if (entry != null) {
+                resolutionLog?.invoke(
+                    "role '$role' -> agent.defaultModelEntry -> ${entry.model.displayName}"
+                )
+                return entry
+            }
+            resolutionLog?.invoke(
+                "role '$role': agent.defaultModelEntry='$explicit' does not match any " +
+                    "visible entry — falling back"
+            )
+        }
+
+        // 3. Whatever the user already uses.
+        val fallback = resolvedAgentLoopEntries().firstOrNull()
+            ?: allVisibleEntries().firstOrNull()
+            ?: lastUsedVisibleEntry()
+        if (fallback != null) {
+            resolutionLog?.invoke(
+                "role '$role' -> implicit fallback -> ${fallback.model.displayName} " +
+                    "(set agent.keys.$role or agent.defaultModelEntry to pin this)"
+            )
+        } else {
+            resolutionLog?.invoke(
+                "role '$role': NO model available — configure a provider first"
+            )
+        }
+        return fallback
     }
+
+    /**
+     * Single model entry used by every agent role that has no per-role key.
+     * Lets a user try the multi-agent graph with the one provider they already
+     * have, then split roles onto separate keys later.
+     */
+    var agentDefaultModelEntryId: String?
+        get() = prefs.getString(KEY_AGENT_DEFAULT_ENTRY, null)
+        set(value) {
+            prefs.edit().apply {
+                if (value.isNullOrBlank()) remove(KEY_AGENT_DEFAULT_ENTRY)
+                else putString(KEY_AGENT_DEFAULT_ENTRY, value)
+            }.apply()
+        }
 
     /**
      * Get all role→entry mappings for a graph's nodes.

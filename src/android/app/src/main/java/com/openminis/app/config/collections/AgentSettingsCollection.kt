@@ -28,13 +28,16 @@ class AgentSettingsCollection(
     override val removable: Boolean get() = false
     override val risk: ConfigRisk get() = ConfigRisk.NORMAL
 
-    override fun childIds(): List<String> = listOf("autoRoute", "defaultGraph", "autoRouteModel")
+    override fun childIds(): List<String> = listOf(
+        "autoRoute", "defaultGraph", "autoRouteModel", "defaultModelEntry",
+    )
 
     override fun fields(forId: String): List<ConfigField> {
         return when (forId) {
             "autoRoute" -> listOf(autoRouteField())
             "defaultGraph" -> listOf(defaultGraphField())
             "autoRouteModel" -> listOf(autoRouteModelField())
+            "defaultModelEntry" -> listOf(defaultModelEntryField())
             else -> emptyList()
         }
     }
@@ -104,6 +107,40 @@ class AgentSettingsCollection(
                     }
                 }
                 prefs.edit().putString(KEY_AUTO_ROUTE_MODEL, s).apply()
+            },
+        )
+
+    /**
+     * The one setting needed to try the multi-agent graph: every role uses this
+     * model unless it has its own key under `agent.keys.<role>`.
+     *
+     * Without it a first run needs six provider instances and six env vars
+     * before anything happens, which is a lot of setup to discover the feature
+     * does not work for you. Split roles onto separate keys once it does.
+     */
+    private fun defaultModelEntryField(): ConfigField =
+        ClosureField(
+            path = "agent.defaultModelEntry",
+            displayName = "Default model for all agent roles",
+            description = "Model entry every agent role falls back to when it has no per-role key " +
+                "in agent.keys. Empty = use whatever the agent loop already exposes. " +
+                "Discover ids with `minis-config get models`.",
+            valueSchema = ConfigSchema.Str(maxLength = 200),
+            risk = ConfigRisk.NORMAL,
+            revertable = true,
+            reader = { ConfigValue.Str(providerRepo.agentDefaultModelEntryId ?: "") },
+            writer = { v ->
+                val s = (v as? ConfigValue.Str)?.value?.trim() ?: ""
+                if (s.isNotEmpty()) {
+                    val entry = providerRepo.config.value.modelEntries.find { it.id == s }
+                        ?: throw ConfigError.InvalidValue(
+                            "Model entry not found: $s. Run `minis-config get models` for valid ids."
+                        )
+                    if (entry.isHidden) {
+                        throw ConfigError.InvalidValue("Model entry $s is hidden — pick a visible one")
+                    }
+                }
+                providerRepo.agentDefaultModelEntryId = s.ifBlank { null }
             },
         )
 

@@ -26,6 +26,7 @@ import java.util.UUID
  */
 internal object AgentGraphRunner {
 
+    private const val LOG_TAG = "AgentGraph"
     private const val ARTIFACT_DIR_BASE = "/var/minis/workspace"
     private const val TRACE_DIR = "/var/minis/offloads"
 
@@ -69,23 +70,48 @@ internal object AgentGraphRunner {
         val providerRepo = app.providerRepository
         val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
+        com.openminis.app.logging.AppLogger.info(
+            LOG_TAG,
+            "[${taskId.take(8)}] RUN START graph=$graphId input=${input.take(200)}",
+        )
+
         // Load graph
         val graph = providerRepo.loadAgentGraph(graphId)
-            ?: return@withContext GraphRunResult(
-                taskId = taskId,
-                status = RunStatus.FAILED,
-                error = "Graph not found: $graphId",
-            )
+            ?: run {
+                com.openminis.app.logging.AppLogger.error(
+                    LOG_TAG,
+                    "[${taskId.take(8)}] graph '$graphId' not found. " +
+                        "Available: ${providerRepo.listAgentGraphs().joinToString { it.id }}",
+                )
+                return@withContext GraphRunResult(
+                    taskId = taskId,
+                    status = RunStatus.FAILED,
+                    error = "Graph not found: $graphId",
+                )
+            }
 
         // Validate graph
         val errors = graph.validate()
         if (errors.isNotEmpty()) {
+            com.openminis.app.logging.AppLogger.error(
+                LOG_TAG,
+                "[${taskId.take(8)}] graph '$graphId' invalid: ${errors.joinToString("; ")}",
+            )
             return@withContext GraphRunResult(
                 taskId = taskId,
                 status = RunStatus.FAILED,
                 error = "Graph validation failed: ${errors.joinToString(", ")}",
             )
         }
+
+        val runtimeCount = graph.nodes.sumOf { it.replicas }
+        com.openminis.app.logging.AppLogger.info(
+            LOG_TAG,
+            "[${taskId.take(8)}] graph '${graph.name}': ${graph.nodes.size} config nodes -> " +
+                "$runtimeCount runtime, ${graph.edges.size} edges, " +
+                "maxParallel=${graph.config.maxParallelNodes}, " +
+                "contextBudget=${graph.config.contextBudgetTokens}",
+        )
 
         // Prepare artifact directory
         val artifactDir = "$ARTIFACT_DIR_BASE/$taskId"
@@ -119,6 +145,28 @@ internal object AgentGraphRunner {
 
         // Write final artifacts summary
         writeArtifactIndex(artifactDir, result.artifacts)
+
+        // A per-node status summary is the single most useful line when a run
+        // did not do what was expected: it shows at a glance which stage was
+        // skipped, blocked, or never reached.
+        val summary = state.nodeStatus.entries
+            .sortedBy { it.key }
+            .joinToString(", ") { "${it.key}=${it.value}" }
+        com.openminis.app.logging.AppLogger.info(
+            LOG_TAG,
+            "[${taskId.take(8)}] RUN END status=${result.status} " +
+                "artifacts=${result.artifacts.size} traceEvents=${result.trace.size}\n" +
+                "  nodes: $summary\n" +
+                "  artifacts dir: $artifactDir\n" +
+                "  trace: $TRACE_DIR/agent_graph_$taskId.json",
+        )
+        if (state.scopeViolations.isNotEmpty()) {
+            com.openminis.app.logging.AppLogger.error(
+                LOG_TAG,
+                "[${taskId.take(8)}] SCOPE VIOLATIONS: " +
+                    state.scopeViolations.entries.joinToString("; ") { "${it.key}: ${it.value}" },
+            )
+        }
 
         result
     }
@@ -275,19 +323,30 @@ internal object AgentGraphRunner {
             else "Node execution started",
         )
 
-        // Resolve model entry: prefer modelRole (via agent.keys), fallback to modelEntryId
-        val modelEntryId = if (node.modelRole.isNotBlank()) {
-            providerRepo.resolveModelEntryForRole(node.modelRole)?.id
-                ?: run {
-                    handleMissingModelEntry(execContext, node, "modelRole '${node.modelRole}' not resolved")
-                    return
-                }
+        // Resolve the model. An explicit modelEntryId wins; otherwise the role
+        // goes through the fallback chain (per-role key -> shared default ->
+        // whatever the user already uses), and HOW it resolved is traced so a
+        // surprising model choice is diagnosable rather than mysterious.
+        val modelEntryId = if (node.modelEntryId.isNotBlank()) {
+            addTrace(state, runtimeId, node.role, "MODEL", "explicit modelEntryId=${node.modelEntryId}")
+            node.modelEntryId
+        } else if (node.modelRole.isNotBlank()) {
+            val resolved = providerRepo.resolveModelEntryForRole(node.modelRole) { line ->
+                addTrace(state, runtimeId, node.role, "MODEL", line)
+            }
+            resolved?.id ?: run {
+                handleMissingModelEntry(
+                    execContext, node, runtimeId,
+                    "modelRole '${node.modelRole}' resolved to nothing — no provider configured?",
+                )
+                return
+            }
         } else {
-            node.modelEntryId.takeIf { it.isNotBlank() }
-                ?: run {
-                    handleMissingModelEntry(execContext, node, "modelEntryId is empty")
-                    return
-                }
+            handleMissingModelEntry(
+                execContext, node, runtimeId,
+                "node declares neither modelEntryId nor modelRole",
+            )
+            return
         }
 
         // Get or create session for this node.
@@ -683,7 +742,14 @@ internal object AgentGraphRunner {
         state.nodeStatus[node.id] = NodeStatus.FAILED
     }
 
-    /** Add trace event. */
+    /**
+     * Record a trace event AND mirror it to AppLogger.
+     *
+     * The in-memory trace is only readable once `run` returns, which is exactly
+     * no help when a node is hung or the app was killed mid-run. Logging every
+     * event as it happens means Settings -> Logs shows how far a run got, which
+     * is the first question when something does not finish.
+     */
     private fun addTrace(state: GraphState, nodeId: String, role: AgentRole, action: String, details: String) {
         state.trace.add(TraceEvent(
             timestamp = System.currentTimeMillis(),
@@ -692,6 +758,15 @@ internal object AgentGraphRunner {
             action = action,
             details = details,
         ))
+        val line = "[${state.taskId.take(8)}] $nodeId (${role.name}) $action: $details"
+        when (action) {
+            "OUT_OF_SCOPE", "FAILED", "MISSING_MODEL_ENTRY", "PARSE_FAILURE" ->
+                com.openminis.app.logging.AppLogger.error(LOG_TAG, line)
+            "INVALID_HANDOFF", "RETRY", "SCOPE_WARNING", "SKIPPED" ->
+                com.openminis.app.logging.AppLogger.warning(LOG_TAG, line)
+            else ->
+                com.openminis.app.logging.AppLogger.info(LOG_TAG, line)
+        }
     }
 
     /** Read artifact content from file system or minis:// URL. */
@@ -730,10 +805,11 @@ internal object AgentGraphRunner {
     private fun handleMissingModelEntry(
         execContext: ExecutionContext,
         node: AgentNode,
+        runtimeId: String,
         reason: String,
     ) {
         val state = execContext.state
-        addTrace(state, node.id, node.role, "MISSING_MODEL_ENTRY", reason)
-        state.nodeStatus[node.id] = NodeStatus.FAILED
+        addTrace(state, runtimeId, node.role, "MISSING_MODEL_ENTRY", reason)
+        state.nodeStatus[runtimeId] = NodeStatus.FAILED
     }
 }

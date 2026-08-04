@@ -201,6 +201,8 @@ class DebugRPCHandler(private val context: Context) {
             "agent.graph.run" -> handleAgentGraphRun(params)
             "agent.graph.trace" -> handleAgentGraphTrace(params)
             "agent.graph.validate" -> handleAgentGraphValidate(params)
+            "agent.graph.preflight" -> handleAgentGraphPreflight(params)
+            "agent.graph.seed" -> handleAgentGraphSeed(params)
 
             else -> throw RPCException(-32601, "Method not found: $method. Call 'rpc.discover' to list available methods.")
         }
@@ -1314,6 +1316,131 @@ class DebugRPCHandler(private val context: Context) {
         return JSONObject().apply {
             put("taskId", taskId)
             put("trace", trace)
+        }
+    }
+
+    /**
+     * [T-agent-graph] Readiness check before spending tokens.
+     *
+     * The two questions a first run always raises are "which model did this node
+     * actually use" and "why could it not call the tool I expected". Both are
+     * answerable statically, so answer them statically rather than after a
+     * failed run.
+     */
+    private suspend fun handleAgentGraphPreflight(params: JSONObject): JSONObject {
+        val graphId = params.optString("graphId", "").takeIf { it.isNotEmpty() }
+            ?: throw RPCException(-32602, "Missing required parameter: graphId")
+        val app = context.applicationContext as com.openminis.app.MinisApp
+        val repo = app.providerRepository
+        val graph = repo.loadAgentGraph(graphId)
+            ?: throw RPCException(-32602, "Graph not found: $graphId")
+
+        val graphIssues = JSONArray()
+        for (e in graph.validate()) graphIssues.put(e)
+
+        var ready = graph.validate().isEmpty()
+        val nodesArr = JSONArray()
+
+        for (node in graph.nodes) {
+            val issues = JSONArray()
+
+            // Which model, and via which step of the fallback chain.
+            var modelSource = "unresolved"
+            val entry = if (node.modelEntryId.isNotBlank()) {
+                modelSource = "explicit modelEntryId"
+                repo.config.value.modelEntries.firstOrNull { it.id == node.modelEntryId }
+                    .also { if (it == null) issues.put("modelEntryId '${node.modelEntryId}' not found") }
+            } else if (node.modelRole.isNotBlank()) {
+                val log = StringBuilder()
+                val resolved = repo.resolveModelEntryForRole(node.modelRole) { line ->
+                    if (log.isNotEmpty()) log.append(" | ")
+                    log.append(line)
+                }
+                modelSource = log.toString().ifBlank { "no resolution info" }
+                resolved.also { if (it == null) issues.put("modelRole '${node.modelRole}' resolves to nothing") }
+            } else {
+                issues.put("node declares neither modelEntryId nor modelRole")
+                null
+            }
+            if (entry == null) ready = false
+
+            // Exactly the schema the model will receive.
+            val tools = com.openminis.app.tools.AgentTools.makeAgentTools(
+                allowedTools = node.allowedTools,
+            ).map { it.name }
+            if (node.allowedTools.isNotEmpty() && tools.isEmpty()) {
+                issues.put(
+                    "allowedTools=${node.allowedTools} resolves to an EMPTY schema — " +
+                        "this node can call nothing"
+                )
+                ready = false
+            }
+            val unknownTools = com.openminis.app.offload.ToolAllowlistEnforcer
+                .unknownTools(node.allowedTools)
+            for (t in unknownTools) {
+                issues.put("unknown tool name '$t'")
+                ready = false
+            }
+
+            if (node.replicas > 1 && node.shardHint.size < node.replicas) {
+                issues.put(
+                    "replicas=${node.replicas} but ${node.shardHint.size} shardHint entries — " +
+                        "replicas would receive identical prompts and duplicate work"
+                )
+                ready = false
+            }
+            if (node.ownedArtifact.isBlank()) {
+                issues.put("ownedArtifact is empty — the scope guard has nothing to check against")
+            }
+
+            val toolsArr = JSONArray()
+            for (t in tools) toolsArr.put(t)
+            val shardArr = JSONArray()
+            for (sh in node.shardHint) shardArr.put(sh.take(120))
+
+            nodesArr.put(JSONObject().apply {
+                put("id", node.id)
+                put("role", node.role.name)
+                put("replicas", node.replicas)
+                put("runtimeIds", JSONArray().also { a -> node.replicaIds().forEach { a.put(it) } })
+                put("model", entry?.model?.displayName ?: "NONE")
+                put("modelId", entry?.baseModel?.id ?: "")
+                put("modelSource", modelSource)
+                put("tools", toolsArr)
+                put("shardHint", shardArr)
+                put("ownedArtifact", node.ownedArtifact)
+                put("issues", issues)
+            })
+        }
+
+        return JSONObject().apply {
+            put("graphId", graph.id)
+            put("graphName", graph.name)
+            put("ready", ready)
+            put("configNodes", graph.nodes.size)
+            put("runtimeNodes", graph.nodes.sumOf { it.replicas })
+            put("nodes", nodesArr)
+            put("issues", graphIssues)
+        }
+    }
+
+    /** Re-insert built-in graphs that are missing. Never overwrites. */
+    private suspend fun handleAgentGraphSeed(params: JSONObject): JSONObject {
+        val app = context.applicationContext as com.openminis.app.MinisApp
+        val repo = app.providerRepository
+        val before = repo.listAgentGraphs().map { it.id }.toSet()
+        repo.seedBuiltinGraphs()
+        val after = repo.listAgentGraphs().map { it.id }.toSet()
+
+        val seeded = JSONArray()
+        for (id in (after - before).sorted()) seeded.put(id)
+        val present = JSONArray()
+        for (g in com.openminis.app.offload.BuiltinGraphs.all()) {
+            if (g.id in before) present.put(g.id)
+        }
+        return JSONObject().apply {
+            put("seeded", seeded)
+            put("alreadyPresent", present)
         }
     }
 

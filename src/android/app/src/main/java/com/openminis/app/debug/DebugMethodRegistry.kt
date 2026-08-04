@@ -817,6 +817,26 @@ object DebugMethodRegistry {
             returns = "{valid, errors:[]}",
             example = ex("graphId" to "coding_v4"),
         ),
+        MethodSpec(
+            name = "agent.graph.preflight",
+            description = "Dry-run readiness check: for each node, which model it resolves to and " +
+                "which tools it will actually get. Answers 'why did this node fail' BEFORE " +
+                "spending tokens on a real run.",
+            params = listOf(
+                ParamSpec("graphId", "string", required = true, description = "Graph ID to check."),
+            ),
+            returns = "{graphId, ready, nodes:[{id, role, replicas, model, modelSource, tools, issues:[]}], issues:[]}",
+            example = ex("graphId" to "builtin_light"),
+        ),
+        MethodSpec(
+            name = "agent.graph.seed",
+            description = "Re-insert the built-in graphs (builtin_light, builtin_full) if missing. " +
+                "Existing graphs with the same id are left untouched — delete one first to get " +
+                "the shipped version back.",
+            params = emptyList(),
+            returns = "{seeded:[ids], alreadyPresent:[ids]}",
+            example = JSONObject(),
+        ),
     )
 
     private fun encode(method: MethodSpec): JSONObject {
