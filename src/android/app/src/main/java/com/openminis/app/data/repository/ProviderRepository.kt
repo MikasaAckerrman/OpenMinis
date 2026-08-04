@@ -2260,8 +2260,6 @@ class ProviderRepository(private val context: Context) {
      */
     fun listAgentGraphNamesSync(): List<Pair<String, String>> = graphRepo.listGraphNamesSync()
 
-    fun getGraphRepo(): AgentGraphRepository = graphRepo
-
     // ============================================================
     // Agent Role → ModelEntry Resolution (using agent.keys)
     // ============================================================
