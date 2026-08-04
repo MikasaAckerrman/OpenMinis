@@ -294,8 +294,10 @@ data class ProviderConfig(
     // or iCloud sync.
     @kotlinx.serialization.Transient var revision: Long = 0L,
 
-    // [T-agent-graph] Multi-agent graph configurations. New field with
-    // default empty list — kotlinx.serialization fills missing key with
-    // default, so existing configs round-trip cleanly.
-    val agentGraphs: MutableList<AgentGraph> = mutableListOf(),
+    // [T-agent-graph] Multi-agent graph configurations. @Transient: graphs live
+    // in their own Room table (agent_graphs) — this in-memory list is a cache
+    // for synchronous reads, NOT part of the persisted JSON mirror. Marking it
+    // Transient keeps the mirror byte-identical to older builds (no hash churn)
+    // and avoids double-storing the same data.
+    @kotlinx.serialization.Transient val agentGraphs: MutableList<AgentGraph> = mutableListOf(),
 )

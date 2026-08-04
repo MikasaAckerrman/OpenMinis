@@ -48,7 +48,7 @@ internal object ConfigBuiltins {
         registerChat(r, context)
         registerBackground(r, context)
         registerLogs(r, context)
-        registerProviderCollections(r, providerRepo, envVarRepo)
+        registerProviderCollections(r, context, providerRepo, envVarRepo)
         registerDefaults(r, providerRepo)
         registerSoul(r, context)
         registerMemory(r, context)
@@ -540,6 +540,7 @@ internal object ConfigBuiltins {
 
     private fun registerProviderCollections(
         r: ConfigRegistry,
+        context: Context,
         providerRepo: ProviderRepository,
         envVarRepo: EnvVarRepository,
     ) {

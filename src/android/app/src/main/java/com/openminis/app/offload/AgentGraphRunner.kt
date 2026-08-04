@@ -14,24 +14,17 @@ import com.openminis.app.data.model.TraceEvent
 import com.openminis.app.data.repository.ProviderRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import java.io.File
-import java.io.FileWriter
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Core execution engine for agent graphs.
  * Runs a graph of agents with structured handoffs, artifact persistence, and tracing.
  */
-object AgentGraphRunner {
+internal object AgentGraphRunner {
 
     private const val ARTIFACT_DIR_BASE = "/var/minis/workspace"
     private const val TRACE_DIR = "/var/minis/offloads"
@@ -47,6 +40,9 @@ object AgentGraphRunner {
         val artifactIndex: MutableMap<String, String> = mutableMapOf(), // path -> content
         val trace: MutableList<TraceEvent> = mutableListOf(),
         val nodeStatus: MutableMap<String, NodeStatus> = mutableMapOf(),
+        /** Nodes already enqueued or started — guards against double-dispatch
+         *  when a fan-in node's predecessors finish at different times. */
+        val dispatched: MutableSet<String> = mutableSetOf(),
     )
 
     enum class NodeStatus { PENDING, RUNNING, COMPLETED, FAILED, BLOCKED, SKIPPED }
@@ -73,7 +69,7 @@ object AgentGraphRunner {
 
         // Load graph
         val graph = providerRepo.loadAgentGraph(graphId)
-            ?: return GraphRunResult(
+            ?: return@withContext GraphRunResult(
                 taskId = taskId,
                 status = RunStatus.FAILED,
                 error = "Graph not found: $graphId",
@@ -82,7 +78,7 @@ object AgentGraphRunner {
         // Validate graph
         val errors = graph.validate()
         if (errors.isNotEmpty()) {
-            return GraphRunResult(
+            return@withContext GraphRunResult(
                 taskId = taskId,
                 status = RunStatus.FAILED,
                 error = "Graph validation failed: ${errors.joinToString(", ")}",
@@ -135,22 +131,28 @@ object AgentGraphRunner {
         val runningJobs = mutableMapOf<String, Job>()
 
         while (true) {
-            // Check if any exit nodes completed
-            val exitCompleted = graph.exitNodeIds.all { id ->
-                state.nodeStatus[id] == NodeStatus.COMPLETED
+            // Exit when every declared exit node reached a terminal state and
+            // nothing is left to run. `all {}` on an empty list is true, so a
+            // graph without exitNodeIds ends as soon as the queue drains —
+            // which is the desired behaviour (it just runs to exhaustion).
+            val exitsSettled = graph.exitNodeIds.all { id ->
+                when (state.nodeStatus[id]) {
+                    NodeStatus.COMPLETED, NodeStatus.FAILED,
+                    NodeStatus.BLOCKED, NodeStatus.SKIPPED -> true
+                    else -> false
+                }
             }
-            if (exitCompleted && readyQueue.isEmpty() && runningJobs.isEmpty()) {
+            if (exitsSettled && readyQueue.isEmpty() && runningJobs.isEmpty()) {
                 break
             }
 
-            // Check for deadlock (no ready nodes, but running jobs exist)
+            // Nothing ready but work in flight → wait for a job to land.
             if (readyQueue.isEmpty() && runningJobs.isNotEmpty()) {
-                // Wait for a running job to complete
                 kotlinx.coroutines.delay(100)
                 continue
             }
 
-            // Deadlock: no ready nodes, no running jobs, but not all exits completed
+            // Nothing ready, nothing running, exits unsettled → stuck.
             if (readyQueue.isEmpty() && runningJobs.isEmpty()) {
                 val incompleteExits = graph.exitNodeIds.filter { state.nodeStatus[it] != NodeStatus.COMPLETED }
                 return GraphRunResult(
@@ -167,6 +169,10 @@ object AgentGraphRunner {
                 val nodeId = readyQueue.poll() ?: break
                 val node = graph.nodes.find { it.id == nodeId } ?: continue
                 if (state.nodeStatus[nodeId] != NodeStatus.PENDING) continue
+                // Guard against double-dispatch: a fan-in node can be queued by
+                // several predecessors. `dispatched` is the single source of truth
+                // for "already launched".
+                if (!state.dispatched.add(nodeId)) continue
 
                 val job = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
                     executeNode(execContext, node)
@@ -183,8 +189,10 @@ object AgentGraphRunner {
             }
             for (nodeId in toRemove) {
                 runningJobs.remove(nodeId)
-                // Queue successors
-                queueSuccessors(execContext, nodeId)
+                // Queue successors that just became runnable
+                for (readyId in queueSuccessors(execContext, nodeId)) {
+                    if (readyId !in state.dispatched) readyQueue.add(readyId)
+                }
             }
 
             // Small delay to prevent busy loop
@@ -211,9 +219,9 @@ object AgentGraphRunner {
     /** Execute a single agent node. */
     private suspend fun executeNode(execContext: ExecutionContext, node: AgentNode) {
         val state = execContext.state
+        val graph = state.graph
         val context = execContext.context
         val providerRepo = execContext.providerRepo
-        val json = execContext.json
 
         state.nodeStatus[node.id] = NodeStatus.RUNNING
         addTrace(state, node.id, node.role, "START", "Node execution started")
@@ -221,17 +229,24 @@ object AgentGraphRunner {
         // Resolve model entry: prefer modelRole (via agent.keys), fallback to modelEntryId
         val modelEntryId = if (node.modelRole.isNotBlank()) {
             providerRepo.resolveModelEntryForRole(node.modelRole)?.id
-                ?: return handleMissingModelEntry(execContext, node, "modelRole '${node.modelRole}' not resolved")
+                ?: run {
+                    handleMissingModelEntry(execContext, node, "modelRole '${node.modelRole}' not resolved")
+                    return
+                }
         } else {
             node.modelEntryId.takeIf { it.isNotBlank() }
-                ?: return handleMissingModelEntry(execContext, node, "modelEntryId is empty")
+                ?: run {
+                    handleMissingModelEntry(execContext, node, "modelEntryId is empty")
+                    return
+                }
         }
 
-        // Get or create session for this node
-        val sessionId = state.sessionMap.getOrPut(node.id) {
-            // Create session bound to node's model entry
-            AgentSessionManager.createAndBindSession(context, modelEntryId)
-        }
+        // Get or create session for this node.
+        // NOTE: not `getOrPut { … }` — the initializer lambda is NOT an inline
+        // suspend context, so calling a suspend fun inside it fails to compile.
+        val sessionId = state.sessionMap[node.id]
+            ?: AgentSessionManager.createAndBindSession(context, modelEntryId)
+                .also { state.sessionMap[node.id] = it }
 
         // Build system prompt with role + tool allowlist
         val systemPrompt = buildSystemPrompt(node, state)
@@ -267,38 +282,46 @@ object AgentGraphRunner {
             }
         }
 
-        if (response == null) {
-            state.nodeStatus[node.id] = NodeStatus.FAILED
-            addTrace(state, node.id, node.role, "FAILED", "All attempts exhausted")
-            return
-        }
+        // `response` is a nullable var mutated in the loop above; copy into a
+        // local val so the compiler can smart-cast it to non-null below.
+        var finalResponse: String = response
+            ?: run {
+                state.nodeStatus[node.id] = NodeStatus.FAILED
+                addTrace(state, node.id, node.role, "FAILED", "All attempts exhausted")
+                return
+            }
 
         // Validate handoff
-        val validation = HandoffValidator.validateResponse(response)
+        var validation = HandoffValidator.validateResponse(finalResponse)
         if (!validation.isValid) {
             addTrace(state, node.id, node.role, "INVALID_HANDOFF", validation.message)
-            // Retry with feedback
-            if (attempts < maxAttempts) {
-                val retryMessage = "Your previous response was invalid: ${validation.message}\n\nPlease respond with a valid handoff block."
-                val retryResult = AgentSessionManager.sendAndWait(
-                    context = context,
-                    sessionId = sessionId,
-                    text = retryMessage,
-                    thinkingLevel = node.thinkingLevel,
-                    timeoutMs = graph.config.defaultTimeoutMs,
-                )
-                if (retryResult.status == "Completed" && retryResult.responseText != null) {
-                    val retryValidation = HandoffValidator.validateResponse(retryResult.responseText!!)
-                    if (retryValidation.isValid) {
-                        response = retryResult.responseText
-                    }
+            // One corrective round-trip: tell the model exactly what was wrong.
+            val retryMessage =
+                "Your previous response was invalid: ${validation.message}\n\n" +
+                "Please respond with a valid handoff block."
+            val retryResult = AgentSessionManager.sendAndWait(
+                context = context,
+                sessionId = sessionId,
+                text = retryMessage,
+                thinkingLevel = node.thinkingLevel,
+                timeoutMs = graph.config.defaultTimeoutMs,
+            )
+            val retryText = retryResult.responseText
+            if (retryResult.status == "Completed" && retryText != null) {
+                val retryValidation = HandoffValidator.validateResponse(retryText)
+                if (retryValidation.isValid) {
+                    finalResponse = retryText
+                    validation = retryValidation
                 }
             }
         }
 
         val handoff = validation.handoff
-            ?: HandoffValidator.parseHandoff(response!!)
-            ?: return handleParseFailure(execContext, node, response!!)
+            ?: HandoffValidator.parseHandoff(finalResponse)
+            ?: run {
+                handleParseFailure(execContext, node, finalResponse)
+                return
+            }
 
         // Store handoff
         state.handoffMap[node.id] = handoff
@@ -392,8 +415,58 @@ object AgentGraphRunner {
         return sb.toString()
     }
 
-    /** Queue successor nodes based on edge types. */
-    private fun queueSuccessors(execContext: ExecutionContext, completedNodeId: String) {
+    /**
+     * Advance the graph after [completedNodeId] finished. Returns the ids of
+     * nodes that became runnable (all their incoming edges resolved).
+     *
+     * Fan-in rule: a node runs only when EVERY predecessor has reached a
+     * terminal state, and at least one of them COMPLETED. That is what makes
+     * the parallel review block (4 reviewers -> auditor) work: the auditor
+     * waits for all four instead of starting on the first one.
+     */
+    private fun queueSuccessors(execContext: ExecutionContext, completedNodeId: String): List<String> {
+        val state = execContext.state
+        val graph = state.graph
+        val ready = mutableListOf<String>()
+
+        fun terminal(id: String): Boolean = when (state.nodeStatus[id]) {
+            NodeStatus.COMPLETED, NodeStatus.FAILED,
+            NodeStatus.BLOCKED, NodeStatus.SKIPPED -> true
+            else -> false
+        }
+
+        for (edge in graph.edges.filter { it.from == completedNodeId }) {
+            val targetId = edge.to
+            if (targetId in state.dispatched) continue
+
+            val incoming = graph.edges.filter { it.to == targetId }
+            // Wait until every predecessor settled.
+            if (!incoming.all { terminal(it.from) }) continue
+
+            // CONDITIONAL edges gate on the predecessor's handoff.
+            val satisfied = incoming.any { inEdge ->
+                val predOk = state.nodeStatus[inEdge.from] == NodeStatus.COMPLETED
+                when (inEdge.type) {
+                    EdgeType.CONDITIONAL -> {
+                        val handoff = state.handoffMap[inEdge.from]
+                        predOk && handoff != null && evaluateCondition(inEdge.condition, handoff)
+                    }
+                    else -> predOk
+                }
+            }
+
+            if (satisfied) {
+                state.nodeStatus[targetId] = NodeStatus.PENDING
+                ready.add(targetId)
+            } else {
+                state.nodeStatus[targetId] = NodeStatus.SKIPPED
+            }
+        }
+        return ready
+    }
+
+    /** Legacy per-edge-type dispatch, superseded by the fan-in rule above. */
+    private fun queueSuccessorsLegacy(execContext: ExecutionContext, completedNodeId: String) {
         val state = execContext.state
         val graph = state.graph
         val completedStatus = state.nodeStatus[completedNodeId] ?: return
@@ -469,11 +542,10 @@ object AgentGraphRunner {
     }
 
     /** Handle handoff parse failure. */
-    private suspend fun handleParseFailure(execContext: ExecutionContext, node: AgentNode, response: String): NodeStatus {
+    private fun handleParseFailure(execContext: ExecutionContext, node: AgentNode, response: String) {
         val state = execContext.state
         addTrace(state, node.id, node.role, "PARSE_FAILURE", "Could not parse handoff from response")
         state.nodeStatus[node.id] = NodeStatus.FAILED
-        return NodeStatus.FAILED
     }
 
     /** Add trace event. */
@@ -505,25 +577,28 @@ object AgentGraphRunner {
     private fun writeTrace(taskId: String, trace: List<TraceEvent>, json: Json) {
         val traceFile = File(TRACE_DIR, "agent_graph_${taskId}.json")
         traceFile.parentFile?.mkdirs()
-        val traceJson = json.encodeToString(trace)
+        val traceJson = json.encodeToString(
+            kotlinx.serialization.builtins.ListSerializer(TraceEvent.serializer()),
+            trace,
+        )
         traceFile.writeText(traceJson)
     }
 
     /** Write artifact index. */
     private fun writeArtifactIndex(artifactDir: String, artifacts: Map<String, String>) {
         val indexFile = File(artifactDir, "ARTIFACT_INDEX.json")
-        val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
-        indexFile.writeText(json.encodeToString(artifacts))
+        val obj = org.json.JSONObject()
+        for ((k, v) in artifacts) obj.put(k, v)
+        indexFile.writeText(obj.toString(2))
     }
 
-    private suspend fun handleMissingModelEntry(
+    private fun handleMissingModelEntry(
         execContext: ExecutionContext,
         node: AgentNode,
         reason: String,
-    ): NodeStatus {
+    ) {
         val state = execContext.state
         addTrace(state, node.id, node.role, "MISSING_MODEL_ENTRY", reason)
         state.nodeStatus[node.id] = NodeStatus.FAILED
-        return NodeStatus.FAILED
     }
 }

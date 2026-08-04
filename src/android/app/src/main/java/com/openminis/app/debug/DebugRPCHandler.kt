@@ -1216,32 +1216,45 @@ class DebugRPCHandler(private val context: Context) {
         val app = context.applicationContext as com.openminis.app.MinisApp
         val graph = app.providerRepository.loadAgentGraph(id)
             ?: throw RPCException(-32602, "Graph not found: $id")
+
+        val nodesArr = JSONArray()
+        for (node in graph.nodes) {
+            val toolsArr = JSONArray()
+            for (t in node.allowedTools) toolsArr.put(t)
+            nodesArr.put(JSONObject().apply {
+                put("id", node.id)
+                put("role", node.role.name)
+                put("systemPrompt", node.systemPrompt)
+                put("allowedTools", toolsArr)
+                put("modelEntryId", node.modelEntryId)
+                put("modelRole", node.modelRole)
+                put("maxTurns", node.maxTurns)
+                put("thinkingLevel", node.thinkingLevel?.name ?: "")
+                put("temperature", node.temperature?.toDouble() ?: 0.0)
+            })
+        }
+
+        val edgesArr = JSONArray()
+        for (edge in graph.edges) {
+            edgesArr.put(JSONObject().apply {
+                put("from", edge.from)
+                put("to", edge.to)
+                put("type", edge.type.name)
+                put("condition", edge.condition ?: "")
+            })
+        }
+
+        val exitArr = JSONArray()
+        for (e in graph.exitNodeIds) exitArr.put(e)
+
         return JSONObject().apply {
             put("id", graph.id)
             put("name", graph.name)
             put("version", graph.version)
-            put("nodes", JSONArray(graph.nodes.map { node ->
-                JSONObject().apply {
-                    put("id", node.id)
-                    put("role", node.role.name)
-                    put("systemPrompt", node.systemPrompt)
-                    put("allowedTools", JSONArray(node.allowedTools))
-                    put("modelEntryId", node.modelEntryId)
-                    put("maxTurns", node.maxTurns)
-                    put("thinkingLevel", node.thinkingLevel?.name)
-                    put("temperature", node.temperature)
-                }
-            }))
-            put("edges", JSONArray(graph.edges.map { edge ->
-                JSONObject().apply {
-                    put("from", edge.from)
-                    put("to", edge.to)
-                    put("type", edge.type.name)
-                    put("condition", edge.condition)
-                }
-            }))
+            put("nodes", nodesArr)
+            put("edges", edgesArr)
             put("entryNodeId", graph.entryNodeId)
-            put("exitNodeIds", JSONArray(graph.exitNodeIds))
+            put("exitNodeIds", exitArr)
             put("config", JSONObject().apply {
                 put("maxParallelNodes", graph.config.maxParallelNodes)
                 put("defaultTimeoutMs", graph.config.defaultTimeoutMs)
@@ -1257,8 +1270,8 @@ class DebugRPCHandler(private val context: Context) {
         val input = params.optString("input", "").takeIf { it.isNotEmpty() }
             ?: throw RPCException(-32602, "Missing required parameter: input")
         val taskId = params.optString("taskId", "").takeIf { it.isNotEmpty() }
+            ?: java.util.UUID.randomUUID().toString()
 
-        val app = context.applicationContext as com.openminis.app.MinisApp
         val result = com.openminis.app.offload.AgentGraphRunner.run(
             context = context,
             graphId = graphId,
@@ -1266,19 +1279,25 @@ class DebugRPCHandler(private val context: Context) {
             taskId = taskId,
         )
 
+        val artifactsObj = JSONObject()
+        for ((k, v) in result.artifacts) artifactsObj.put(k, v)
+
+        val traceArr = JSONArray()
+        for (event in result.trace) {
+            traceArr.put(JSONObject().apply {
+                put("timestamp", event.timestamp)
+                put("nodeId", event.nodeId)
+                put("role", event.role.name)
+                put("action", event.action)
+                put("details", event.details)
+            })
+        }
+
         return JSONObject().apply {
             put("taskId", result.taskId)
             put("status", result.status.name)
-            put("artifacts", JSONObject(result.artifacts))
-            put("trace", JSONArray(result.trace.map { event ->
-                JSONObject().apply {
-                    put("timestamp", event.timestamp)
-                    put("nodeId", event.nodeId)
-                    put("role", event.role.name)
-                    put("action", event.action)
-                    put("details", event.details)
-                }
-            }))
+            put("artifacts", artifactsObj)
+            put("trace", traceArr)
             result.error?.let { put("error", it) }
         }
     }
@@ -1305,21 +1324,22 @@ class DebugRPCHandler(private val context: Context) {
         val app = context.applicationContext as com.openminis.app.MinisApp
         val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
-        val graph: com.openminis.app.data.model.AgentGraph
-        if (graphId.isNotEmpty()) {
-            val loaded = app.providerRepository.loadAgentGraph(graphId)
+        val graph: com.openminis.app.data.model.AgentGraph = when {
+            graphId != null -> app.providerRepository.loadAgentGraph(graphId)
                 ?: throw RPCException(-32602, "Graph not found: $graphId")
-            graph = loaded
-        } else if (configJson != null) {
-            graph = json.decodeFromString<com.openminis.app.data.model.AgentGraph>(configJson.toString())
-        } else {
-            throw RPCException(-32602, "Either graphId or config must be provided")
+            configJson != null -> json.decodeFromString(
+                com.openminis.app.data.model.AgentGraph.serializer(),
+                configJson.toString(),
+            )
+            else -> throw RPCException(-32602, "Either graphId or config must be provided")
         }
 
         val errors = graph.validate()
+        val errArr = JSONArray()
+        for (e in errors) errArr.put(e)
         return JSONObject().apply {
             put("valid", errors.isEmpty())
-            put("errors", JSONArray(errors))
+            put("errors", errArr)
         }
     }
 }

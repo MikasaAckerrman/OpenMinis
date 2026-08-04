@@ -23,6 +23,7 @@ class EnvVarRepository(private val context: Context) {
         private const val TAG = "EnvVarRepository"
         private const val METADATA_FILE = "env-vars.json"
         private const val ENCRYPTED_PREFS_NAME = "env_var_values"
+        private const val AGENT_KEY_PREFIX = "agent_key_"
         private val KEY_REGEX = Regex("^[A-Za-z][A-Za-z0-9_]*$")
     }
 
@@ -175,14 +176,12 @@ class EnvVarRepository(private val context: Context) {
 
     // -- Agent Keys (isolated namespace for agent role API keys) --
 
-    private const val AGENT_KEY_PREFIX = "agent_key_"
-
     /**
      * Get the env var reference for an agent role.
-     * Returns the $$ENV_VAR_NAME string, or null if not set.
+     * Returns the env var reference string, or null if not set.
      */
     fun getAgentKey(role: String): String? {
-        val key = "${AGENT_KEY_PREFIX}${role.lowercase()}"
+        val key = "$AGENT_KEY_PREFIX${role.lowercase()}"
         return encryptedPrefs.getString(key, null)
     }
 
@@ -191,7 +190,7 @@ class EnvVarRepository(private val context: Context) {
      * Value should be like "$$AGENT_PLANNER_KEY" or empty to clear.
      */
     fun setAgentKey(role: String, envVarRef: String?) {
-        val key = "${AGENT_KEY_PREFIX}${role.lowercase()}"
+        val key = "$AGENT_KEY_PREFIX${role.lowercase()}"
         if (envVarRef == null || envVarRef.isBlank()) {
             encryptedPrefs.edit().remove(key).apply()
         } else {

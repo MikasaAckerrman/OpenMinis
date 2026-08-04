@@ -1,57 +1,55 @@
 package com.openminis.app.offload
 
 import android.content.Context
-import com.openminis.app.data.model.LLMMessage
+import com.openminis.app.data.model.ThinkingLevel
 import com.openminis.app.debug.HeadlessChatRunner
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * Wrapper around HeadlessChatRunner for agent graph execution.
- * Provides higher-level session management for agents.
+ * [T-agent-graph] Thin wrapper around [HeadlessChatRunner] used by
+ * [AgentGraphRunner]. Keeps the graph engine free of ViewModel plumbing:
+ * create a session bound to a model entry, send a prompt, read the reply.
+ *
+ * Deliberately narrow — only what the graph runner needs. Message-history
+ * reads go through ChatRepository directly where required.
  */
-object AgentSessionManager {
+internal object AgentSessionManager {
 
     data class PromptResult(
         val status: String,
         val responseText: String?,
         val timedOut: Boolean,
-        val deletedMessageCount: Int = 0,
-        val retriedMessageId: String? = null,
     )
 
     /**
-     * Create a new session bound to a specific model entry.
-     */
-    suspend fun createSession(
-        context: Context,
-        modelEntryId: String,
-    ): String = withContext(Dispatchers.IO) {
-        HeadlessChatRunner.ensureSession(context, modelEntryId)
-    }
-
-    /**
-     * Create a session and bind it to a model entry in one call.
+     * Create a session and bind it to [modelEntryId] in one call.
+     * Returns the new session id.
+     *
+     * NOTE: `ensureSession` takes a MODEL id (used to seed the session row);
+     * the real binding is applied by `applyModelOverride`, which takes the
+     * ENTRY uuid. Passing null to ensureSession lets it pick any visible
+     * entry as a placeholder — applyModelOverride immediately overwrites it.
      */
     suspend fun createAndBindSession(
         context: Context,
         modelEntryId: String,
     ): String = withContext(Dispatchers.IO) {
-        val sessionId = HeadlessChatRunner.ensureSession(context, modelEntryId)
-        val modelName = HeadlessChatRunner.applyModelOverride(context, sessionId, modelEntryId, null)
+        val sessionId = HeadlessChatRunner.ensureSession(context, null)
+        HeadlessChatRunner.applyModelOverride(context, sessionId, modelEntryId, null)
         sessionId
     }
 
     /**
-     * Send a prompt to a session and wait for completion.
+     * Send [text] into [sessionId] and wait for the stream to finish.
      */
     suspend fun sendAndWait(
         context: Context,
         sessionId: String,
         text: String,
-        thinkingLevel: com.openminis.app.data.model.ThinkingLevel? = null,
+        thinkingLevel: ThinkingLevel? = null,
         timeoutMs: Long = 120_000,
-    ): PromptResult = withContext(Dispatchers.Main) {
+    ): PromptResult {
         val result = HeadlessChatRunner.prompt(
             context = context,
             sessionId = sessionId,
@@ -60,33 +58,7 @@ object AgentSessionManager {
             wait = true,
             timeoutMs = timeoutMs,
         )
-        PromptResult(
-            status = result.status,
-            responseText = result.responseText,
-            timedOut = result.timedOut,
-            deletedMessageCount = result.deletedMessageCount,
-            retriedMessageId = result.retriedMessageId,
-        )
-    }
-
-    /**
-     * Send a prompt without waiting (async).
-     */
-    suspend fun sendAsync(
-        context: Context,
-        sessionId: String,
-        text: String,
-        thinkingLevel: com.openminis.app.data.model.ThinkingLevel? = null,
-    ): PromptResult = withContext(Dispatchers.Main) {
-        val result = HeadlessChatRunner.prompt(
-            context = context,
-            sessionId = sessionId,
-            text = text,
-            thinkingLevel = thinkingLevel,
-            wait = false,
-            timeoutMs = 0,
-        )
-        PromptResult(
+        return PromptResult(
             status = result.status,
             responseText = result.responseText,
             timedOut = result.timedOut,
@@ -94,21 +66,9 @@ object AgentSessionManager {
     }
 
     /**
-     * Get all messages from a session.
+     * Read the last assistant reply text from [sessionId], or null.
      */
-    suspend fun getMessages(
-        context: Context,
-        sessionId: String,
-    ): List<LLMMessage> = withContext(Dispatchers.IO) {
-        val app = context.applicationContext as com.openminis.app.MinisApp
-        app.chatRepository.dao.loadMessages(sessionId)
-            .map { it.toLLMMessage() }
-    }
-
-    /**
-     * Get the last assistant message from a session.
-     */
-    suspend fun getLastAssistantMessage(
+    suspend fun lastAssistantText(
         context: Context,
         sessionId: String,
     ): String? = withContext(Dispatchers.IO) {
@@ -117,9 +77,7 @@ object AgentSessionManager {
         msgs.lastOrNull { it.role == "assistant" }?.let { extractText(it.partsJson) }
     }
 
-    /**
-     * Delete a session and clean up.
-     */
+    /** Delete a session and its messages. */
     suspend fun deleteSession(
         context: Context,
         sessionId: String,
@@ -128,22 +86,20 @@ object AgentSessionManager {
         app.chatRepository.deleteSession(sessionId)
     }
 
-    /**
-     * Extract plain text from parts JSON.
-     */
+    /** Concatenate the `text` parts of a persisted message's parts JSON. */
     private fun extractText(partsJson: String): String {
-        try {
+        return try {
             val arr = org.json.JSONArray(partsJson)
             val sb = StringBuilder()
             for (i in 0 until arr.length()) {
-                val part = arr.getJSONObject(i)
-                if (part.getString("type") == "text") {
-                    sb.append(part.getString("text"))
+                val part = arr.optJSONObject(i) ?: continue
+                if (part.optString("type") == "text") {
+                    sb.append(part.optString("text"))
                 }
             }
-            return sb.toString()
+            sb.toString()
         } catch (_: Exception) {
-            return ""
+            ""
         }
     }
 }

@@ -28,10 +28,10 @@ class GraphsCollection(
     override val risk: ConfigRisk get() = ConfigRisk.SENSITIVE
     override val addPayloadSchema: ConfigSchema get() = ConfigSchema.Json
 
-    override fun childIds(): List<String> = repo.config.value.agentGraphs.map { it.id }
+    override fun childIds(): List<String> = repo.listAgentGraphsSync().map { it.id }
 
     override fun fields(forId: String): List<ConfigField> {
-        val graph = repo.config.value.agentGraphs.firstOrNull { it.id == forId }
+        val graph = repo.loadAgentGraphSync(forId)
         if (graph == null) return emptyList()
         return listOf(
             nameField(forId),
@@ -59,14 +59,17 @@ class GraphsCollection(
         for (n in nodesArr) {
             val nObj = (n as? ConfigValue.Obj)?.value ?: continue
             val roleStr = (nObj["role"] as? ConfigValue.Str)?.value ?: continue
-            val role = AgentRole.valueOf(roleStr)
+            val role = runCatching { AgentRole.valueOf(roleStr) }.getOrNull()
+                ?: throw ConfigError.InvalidValue("Unknown agent role: $roleStr")
             val id = (nObj["id"] as? ConfigValue.Str)?.value ?: java.util.UUID.randomUUID().toString()
             val systemPrompt = (nObj["systemPrompt"] as? ConfigValue.Str)?.value ?: ""
             val modelEntryId = (nObj["modelEntryId"] as? ConfigValue.Str)?.value ?: ""
             val modelRole = (nObj["modelRole"] as? ConfigValue.Str)?.value ?: ""
             val allowedTools = (nObj["allowedTools"] as? ConfigValue.Arr)?.value?.mapNotNull { (it as? ConfigValue.Str)?.value } ?: emptyList()
             val maxTurns = (nObj["maxTurns"] as? ConfigValue.Int)?.value ?: 10
-            val thinkingLevel = (nObj["thinkingLevel"] as? ConfigValue.Str)?.value?.let { com.openminis.app.data.model.ThinkingLevel.valueOf(it) }
+            val thinkingLevel = (nObj["thinkingLevel"] as? ConfigValue.Str)?.value
+                ?.takeIf { it.isNotBlank() }
+                ?.let { runCatching { com.openminis.app.data.model.ThinkingLevel.valueOf(it) }.getOrNull() }
             val temperature = (nObj["temperature"] as? ConfigValue.Double)?.value?.toFloat()
             
             nodes.add(AgentNode(
@@ -90,7 +93,8 @@ class GraphsCollection(
             val from = (eObj["from"] as? ConfigValue.Str)?.value ?: continue
             val to = (eObj["to"] as? ConfigValue.Str)?.value ?: continue
             val typeStr = (eObj["type"] as? ConfigValue.Str)?.value ?: "SEQUENTIAL"
-            val type = EdgeType.valueOf(typeStr)
+            val type = runCatching { EdgeType.valueOf(typeStr) }.getOrNull()
+                ?: throw ConfigError.InvalidValue("Unknown edge type: $typeStr")
             val condition = (eObj["condition"] as? ConfigValue.Str)?.value
             
             edges.add(com.openminis.app.data.model.AgentEdge(from = from, to = to, type = type, condition = condition))
@@ -102,7 +106,8 @@ class GraphsCollection(
         // Parse config
         val configObj = (obj["config"] as? ConfigValue.Obj)?.value
         val maxParallelNodes = configObj?.get("maxParallelNodes")?.let { (it as? ConfigValue.Int)?.value ?: 4 } ?: 4
-        val defaultTimeoutMs = configObj?.get("defaultTimeoutMs")?.let { (it as? ConfigValue.Int)?.value ?: 120_000 } ?: 120_000
+        val defaultTimeoutMs = configObj?.get("defaultTimeoutMs")
+            ?.let { (it as? ConfigValue.Int)?.value?.toLong() } ?: 120_000L
 
         val graph = AgentGraph(
             name = name,
@@ -127,10 +132,15 @@ class GraphsCollection(
 
     private fun graph(id: String): AgentGraph? = repo.loadAgentGraphSync(id)
 
-    private fun mutate(id: String, apply: (AgentGraph) -> Unit) {
+    /**
+     * AgentGraph is an immutable data class (all fields `val`), so mutation
+     * goes through `copy()` — the transform returns the NEW graph rather than
+     * editing in place (which is what GroupsCollection can do because
+     * ModelGroup's fields are `var`).
+     */
+    private fun mutate(id: String, transform: (AgentGraph) -> AgentGraph) {
         val g = graph(id) ?: throw ConfigError.UnknownPath("graphs.$id")
-        apply(g)
-        repo.saveAgentGraphSync(g)
+        repo.saveAgentGraphSync(transform(g))
     }
 
     private fun nameField(id: String): ConfigField =
@@ -142,7 +152,10 @@ class GraphsCollection(
             risk = ConfigRisk.NORMAL,
             revertable = true,
             reader = { val g = graph(id) ?: return@ClosureField ConfigValue.Null; ConfigValue.Str(g.name) },
-            writer = { val s = (v as? ConfigValue.Str)?.value ?: throw ConfigError.TypeMismatch("string"); mutate(id) { it.name = s } },
+            writer = { v ->
+                val s = (v as? ConfigValue.Str)?.value ?: throw ConfigError.TypeMismatch("string")
+                mutate(id) { g -> g.copy(name = s) }
+            },
         )
 
     private fun nodesField(id: String): ConfigField =
@@ -204,7 +217,10 @@ class GraphsCollection(
             risk = ConfigRisk.SENSITIVE,
             revertable = true,
             reader = { val g = graph(id) ?: return@ClosureField ConfigValue.Null; ConfigValue.Str(g.entryNodeId) },
-            writer = { val s = (v as? ConfigValue.Str)?.value ?: throw ConfigError.TypeMismatch("string"); mutate(id) { it.entryNodeId = s } },
+            writer = { v ->
+                val s = (v as? ConfigValue.Str)?.value ?: throw ConfigError.TypeMismatch("string")
+                mutate(id) { g -> g.copy(entryNodeId = s) }
+            },
         )
 
     private fun exitNodesField(id: String): ConfigField =
@@ -216,7 +232,11 @@ class GraphsCollection(
             risk = ConfigRisk.SENSITIVE,
             revertable = true,
             reader = { val g = graph(id) ?: return@ClosureField ConfigValue.Null; ConfigValue.Arr(g.exitNodeIds.map { ConfigValue.Str(it) }) },
-            writer = { val arr = (v as? ConfigValue.Arr)?.value ?: throw ConfigError.TypeMismatch("array"); mutate(id) { it.exitNodeIds = arr.mapNotNull { (it as? ConfigValue.Str)?.value } } },
+            writer = { v ->
+                val arr = (v as? ConfigValue.Arr)?.value ?: throw ConfigError.TypeMismatch("array")
+                val ids = arr.mapNotNull { (it as? ConfigValue.Str)?.value }
+                mutate(id) { g -> g.copy(exitNodeIds = ids) }
+            },
         )
 
     private fun configField(id: String): ConfigField =

@@ -8,7 +8,6 @@ import com.openminis.app.config.ConfigSchema
 import com.openminis.app.config.ConfigValue
 import com.openminis.app.config.fields.ClosureField
 import com.openminis.app.config.fields.PrefsBoolField
-import com.openminis.app.config.fields.PrefsStringField
 import com.openminis.app.data.repository.ProviderRepository
 import android.content.Context
 import android.content.SharedPreferences
@@ -76,9 +75,10 @@ class AgentSettingsCollection(
             reader = { ConfigValue.Str(prefs.getString(KEY_DEFAULT_GRAPH, "coding_v4") ?: "coding_v4") },
             writer = { v ->
                 val s = (v as? ConfigValue.Str)?.value?.trim() ?: ""
-                // Validate graph exists - use synchronous config access
-                val graph = providerRepo.config.value.agentGraphs.firstOrNull { it.id == s }
-                if (graph == null && s.isNotEmpty()) {
+                // Validate against the DB (synchronous wrapper) rather than the
+                // in-memory cache, which is only populated after a save/load in
+                // this process.
+                if (s.isNotEmpty() && providerRepo.loadAgentGraphSync(s) == null) {
                     throw ConfigError.InvalidValue("Graph not found: $s")
                 }
                 prefs.edit().putString(KEY_DEFAULT_GRAPH, s).apply()

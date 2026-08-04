@@ -113,6 +113,19 @@ class ProviderRepository(private val context: Context) {
             while (s.endsWith("/")) s = s.dropLast(1)
             return s
         }
+
+        /**
+         * [T-agent-graph] Agent role → agent.keys slot name. Not `const`
+         * because a Map is not a compile-time constant in Kotlin.
+         */
+        private val ROLE_TO_KEY: Map<String, String> = mapOf(
+            "planner" to "planner",
+            "analyst" to "analyst",
+            "architect" to "architect",
+            "coder" to "coder",
+            "reviewer" to "reviewer",
+            "tester" to "tester",
+        )
     }
 
     /** Record the time of a successful model fetch for [instanceId]. */
@@ -2219,7 +2232,7 @@ class ProviderRepository(private val context: Context) {
         synchronized(configLock) {
             val config = _config.value
             _config.value = config.copy(
-                agentGraphs = config.agentGraphs.filter { it.id != id },
+                agentGraphs = config.agentGraphs.filter { it.id != id }.toMutableList(),
                 revision = config.revision + 1,
             )
         }
@@ -2233,7 +2246,7 @@ class ProviderRepository(private val context: Context) {
         synchronized(configLock) {
             val config = _config.value
             _config.value = config.copy(
-                agentGraphs = config.agentGraphs.filter { it.id != id },
+                agentGraphs = config.agentGraphs.filter { it.id != id }.toMutableList(),
                 revision = config.revision + 1,
             )
         }
@@ -2252,17 +2265,6 @@ class ProviderRepository(private val context: Context) {
     // Agent Role → ModelEntry Resolution (using agent.keys)
     // ============================================================
 
-    companion object {
-        private const val ROLE_TO_KEY = mapOf(
-            "planner" to "planner",
-            "analyst" to "analyst",
-            "architect" to "architect",
-            "coder" to "coder",
-            "reviewer" to "reviewer",
-            "tester" to "tester",
-        )
-    }
-
     /**
      * Resolve a ModelEntry for an agent role using agent.keys env var references.
      * Returns the first enabled ModelEntry from the provider instance referenced
@@ -2273,14 +2275,14 @@ class ProviderRepository(private val context: Context) {
         val config = _config.value
         val keyName = ROLE_TO_KEY[role.lowercase()] ?: return null
         val envVarRef = envVarRepository?.getAgentKey(keyName) ?: return null
-        // envVarRef is like "$$AGENT_PLANNER_KEY" — extract the env var name
-        val envVarName = envVarRef.removePrefix("$$").removePrefix("$")
-        // Find provider instance that uses this env var (by convention, the apiKey field contains the $$ ref)
+        // envVarRef is like "$$AGENT_PLANNER_KEY" — strip the reference prefix
+        val envVarName = envVarRef.trimStart('$')
+        // Find provider instance whose stored apiKey carries that env-var reference
         val instance = config.instances.firstOrNull { inst ->
-            val apiKey = try { getApiKey(inst.id) } catch (_: Exception) { null }
+            val apiKey = try { loadApiKey(inst.id) } catch (_: Exception) { null }
             apiKey?.contains(envVarName) == true
         } ?: return null
-        // Return first enabled entry for this instance
+        // Return first visible entry for this instance
         return config.modelEntries.firstOrNull { it.providerInstanceId == instance.id && !it.isHidden }
     }
 

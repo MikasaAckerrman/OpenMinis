@@ -109,17 +109,6 @@ data class AgentGraph(
         }
         return errors
     }
-
-    fun toEntity(json: kotlinx.serialization.json.Json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; encodeDefaults = true }): com.openminis.app.data.db.AgentGraphEntity {
-        return com.openminis.app.data.db.AgentGraphEntity(
-            id = id,
-            name = name,
-            version = version,
-            jsonConfig = json.encodeToString(this),
-            createdAt = System.currentTimeMillis(),
-            updatedAt = System.currentTimeMillis(),
-        )
-    }
 }
 
 @Serializable

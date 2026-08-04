@@ -1,11 +1,8 @@
 package com.openminis.app.offload
 
-import com.openminis.app.data.model.AgentGraph
 import com.openminis.app.data.model.AgentRole
 import com.openminis.app.data.model.Handoff
 import com.openminis.app.data.model.HandoffStatus
-import org.json.JSONException
-import org.json.JSONObject
 
 /**
  * Validates and parses the structured handoff protocol.
@@ -58,13 +55,13 @@ object HandoffValidator {
         var currentSection = ""
         for (line in lines) {
             if (line.startsWith("FROM:")) {
-                from = AgentRole.valueOf(line.substring(5).trim())
+                from = runCatching { AgentRole.valueOf(line.substring(5).trim()) }.getOrNull()
             } else if (line.startsWith("TO:")) {
-                to = AgentRole.valueOf(line.substring(3).trim())
+                to = runCatching { AgentRole.valueOf(line.substring(3).trim()) }.getOrNull()
             } else if (line.startsWith("TASK_ID:")) {
                 taskId = line.substring(8).trim()
             } else if (line.startsWith("STATUS:")) {
-                status = HandoffStatus.valueOf(line.substring(7).trim())
+                status = runCatching { HandoffStatus.valueOf(line.substring(7).trim()) }.getOrNull()
             } else if (line == "DELIVERABLES:") {
                 currentSection = "DELIVERABLES"
             } else if (line == "SUCCESS_CRITERIA_MET:") {
