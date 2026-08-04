@@ -38,7 +38,7 @@ data class AgentGraphEntity(
                 id = graph.id,
                 name = graph.name,
                 version = graph.version,
-                jsonConfig = json.encodeToString(graph),
+                jsonConfig = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; encodeDefaults = true }.encodeToString(graph),
                 createdAt = System.currentTimeMillis(),
                 updatedAt = System.currentTimeMillis(),
             )

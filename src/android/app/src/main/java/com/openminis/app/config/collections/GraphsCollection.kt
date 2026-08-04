@@ -67,7 +67,7 @@ class GraphsCollection(
             val allowedTools = (nObj["allowedTools"] as? ConfigValue.Arr)?.value?.mapNotNull { (it as? ConfigValue.Str)?.value } ?: emptyList()
             val maxTurns = (nObj["maxTurns"] as? ConfigValue.Int)?.value ?: 10
             val thinkingLevel = (nObj["thinkingLevel"] as? ConfigValue.Str)?.value?.let { com.openminis.app.data.model.ThinkingLevel.valueOf(it) }
-            val temperature = (nObj["temperature"] as? ConfigValue.Float)?.value?.toFloat()
+            val temperature = (nObj["temperature"] as? ConfigValue.Double)?.value?.toFloat()
             
             nodes.add(AgentNode(
                 id = id,
@@ -102,7 +102,7 @@ class GraphsCollection(
         // Parse config
         val configObj = (obj["config"] as? ConfigValue.Obj)?.value
         val maxParallelNodes = configObj?.get("maxParallelNodes")?.let { (it as? ConfigValue.Int)?.value ?: 4 } ?: 4
-        val defaultTimeoutMs = configObj?.get("defaultTimeoutMs")?.let { (it as? ConfigValue.Long)?.value ?: 120_000 } ?: 120_000
+        val defaultTimeoutMs = configObj?.get("defaultTimeoutMs")?.let { (it as? ConfigValue.Int)?.value ?: 120_000 } ?: 120_000
 
         val graph = AgentGraph(
             name = name,
@@ -166,7 +166,7 @@ class GraphsCollection(
                         "allowedTools" to ConfigValue.Arr(node.allowedTools.map { ConfigValue.Str(it) }),
                         "maxTurns" to ConfigValue.Int(node.maxTurns),
                         "thinkingLevel" to ConfigValue.Str(node.thinkingLevel?.name ?: ""),
-                        "temperature" to ConfigValue.Float(node.temperature?.toDouble() ?: 0.0),
+                        "temperature" to ConfigValue.Double(node.temperature?.toDouble() ?: 0.0),
                     ))
                 })
             },
@@ -231,7 +231,7 @@ class GraphsCollection(
                 val g = graph(id) ?: return@ClosureField ConfigValue.Null
                 ConfigValue.Obj(mapOf(
                     "maxParallelNodes" to ConfigValue.Int(g.config.maxParallelNodes),
-                    "defaultTimeoutMs" to ConfigValue.Long(g.config.defaultTimeoutMs),
+                    "defaultTimeoutMs" to ConfigValue.Int(g.config.defaultTimeoutMs.toInt()),
                     "artifactDir" to ConfigValue.Str(g.config.artifactDir),
                     "enableTracing" to ConfigValue.Bool(g.config.enableTracing),
                 ))
