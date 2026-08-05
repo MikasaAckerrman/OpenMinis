@@ -1301,6 +1301,9 @@ class DebugRPCHandler(private val context: Context) {
             put("artifacts", artifactsObj)
             put("trace", traceArr)
             result.error?.let { put("error", it) }
+            // Same field the chat turn renders, so a debug run and a routed chat
+            // turn can be compared without digging through the artifact map.
+            result.finalHandoff?.let { put("finalHandoff", it) }
         }
     }
 

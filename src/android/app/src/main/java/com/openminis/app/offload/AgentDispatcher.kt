@@ -28,11 +28,17 @@ object AgentDispatcher {
 
     private const val TAG = "AgentDispatcher"
 
-    /** Mirrors AgentSettingsCollection — same prefs file, same keys. */
+    /**
+     * Mirrors AgentSettingsCollection — same prefs file, same keys.
+     *
+     * These must stay byte-identical to the writer's constants
+     * (`config/collections/AgentSettingsCollection.kt`): a mismatched key reads
+     * as "unset", which silently disables routing with no error anywhere.
+     */
     private const val PREFS_NAME = "agent_settings_prefs"
     private const val KEY_AUTO_ROUTE = "auto_route_enabled"
     private const val KEY_AUTO_ROUTE_MODEL = "auto_route_model_entry_id"
-    private const val KEY_DEFAULT_GRAPH = "agent_default_graph"
+    private const val KEY_DEFAULT_GRAPH = "default_graph_id"
 
     /**
      * How much of the user's message the classifier sees. The decision only
@@ -84,6 +90,17 @@ object AgentDispatcher {
     }
 
     /**
+     * Whether auto-routing is switched on, without touching the network.
+     *
+     * Split out from [decide] so the send path can skip the dispatcher entirely
+     * on a default install: the common case must cost nothing, not even a
+     * coroutine hop.
+     */
+    fun isEnabled(context: Context): Boolean =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(KEY_AUTO_ROUTE, false)
+
+    /**
      * Classify [userMessage] and decide where it should go.
      *
      * Never throws: callers are on the message-send path, where an exception
@@ -115,7 +132,7 @@ object AgentDispatcher {
         }
 
         val level = try {
-            classify(providerRepository, entry, userMessage)
+            classify(context, providerRepository, entry, userMessage)
         } catch (e: Exception) {
             Log.w(TAG, "classification failed, staying in normal chat: ${e.message}")
             return Decision.NormalChat("classifier error: ${e.javaClass.simpleName}")
@@ -125,8 +142,32 @@ object AgentDispatcher {
             return Decision.NormalChat("classified $level — simple enough for direct answer")
         }
 
-        val graphId = prefs.getString(KEY_DEFAULT_GRAPH, DEFAULT_GRAPH_ID)
-            ?.takeIf { it.isNotBlank() } ?: DEFAULT_GRAPH_ID
+        // An explicit `agent.defaultGraph` wins: the user picked it, so honour it
+        // for every escalated level. With nothing set, the level chooses — three
+        // agents for a contained change, the full chain only when the request
+        // actually spans the codebase.
+        val configured = prefs.getString(KEY_DEFAULT_GRAPH, null)?.trim().orEmpty()
+        val byLevel = defaultGraphFor(level)
+
+        // A configured id can be stale: the graph may have been deleted after it
+        // was set. Falling back to the level's built-in beats failing the turn,
+        // and a run the user did not quite ask for is still closer to the intent
+        // than no run at all.
+        val graphId = when {
+            configured.isEmpty() -> byLevel
+            graphExists(providerRepository, configured) -> configured
+            else -> {
+                Log.w(TAG, "configured graph '$configured' not found, falling back to $byLevel")
+                byLevel
+            }
+        }
+
+        // Nothing to fall back to: built-ins are seeded at repository init, so a
+        // miss here means graph storage is unavailable. Degrade rather than hand
+        // the runner an id it will only fail on.
+        if (graphId != configured && !graphExists(providerRepository, graphId)) {
+            return Decision.NormalChat("no runnable graph found (built-ins not seeded?)")
+        }
 
         return Decision.RunGraph(
             graphId = graphId,
@@ -134,6 +175,26 @@ object AgentDispatcher {
             rationale = "classified $level",
         )
     }
+
+    private suspend fun graphExists(
+        providerRepository: ProviderRepository,
+        graphId: String,
+    ): Boolean = try {
+        providerRepository.loadAgentGraph(graphId) != null
+    } catch (e: Exception) {
+        Log.w(TAG, "graph lookup failed for '$graphId': ${e.message}")
+        false
+    }
+
+    /**
+     * Graph for [level] when the user has not pinned one.
+     *
+     * L2 is a contained change: implement-then-review catches most of what a
+     * longer chain would, at three calls instead of seven. L3+ is where
+     * discovery and an architecture pass stop being ceremony.
+     */
+    internal fun defaultGraphFor(level: Level): String =
+        if (level >= Level.L3) BuiltinGraphs.ID_FULL else BuiltinGraphs.ID_LIGHT
 
     /**
      * The router model, or null when it is unset or no longer exists.
@@ -156,6 +217,7 @@ object AgentDispatcher {
 
     /** One short call. Returns null when the reply cannot be trusted. */
     private suspend fun classify(
+        context: Context,
         providerRepository: ProviderRepository,
         entry: ModelEntry,
         userMessage: String,
@@ -170,7 +232,7 @@ object AgentDispatcher {
         val prompt = userMessage.take(MAX_PROMPT_CHARS)
 
         val response = provider.sendMessage(
-            messages = listOf(LLMMessage(role = "user", content = prompt)),
+            messages = listOf(LLMMessage(role = LLMMessage.Role.USER, content = prompt)),
             systemPrompt = CLASSIFIER_SYSTEM_PROMPT,
             maxTokens = MAX_REPLY_TOKENS,
             // Classification must be repeatable: the same request should not
@@ -178,7 +240,7 @@ object AgentDispatcher {
             temperature = 0.0,
         )
 
-        val level = parseLevel(response.content)
+        val level = parseLevel(response.text)
         Log.i(TAG, "router: ${entry.model.id} -> ${level ?: "unparseable"}")
         return level
     }
@@ -214,9 +276,6 @@ object AgentDispatcher {
 
     private fun levelOrNull(value: String): Level? =
         Level.entries.firstOrNull { it.name == value }
-
-    /** Graph used when [KEY_DEFAULT_GRAPH] is unset. */
-    internal const val DEFAULT_GRAPH_ID = "builtin_light"
 
     private val CLASSIFIER_SYSTEM_PROMPT = """
         You classify how much work a software request needs. You do not answer it.

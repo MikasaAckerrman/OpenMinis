@@ -61,6 +61,7 @@ import com.openminis.app.offload.OffloadPermissionManager
 import com.openminis.app.service.SessionActivityTracker
 import com.openminis.app.service.SessionConcurrencyManager
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -4928,6 +4929,46 @@ class ChatViewModel(
                 dbMessageId = persistedUser.id,
             ))
 
+            // [P2] Auto-route: ask the cheap classifier whether this turn deserves
+            // the multi-agent graph. Placed here — after the user message is
+            // persisted and in history, before any provider work — so the graph
+            // path and the normal path start from an identical, already-committed
+            // conversation state. Default is OFF, and every failure inside
+            // AgentDispatcher resolves to NormalChat, so an untouched install
+            // behaves exactly as before.
+            //
+            // The enabled check is separate and synchronous so a default install
+            // pays nothing at all — not even a dispatcher hop. The decision
+            // itself runs on IO: it makes a network call, and this coroutine is
+            // on Main.
+            val routing = if (com.openminis.app.offload.AgentDispatcher.isEnabled(context)) {
+                withContext(Dispatchers.IO) {
+                    com.openminis.app.offload.AgentDispatcher.decide(
+                        context = context,
+                        providerRepository = providerRepository,
+                        userMessage = trimmed,
+                    )
+                }
+            } else {
+                null
+            }
+            if (routing is com.openminis.app.offload.AgentDispatcher.Decision.RunGraph) {
+                // Claim the stream slot for the graph turn instead of the model
+                // turn: streamLaunched must be true or the `finally` below would
+                // clear _isStreaming while the graph is still running.
+                streamLaunched = true
+                // The graph runs in its own hidden sessions with no access to this
+                // chat's history, so it gets the request verbatim and nothing else:
+                // earlier turns belong to a conversation it is not part of, and
+                // pasting them in would spend the orchestrator's budget on context
+                // it cannot act on.
+                launchGraphTurn(activeSessionId, routing, trimmed)
+                return@launch
+            }
+            if (routing is com.openminis.app.offload.AgentDispatcher.Decision.NormalChat) {
+                Log.d(TAG, "auto-route: staying in normal chat — ${routing.reason}")
+            }
+
             // Refresh OAuth token if needed before sending (mirrors iOS validAccessToken)
             if ((provider as? com.openminis.app.provider.anthropic.AnthropicProvider)?.isOAuth == true) {
                 try {
@@ -5039,6 +5080,160 @@ class ChatViewModel(
                     AppLogger.info(TAG_STREAM, "send _isStreaming=false (setup aborted)")
                     _isStreaming.value = false
                 }
+            }
+        }
+    }
+
+    /**
+     * Run the multi-agent graph as this turn instead of a normal model stream.
+     *
+     * Deliberately NOT reusing the agent-loop machinery: a graph run is not a
+     * token stream. There is nothing to stream (each node's output is a
+     * structured handoff, produced in its own hidden session), so this turn
+     * shows a "thinking" bubble until the run lands and then commits one
+     * assistant message with the outcome. What it DOES share with the normal
+     * path is the surrounding contract — same `streamJob` handle so Stop works,
+     * same concurrency slot so two turns cannot run against one session, same
+     * `_isStreaming` lifecycle so the composer stays disabled meanwhile.
+     */
+    private fun CoroutineScope.launchGraphTurn(
+        activeSessionId: String,
+        decision: com.openminis.app.offload.AgentDispatcher.Decision.RunGraph,
+        input: String,
+    ) {
+        appendSystemInfo(
+            text = "Routing to agent graph '${decision.graphId}' (${decision.rationale}).",
+            iconKind = "info",
+        )
+
+        // Placeholder assistant bubble so the turn is visibly in flight. A graph
+        // run takes minutes; without it the UI looks frozen after the user's
+        // message.
+        val placeholderId = "graph_${System.currentTimeMillis()}"
+        _messages.value = _messages.value + ChatMessage(
+            id = placeholderId,
+            role = "assistant",
+            content = "",
+            isStreaming = true,
+            isAwaitingModelResponse = true,
+        )
+
+        streamJob = launch(Dispatchers.IO) {
+            AppLogger.info(TAG_STREAM, "graph streamJob ENTER sid=$activeSessionId graph=${decision.graphId}")
+            try {
+                SessionConcurrencyManager.acquireSlot(activeSessionId)
+                SessionActivityTracker.setActive(activeSessionId, onStop = { cancelStream() })
+
+                val taskId = java.util.UUID.randomUUID().toString()
+                try {
+                    val result = com.openminis.app.offload.AgentGraphRunner.run(
+                        context = context,
+                        graphId = decision.graphId,
+                        input = input,
+                        taskId = taskId,
+                    )
+                    commitGraphResult(activeSessionId, placeholderId, decision, taskId, result)
+                } catch (e: CancellationException) {
+                    // Leave the placeholder to handleUserCancelledCleanup, which
+                    // drops a content-less in-flight bubble.
+                    AppLogger.info(TAG_STREAM, "graph run CANCELLED")
+                    throw e
+                } catch (e: Exception) {
+                    AppLogger.error(TAG_STREAM, "graph run EXCEPTION ${e.javaClass.simpleName}: ${e.message}")
+                    Log.e(TAG, "Agent graph run failed", e)
+                    // Not setInlineError: that stamps the error onto the LAST
+                    // assistant message and persists it to the last assistant DB
+                    // row — which, since the placeholder was never persisted,
+                    // is a PREVIOUS turn's row. It would put an error banner on
+                    // an answer that succeeded. Commit the failure as this turn
+                    // instead.
+                    commitGraphMessage(
+                        activeSessionId = activeSessionId,
+                        placeholderId = placeholderId,
+                        body = "Agent graph `${decision.graphId}` failed to run.\n\n" +
+                            "```\n${e.javaClass.simpleName}: ${e.message ?: "no message"}\n```",
+                    )
+                    SessionActivityTracker.markStreamError(activeSessionId)
+                } finally {
+                    publishOverlayReplyExcerpt(activeSessionId)
+                    SessionActivityTracker.setInactive(activeSessionId)
+                    SessionConcurrencyManager.releaseSlot(activeSessionId)
+                }
+            } catch (e: CancellationException) {
+                AppLogger.info(TAG_STREAM, "graph streamJob CANCELLED")
+            }
+            if (streamJob === coroutineContext[Job]) {
+                _isStreaming.value = false
+            }
+            AppLogger.info(TAG_STREAM, "graph streamJob EXIT")
+        }
+    }
+
+    /**
+     * Turn a finished run into one assistant message, in the chat and in history.
+     *
+     * The body is the exit node's handoff — the only part of a run written for a
+     * human to read. Node-by-node narration stays in the showcase session;
+     * repeating it here would bury the answer.
+     */
+    private suspend fun commitGraphResult(
+        activeSessionId: String,
+        placeholderId: String,
+        decision: com.openminis.app.offload.AgentDispatcher.Decision.RunGraph,
+        taskId: String,
+        result: com.openminis.app.data.model.GraphRunResult,
+    ) {
+        val handoff = result.finalHandoff?.trim().orEmpty()
+
+        val body = buildString {
+            if (handoff.isNotEmpty()) {
+                append(handoff)
+            } else {
+                append("The agent graph finished without a handoff from its exit node.")
+            }
+            append("\n\n---\n")
+            append("Graph `${decision.graphId}` · ${decision.level} · status ${result.status}")
+            result.error?.takeIf { it.isNotBlank() }?.let { append("\nError: $it") }
+            append("\nArtifacts: ${result.artifacts.size} in `/var/minis/workspace/$taskId`")
+        }
+
+        commitGraphMessage(activeSessionId, placeholderId, body)
+    }
+
+    /**
+     * Persist [body] as this turn's assistant message and swap it into the
+     * placeholder's slot, so the bubble keeps its position next to the user's
+     * message instead of being dropped and re-appended at the end.
+     */
+    private suspend fun commitGraphMessage(
+        activeSessionId: String,
+        placeholderId: String,
+        body: String,
+    ) {
+        val parts = listOf<AgentContentPart>(AgentContentPart.Text(body))
+        val partsJson = buildAssistantPartsJson(parts)
+        val persisted = chatRepository.appendMessage(activeSessionId, "assistant", partsJson)
+
+        agentHistory.add(
+            LLMMessage(
+                role = LLMMessage.Role.ASSISTANT,
+                content = body,
+                contentParts = parts,
+                dbMessageId = persisted.id,
+            )
+        )
+
+        _messages.value = _messages.value.map { msg ->
+            if (msg.id == placeholderId) {
+                msg.copy(
+                    id = persisted.id,
+                    content = body,
+                    isStreaming = false,
+                    isAwaitingModelResponse = false,
+                    sourceDbIds = listOf(persisted.id),
+                )
+            } else {
+                msg
             }
         }
     }

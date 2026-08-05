@@ -278,6 +278,17 @@ data class GraphRunResult(
     val artifacts: Map<String, String> = emptyMap(),
     val trace: List<TraceEvent> = emptyList(),
     val error: String? = null,
+    /**
+     * The exit node's handoff, rendered as text — the run's answer.
+     *
+     * Callers that surface a run to a human (the chat turn) need exactly one
+     * block of prose, and picking it out of [artifacts] by filename is guesswork
+     * once nodes run in parallel: map order is insertion order, and the last
+     * handoff written is not necessarily the exit node's. The runner knows which
+     * node is the exit, so it resolves this here. Null when no exit node
+     * produced a handoff (failed, blocked, or deadlocked run).
+     */
+    val finalHandoff: String? = null,
 )
 
 @Serializable

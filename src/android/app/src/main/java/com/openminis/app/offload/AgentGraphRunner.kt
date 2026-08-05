@@ -14,6 +14,7 @@ import com.openminis.app.data.model.TraceEvent
 import com.openminis.app.data.repository.ProviderRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -234,7 +235,36 @@ internal object AgentGraphRunner {
         return node to (idx - 1)
     }
 
-    private suspend fun executeGraph(execContext: ExecutionContext): GraphRunResult {
+    /**
+     * Run the graph, with node coroutines as children of the caller.
+     *
+     * The [kotlinx.coroutines.coroutineScope] wrapper is load-bearing: nodes used
+     * to be launched into a freshly built `CoroutineScope`, which made them
+     * unreachable from the caller's Job. That was survivable while runs only
+     * started from debug RPC, but a run started from a chat turn can be
+     * cancelled by the user tapping Stop — and orphaned nodes would keep calling
+     * models, spending tokens on a turn nobody is waiting for.
+     */
+    private suspend fun executeGraph(execContext: ExecutionContext): GraphRunResult =
+        kotlinx.coroutines.coroutineScope {
+            try {
+                executeGraphIn(this, execContext)
+            } finally {
+                // A run reaches its verdict as soon as the exit nodes are
+                // terminal — an unrelated parallel branch may still be mid-call.
+                // Cancel those: their output can no longer change the result, so
+                // letting them finish is pure token spend. coroutineScope then
+                // waits for the cancelled children to unwind, which also means
+                // nothing is still appending to state.trace when the caller gets
+                // the result.
+                coroutineContext[Job]?.cancelChildren()
+            }
+        }
+
+    private suspend fun executeGraphIn(
+        scope: kotlinx.coroutines.CoroutineScope,
+        execContext: ExecutionContext,
+    ): GraphRunResult {
         val state = execContext.state
         val graph = state.graph
 
@@ -295,8 +325,30 @@ internal object AgentGraphRunner {
                 // for "already launched".
                 if (!state.dispatched.add(nodeId)) continue
 
-                val job = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
-                    executeNode(execContext, node, nodeId, replicaIndex)
+                val job = scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                    // executeNode's failure paths all mark status and return, but
+                    // an unexpected throw would escape into a bare CoroutineScope
+                    // with no handler — i.e. the thread's default handler, i.e. an
+                    // app crash. Now that a run can be started from the chat send
+                    // path rather than only from debug RPC, that is a crash in the
+                    // user's face. Contain it: a thrown node is a FAILED node.
+                    try {
+                        executeNode(execContext, node, nodeId, replicaIndex)
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        state.nodeStatus[nodeId] = NodeStatus.FAILED
+                        addTrace(state, nodeId, node.role, "CANCELLED", "node cancelled")
+                        throw e
+                    } catch (e: Exception) {
+                        state.nodeStatus[nodeId] = NodeStatus.FAILED
+                        addTrace(
+                            state, nodeId, node.role, "ERROR",
+                            "${e.javaClass.simpleName}: ${e.message ?: "no message"}",
+                        )
+                        com.openminis.app.logging.AppLogger.error(
+                            LOG_TAG,
+                            "[${state.taskId.take(8)}] node $nodeId threw: ${e.javaClass.simpleName}: ${e.message}",
+                        )
+                    }
                 }
                 runningJobs[nodeId] = job
             }
@@ -341,8 +393,31 @@ internal object AgentGraphRunner {
             status = finalStatus,
             artifacts = state.artifactIndex,
             trace = state.trace,
+            finalHandoff = resolveFinalHandoff(state, allExitRuntimeIds),
         )
     }
+
+    /**
+     * The exit node's handoff as text, for callers that show a run to a human.
+     *
+     * Prefers a COMPLETE handoff: with several exit nodes (or replicas), one
+     * blocked branch should not become the reported answer while a finished one
+     * is available. Falls back to any exit handoff, so a run that only got as
+     * far as BLOCKED still explains itself rather than reporting nothing.
+     */
+    private fun resolveFinalHandoff(
+        state: GraphState,
+        exitRuntimeIds: List<String>,
+    ): String? {
+        val chosen = pickFinalHandoff(exitRuntimeIds.mapNotNull { state.handoffMap[it] })
+            ?: return null
+        return HandoffValidator.buildHandoff(chosen)
+    }
+
+    /** See [resolveFinalHandoff]; split out so the choice is testable on its own. */
+    internal fun pickFinalHandoff(exitHandoffs: List<Handoff>): Handoff? =
+        exitHandoffs.firstOrNull { it.status == HandoffStatus.COMPLETE }
+            ?: exitHandoffs.firstOrNull()
 
     /** Execute a single agent node. */
     private suspend fun executeNode(

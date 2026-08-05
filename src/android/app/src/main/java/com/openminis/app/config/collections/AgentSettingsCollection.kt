@@ -71,11 +71,15 @@ class AgentSettingsCollection(
         ClosureField(
             path = "agent.defaultGraph",
             displayName = "Default graph ID",
-            description = "Graph to auto-launch for complex tasks (L2+). Must match a configured graph ID from `graphs` collection.",
+            description = "Graph to auto-launch for complex tasks (L2+). Must match a configured graph ID from the `graphs` collection. Leave empty to let the router pick by complexity: builtin_light for L2, builtin_full for L3+.",
             valueSchema = ConfigSchema.Str(maxLength = 200),
             risk = ConfigRisk.NORMAL,
             revertable = true,
-            reader = { ConfigValue.Str(prefs.getString(KEY_DEFAULT_GRAPH, "coding_v4") ?: "coding_v4") },
+            // Empty, not "coding_v4": no graph by that id ships with the app, so
+            // reporting it as the default described a setting that could never
+            // run. Empty means "let the level decide" — see
+            // AgentDispatcher.defaultGraphFor.
+            reader = { ConfigValue.Str(prefs.getString(KEY_DEFAULT_GRAPH, "") ?: "") },
             writer = { v ->
                 val s = (v as? ConfigValue.Str)?.value?.trim() ?: ""
                 // Validate against the DB (synchronous wrapper) rather than the
