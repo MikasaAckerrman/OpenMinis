@@ -80,13 +80,31 @@ object PRootKernel {
         // statically, so only the native lib dir is needed.
         nativeLibDir = rootfsManager.nativeLibDir.absolutePath
 
-        // PROOT_LOADER / PROOT_LOADER_32 overrides. The loader is bundled into
-        // the proot binary (extracted via /proc/self/fd at runtime), so these
-        // files normally do not exist — kept only to honour a side-loaded
-        // loader if one is present.
+        // PROOT_LOADER / PROOT_LOADER_32.
+        //
+        // proot also carries a copy of the loader inside its own binary and can
+        // extract it at runtime (extract_loader() in src/execve/enter.c), but
+        // that fallback is useless on Android 10+: it writes the loader into
+        // PROOT_TMP_DIR and chmod +x's it, and W^X forbids executing a file the
+        // app wrote into its own data directory. Every execve inside the rootfs
+        // then fails with `execve("/bin/sh"): Permission denied`, which looks
+        // like a broken rootfs but is a missing loader.
+        //
+        // Only the APK's native library directory is executable, so the loader
+        // must ship as libproot-loader.so (deps/build_proot.sh installs it) and
+        // be named here explicitly.
         val loaderPath = File(rootfsManager.nativeLibDir, "libproot-loader.so")
         val loader32Path = File(rootfsManager.nativeLibDir, "libproot-loader32.so")
-        if (loaderPath.exists()) prootLoaderPath = loaderPath.absolutePath
+        if (loaderPath.exists()) {
+            prootLoaderPath = loaderPath.absolutePath
+        } else {
+            Log.e(
+                TAG,
+                "libproot-loader.so missing from ${rootfsManager.nativeLibDir} — proot will " +
+                    "fall back to extracting its bundled loader, which Android's W^X blocks; " +
+                    "expect execve(...): Permission denied for every command",
+            )
+        }
         if (loader32Path.exists()) prootLoader32Path = loader32Path.absolutePath
 
         // Set default PATH for Alpine Linux

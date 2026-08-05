@@ -8,6 +8,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.BufferedWriter
+import java.io.File
 import java.io.OutputStreamWriter
 import java.nio.charset.StandardCharsets
 import java.util.UUID
@@ -197,9 +198,20 @@ class PersistentShell(
             AppLogger.error(TAG, startFailure!!)
             return
         }
-        // proot unpacks its loader into PROOT_TMP_DIR before it can exec
-        // anything; a missing directory surfaces as the misleading
-        // `execve("/bin/sh"): Permission denied`. Name it here instead.
+        // The loader must exist as a native library: proot's own fallback
+        // (extract into PROOT_TMP_DIR + chmod +x) is blocked by Android's W^X,
+        // and its only symptom is `execve("/bin/sh"): Permission denied`.
+        val loader = File(rootfsManager.nativeLibDir, "libproot-loader.so")
+        if (!loader.exists()) {
+            startFailure = "proot loader missing at ${loader.absolutePath} — the APK was built " +
+                "without jniLibs/arm64-v8a/libproot-loader.so, so proot cannot exec anything " +
+                "inside the rootfs (Android forbids running a file the app wrote itself)"
+            Log.e(TAG, startFailure!!)
+            AppLogger.error(TAG, startFailure!!)
+            return
+        }
+        // proot unpacks temporary state into PROOT_TMP_DIR; a missing directory
+        // also surfaces as a misleading "Permission denied". Name it here.
         val prootTmp = PRootKernel.getProotTmpDir(context)
         if (!prootTmp.isDirectory) {
             startFailure = "PROOT_TMP_DIR unusable: ${prootTmp.absolutePath} is not a directory " +

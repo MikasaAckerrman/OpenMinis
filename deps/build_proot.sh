@@ -306,6 +306,46 @@ install_asset() {
     mkdir -p "$JNILIBS_DIR"
     install -m 0755 "$BUILT_PROOT" "$JNILIBS_BIN"
     log_success "Installed: $JNILIBS_BIN ($(du -h "$JNILIBS_BIN" | awk '{print $1}'))"
+
+    install_loader
+}
+
+# Ship the loader as its own native library.
+#
+# proot bundles a copy of the loader inside its own binary and, when
+# PROOT_LOADER is unset, extracts it into PROOT_TMP_DIR and chmod +x's it
+# (extract_loader() in src/execve/enter.c). On Android 10+ that path is a dead
+# end: W^X forbids executing a file the app itself wrote into its data
+# directory, so every execve inside the rootfs fails with
+#
+#   proot error: execve("/bin/sh"): Permission denied
+#   proot info: possible causes: ... the loader was not found or doesn't work.
+#
+# which reads like a broken rootfs. Only files under the APK's native library
+# directory are executable, so the loader has to travel as lib*.so and be
+# pointed at via PROOT_LOADER (PRootKernel.prootLoaderPath).
+#
+# The primary install predates this and worked by accident — it was built when
+# the loader still landed in jniLibs. The clone variant, built from the current
+# script, had libproot.so only and could never exec anything.
+install_loader() {
+    loader_src="$PROOT_DIR/src/loader/loader"
+    if [ ! -f "$loader_src" ]; then
+        log_error "Loader not built: $loader_src (expected from 'make proot')"
+    fi
+    install -m 0755 "$loader_src" "$JNILIBS_DIR/libproot-loader.so"
+    log_success "Installed: $JNILIBS_DIR/libproot-loader.so ($(du -h "$JNILIBS_DIR/libproot-loader.so" | awk '{print $1}'))"
+
+    # 32-bit loader: only needed to run armeabi binaries under an arm64 kernel.
+    # Absent unless the build enabled it, and its absence is not fatal — proot
+    # falls back to its bundled copy, which only matters for 32-bit guests.
+    loader32_src="$PROOT_DIR/src/loader/loader-m32"
+    if [ -f "$loader32_src" ]; then
+        install -m 0755 "$loader32_src" "$JNILIBS_DIR/libproot-loader32.so"
+        log_success "Installed: $JNILIBS_DIR/libproot-loader32.so"
+    else
+        log_info "No 32-bit loader built — skipping libproot-loader32.so"
+    fi
 }
 
 # ----------------------------------------------------------------------------
