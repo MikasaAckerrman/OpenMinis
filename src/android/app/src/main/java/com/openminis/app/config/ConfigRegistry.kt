@@ -35,17 +35,13 @@ class ConfigRegistry private constructor() {
 
     /**
      * Look up a field by path. Handles both flat fields and collection
-     * children (`<base>.<id>.<sub>`). Returns null for unknown paths.
+     * children — including collections whose base path contains a dot
+     * (`agent.keys.planner`) and children that are themselves the leaf
+     * (`agent.autoRoute`). See [resolveCollectionField].
      */
     fun resolveField(path: String): ConfigField? {
         fields[path]?.let { return it }
-        // Collection child lookup: split into [base, id, leaf]. The leaf
-        // may itself contain dots (e.g. `models.<uuid>.modality.video`),
-        // so cap maxSplits at 2.
-        val segments = path.split('.', limit = 3)
-        if (segments.size != 3) return null
-        val coll = collections[segments[0]] ?: return null
-        return coll.fields(forId = segments[1]).firstOrNull { it.path == path }
+        return resolveCollectionField(path) { collections[it] }
     }
 
     fun collection(basePath: String): ConfigCollection? = collections[basePath]
@@ -72,10 +68,16 @@ class ConfigRegistry private constructor() {
     /**
      * All visible fields whose path equals `<topic>` (the bare topic
      * name — e.g. an aggregate `providers` summary) or starts with
-     * `<topic>.`. When [topic] matches a registered collection, a
-     * representative child's fields (using the first child id) are
-     * also included so `topic-help <collection>` surfaces the per-
-     * child schema instead of an empty list. Mirrors iOS.
+     * `<topic>.`. When [topic] matches a registered collection, its
+     * children's fields are included so `topic-help <collection>`
+     * surfaces the per-child schema instead of an empty list.
+     *
+     * Fixed-membership collections (`addable == false`, e.g. `agent`,
+     * `agent.keys`) list every child: the set is small, known at compile
+     * time, and showing one of four settings made the other three look
+     * unsupported. Open collections (`models`, `providers`, …) still show a
+     * single representative child, since their child count is unbounded and
+     * every child has the same schema anyway.
      */
     fun fields(topic: String): List<ConfigField> {
         val out = ArrayList<ConfigField>()
@@ -85,9 +87,10 @@ class ConfigRegistry private constructor() {
         }
         val coll = collections[topic]
         if (coll != null) {
-            val firstId = coll.childIds().firstOrNull()
-            if (firstId != null) {
-                out.addAll(coll.fields(forId = firstId).filter { it.access != ConfigAccess.HIDDEN })
+            val ids = coll.childIds()
+            val shown = if (coll.addable) ids.take(1) else ids
+            for (id in shown) {
+                out.addAll(coll.fields(forId = id).filter { it.access != ConfigAccess.HIDDEN })
             }
         }
         return out.sortedBy { it.path }

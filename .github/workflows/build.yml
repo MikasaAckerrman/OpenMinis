@@ -74,11 +74,15 @@ jobs:
       #       overwritten tail and padding ("AAAA\rBB" yields "BB", not "BBAA")
       # Widen this filter as each suite is fixed; do not swap it for the whole
       # suite until they are green, or the gate goes back to being ignored.
+      # `config.ConfigPathResolverTest` is listed by name rather than as
+      # `config.*` for the same reason: the rest of that package is not covered
+      # yet, and a wildcard would drag in whatever lands there next.
       - name: Run unit tests
         run: |
           cd src/android
           ./gradlew :app:testCloneUnitTest --no-daemon -Dorg.gradle.jvmargs="-Xmx4g" \
-            --tests 'com.openminis.app.offload.*'
+            --tests 'com.openminis.app.offload.*' \
+            --tests 'com.openminis.app.config.ConfigPathResolverTest'
 
       - name: Upload unit test report on failure
         if: failure()
