@@ -176,12 +176,12 @@ class PersistentShell(
 
         val rootfsManager = RootfsManager.getInstance(context)
 
-        // [T-clone-variant] Preflight the two files the shell cannot run
-        // without. Both are per-install: a fresh install (e.g. the clone
-        // variant) has its own empty filesDir and its own nativeLibraryDir, so
-        // "works on the primary install" says nothing about this one. Failing
-        // here with a named cause beats ProcessBuilder throwing ENOENT that
-        // nobody sees.
+        // [T-clone-variant] Preflight the three things the shell cannot run
+        // without. All are per-install: a fresh install (e.g. the clone
+        // variant) has its own empty filesDir, its own cacheDir and its own
+        // nativeLibraryDir, so "works on the primary install" says nothing
+        // about this one. Failing here with a named cause beats ProcessBuilder
+        // throwing ENOENT that nobody sees.
         if (!rootfsManager.prootBinary.exists()) {
             startFailure = "proot binary missing at ${rootfsManager.prootBinary.absolutePath} " +
                 "(APK built without jniLibs/arm64-v8a/libproot.so?)"
@@ -193,6 +193,18 @@ class PersistentShell(
             startFailure = "Alpine rootfs not installed at ${rootfsManager.rootfsDir.absolutePath} " +
                 "(extraction never ran or failed) — open the app's onboarding / " +
                 "Settings → Rootfs to reinstall"
+            Log.e(TAG, startFailure!!)
+            AppLogger.error(TAG, startFailure!!)
+            return
+        }
+        // proot unpacks its loader into PROOT_TMP_DIR before it can exec
+        // anything; a missing directory surfaces as the misleading
+        // `execve("/bin/sh"): Permission denied`. Name it here instead.
+        val prootTmp = PRootKernel.getProotTmpDir(context)
+        if (!prootTmp.isDirectory) {
+            startFailure = "PROOT_TMP_DIR unusable: ${prootTmp.absolutePath} is not a directory " +
+                "— proot cannot unpack its loader, so every exec fails with " +
+                "\"Permission denied\""
             Log.e(TAG, startFailure!!)
             AppLogger.error(TAG, startFailure!!)
             return
@@ -234,7 +246,10 @@ class PersistentShell(
         processBuilder.redirectErrorStream(!debugOffload)
 
         val env = processBuilder.environment()
-        env["PROOT_TMP_DIR"] = PRootKernel.getProotTmpDir(context).absolutePath
+        // Reuse the directory the preflight above already validated — calling
+        // getProotTmpDir() twice could pick a different fallback if storage
+        // state changed in between.
+        env["PROOT_TMP_DIR"] = prootTmp.absolutePath
         if (PRootKernel.nativeLibDir.isNotEmpty()) {
             env["LD_LIBRARY_PATH"] = PRootKernel.nativeLibDir
         }
