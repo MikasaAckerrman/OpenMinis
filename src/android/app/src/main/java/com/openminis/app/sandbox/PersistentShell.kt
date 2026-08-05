@@ -30,6 +30,7 @@ class PersistentShell(
 
     companion object {
         private const val TAG = "PersistentShell"
+        private const val STDERR_TAIL_LINES = 40
     }
 
     @Volatile
@@ -43,6 +44,53 @@ class PersistentShell(
     /** Pending command callback — only one command at a time. */
     @Volatile
     private var pendingCallback: CommandCallback? = null
+
+    /**
+     * Why the last [startProcess] attempt produced no usable shell.
+     *
+     * [T-clone-variant] Without this the only symptom of a dead sandbox was the
+     * bare string "[Shell not running]" in the chat — proot's own explanation
+     * went to logcat (stderr is NOT merged into stdout in debug builds, see
+     * redirectErrorStream below), which a user on-device cannot read. Every
+     * failure mode is now surfaced in-band so the reason is pasteable.
+     */
+    @Volatile
+    private var startFailure: String? = null
+
+    /**
+     * Last few lines proot printed, kept so a start failure can quote them.
+     * Fed from stderr in debug builds and from unclaimed stdout otherwise
+     * (release sets redirectErrorStream=true, so errors arrive on stdout).
+     * Bounded — proot is chatty when MINIS_NOFF_DEBUG=1 and this must not grow
+     * for the lifetime of a session.
+     */
+    private val stderrTail = java.util.ArrayDeque<String>()
+
+    private fun recordStderr(line: String) {
+        synchronized(stderrTail) {
+            stderrTail.addLast(line)
+            while (stderrTail.size > STDERR_TAIL_LINES) stderrTail.removeFirst()
+        }
+    }
+
+    private fun stderrTailText(): String = synchronized(stderrTail) {
+        stderrTail.joinToString("\n")
+    }
+
+    /**
+     * The in-band diagnostic shown where "[Shell not running]" used to be.
+     *
+     * Keeps the original marker as the first line so existing log greps and any
+     * UI that matched on it still work, then appends the concrete reason.
+     */
+    private fun shellNotRunningMessage(): String {
+        val reason = startFailure
+        return if (reason.isNullOrEmpty()) {
+            "[Shell not running] no start attempt recorded — PRoot kernel may not have booted"
+        } else {
+            "[Shell not running] $reason"
+        }
+    }
 
     val isAlive: Boolean
         get() = process?.isAlive == true
@@ -80,8 +128,29 @@ class PersistentShell(
 
     private fun startProcess() {
         Log.i(TAG, "Starting persistent shell process")
+        startFailure = null
 
         val rootfsManager = RootfsManager.getInstance(context)
+
+        // [T-clone-variant] Preflight the two files the shell cannot run
+        // without. Both are per-install: a fresh install (e.g. the clone
+        // variant) has its own empty filesDir and its own nativeLibraryDir, so
+        // "works on the primary install" says nothing about this one. Failing
+        // here with a named cause beats ProcessBuilder throwing ENOENT that
+        // nobody sees.
+        if (!rootfsManager.prootBinary.exists()) {
+            startFailure = "proot binary missing at ${rootfsManager.prootBinary.absolutePath} " +
+                "(APK built without jniLibs/arm64-v8a/libproot.so?)"
+            Log.e(TAG, startFailure!!)
+            return
+        }
+        if (!rootfsManager.isInstalled) {
+            startFailure = "Alpine rootfs not installed at ${rootfsManager.rootfsDir.absolutePath} " +
+                "(extraction never ran or failed) — open the app's onboarding / " +
+                "Settings → Rootfs to reinstall"
+            Log.e(TAG, startFailure!!)
+            return
+        }
 
         val cmd = mutableListOf<String>()
         cmd.add(rootfsManager.prootBinary.absolutePath)
@@ -146,7 +215,15 @@ class PersistentShell(
             env[key] = value
         }
 
-        val p = processBuilder.start()
+        val p = try {
+            processBuilder.start()
+        } catch (e: Exception) {
+            // ENOENT / EACCES on the proot binary, fork failure under memory
+            // pressure, SELinux denial — all land here and used to vanish.
+            startFailure = "failed to spawn proot: ${e.javaClass.simpleName}: ${e.message}"
+            Log.e(TAG, startFailure!!, e)
+            return
+        }
         process = p
         stdinWriter = BufferedWriter(OutputStreamWriter(p.outputStream, StandardCharsets.UTF_8))
 
@@ -158,12 +235,16 @@ class PersistentShell(
             start()
         }
 
-        // In debug, drain stderr separately into logcat.
+        // In debug, drain stderr separately into logcat AND into a bounded
+        // ring buffer so a start failure can be explained in the chat itself.
         if (debugOffload) {
             Thread({
                 val br = p.errorStream.bufferedReader(StandardCharsets.UTF_8)
                 try {
-                    for (line in br.lineSequence()) Log.d("PRootStderr", line)
+                    for (line in br.lineSequence()) {
+                        Log.d("PRootStderr", line)
+                        recordStderr(line)
+                    }
                 } catch (_: Exception) {}
             }, "PersistentShell-stderr").apply {
                 isDaemon = true
@@ -175,6 +256,26 @@ class PersistentShell(
         try {
             Thread.sleep(200)
         } catch (_: InterruptedException) {}
+
+        // proot commonly starts and then dies immediately (bad -r root, missing
+        // loader, unusable /proc). Catch that here so the exit code and proot's
+        // own complaint reach the caller instead of a bare "not running".
+        if (!p.isAlive) {
+            val code = try { p.exitValue() } catch (_: IllegalThreadStateException) { null }
+            // Give the drain threads a moment to flush what proot printed on its
+            // way out — otherwise the tail is often empty and the diagnostic
+            // loses the only line that matters.
+            try { Thread.sleep(150) } catch (_: InterruptedException) {}
+            val tail = stderrTailText()
+            val detail = if (tail.isNotEmpty()) {
+                "\nproot output:\n$tail"
+            } else {
+                " — no output captured"
+            }
+            startFailure = "proot exited immediately (exit=$code)$detail"
+            Log.e(TAG, startFailure!!)
+            return
+        }
 
         Log.i(TAG, "Persistent shell started")
     }
@@ -216,7 +317,15 @@ class PersistentShell(
                         }
                     }
                 }
-                // If no pending callback, discard (shell prompt noise etc.)
+                // If no pending callback, this is shell prompt noise — or, in
+                // release builds (redirectErrorStream=true), proot's own error
+                // output on a failed boot. Keep it in the ring buffer so a
+                // start failure can quote it; it is discarded otherwise.
+                if (cb == null) {
+                    for (line in text.split('\n')) {
+                        if (line.isNotBlank()) recordStderr(line.trimEnd('\r'))
+                    }
+                }
             }
         } catch (e: Exception) {
             Log.d(TAG, "Reader loop ended: ${e.message}")
@@ -271,7 +380,7 @@ class PersistentShell(
 
         val writer = stdinWriter
         if (writer == null || !isAlive) {
-            return Pair("[Shell not running]", -1)
+            return Pair(shellNotRunningMessage(), -1)
         }
 
         val marker = UUID.randomUUID().toString().take(8)

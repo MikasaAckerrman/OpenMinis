@@ -11,7 +11,7 @@ on:
 
 jobs:
   build:
-    name: Build arm64 Debug APK
+    name: Build arm64 Clone APK
     runs-on: ubuntu-latest
     timeout-minutes: 20
     
@@ -58,24 +58,29 @@ jobs:
       - name: Grant Gradle permission
         run: chmod +x src/android/gradlew
 
-      - name: Build Debug APK
-        run: |
-          cd src/android
-          ./gradlew :app:assembleDebug --no-daemon -Dorg.gradle.jvmargs="-Xmx4g"
-
-      # [T-clone-variant] Side-by-side install (com.openminis.app.clone) for
-      # testing a build without touching the install that holds real chats.
+      # [T-clone-only-ci] Only the clone variant is built.
+      #
+      # `clone` and `debug` compile the SAME sources — they differ in
+      # applicationId (.clone), launcher label and debug-RPC port only. The
+      # clone installs alongside the primary Minis, so it is where development
+      # builds are tested without risking the install that holds real chats.
+      #
+      # Building debug as well doubled CI time (8 min vs 5) to produce an
+      # artifact nobody installs. To resurrect it — when the primary install
+      # should finally receive the accumulated work — restore this step:
+      #
+      #   - name: Build Debug APK
+      #     run: cd src/android && ./gradlew :app:assembleDebug --no-daemon
+      #   - name: Upload APK artifact
+      #     uses: actions/upload-artifact@v4
+      #     with: { name: app-debug-apk, path: src/android/app/build/outputs/apk/debug/app-debug.apk }
+      #
+      # Both variants share the committed debug keystore, so a debug APK built
+      # later still installs over any earlier one.
       - name: Build Clone APK
         run: |
           cd src/android
           ./gradlew :app:assembleClone --no-daemon -Dorg.gradle.jvmargs="-Xmx4g"
-
-      - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-debug-apk
-          path: src/android/app/build/outputs/apk/debug/app-debug.apk
-          retention-days: 7
 
       - name: Upload Clone APK artifact
         uses: actions/upload-artifact@v4

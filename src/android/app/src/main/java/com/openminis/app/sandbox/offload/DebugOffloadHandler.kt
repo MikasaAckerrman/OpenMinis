@@ -17,7 +17,7 @@ import java.net.SocketTimeoutException
 
 /**
  * minis-debug — DEBUG-ONLY CLI wrapper for the local DebugServer JSON-RPC
- * endpoint at 127.0.0.1:5321.
+ * endpoint at 127.0.0.1:5321 (127.0.0.1:5322 for the `.clone` install).
  *
  * Lets a user (or agent) in the PRoot shell drive the in-app debug RPC
  * without hand-rolling curl + JSON. Each subcommand maps to one RPC
@@ -29,7 +29,19 @@ import java.net.SocketTimeoutException
  * Registration is guarded by `BuildConfig.DEBUG` in MinisApp.kt so the
  * Release APK contains no trace of this command.
  */
-class DebugOffloadHandler(@Suppress("UNUSED_PARAMETER") context: Context) : NativeOffloadHandler {
+class DebugOffloadHandler(context: Context) : NativeOffloadHandler {
+
+    /**
+     * [T-clone-variant] Must mirror the port split in MinisApp.onCreate():
+     * the clone install (`com.openminis.app.clone`) runs its DebugServer on
+     * 5322 so it can coexist with the primary install on 5321. Hardcoding
+     * 5321 here made `minis-debug` inside the clone's shell talk to the
+     * PRIMARY app's debug server — commands silently hit the wrong process,
+     * or failed with ConnectionRefused when the primary wasn't running,
+     * which reads like "the clone's debug server is dead".
+     */
+    private val debugServerPort: Int =
+        if (context.packageName.endsWith(".clone")) 5322 else 5321
 
     override fun handle(request: NativeOffloadRequest): NativeOffloadResult {
         val args = OffloadArgs(request.argv.drop(1), booleanFlags = BOOLEAN_FLAGS)
@@ -69,7 +81,7 @@ class DebugOffloadHandler(@Suppress("UNUSED_PARAMETER") context: Context) : Nati
         } catch (e: ConnectionRefused) {
             val body = JSONObject()
                 .put("error", "debug_server_unreachable")
-                .put("message", "Debug server not running on 127.0.0.1:5321. Is this a debug build?")
+                .put("message", "Debug server not running on 127.0.0.1:$debugServerPort. Is this a debug build?")
                 .toString()
             NativeOffloadResult(1, OffloadOutput.formatBody(body, args) + "\n")
         } catch (e: SocketTimeoutException) {
@@ -205,7 +217,7 @@ class DebugOffloadHandler(@Suppress("UNUSED_PARAMETER") context: Context) : Nati
         val socket = Socket()
         try {
             try {
-                socket.connect(InetSocketAddress("127.0.0.1", DEBUG_SERVER_PORT), TIMEOUT_MS)
+                socket.connect(InetSocketAddress("127.0.0.1", debugServerPort), TIMEOUT_MS)
             } catch (e: java.net.ConnectException) {
                 throw ConnectionRefused(e)
             }
@@ -214,7 +226,7 @@ class DebugOffloadHandler(@Suppress("UNUSED_PARAMETER") context: Context) : Nati
             val out: OutputStream = socket.getOutputStream()
             val req = buildString {
                 append("POST / HTTP/1.1\r\n")
-                append("Host: 127.0.0.1:$DEBUG_SERVER_PORT\r\n")
+                append("Host: 127.0.0.1:$debugServerPort\r\n")
                 append("Content-Type: application/json\r\n")
                 append("Content-Length: ${bodyBytes.size}\r\n")
                 append("Connection: close\r\n")
@@ -284,7 +296,6 @@ class DebugOffloadHandler(@Suppress("UNUSED_PARAMETER") context: Context) : Nati
 
     companion object {
         private const val TAG = "DebugOffload"
-        private const val DEBUG_SERVER_PORT = 5321
         private const val TIMEOUT_MS = 30_000
 
         /**
@@ -333,7 +344,8 @@ EXAMPLES:
   minis-debug exec uname -a
   minis-debug call debug.logs.list --params '{}'
 
-The handler talks to 127.0.0.1:$DEBUG_SERVER_PORT (DebugServer). If the server
+The handler talks to 127.0.0.1:5321 (DebugServer); the `.clone` install uses
+5322 instead so both can run side by side. If the server
 isn't running you'll see `debug_server_unreachable` — Release builds don't
 ship this command at all.
 """
