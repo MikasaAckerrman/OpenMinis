@@ -2,6 +2,7 @@ package com.openminis.app.sandbox
 
 import android.content.Context
 import android.util.Log
+import com.openminis.app.logging.AppLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -30,7 +31,8 @@ class PersistentShell(
 
     companion object {
         private const val TAG = "PersistentShell"
-        private const val STDERR_TAIL_LINES = 40
+        private const val STDERR_HEAD_LINES = 25
+        private const val STDERR_TAIL_LINES = 15
     }
 
     @Volatile
@@ -58,23 +60,65 @@ class PersistentShell(
     private var startFailure: String? = null
 
     /**
-     * Last few lines proot printed, kept so a start failure can quote them.
-     * Fed from stderr in debug builds and from unclaimed stdout otherwise
-     * (release sets redirectErrorStream=true, so errors arrive on stdout).
-     * Bounded — proot is chatty when MINIS_NOFF_DEBUG=1 and this must not grow
-     * for the lifetime of a session.
+     * What proot printed, kept so a start failure can quote it.
+     *
+     * Two buffers, not one. proot calls talloc_enable_leak_report() (cli.c), so
+     * on exit it dumps a multi-hundred-line talloc hierarchy to stderr. A plain
+     * "keep the last N lines" buffer therefore throws away the actual error and
+     * shows only leak-report tail — which is exactly what happened on the first
+     * clone build: `exit=1` plus 40 lines of "HandlerEntry contains 30 bytes".
+     *
+     * [head] keeps the FIRST lines, where proot's own complaint appears before
+     * the report starts. [tail] keeps the last lines for cases where the failure
+     * comes late. Recognisable leak-report noise is dropped on the way in.
      */
+    private val stderrHead = ArrayList<String>(STDERR_HEAD_LINES)
     private val stderrTail = java.util.ArrayDeque<String>()
 
+    /**
+     * True for lines that belong to proot's talloc leak report rather than to
+     * any error. Matching on shape, not on an exact string: the report prints
+     * "<name> contains N bytes in M blocks (ref 0) 0x..." plus a
+     * "talloc report on '<ctx>'" header.
+     */
+    private fun isTallocNoise(line: String): Boolean {
+        val t = line.trim()
+        return t.startsWith("talloc report on ") ||
+            t.startsWith("full talloc report on ") ||
+            (t.contains(" contains ") && t.contains(" bytes in ") && t.contains(" blocks"))
+    }
+
     private fun recordStderr(line: String) {
+        if (isTallocNoise(line)) return
+        synchronized(stderrHead) {
+            if (stderrHead.size < STDERR_HEAD_LINES) stderrHead.add(line)
+        }
         synchronized(stderrTail) {
             stderrTail.addLast(line)
             while (stderrTail.size > STDERR_TAIL_LINES) stderrTail.removeFirst()
         }
     }
 
-    private fun stderrTailText(): String = synchronized(stderrTail) {
-        stderrTail.joinToString("\n")
+    /**
+     * The captured output, head first, with the middle elided if both buffers
+     * filled up. Bounded so the result stays pasteable into a chat message.
+     */
+    private fun stderrTailText(): String {
+        val head = synchronized(stderrHead) { stderrHead.toList() }
+        val tail = synchronized(stderrTail) { stderrTail.toList() }
+        if (head.isEmpty() && tail.isEmpty()) return ""
+        // Tail already repeats head when little was printed — the common case.
+        if (tail.size <= STDERR_TAIL_LINES && head.containsAll(tail)) {
+            return head.joinToString("\n")
+        }
+        val overlap = tail.filterNot { head.contains(it) }
+        return buildString {
+            append(head.joinToString("\n"))
+            if (overlap.isNotEmpty()) {
+                append("\n  ...\n")
+                append(overlap.joinToString("\n"))
+            }
+        }
     }
 
     /**
@@ -142,6 +186,7 @@ class PersistentShell(
             startFailure = "proot binary missing at ${rootfsManager.prootBinary.absolutePath} " +
                 "(APK built without jniLibs/arm64-v8a/libproot.so?)"
             Log.e(TAG, startFailure!!)
+            AppLogger.error(TAG, startFailure!!)
             return
         }
         if (!rootfsManager.isInstalled) {
@@ -149,6 +194,7 @@ class PersistentShell(
                 "(extraction never ran or failed) — open the app's onboarding / " +
                 "Settings → Rootfs to reinstall"
             Log.e(TAG, startFailure!!)
+            AppLogger.error(TAG, startFailure!!)
             return
         }
 
@@ -222,6 +268,7 @@ class PersistentShell(
             // pressure, SELinux denial — all land here and used to vanish.
             startFailure = "failed to spawn proot: ${e.javaClass.simpleName}: ${e.message}"
             Log.e(TAG, startFailure!!, e)
+            AppLogger.error(TAG, startFailure!!)
             return
         }
         process = p
@@ -274,6 +321,10 @@ class PersistentShell(
             }
             startFailure = "proot exited immediately (exit=$code)$detail"
             Log.e(TAG, startFailure!!)
+            // Also into the daily log file: Log.e only reaches logcat, and the
+            // whole point of this diagnostic is that the device user cannot read
+            // logcat. AppLogger.error writes the file when logging is enabled.
+            AppLogger.error(TAG, startFailure!!)
             return
         }
 
