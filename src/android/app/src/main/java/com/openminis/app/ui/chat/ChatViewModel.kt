@@ -5120,6 +5120,7 @@ class ChatViewModel(
 
         streamJob = launch(Dispatchers.IO) {
             AppLogger.info(TAG_STREAM, "graph streamJob ENTER sid=$activeSessionId graph=${decision.graphId}")
+            var cancelled = false
             try {
                 SessionConcurrencyManager.acquireSlot(activeSessionId)
                 SessionActivityTracker.setActive(activeSessionId, onStop = { cancelStream() })
@@ -5160,10 +5161,26 @@ class ChatViewModel(
                     SessionConcurrencyManager.releaseSlot(activeSessionId)
                 }
             } catch (e: CancellationException) {
+                cancelled = true
                 AppLogger.info(TAG_STREAM, "graph streamJob CANCELLED")
             }
             if (streamJob === coroutineContext[Job]) {
                 _isStreaming.value = false
+            }
+            // A graph turn holds _isStreaming for minutes, which is exactly when
+            // the composer lets the user queue follow-ups (enqueuePrompt gates on
+            // it). The normal path drains the queue from its own tail; without
+            // this the queued bubbles would sit dashed forever, waiting for a
+            // manual long-press retry. resumeQueueAfterCancel is the existing
+            // "drain outside a running turn" entry point — it resolves provider,
+            // system prompt and fallbacks exactly as sendMessage does, and its
+            // 200ms delay plus _isStreaming guard mean the ordering above is safe.
+            //
+            // Skipped on cancel: cancelStream already kicks the drain itself, and
+            // Stop should not immediately start the next queued prompt anyway.
+            if (!cancelled && _promptQueue.value.isNotEmpty()) {
+                AppLogger.info(TAG_STREAM, "graph turn done — ${_promptQueue.value.size} queued prompt(s), draining")
+                resumeQueueAfterCancel()
             }
             AppLogger.info(TAG_STREAM, "graph streamJob EXIT")
         }

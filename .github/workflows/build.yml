@@ -58,6 +58,23 @@ jobs:
       - name: Grant Gradle permission
         run: chmod +x src/android/gradlew
 
+      # Unit tests were compiled by CI but never executed, so a test could rot
+      # into a false green (or stop compiling) without anyone noticing. They are
+      # pure-JVM and finish in seconds, and they run BEFORE the APK build so a
+      # broken invariant fails fast instead of after a 5-minute assemble.
+      - name: Run unit tests
+        run: |
+          cd src/android
+          ./gradlew :app:testCloneUnitTest --no-daemon -Dorg.gradle.jvmargs="-Xmx4g"
+
+      - name: Upload unit test report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-report
+          path: src/android/app/build/reports/tests/
+          retention-days: 7
+
       # [T-clone-only-ci] Only the clone variant is built.
       #
       # `clone` and `debug` compile the SAME sources — they differ in
