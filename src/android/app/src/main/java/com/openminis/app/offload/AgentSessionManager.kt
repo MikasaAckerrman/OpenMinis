@@ -4,6 +4,7 @@ import android.content.Context
 import com.openminis.app.data.model.ThinkingLevel
 import com.openminis.app.debug.HeadlessChatRunner
 import com.openminis.app.tools.AgentToolPolicyStore
+import com.openminis.app.tools.AgentSystemPromptStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -90,6 +91,7 @@ internal object AgentSessionManager {
         sessionId: String,
     ) = withContext(Dispatchers.IO) {
         AgentToolPolicyStore.clearPolicy(sessionId)
+        AgentSystemPromptStore.clearPrompt(sessionId)
         val app = context.applicationContext as com.openminis.app.MinisApp
         app.chatRepository.deleteSession(sessionId)
     }

@@ -82,7 +82,8 @@ jobs:
           cd src/android
           ./gradlew :app:testCloneUnitTest --no-daemon -Dorg.gradle.jvmargs="-Xmx4g" \
             --tests 'com.openminis.app.offload.*' \
-            --tests 'com.openminis.app.config.ConfigPathResolverTest'
+            --tests 'com.openminis.app.config.ConfigPathResolverTest' \
+            --tests 'com.openminis.app.tools.AgentSystemPromptStoreTest'
 
       - name: Upload unit test report on failure
         if: failure()

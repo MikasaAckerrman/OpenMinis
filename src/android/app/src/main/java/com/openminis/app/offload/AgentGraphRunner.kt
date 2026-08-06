@@ -174,9 +174,10 @@ internal object AgentGraphRunner {
         // Tool policies are keyed by session id in a process-wide map. Without
         // this the map grows by one entry per node per run and never shrinks —
         // small, but a leak that also means a deleted session's policy lingers
-        // and could apply to a recycled id.
+        // and could apply to a recycled id. Same for the role prompt store.
         for (sid in state.sessionMap.values + state.sessionByGroup.values) {
             com.openminis.app.tools.AgentToolPolicyStore.clearPolicy(sid)
+            com.openminis.app.tools.AgentSystemPromptStore.clearPrompt(sid)
         }
 
         // Write trace
@@ -503,8 +504,21 @@ internal object AgentGraphRunner {
             model = modelEntryId.take(24),
         )
 
-        // Build system prompt with role + tool allowlist + scope contract
+        // Build system prompt with role + tool allowlist + scope contract.
+        //
+        // [T-agent-graph-role-prompt] Registered in the store the chat layer
+        // reads, which is the ONLY way it reaches the provider — the graph
+        // sends its turns through the normal chat path, and that path builds
+        // its own system prompt. Before this the value was computed and then
+        // discarded, so every node ran as the general Minis assistant: it
+        // answered the task in prose, never emitted a handoff block, and the
+        // run died on the entry node with PARSE_FAILURE.
+        //
+        // Written per turn rather than once at session creation because
+        // sessionGroup nodes share one session: the next role in the group
+        // must overwrite the previous role's contract, not inherit it.
         val systemPrompt = buildSystemPrompt(node, state, replicaIndex)
+        com.openminis.app.tools.AgentSystemPromptStore.setPrompt(sessionId, systemPrompt)
 
         // Build user message with handoff from predecessors + input
         val userMessage = buildUserMessage(node, state, runtimeId)

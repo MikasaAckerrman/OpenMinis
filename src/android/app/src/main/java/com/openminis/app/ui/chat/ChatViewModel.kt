@@ -4941,7 +4941,19 @@ class ChatViewModel(
             // pays nothing at all — not even a dispatcher hop. The decision
             // itself runs on IO: it makes a network call, and this coroutine is
             // on Main.
-            val routing = if (com.openminis.app.offload.AgentDispatcher.isEnabled(context)) {
+            //
+            // [T-agent-graph-role-prompt] A graph worker never routes. Its turns
+            // arrive through this same send path, so without this guard the
+            // classifier ran on each node's own task text and a node rated L2+
+            // would launch a nested graph — recursively, with each level paying
+            // for the whole tree. A registered role prompt is the exact marker
+            // of "this session is a graph node mid-turn": the runner writes it
+            // immediately before every send and clears it when the run ends.
+            val isGraphWorker = com.openminis.app.tools.AgentSystemPromptStore
+                .promptFor(realSessionId.ifEmpty { sessionId }) != null
+            val routing = if (
+                !isGraphWorker && com.openminis.app.offload.AgentDispatcher.isEnabled(context)
+            ) {
                 withContext(Dispatchers.IO) {
                     com.openminis.app.offload.AgentDispatcher.decide(
                         context = context,
@@ -8364,6 +8376,21 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
             append("- Current date: ").append(dateStr).append(" (").append(tzId).append(")\n")
             append("- Device language: ").append(lang).append("\n")
             append("- minis-model-use models available: ").append(modelUseCount)
+            // [T-agent-graph-role-prompt] A multi-agent graph node's role
+            // contract, when this session is a graph worker. Absent for every
+            // normal chat, so nothing above changes for ordinary use.
+            //
+            // Last on purpose, and after Runtime context: it must override the
+            // general-assistant framing above (a node is NOT a general
+            // assistant and must answer with a handoff block, not prose), and
+            // recency is the only lever available here. It also keeps the
+            // cacheable prefix intact for normal chats.
+            val rolePrompt = com.openminis.app.tools.AgentSystemPromptStore
+                .promptFor(realSessionId.ifEmpty { sessionId })
+            if (rolePrompt != null) {
+                append("\n\n")
+                append(rolePrompt)
+            }
         }
     }
 
