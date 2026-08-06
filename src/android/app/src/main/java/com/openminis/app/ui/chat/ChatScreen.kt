@@ -2187,6 +2187,47 @@ fun ChatScreen(
                     }
                 },
                 actions = {
+                    // Live context pressure. The numerator is the provider's
+                    // latest input/context usage; the denominator is the same
+                    // effective window used by compaction policy (model window,
+                    // clamped by the bound group's contextLimitTokens). Do not
+                    // show a fake 0% before the first usage block arrives.
+                    val contextTokens by viewModel.lastTurnContextTokens.collectAsState()
+                    val contextWindow = viewModel.currentModelContextWindow
+                    if (contextTokens > 0 && contextWindow != null && contextWindow > 0) {
+                        val contextFraction =
+                            (contextTokens.toFloat() / contextWindow.toFloat()).coerceIn(0f, 1f)
+                        val contextPercent =
+                            (contextTokens.toLong() * 100L / contextWindow.toLong()).coerceIn(0L, 999L)
+                        val contextColor = when {
+                            contextFraction >= 0.90f -> MaterialTheme.colorScheme.error
+                            contextFraction >= 0.70f -> Color(0xFFFF9500)
+                            else -> Color(0xFF34C759)
+                        }
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .clickable { showTokenUsageSheet = true },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            androidx.compose.material3.CircularProgressIndicator(
+                                progress = { contextFraction },
+                                modifier = Modifier.size(28.dp),
+                                color = contextColor,
+                                trackColor = ChatColors.tertiaryText.copy(alpha = 0.22f),
+                                strokeWidth = 2.5.dp,
+                            )
+                            Text(
+                                text = "$contextPercent%",
+                                color = ChatColors.primaryText,
+                                fontSize = 8.sp,
+                                lineHeight = 9.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                            )
+                        }
+                    }
                     // iOS: "..." circle button → dropdown menu
                     Box {
                         IconButton(onClick = { showChatMenu = true }) {
