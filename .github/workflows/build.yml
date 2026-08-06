@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
     # Trigger on [quick] marker in commit message
+    #
+    # NOTE: `paths-ignore` also filters out commits that touch NO files at all,
+    # so an empty commit cannot be used to re-trigger a run — GitHub skips the
+    # workflow entirely rather than running it with an unchanged tree.
     paths-ignore:
       - '**.md'
       - 'docs/**'
