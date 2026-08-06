@@ -84,6 +84,8 @@ jobs:
             --tests 'com.openminis.app.offload.*' \
             --tests 'com.openminis.app.config.ConfigPathResolverTest' \
             --tests 'com.openminis.app.tools.AgentSystemPromptStoreTest'
+        # `offload.*` already covers AgentArtifactStoreTest — the artifact store
+        # lives in that package on purpose, next to the runner that uses it.
 
       - name: Upload unit test report on failure
         if: failure()

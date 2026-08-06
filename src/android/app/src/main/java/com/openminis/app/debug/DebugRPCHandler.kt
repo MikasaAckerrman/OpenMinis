@@ -1310,8 +1310,13 @@ class DebugRPCHandler(private val context: Context) {
     private suspend fun handleAgentGraphTrace(params: JSONObject): JSONObject {
         val taskId = params.optString("taskId", "").takeIf { it.isNotEmpty() }
             ?: throw RPCException(-32602, "Missing required parameter: taskId")
-        val traceFile = java.io.File("/var/minis/offloads/agent_graph_${taskId}.json")
-        if (!traceFile.exists()) {
+        // `/var/minis/offloads/...` is a path inside the PRoot rootfs, not a host
+        // path — reading it with a bare File() looks in the app's real root, where
+        // it never exists, so every trace read reported "not found" regardless of
+        // whether the run wrote one. Same translation the writer does.
+        val traceFile = PRootKernel
+            .resolveHostPath("/var/minis/offloads/agent_graph_$taskId.json")
+        if (traceFile == null || !traceFile.exists()) {
             throw RPCException(-32602, "Trace not found for taskId: $taskId")
         }
         val traceJson = traceFile.readText()

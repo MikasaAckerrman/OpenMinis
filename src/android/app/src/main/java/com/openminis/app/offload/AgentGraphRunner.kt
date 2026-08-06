@@ -36,6 +36,20 @@ internal object AgentGraphRunner {
         val graph: AgentGraph,
         val taskId: String,
         val artifactDir: String,
+        /**
+         * Where [artifactDir] actually lives on the Android filesystem.
+         *
+         * `/var/minis/...` is a path inside the PRoot rootfs, not a host path:
+         * `File("/var/minis/workspace/…")` resolves against the app's real root,
+         * where nothing of the sort exists. Every write therefore threw ENOENT and
+         * killed the node right after a perfectly good handoff. Host I/O goes
+         * through here; [artifactDir] stays the Linux path because that is what
+         * the user sees in logs and taps as `minis://workspace/...`.
+         *
+         * Null only if path resolution is unavailable (PRoot never booted), in
+         * which case artifact persistence is skipped rather than fatal.
+         */
+        val artifactHostDir: File?,
         val input: String,
         val sessionMap: MutableMap<String, String> = mutableMapOf(), // runtimeId -> sessionId
         /**
@@ -47,7 +61,7 @@ internal object AgentGraphRunner {
          */
         val sessionByGroup: MutableMap<String, String> = mutableMapOf(),
         /** The single user-visible session narrating this run, or null. */
-        var showcaseId: String? = null,
+        val showcaseId: String? = null,
         val handoffMap: MutableMap<String, Handoff> = mutableMapOf(), // nodeId -> handoff received
         val artifactIndex: MutableMap<String, String> = mutableMapOf(), // path -> content
         val trace: MutableList<TraceEvent> = mutableListOf(),
@@ -124,16 +138,56 @@ internal object AgentGraphRunner {
                 "contextBudget=${graph.config.contextBudgetTokens}",
         )
 
-        // Prepare artifact directory
+        // [T-agent-graph-showcase] One readable session narrating the run. Worker
+        // sessions stay hidden; this is what the user opens. Created before the
+        // first node so the very first "started" line has somewhere to land, and
+        // before the artifact dir is resolved so artifacts land in the workspace
+        // THIS session's `minis://workspace/...` links point at.
+        val showcaseId = AgentRunShowcase.create(
+            context = context,
+            taskId = taskId,
+            graphName = graph.name,
+            input = input,
+            nodeCount = graph.nodes.size,
+            runtimeCount = runtimeCount,
+        )
+
+        // Prepare artifact directory.
+        //
+        // ARTIFACT_DIR_BASE is a Linux path inside the PRoot rootfs, so it must be
+        // translated before any host-side File call. Doing it once here keeps
+        // every later write honest; `File("/var/minis/…")` silently points at a
+        // non-existent host directory and every write throws ENOENT.
+        //
+        // Resolved against the showcase session when there is one: `workspace` is
+        // a per-session subdir, and the global mount map is last-writer-wins
+        // across sessions, so the session-scoped resolver is the only one that
+        // reliably answers "where will the link in THIS chat point".
         val artifactDir = "$ARTIFACT_DIR_BASE/$taskId"
-        File(artifactDir).mkdirs()
+        val artifactHostDir = (
+            if (showcaseId != null) {
+                com.openminis.app.sandbox.PRootKernel
+                    .resolveSessionHostPath(showcaseId, artifactDir, context)
+            } else {
+                com.openminis.app.sandbox.PRootKernel.resolveHostPath(artifactDir)
+            }
+            )?.also { it.mkdirs() }
+        if (artifactHostDir == null) {
+            com.openminis.app.logging.AppLogger.warning(
+                LOG_TAG,
+                "[${taskId.take(8)}] cannot resolve host path for $artifactDir — " +
+                    "artifacts will not be persisted (run continues)",
+            )
+        }
 
         // Initialize state
         val state = GraphState(
             graph = graph,
             taskId = taskId,
             artifactDir = artifactDir,
+            artifactHostDir = artifactHostDir,
             input = input,
+            showcaseId = showcaseId,
         )
 
         // Initialize all nodes as PENDING
@@ -143,18 +197,6 @@ internal object AgentGraphRunner {
                 state.nodeStatus[rid] = NodeStatus.PENDING
             }
         }
-
-        // [T-agent-graph-showcase] One readable session narrating the run. Worker
-        // sessions stay hidden; this is what the user opens. Created before the
-        // first node so the very first "started" line has somewhere to land.
-        state.showcaseId = AgentRunShowcase.create(
-            context = context,
-            taskId = taskId,
-            graphName = graph.name,
-            input = input,
-            nodeCount = graph.nodes.size,
-            runtimeCount = runtimeCount,
-        )
 
         val execContext = ExecutionContext(state, context, providerRepo, json)
 
@@ -186,7 +228,7 @@ internal object AgentGraphRunner {
         }
 
         // Write final artifacts summary
-        writeArtifactIndex(artifactDir, result.artifacts)
+        writeArtifactIndex(state, result.artifacts)
 
         // A per-node status summary is the single most useful line when a run
         // did not do what was expected: it shows at a glance which stage was
@@ -626,23 +668,24 @@ internal object AgentGraphRunner {
             HandoffStatus.NEEDS_CLARIFICATION -> NodeStatus.BLOCKED
         }
 
-        // Extract and persist artifacts
+        // Extract and persist artifacts. Persistence is best-effort: a handoff
+        // that passed validation is a real result, and losing the copy of a
+        // deliverable must not retroactively fail the node that produced it.
         val artifactPaths = HandoffValidator.extractArtifactPaths(handoff.deliverables)
         for (path in artifactPaths) {
-            val content = readArtifactContent(context, path)
-            if (content != null) {
-                state.artifactIndex[path] = content
-                // Also copy to task artifact dir
-                val targetPath = "${state.artifactDir}/${File(path).name}"
-                File(targetPath).writeText(content)
-            }
+            val content = readArtifactContent(context, path) ?: continue
+            state.artifactIndex[path] = content
+            // Also copy to task artifact dir. The store reduces the name to its
+            // last segment, so a deliverable path from model output cannot write
+            // outside the run's own directory.
+            writeArtifact(state, path, content)
         }
 
         // If COMPLETE with deliverables, also save the handoff itself
         if (handoff.status == HandoffStatus.COMPLETE) {
-            val handoffPath = "${state.artifactDir}/${runtimeId}_handoff.md"
-            File(handoffPath).writeText(HandoffValidator.buildHandoff(handoff))
-            state.artifactIndex[handoffPath] = HandoffValidator.buildHandoff(handoff)
+            val handoffText = HandoffValidator.buildHandoff(handoff)
+            writeArtifact(state, "${runtimeId}_handoff.md", handoffText)
+            state.artifactIndex["${state.artifactDir}/${runtimeId}_handoff.md"] = handoffText
         }
 
         addTrace(state, runtimeId, node.role, "HANDOFF", "Status: ${handoff.status}, To: ${handoff.to}")
@@ -939,37 +982,80 @@ internal object AgentGraphRunner {
         }
     }
 
+    /**
+     * Write one artifact into the run's directory, host-side.
+     *
+     * Best-effort by design: the caller has already produced a validated
+     * handoff, so a failed copy is a lost convenience, not a lost result. The
+     * previous code let an IOException here propagate and kill the node —
+     * which is exactly how a working run got reported as a crash.
+     */
+    private fun writeArtifact(state: GraphState, fileName: String, content: String) {
+        artifactStore(state).write(fileName, content)
+    }
+
+    private fun artifactStore(state: GraphState) = AgentArtifactStore(
+        hostDir = state.artifactHostDir,
+        onError = { msg ->
+            com.openminis.app.logging.AppLogger.warning(
+                LOG_TAG, "[${state.taskId.take(8)}] $msg",
+            )
+        },
+    )
+
     /** Read artifact content from file system or minis:// URL. */
     private fun readArtifactContent(context: Context, path: String): String? {
         return try {
-            if (path.startsWith("minis://")) {
-                val realPath = path.replace("minis://", "/var/minis/")
-                File(realPath).readText()
+            // Both forms name a path inside the PRoot rootfs, so both need
+            // translating to a host path before File() can see them.
+            val linuxPath = if (path.startsWith("minis://")) {
+                path.replace("minis://", "/var/minis/")
             } else {
-                File(path).readText()
+                path
             }
+            val host = com.openminis.app.sandbox.PRootKernel.resolveHostPath(linuxPath)
+                ?: return null
+            host.readText()
         } catch (_: Exception) {
             null
         }
     }
 
-    /** Write trace to offloads directory. */
+    /**
+     * Write trace to offloads directory, host-side.
+     *
+     * Same translation as artifacts: TRACE_DIR is a rootfs path. Also
+     * best-effort — the run's result is already computed by the time this is
+     * called, and `agent.graph.trace` returning "not found" is a far better
+     * outcome than a completed run throwing on its way out.
+     */
     private fun writeTrace(taskId: String, trace: List<TraceEvent>, json: Json) {
-        val traceFile = File(TRACE_DIR, "agent_graph_${taskId}.json")
-        traceFile.parentFile?.mkdirs()
-        val traceJson = json.encodeToString(
-            kotlinx.serialization.builtins.ListSerializer(TraceEvent.serializer()),
-            trace,
-        )
-        traceFile.writeText(traceJson)
+        try {
+            val traceFile = com.openminis.app.sandbox.PRootKernel
+                .resolveHostPath("$TRACE_DIR/agent_graph_$taskId.json") ?: return
+            traceFile.parentFile?.mkdirs()
+            val traceJson = json.encodeToString(
+                kotlinx.serialization.builtins.ListSerializer(TraceEvent.serializer()),
+                trace,
+            )
+            traceFile.writeText(traceJson)
+        } catch (e: Exception) {
+            com.openminis.app.logging.AppLogger.warning(
+                LOG_TAG,
+                "[${taskId.take(8)}] could not write trace: ${e.message}",
+            )
+        }
     }
 
-    /** Write artifact index. */
-    private fun writeArtifactIndex(artifactDir: String, artifacts: Map<String, String>) {
-        val indexFile = File(artifactDir, "ARTIFACT_INDEX.json")
-        val obj = org.json.JSONObject()
-        for ((k, v) in artifacts) obj.put(k, v)
-        indexFile.writeText(obj.toString(2))
+    /**
+     * Write artifact index into the run's host directory.
+     *
+     * Takes the resolved host dir rather than the Linux path so it cannot
+     * accidentally reintroduce the untranslated-path bug. Best-effort for the
+     * same reason as [writeArtifact].
+     */
+    private fun writeArtifactIndex(state: GraphState, artifacts: Map<String, String>) {
+        artifactStore(state).writeIndex(artifacts)
     }
 
     private fun handleMissingModelEntry(
