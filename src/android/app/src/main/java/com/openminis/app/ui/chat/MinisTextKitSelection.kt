@@ -198,16 +198,34 @@ class SelectionController {
      */
     private val shards = mutableStateMapOf<TextShardId, TextShard>()
 
+    /**
+     * Plain text survives LazyColumn recycling for the lifetime of a selection.
+     * The live [shards] map intentionally contains only composed nodes, but
+     * copy/order resolution must still know an endpoint after its row scrolls
+     * away. Cleared with the selection, so it does not grow with idle history.
+     */
+    private val selectionDocument = mutableStateMapOf<TextShardId, String>()
+
     fun register(shard: TextShard) {
         shards[shard.id] = shard
+        // Cache every shard seen while selection is active. New rows entering
+        // during edge auto-scroll become part of the persistent document too.
+        if (selection.value != null) selectionDocument[shard.id] = shard.plainText
     }
 
     fun unregister(id: TextShardId) {
-        shards.remove(id)
+        val old = shards.remove(id)
+        if (selection.value != null && old != null) {
+            selectionDocument[id] = old.plainText
+        }
     }
 
     /** Read-only snapshot of currently-composed shards. */
     internal fun currentShards(): Map<TextShardId, TextShard> = shards
+
+    /** Text for a live or recycled shard. */
+    internal fun textFor(id: TextShardId): String? =
+        shards[id]?.plainText ?: selectionDocument[id]
 
     /**
      * Hit-test a window-space point against every currently composed shard.
@@ -283,8 +301,15 @@ class SelectionController {
         return best
     }
 
+    /** Snapshot the currently visible document when a new selection begins. */
+    private fun beginSelectionDocument() {
+        selectionDocument.clear()
+        for ((id, shard) in shards) selectionDocument[id] = shard.plainText
+    }
+
     /** Begin a fresh selection collapsed at [pos] (long-press start). */
     fun beginSelection(pos: TextPosition) {
+        beginSelectionDocument()
         selection.value = TextSelection(start = pos, end = pos)
     }
 
@@ -311,6 +336,7 @@ class SelectionController {
             beginSelection(pos)
             return
         }
+        beginSelectionDocument()
         selection.value = TextSelection(
             start = TextPosition(pos.shard, lo),
             end = TextPosition(pos.shard, hi),
@@ -392,6 +418,7 @@ class SelectionController {
 
     fun clearSelection() {
         selection.value = null
+        selectionDocument.clear()
         messageMarkdownCache.clear()
     }
 
@@ -729,8 +756,10 @@ class SelectionController {
             return if (a.charOffset <= b.charOffset) a to b else b to a
         }
         // Prefer stable document-order index when both endpoints have one,
-        // because that survives a shard being off-screen / unregistered.
-        // Fall back to y-comparison if we can't get an index for either.
+        // even when either shard was recycled off-screen. The old code only
+        // used this branch when the suffix parsed as an Int; `3#2` failed that
+        // parse and selection fell back to moving screen-Y coordinates.
+        // Fall back to y-comparison only when the ids carry no order key.
         val ka = shardOrderKey(a.shard)
         val kb = shardOrderKey(b.shard)
         if (ka != null && kb != null && a.shard.messageId == b.shard.messageId) {
@@ -773,7 +802,7 @@ class SelectionController {
         // shard selection is a normal short/partial-paragraph copy and must
         // stay an exact substring.
         if (first.shard == last.shard) {
-            val txt = shards[first.shard]?.plainText
+            val txt = textFor(first.shard)
                 ?: documentRegistry[first.shard]
                 ?: return ""
             val a = first.charOffset.coerceIn(0, txt.length)
@@ -809,10 +838,10 @@ class SelectionController {
         documentRegistry: Map<TextShardId, String>,
     ): String {
         val sb = StringBuilder()
-        val visitedOrder = registeredShardsInOrder()
+        val visitedOrder = shardsInDocumentOrder(first, last)
         var started = false
         for (id in visitedOrder) {
-            val txt = shards[id]?.plainText ?: documentRegistry[id] ?: continue
+            val txt = textFor(id) ?: documentRegistry[id] ?: continue
             when (id) {
                 first.shard -> {
                     sb.append(txt.substring(first.charOffset.coerceIn(0, txt.length), txt.length))
@@ -857,8 +886,8 @@ class SelectionController {
     ): String? {
         val md = messageMarkdownCache[first.shard.messageId]?.takeIf { it.isNotEmpty() } ?: return null
 
-        val firstText = shards[first.shard]?.plainText ?: documentRegistry[first.shard] ?: return null
-        val lastText = shards[last.shard]?.plainText ?: documentRegistry[last.shard] ?: return null
+        val firstText = textFor(first.shard) ?: documentRegistry[first.shard] ?: return null
+        val lastText = textFor(last.shard) ?: documentRegistry[last.shard] ?: return null
 
         // Head anchor: a run of the selected text right after the start offset.
         val headSel = firstText.substring(first.charOffset.coerceIn(0, firstText.length))
@@ -921,17 +950,35 @@ class SelectionController {
     }
 
     private fun collapsedFallback(sel: TextSelection): String {
-        val txt = shards[sel.start.shard]?.plainText ?: return ""
+        val txt = textFor(sel.start.shard) ?: return ""
         val a = sel.start.charOffset.coerceIn(0, txt.length)
         val b = sel.end.charOffset.coerceIn(0, txt.length)
         return txt.substring(minOf(a, b), maxOf(a, b))
     }
 
-    /** Currently-composed shards in visual top-to-bottom order. */
-    private fun registeredShardsInOrder(): List<TextShardId> =
-        shards.values
-            .sortedBy { it.positionInWindow().y }
-            .map { it.id }
+    /**
+     * Shards participating in a copy operation, in stable document order.
+     *
+     * Same-message markdown shards carry `(blockIndex, subIndex)` in their id,
+     * so use that order even after LazyColumn recycled an endpoint. For the
+     * uncommon cross-message selection there is no chat-row order in this
+     * controller yet; retain the visible-Y fallback rather than inventing one.
+     */
+    private fun shardsInDocumentOrder(
+        first: TextPosition,
+        last: TextPosition,
+    ): List<TextShardId> {
+        val ids = (selectionDocument.keys + shards.keys).distinct()
+        if (first.shard.messageId == last.shard.messageId) {
+            val messageIds = ids.filter { it.messageId == first.shard.messageId }
+            if (messageIds.all { shardOrderKey(it) != null }) {
+                return messageIds.sortedBy { shardOrderKey(it) }
+            }
+        }
+        return ids.sortedBy { id ->
+            shards[id]?.positionInWindow()?.y ?: Float.POSITIVE_INFINITY
+        }
+    }
 }
 
 /**
@@ -1074,11 +1121,20 @@ fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSelectionForShard(
  * The mdblock case is the only one that needs ordering today; the others
  * are single-shard so the comparison never has to disambiguate.
  */
-private fun shardOrderKey(id: TextShardId): Int? {
+internal fun shardOrderKey(id: TextShardId): Long? {
     val s = id.shardId
-    val lastColon = s.lastIndexOf(':')
+    // MdText disambiguates sibling Text composables by appending `#subIndex`:
+    // `mdblock:<parent>:<blockIndex>#<subIndex>`. The old parser fed `3#2`
+    // to toIntOrNull(), returned null, and silently fell back to moving
+    // window-Y coordinates. That is why selection order flipped while scrolling.
+    val base = s.substringBeforeLast('#', missingDelimiterValue = s)
+    val subIndex = if ('#' in s) s.substringAfterLast('#').toIntOrNull() ?: 0 else 0
+    val lastColon = base.lastIndexOf(':')
     if (lastColon < 0) return null
-    return s.substring(lastColon + 1).toIntOrNull()
+    val blockIndex = base.substring(lastColon + 1).toLongOrNull() ?: return null
+    // A million sibling text nodes inside one markdown block is impossible in
+    // practice; this keeps block order dominant and sibling order stable.
+    return blockIndex * 1_000_000L + subIndex.toLong().coerceAtLeast(0L)
 }
 
 internal fun SelectionController.isShardBetween(

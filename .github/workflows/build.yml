@@ -88,7 +88,8 @@ jobs:
           ./gradlew :app:testCloneUnitTest --no-daemon -Dorg.gradle.jvmargs="-Xmx4g" \
             --tests 'com.openminis.app.offload.*' \
             --tests 'com.openminis.app.config.ConfigPathResolverTest' \
-            --tests 'com.openminis.app.tools.AgentSystemPromptStoreTest'
+            --tests 'com.openminis.app.tools.AgentSystemPromptStoreTest' \
+            --tests 'com.openminis.app.ui.chat.MinisTextKitSelectionOrderTest'
         # `offload.*` already covers AgentArtifactStoreTest — the artifact store
         # lives in that package on purpose, next to the runner that uses it.
 
