@@ -135,6 +135,10 @@ object AgentDispatcher {
             classify(context, providerRepository, entry, userMessage)
         } catch (e: Exception) {
             Log.w(TAG, "classification failed, staying in normal chat: ${e.message}")
+            com.openminis.app.logging.AppLogger.warning(
+                "AgentRoute",
+                "classifier threw ${e.javaClass.simpleName}: ${e.message} — staying in normal chat",
+            )
             return Decision.NormalChat("classifier error: ${e.javaClass.simpleName}")
         } ?: return Decision.NormalChat("classifier gave no usable level")
 
@@ -242,6 +246,11 @@ object AgentDispatcher {
 
         val level = parseLevel(response.text)
         Log.i(TAG, "router: ${entry.model.id} -> ${level ?: "unparseable"}")
+        com.openminis.app.logging.AppLogger.info(
+            "AgentRoute",
+            "classifier ${entry.model.id} -> ${level?.name ?: "UNPARSEABLE"} " +
+                "raw=${response.text?.take(120)?.replace('\n', ' ')}",
+        )
         return level
     }
 

@@ -4951,8 +4951,19 @@ class ChatViewModel(
             // immediately before every send and clears it when the run ends.
             val isGraphWorker = com.openminis.app.tools.AgentSystemPromptStore
                 .promptFor(realSessionId.ifEmpty { sessionId }) != null
+            val routingEnabled = com.openminis.app.offload.AgentDispatcher.isEnabled(context)
+            // [T-agent-route-observability] Routing decisions were only visible
+            // through android.util.Log, which the in-app log file captures via a
+            // logcat tailer that is not always attached — so a run that never
+            // reached the graph looked identical to routing being off. AppLogger
+            // writes straight to the file the user and `debug.logs.read` see.
+            com.openminis.app.logging.AppLogger.info(
+                "AgentRoute",
+                "send: autoRoute=$routingEnabled graphWorker=$isGraphWorker " +
+                    "chars=${trimmed.length}",
+            )
             val routing = if (
-                !isGraphWorker && com.openminis.app.offload.AgentDispatcher.isEnabled(context)
+                !isGraphWorker && routingEnabled
             ) {
                 withContext(Dispatchers.IO) {
                     com.openminis.app.offload.AgentDispatcher.decide(
@@ -4965,6 +4976,10 @@ class ChatViewModel(
                 null
             }
             if (routing is com.openminis.app.offload.AgentDispatcher.Decision.RunGraph) {
+                com.openminis.app.logging.AppLogger.info(
+                    "AgentRoute",
+                    "routing to graph '${routing.graphId}' (${routing.level}) — ${routing.rationale}",
+                )
                 // Claim the stream slot for the graph turn instead of the model
                 // turn: streamLaunched must be true or the `finally` below would
                 // clear _isStreaming while the graph is still running.
@@ -4979,6 +4994,9 @@ class ChatViewModel(
             }
             if (routing is com.openminis.app.offload.AgentDispatcher.Decision.NormalChat) {
                 Log.d(TAG, "auto-route: staying in normal chat — ${routing.reason}")
+                com.openminis.app.logging.AppLogger.info(
+                    "AgentRoute", "normal chat — ${routing.reason}",
+                )
             }
 
             // Refresh OAuth token if needed before sending (mirrors iOS validAccessToken)
