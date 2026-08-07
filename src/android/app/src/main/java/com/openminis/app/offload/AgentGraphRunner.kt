@@ -321,6 +321,32 @@ internal object AgentGraphRunner {
         val runningJobs = mutableMapOf<String, Job>()
 
         while (true) {
+            // Reap completed jobs BEFORE deciding that "work is in flight".
+            //
+            // Previously this block lived below the two empty-queue branches.
+            // As soon as the entry node finished, readyQueue was empty and
+            // runningJobs still contained its already-completed Job. The loop
+            // interpreted that as active work, delayed, and continued forever;
+            // the code that removed the Job and queued its successor was
+            // permanently unreachable. Live symptom: Orchestrator reported a
+            // valid COMPLETE handoff, but Implementer never started.
+            val completedNodeIds = runningJobs
+                .filterValues { it.isCompleted }
+                .keys
+                .toList()
+            for (nodeId in completedNodeIds) {
+                runningJobs.remove(nodeId)
+                for (readyId in queueSuccessors(execContext, nodeId)) {
+                    if (readyId !in state.dispatched) {
+                        readyQueue.add(readyId)
+                        val targetRole = resolveRuntimeNode(graph, readyId)?.first?.role
+                        if (targetRole != null) {
+                            addTrace(state, readyId, targetRole, "QUEUED", "successor of $nodeId")
+                        }
+                    }
+                }
+            }
+
             // Exit when every declared exit node reached a terminal state and
             // nothing is left to run. `all {}` on an empty list is true, so a
             // graph without exitNodeIds ends as soon as the queue drains —
@@ -394,21 +420,6 @@ internal object AgentGraphRunner {
                     }
                 }
                 runningJobs[nodeId] = job
-            }
-
-            // Check completed jobs
-            val toRemove = mutableListOf<String>()
-            for ((nodeId, job) in runningJobs) {
-                if (job.isCompleted) {
-                    toRemove.add(nodeId)
-                }
-            }
-            for (nodeId in toRemove) {
-                runningJobs.remove(nodeId)
-                // Queue successors that just became runnable
-                for (readyId in queueSuccessors(execContext, nodeId)) {
-                    if (readyId !in state.dispatched) readyQueue.add(readyId)
-                }
             }
 
             // Small delay to prevent busy loop
