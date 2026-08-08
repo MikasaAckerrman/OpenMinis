@@ -47,6 +47,38 @@ internal object BuiltinGraphs {
             "remembers it was a guess. If something is missing I return " +
             "STATUS: NEEDS_CLARIFICATION and name exactly what."
 
+    /**
+     * Debugging discipline, injected into every implementer/reviewer prompt.
+     *
+     * This is the rule the human maintainer paid for the hard way: a chain of
+     * agents is a chain of stages, and a stage that is only observed by
+     * shipping a build and re-running end-to-end costs one build per broken
+     * link. That is how a two-fix job became a week. The rule below forces the
+     * cheap checks (read the whole path, add a log, run the pure part locally,
+     * predict the failure) BEFORE the expensive one (build + install + run).
+     */
+    private const val DEBUG_DISCIPLINE =
+        "DEBUGGING DISCIPLINE — non-negotiable, this pipeline exists in a slow " +
+            "build-and-install loop where each blind iteration costs real time:\n" +
+            "1. READ THE WHOLE PATH FIRST. Before changing anything, trace the " +
+            "entire chain from input to output and list every place it can " +
+            "break. Do not fix the first symptom and rebuild — an unused value " +
+            "or unreachable block is found by reading, not by running.\n" +
+            "2. OBSERVABILITY BEFORE FIXES. If a stage's success and its silent " +
+            "failure look identical from outside, add a durable log line that " +
+            "distinguishes them FIRST. Never rebuild just to learn where it " +
+            "broke.\n" +
+            "3. PROVE IT LOCALLY. Put the logic behind a check that runs without " +
+            "the full build — a unit test, a pure function, a dry run with a " +
+            "stub. A full rebuild is for CONFIRMING a fix already proven " +
+            "locally, never for discovering whether it works.\n" +
+            "4. ONE ROOT CAUSE AT A TIME, NAMED. State the single root cause and " +
+            "why the fix addresses it. If you cannot name it, you have not " +
+            "found it — keep investigating, do not guess-and-build.\n" +
+            "5. VERIFY THE ENVIRONMENT before blaming the code: stale config, " +
+            "exhausted quota misreported as an auth error, a renamed model, a " +
+            "dead debug channel have all masqueraded as code bugs here."
+
     private const val CONFIDENCE =
         "I end with `Confidence: High|Medium|Low` — how thoroughly I actually " +
             "checked, not how sure I feel. 'No issues, Confidence: Low' is " +
@@ -111,6 +143,8 @@ internal object BuiltinGraphs {
 
                     If the plan cannot be followed as written, that is a finding: I stop with
                     STATUS: BLOCKED and say why, rather than quietly redesigning it.
+
+                    $DEBUG_DISCIPLINE
                 """.trimIndent(),
             ),
             AgentNode(
@@ -136,6 +170,8 @@ internal object BuiltinGraphs {
                     style preference), minimal recommendation.
                     $CONFIDENCE
                     If nothing at Medium or above: `No blocking correctness issues found.`
+
+                    $DEBUG_DISCIPLINE
                 """.trimIndent(),
             ),
         ),
@@ -285,6 +321,8 @@ internal object BuiltinGraphs {
 
                     If the design cannot be implemented as written, I stop and say so rather
                     than quietly bending it.
+
+                    $DEBUG_DISCIPLINE
                 """.trimIndent(),
             ),
             AgentNode(
@@ -310,6 +348,8 @@ internal object BuiltinGraphs {
                     OUTPUT per issue: location, severity, a concrete failure scenario,
                     minimal recommendation.
                     $CONFIDENCE
+
+                    $DEBUG_DISCIPLINE
                 """.trimIndent(),
             ),
             AgentNode(
