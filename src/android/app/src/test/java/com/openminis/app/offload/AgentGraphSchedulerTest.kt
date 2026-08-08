@@ -132,6 +132,34 @@ class AgentGraphSchedulerTest {
     }
 
     @Test
+    fun `a blocked node mid-chain cascades skip to the exit and settles`() {
+        // The builtin_full-shaped regression: a blocked middle node must not
+        // leave everything downstream PENDING forever (a false deadlock). Every
+        // later node ends SKIPPED and the run settles.
+        val g = AgentGraphSpec(
+            entryNodeId = "orchestrator",
+            exitNodeIds = listOf("gatekeeper"),
+            edges = listOf(
+                Edge("orchestrator", "discovery"),
+                Edge("discovery", "architect"),
+                Edge("architect", "implementer"),
+                Edge("implementer", "correctness"),
+                Edge("correctness", "gatekeeper"),
+            ),
+        )
+        val r = AgentGraphScheduler.run(g) { id ->
+            if (id == "architect") Outcome.BLOCKED else Outcome.COMPLETE
+        }
+        assertFalse("must settle, not deadlock", r.deadlock)
+        assertEquals(NodeStatus.BLOCKED, r.statusByNode["architect"])
+        assertEquals(NodeStatus.SKIPPED, r.statusByNode["implementer"])
+        assertEquals(NodeStatus.SKIPPED, r.statusByNode["correctness"])
+        assertEquals(NodeStatus.SKIPPED, r.statusByNode["gatekeeper"])
+        // Nothing past the block should have been dispatched.
+        assertEquals(listOf("orchestrator", "discovery", "architect"), r.dispatchOrder)
+    }
+
+    @Test
     fun `no node runs twice even with diamond edges`() {
         val g = AgentGraphSpec(
             entryNodeId = "a",

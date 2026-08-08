@@ -884,63 +884,89 @@ internal object AgentGraphRunner {
             graph.nodes.find { it.id == configId }?.replicaIds() ?: listOf(configId)
 
         // Edges are declared between CONFIG ids; map the finished replica back.
-        val completedConfigId = resolveRuntimeNode(graph, completedRuntimeId)?.first?.id
+        val startConfigId = resolveRuntimeNode(graph, completedRuntimeId)?.first?.id
             ?: completedRuntimeId
 
-        for (edge in graph.edges.filter { it.from == completedConfigId }) {
-            val incoming = graph.edges.filter { it.to == edge.to }
+        // [T-agent-graph-skip-cascade] A skipped node is never a job, so the
+        // event loop never calls queueSuccessors for it. Without cascading the
+        // skip here, a blocked node mid-chain leaves everything downstream in
+        // PENDING forever and the run dead-ends as a false "deadlock" instead of
+        // settling. builtin_light hides this (its only successor is the exit),
+        // builtin_full does not. Worklist of config ids whose successors still
+        // need evaluating; a target we just marked SKIPPED is pushed back so its
+        // own successors are evaluated (and skipped) in turn. Proven in
+        // AgentGraphSchedulerTest.
+        val settledConfigIds = ArrayDeque<String>()
+        settledConfigIds.add(startConfigId)
+        val processedFrom = mutableSetOf<String>()
 
-            // Fan-in over REPLICAS too: a node waits for every replica of every
-            // predecessor. Without this the auditor would start after one of
-            // two implementer replicas, reviewing half the work.
-            val allPredRuntimeIds = incoming.flatMap { runtimeIdsOf(it.from) }.distinct()
-            if (!allPredRuntimeIds.all { terminal(it) }) continue
+        while (settledConfigIds.isNotEmpty()) {
+            val completedConfigId = settledConfigIds.removeFirst()
+            if (!processedFrom.add(completedConfigId)) continue
 
-            // At least one predecessor must have COMPLETED, and CONDITIONAL
-            // edges must have their condition hold on that predecessor.
-            val satisfied = incoming.any { inEdge ->
-                runtimeIdsOf(inEdge.from).any { predRuntimeId ->
-                    val predOk = state.nodeStatus[predRuntimeId] == NodeStatus.COMPLETED
-                    when (inEdge.type) {
-                        EdgeType.CONDITIONAL -> {
-                            val h = state.handoffMap[predRuntimeId]
-                            predOk && h != null && evaluateCondition(inEdge.condition, h)
+            for (edge in graph.edges.filter { it.from == completedConfigId }) {
+                val incoming = graph.edges.filter { it.to == edge.to }
+
+                // Fan-in over REPLICAS too: a node waits for every replica of every
+                // predecessor. Without this the auditor would start after one of
+                // two implementer replicas, reviewing half the work.
+                val allPredRuntimeIds = incoming.flatMap { runtimeIdsOf(it.from) }.distinct()
+                if (!allPredRuntimeIds.all { terminal(it) }) continue
+
+                // At least one predecessor must have COMPLETED, and CONDITIONAL
+                // edges must have their condition hold on that predecessor.
+                val satisfied = incoming.any { inEdge ->
+                    runtimeIdsOf(inEdge.from).any { predRuntimeId ->
+                        val predOk = state.nodeStatus[predRuntimeId] == NodeStatus.COMPLETED
+                        when (inEdge.type) {
+                            EdgeType.CONDITIONAL -> {
+                                val h = state.handoffMap[predRuntimeId]
+                                predOk && h != null && evaluateCondition(inEdge.condition, h)
+                            }
+                            else -> predOk
                         }
-                        else -> predOk
                     }
                 }
-            }
 
-            // Activate (or skip) every replica of the target.
-            for (targetRuntimeId in runtimeIdsOf(edge.to)) {
-                if (targetRuntimeId in state.dispatched) continue
-                if (terminal(targetRuntimeId)) continue
-                if (satisfied) {
-                    state.nodeStatus[targetRuntimeId] = NodeStatus.PENDING
-                    ready.add(targetRuntimeId)
-                } else {
-                    state.nodeStatus[targetRuntimeId] = NodeStatus.SKIPPED
-                    // Record WHY. A skipped node with no explanation is
-                    // indistinguishable from a bug in the routing.
-                    val why = incoming
-                        .filter { it.type == EdgeType.CONDITIONAL }
-                        .mapNotNull { inEdge ->
-                            runtimeIdsOf(inEdge.from).firstNotNullOfOrNull { pid ->
-                                state.handoffMap[pid]?.let { h ->
-                                    evaluateConditionExplained(inEdge.condition, h).explanation
+                // Activate (or skip) every replica of the target.
+                for (targetRuntimeId in runtimeIdsOf(edge.to)) {
+                    if (targetRuntimeId in state.dispatched) continue
+                    if (terminal(targetRuntimeId)) continue
+                    if (satisfied) {
+                        state.nodeStatus[targetRuntimeId] = NodeStatus.PENDING
+                        ready.add(targetRuntimeId)
+                    } else {
+                        state.nodeStatus[targetRuntimeId] = NodeStatus.SKIPPED
+                        // Record WHY. A skipped node with no explanation is
+                        // indistinguishable from a bug in the routing.
+                        val why = incoming
+                            .filter { it.type == EdgeType.CONDITIONAL }
+                            .mapNotNull { inEdge ->
+                                runtimeIdsOf(inEdge.from).firstNotNullOfOrNull { pid ->
+                                    state.handoffMap[pid]?.let { h ->
+                                        evaluateConditionExplained(inEdge.condition, h).explanation
+                                    }
                                 }
                             }
+                            .joinToString("; ")
+                            .ifBlank { "no predecessor COMPLETED" }
+                        val targetRole = graph.nodes.find { it.id == edge.to }?.role
+                        if (targetRole != null) {
+                            addTrace(state, targetRuntimeId, targetRole, "SKIPPED", why)
+                            AgentRunShowcase.noteSkipped(
+                                execContext.context, state.showcaseId, targetRole, why,
+                            )
                         }
-                        .joinToString("; ")
-                        .ifBlank { "no predecessor COMPLETED" }
-                    val targetRole = graph.nodes.find { it.id == edge.to }?.role
-                    if (targetRole != null) {
-                        addTrace(state, targetRuntimeId, targetRole, "SKIPPED", why)
-                        AgentRunShowcase.noteSkipped(
-                            execContext.context, state.showcaseId, targetRole, why,
-                        )
                     }
                 }
+
+                // If every replica of the target ended up SKIPPED, it will never
+                // run, so cascade: evaluate ITS successors now (they will be
+                // skipped in turn unless another, completed branch feeds them).
+                val targetAllSkipped = runtimeIdsOf(edge.to).all {
+                    state.nodeStatus[it] == NodeStatus.SKIPPED
+                }
+                if (targetAllSkipped) settledConfigIds.add(edge.to)
             }
         }
         return ready.distinct()
