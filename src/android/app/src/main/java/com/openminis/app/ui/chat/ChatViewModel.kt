@@ -739,6 +739,14 @@ class ChatViewModel(
      */
     private var pendingCredentialGeneration: Int? = null
 
+    /**
+     * [T-agent-graph-live-progress] taskId of the graph run this chat started,
+     * or null when no run is in flight. Drives the progress card in place of the
+     * typing indicator.
+     */
+    private val _activeAgentRunTaskId = MutableStateFlow<String?>(null)
+    val activeAgentRunTaskId: StateFlow<String?> = _activeAgentRunTaskId.asStateFlow()
+
     /** Structured agent history for the agent loop (contentParts-based). */
     private val agentHistory = mutableListOf<LLMMessage>()
 
@@ -5260,6 +5268,13 @@ class ChatViewModel(
                 SessionActivityTracker.setActive(activeSessionId, onStop = { cancelStream() })
 
                 val taskId = java.util.UUID.randomUUID().toString()
+                // [T-agent-graph-live-progress] Publish the id so the chat's
+                // placeholder bubble can render the live progress card. Set
+                // before run() so the card is in place when the entry node
+                // reports its start, cleared in the finally below whatever the
+                // outcome — a stale id would leave a card pinned to a finished
+                // turn.
+                _activeAgentRunTaskId.value = taskId
                 try {
                     val result = com.openminis.app.offload.AgentGraphRunner.run(
                         context = context,
@@ -5293,6 +5308,11 @@ class ChatViewModel(
                     publishOverlayReplyExcerpt(activeSessionId)
                     SessionActivityTracker.setInactive(activeSessionId)
                     SessionConcurrencyManager.releaseSlot(activeSessionId)
+                    // The chat has committed its message by now, so the run's
+                    // progress state has no reader left — drop it here rather
+                    // than in the runner, which finishes before the commit.
+                    _activeAgentRunTaskId.value = null
+                    com.openminis.app.offload.AgentRunProgress.clear(taskId)
                 }
             } catch (e: CancellationException) {
                 cancelled = true

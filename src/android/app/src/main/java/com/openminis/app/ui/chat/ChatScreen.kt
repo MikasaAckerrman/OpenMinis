@@ -437,6 +437,9 @@ fun ChatScreen(
     val messages by viewModel.uiMessages.collectAsState()
     val hasOlderMessages by viewModel.hasOlderMessages.collectAsState()
     val isStreaming by viewModel.isStreaming.collectAsState()
+    // [T-agent-graph-live-progress] Non-null while a graph run started from this
+    // chat is in flight; swaps the typing dots for the per-agent progress card.
+    val activeAgentRunTaskId by viewModel.activeAgentRunTaskId.collectAsState()
     val canResume by viewModel.canResume.collectAsState()
     val error by viewModel.error.collectAsState()
     val modelName by viewModel.modelName.collectAsState()
@@ -2841,7 +2844,13 @@ fun ChatScreen(
                             } else {
                                 withContext(Dispatchers.Default) {
                                     val merged = mergeStreamingOverlay(msgs, stream)
-                                    buildFlatChatItems(merged, null, fromIndex = splitIdx, seedKeys = frozenKeys)
+                                    buildFlatChatItems(
+                                        merged,
+                                        null,
+                                        fromIndex = splitIdx,
+                                        seedKeys = frozenKeys,
+                                        activeAgentRunTaskId = activeAgentRunTaskId,
+                                    )
                                 }
                             }
                             flatItems = if (liveRows.isEmpty()) frozenRows else frozenRows + liveRows
@@ -2892,7 +2901,8 @@ fun ChatScreen(
                     // the end.
                     val newest = flatItems.lastOrNull() ?: return@LaunchedEffect
                     if (newest !is FlatChatItem.AssistantToolUse &&
-                        newest !is FlatChatItem.AssistantTyping
+                        newest !is FlatChatItem.AssistantTyping &&
+                        newest !is FlatChatItem.AgentRunCard
                     ) return@LaunchedEffect
                     if (newest.key == lastTrailingPinKey) return@LaunchedEffect
                     if (userScrolledAway) return@LaunchedEffect
@@ -2930,6 +2940,9 @@ fun ChatScreen(
                     is FlatChatItem.AssistantToolUse -> grayedMap[originalMessageId(messageId)] == true
                     is FlatChatItem.AssistantInfo -> false  // system rows never grayed
                     is FlatChatItem.AssistantTyping -> false
+                    // Live progress card is never part of persisted history, so
+                    // a compact marker can't gray it.
+                    is FlatChatItem.AgentRunCard -> false
                     is FlatChatItem.AssistantError -> grayedMap[originalMessageId(messageId)] == true
                     is FlatChatItem.AssistantLegacyContent -> grayedMap[originalMessageId(messageId)] == true
                 }
@@ -3477,6 +3490,22 @@ fun ChatScreen(
                                 } else null,
                             )
                             is FlatChatItem.AssistantTyping -> TypingIndicator()
+                            is FlatChatItem.AgentRunCard -> {
+                                // Subscribed here, not in the flat list, so a node
+                                // state change repaints just this card instead of
+                                // rebuilding every row.
+                                val runs by com.openminis.app.offload.AgentRunProgress
+                                    .snapshots.collectAsState()
+                                val snapshot = runs[item.taskId]
+                                if (snapshot != null) {
+                                    AgentRunProgressCard(snapshot = snapshot)
+                                } else {
+                                    // Run registered but no snapshot yet (or already
+                                    // cleared): fall back to the dots rather than
+                                    // rendering an empty card.
+                                    TypingIndicator()
+                                }
+                            }
                             is FlatChatItem.AssistantError -> InlineErrorBanner(
                                 error = item.error,
                                 onRetry = {

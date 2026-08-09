@@ -448,6 +448,20 @@ internal sealed class FlatChatItem {
         override val contentType = "typing"
     }
 
+    /**
+     * [T-agent-graph-live-progress] Live agent-graph progress card, shown in the
+     * chat that started the run INSTEAD of the typing indicator.
+     *
+     * Carries only the taskId: the card reads the snapshot from
+     * [com.openminis.app.offload.AgentRunProgress] itself, so a node state change
+     * repaints the card without rebuilding this whole flat list (the list is
+     * rebuilt per message change, which is far too coarse for per-node updates).
+     */
+    data class AgentRunCard(val messageId: String, val taskId: String) : FlatChatItem() {
+        override val key = "agentrun:$messageId:$taskId"
+        override val contentType = "agentrun"
+    }
+
     data class AssistantError(val messageId: String, val error: String) : FlatChatItem() {
         override val key = "error:$messageId"
         override val contentType = "error"
@@ -524,6 +538,11 @@ internal fun buildFlatChatItems(
     // prefix so the defensive key-collision suffixing behaves exactly as a
     // single full build would.
     seedKeys: Set<String> = emptySet(),
+    // [T-agent-graph-live-progress] taskId of a graph run in flight for THIS
+    // session, or null. When set, the placeholder assistant bubble renders the
+    // progress card instead of the typing indicator — a graph turn lasts minutes,
+    // and bouncing dots for that long read as a hang.
+    activeAgentRunTaskId: String? = null,
 ): List<FlatChatItem> {
     val out = mutableListOf<FlatChatItem>()
     val usedKeys = if (seedKeys.isEmpty()) mutableSetOf() else seedKeys.toMutableSet()
@@ -555,6 +574,7 @@ internal fun buildFlatChatItems(
             is FlatChatItem.AssistantToolUse -> item.copy(messageId = "${item.messageId}#$n")
             is FlatChatItem.AssistantInfo -> item.copy(messageId = "${item.messageId}#$n")
             is FlatChatItem.AssistantTyping -> item.copy(messageId = "${item.messageId}#$n")
+            is FlatChatItem.AgentRunCard -> item.copy(messageId = "${item.messageId}#$n")
             is FlatChatItem.AssistantError -> item.copy(messageId = "${item.messageId}#$n")
             is FlatChatItem.AssistantLegacyContent -> FlatChatItem.AssistantLegacyContent(
                 messageId = "${item.messageId}#$n",
@@ -741,7 +761,15 @@ internal fun buildFlatChatItems(
         val hasRealBlocks = blocks.any { it.kind != "info" }
         val hasVisibleContent = hasRealBlocks || message.content.isNotEmpty()
         if (message.isStreaming && (!hasVisibleContent || message.isAwaitingModelResponse)) {
-            out.add(dedupe(FlatChatItem.AssistantTyping(message.id)))
+            // A graph turn replaces the dots with the per-agent card: it is the
+            // same "nothing to show yet" slot, but a run has real intermediate
+            // state worth surfacing. Only for the bubble with no content, so a
+            // graph that has already committed text is not covered by a card.
+            if (activeAgentRunTaskId != null && !hasVisibleContent) {
+                out.add(dedupe(FlatChatItem.AgentRunCard(message.id, activeAgentRunTaskId)))
+            } else {
+                out.add(dedupe(FlatChatItem.AssistantTyping(message.id)))
+            }
         }
 
         // Legacy fallback: pre-migration sessions stored all text in message.content
