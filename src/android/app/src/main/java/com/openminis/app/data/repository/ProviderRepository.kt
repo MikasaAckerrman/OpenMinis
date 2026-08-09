@@ -2379,7 +2379,22 @@ class ProviderRepository(private val context: Context) {
             }
         }
 
-        // 2. Explicit shared default.
+        // 2. Explicit per-role entry set in Settings → Agent Models.
+        val perRole = agentRoleModelEntryId(role)
+        if (!perRole.isNullOrBlank()) {
+            val entry = config.modelEntries.firstOrNull { it.id == perRole && !it.isHidden }
+            if (entry != null) {
+                resolutionLog?.invoke(
+                    "role '$role' -> Settings per-role model -> ${entry.model.displayName}"
+                )
+                return entry
+            }
+            resolutionLog?.invoke(
+                "role '$role': per-role model '$perRole' no longer visible — falling back"
+            )
+        }
+
+        // 3. Explicit shared default.
         val explicit = agentDefaultModelEntryId
         if (!explicit.isNullOrBlank()) {
             val entry = config.modelEntries.firstOrNull { it.id == explicit && !it.isHidden }
@@ -2395,18 +2410,36 @@ class ProviderRepository(private val context: Context) {
             )
         }
 
-        // 3. Whatever the user already uses — but never trust catalog order.
-        // Catalogs commonly put flagship models first; that made an absent `agent`
-        // section silently select a 128K-output Opus and fail quota pre-authorisation.
+        // 4. THE model the user actually chats with. This is the sensible
+        // default the user expects: "agents use the provider I use". Order:
+        // last-used entry (the model most recently selected/sent) → the first
+        // member of the default primary group. Both are text-capable, on an
+        // enabled provider, and — crucially — the one the user has funded.
+        val userDefault = lastUsedVisibleEntry()
+            ?: defaultPrimaryGroupId
+                ?.let { group(it) }
+                ?.memberEntryIds
+                ?.firstNotNullOfOrNull { mid ->
+                    config.modelEntries.firstOrNull { it.id == mid && !it.isHidden }
+                }
+        if (userDefault != null) {
+            resolutionLog?.invoke(
+                "role '$role' -> user's current model -> ${userDefault.model.displayName} " +
+                    "(override per role in Settings → Agent Models)"
+            )
+            return userDefault
+        }
+
+        // 5. Last-resort catalog pick — never trust catalog order (flagship
+        // first would select a 128K-output Opus and fail quota pre-authorisation).
         // Prefer the smallest known output cap, then stable display/id ordering.
         val fallbackCandidates = resolvedAgentLoopEntries() + allVisibleEntries()
         val fallback = com.openminis.app.offload.AgentModelFallbackSelector
             .select(fallbackCandidates)
-            ?: lastUsedVisibleEntry()
         if (fallback != null) {
             resolutionLog?.invoke(
                 "role '$role' -> implicit fallback -> ${fallback.model.displayName} " +
-                    "(set agent.keys.$role or agent.defaultModelEntry to pin this)"
+                    "(set a per-role model in Settings → Agent Models)"
             )
         } else {
             resolutionLog?.invoke(
@@ -2415,6 +2448,23 @@ class ProviderRepository(private val context: Context) {
         }
         return fallback
     }
+
+    /**
+     * Per-role model entry chosen by the user in Settings → Agent Models.
+     * Null means "no explicit choice; use the shared default / current model".
+     * Keyed per role so a planner and a coder can run on different models.
+     */
+    fun agentRoleModelEntryId(role: String): String? =
+        prefs.getString(agentRoleModelKey(role), null)
+
+    fun setAgentRoleModelEntryId(role: String, entryId: String?) {
+        prefs.edit().apply {
+            if (entryId.isNullOrBlank()) remove(agentRoleModelKey(role))
+            else putString(agentRoleModelKey(role), entryId)
+        }.apply()
+    }
+
+    private fun agentRoleModelKey(role: String) = "agentRoleModel_${role.lowercase()}"
 
     /**
      * Single model entry used by every agent role that has no per-role key.

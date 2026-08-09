@@ -21,6 +21,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material.icons.outlined.BatteryFull
@@ -74,6 +75,7 @@ fun SettingsScreen(
     onBack: () -> Unit,
     onProvidersClick: () -> Unit,
     onModelGroupsClick: () -> Unit,
+    onAgentModelsClick: () -> Unit = {},
     onRootfsClick: () -> Unit = {},
     onEnvVarsClick: () -> Unit = {},
     onSkillsClick: () -> Unit = {},
@@ -146,6 +148,16 @@ fun SettingsScreen(
                     title = stringResource(R.string.settings_model_groups),
                     subtitle = stringResource(R.string.settings_model_groups_subtitle),
                     onClick = onModelGroupsClick,
+                )
+                // [T-agent-role-models] Per-role model picker for the
+                // multi-agent graph. Sits next to Model Groups because both
+                // answer "which model runs what".
+                SettingsItem(
+                    icon = Icons.Outlined.AccountTree,
+                    iconColor = Color(0xFF007AFF),
+                    title = stringResource(R.string.settings_agent_models),
+                    subtitle = stringResource(R.string.settings_agent_models_subtitle),
+                    onClick = onAgentModelsClick,
                 )
                 SettingsItem(
                     icon = Icons.Outlined.BarChart,

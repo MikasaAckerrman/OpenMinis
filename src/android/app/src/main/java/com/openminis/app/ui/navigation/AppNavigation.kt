@@ -32,6 +32,7 @@ import com.openminis.app.data.repository.ProviderRepository
 import com.openminis.app.ui.chat.ChatScreen
 import com.openminis.app.ui.sessions.SessionListScreen
 import com.openminis.app.ui.settings.AboutScreen
+import com.openminis.app.ui.settings.AgentModelsScreen
 import com.openminis.app.ui.settings.AddAgentLoopGroupsScreen
 import com.openminis.app.ui.settings.AddAgentLoopModelsScreen
 import com.openminis.app.ui.settings.AddCustomModelScreen
@@ -95,6 +96,8 @@ object Routes {
     /** [T-android-provider-voice] Read-only shadow Voice Service detail. */
     const val SHADOW_VOICE_DETAIL = "voice_service/{instanceId}"
     const val MODEL_GROUPS = "model_groups"
+    /** [T-agent-role-models] Per-role model picker for the multi-agent graph. */
+    const val AGENT_MODELS = "agent_models"
     const val MODEL_GROUP_DETAIL = "model_group/{groupId}"
     const val ADD_MODELS_TO_GROUP = "add_models_to_group/{groupId}"
     /** T185: picker that adds model *entries* to the agent-loop set. */
@@ -572,6 +575,7 @@ fun AppNavigation(
                 onBack = { navController.safePopBackStack() },
                 onProvidersClick = { navController.safeNavigate(Routes.PROVIDER_LIST) },
                 onModelGroupsClick = { navController.safeNavigate(Routes.MODEL_GROUPS) },
+                onAgentModelsClick = { navController.safeNavigate(Routes.AGENT_MODELS) },
                 onRootfsClick = { navController.safeNavigate(Routes.STORAGE) },
                 onEnvVarsClick = { navController.safeNavigate(Routes.ENV_VARS) },
                 onSkillsClick = { navController.safeNavigate(Routes.SKILLS) },
@@ -742,6 +746,13 @@ fun AppNavigation(
                 onAddAgentLoopGroups = {
                     navController.safeNavigate(Routes.ADD_GROUPS_TO_AGENT_LOOP)
                 },
+            )
+        }
+
+        composable(Routes.AGENT_MODELS) {
+            AgentModelsScreen(
+                providerRepository = providerRepository,
+                onBack = { navController.safePopBackStack() },
             )
         }
 
