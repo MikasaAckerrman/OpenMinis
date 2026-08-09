@@ -1010,9 +1010,13 @@ class AnthropicProvider(
 
     private fun mapHttpError(statusCode: Int, body: String): LLMError {
         if (statusCode == 401 || statusCode == 403) {
-            if (body.contains("insufficient_user_quota", ignoreCase = true) ||
-                body.contains("预扣费额度失败", ignoreCase = true)
-            ) return LLMError.QuotaExceeded(body.take(500))
+            // See QuotaErrorDetection: 403 covers both auth failure and
+            // balance-too-low pre-charge rejection on relay gateways.
+            if (com.openminis.app.provider.QuotaErrorDetection.isQuotaFailure(body)) {
+                return LLMError.QuotaExceeded(
+                    com.openminis.app.provider.QuotaErrorDetection.describe(body)
+                )
+            }
             return LLMError.InvalidApiKey()
         }
         if (statusCode == 429) return LLMError.RateLimited()

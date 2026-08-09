@@ -2617,6 +2617,19 @@ class ChatViewModel(
                         }
                 }
             }
+        // [T-stale-credential-after-key-swap] Rebuild the cached provider when
+        // a credential is rewritten (Settings → Providers paste, minis-config
+        // write, OAuth refresh). currentProvider captured the key as a string
+        // at construction time, so without this an open chat keeps sending the
+        // PREVIOUS key after the user swaps in a new one — reported as
+        // "Invalid API key" on a valid, funded key that only a full app
+        // restart cleared.
+        viewModelScope.launch {
+            providerRepository.credentialGeneration.collect { generation ->
+                if (generation == 0) return@collect  // initial value, nothing swapped yet
+                rebuildProviderForNewCredential(generation)
+            }
+        }
         // Re-resolve provider when config changes (models may load async)
         viewModelScope.launch {
             // T306: wait for loadSession to finish BEFORE observing config.

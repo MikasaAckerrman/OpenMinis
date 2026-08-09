@@ -102,11 +102,17 @@ fun AgentModelsScreen(
                     }
                     ?: stringResource(R.string.agent_models_use_current)
 
-                SettingsValueRow(
+                // Role name as the row TITLE and the model as the SUBTITLE.
+                // A trailing value Text has no width constraint, so a long label
+                // like "Моя текущая модель (claude-opus-5-thinking)" consumed the
+                // whole row and ellipsised the role name away entirely — the user
+                // saw six identical rows with no way to tell which agent was which.
+                SettingsRow(
                     title = stringResource(labelRes),
-                    value = valueText,
+                    subtitle = valueText,
                     onClick = { editingRole = role },
                     showDivider = index != AGENT_ROLES.lastIndex,
+                    minHeight = 72.dp,
                 )
             }
         }

@@ -2790,9 +2790,15 @@ class OpenAIProvider private constructor(
 
     private fun mapHttpError(statusCode: Int, body: String): LLMError {
         if (statusCode == 401 || statusCode == 403) {
-            if (body.contains("insufficient_user_quota", ignoreCase = true) ||
-                body.contains("预扣费额度失败", ignoreCase = true)
-            ) return LLMError.QuotaExceeded(body.take(500))
+            // Relays answer 403 for BOTH "credential rejected" and "balance
+            // too low to pre-charge this request"; only the body separates
+            // them. Route the balance case to QuotaExceeded so the user isn't
+            // told to fix a key that works. See QuotaErrorDetection.
+            if (com.openminis.app.provider.QuotaErrorDetection.isQuotaFailure(body)) {
+                return LLMError.QuotaExceeded(
+                    com.openminis.app.provider.QuotaErrorDetection.describe(body)
+                )
+            }
             return LLMError.InvalidApiKey()
         }
         if (statusCode == 429) return LLMError.RateLimited()
