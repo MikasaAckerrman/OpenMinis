@@ -151,6 +151,11 @@ internal object AgentGraphRunner {
             nodeCount = graph.nodes.size,
             runtimeCount = runtimeCount,
         )
+        // [T-agent-graph-live-progress] Open the live progress record BEFORE the
+        // first node, for the same reason the showcase is created first: an event
+        // arriving for an unknown taskId is dropped, so a late begin() would lose
+        // the entry node's start.
+        AgentRunProgress.begin(taskId, graph.name)
 
         // Prepare artifact directory.
         //
@@ -212,6 +217,11 @@ internal object AgentGraphRunner {
             artifactCount = result.artifacts.size,
             scopeViolations = state.scopeViolations,
         )
+        // Mark the run settled. NOT cleared here: the chat still has to render
+        // the final card and commit its message, and clearing now would make the
+        // card vanish mid-commit. Ownership of the cleanup sits with the caller
+        // that showed the card.
+        AgentRunProgress.finish(taskId, result.status.name)
 
         // Tool policies are keyed by session id in a process-wide map. Without
         // this the map grows by one entry per node per run and never shrinks —
@@ -560,6 +570,17 @@ internal object AgentGraphRunner {
             replicaInfo = if (node.replicas > 1) "${replicaIndex + 1}/${node.replicas}" else null,
             model = modelEntryId.take(24),
         )
+        // [T-agent-graph-live-progress] Same event, second consumer: the chat
+        // that started the run renders this so the user sees WHICH agent is
+        // working instead of a silent bubble for minutes.
+        AgentRunProgress.nodeStarted(
+            taskId = state.taskId,
+            runtimeId = runtimeId,
+            role = node.role,
+            label = AgentRunShowcase.roleLabel(node.role),
+            replicaInfo = if (node.replicas > 1) "${replicaIndex + 1}/${node.replicas}" else null,
+            model = modelEntryId.take(24),
+        )
 
         // Build system prompt with role + tool allowlist + scope contract.
         //
@@ -617,6 +638,9 @@ internal object AgentGraphRunner {
                 AgentRunShowcase.noteFailure(
                     context, state.showcaseId, node.role,
                     "no valid reply after $maxAttempts attempt(s)",
+                )
+                AgentRunProgress.nodeSettled(
+                    state.taskId, runtimeId, AgentRunProgress.NodeState.FAILED,
                 )
                 return
             }
@@ -710,6 +734,18 @@ internal object AgentGraphRunner {
             role = node.role,
             runtimeId = runtimeId,
             handoff = handoff,
+        )
+        // Mirror the handoff's verdict into the live progress card. BLOCKED and
+        // NEEDS_CLARIFICATION both mean "did not deliver", which the reader needs
+        // to see — a card that only ever showed green would hide a stalled run.
+        AgentRunProgress.nodeSettled(
+            taskId = state.taskId,
+            runtimeId = runtimeId,
+            state = when (handoff.status) {
+                HandoffStatus.COMPLETE -> AgentRunProgress.NodeState.COMPLETED
+                HandoffStatus.BLOCKED,
+                HandoffStatus.NEEDS_CLARIFICATION -> AgentRunProgress.NodeState.BLOCKED
+            },
         )
     }
 
@@ -960,6 +996,12 @@ internal object AgentGraphRunner {
                             AgentRunShowcase.noteSkipped(
                                 execContext.context, state.showcaseId, targetRole, why,
                             )
+                            AgentRunProgress.nodeSkipped(
+                                taskId = state.taskId,
+                                runtimeId = targetRuntimeId,
+                                role = targetRole,
+                                label = AgentRunShowcase.roleLabel(targetRole),
+                            )
                         }
                     }
                 }
@@ -1108,5 +1150,15 @@ internal object AgentGraphRunner {
         val state = execContext.state
         addTrace(state, runtimeId, node.role, "MISSING_MODEL_ENTRY", reason)
         state.nodeStatus[runtimeId] = NodeStatus.FAILED
+        // This path returns BEFORE nodeStarted() ever fired, so record the node
+        // as skipped-with-reason rather than settling something the card has
+        // never seen — otherwise "no model configured" would show as an empty
+        // card and read like a hang.
+        AgentRunProgress.nodeSkipped(
+            taskId = state.taskId,
+            runtimeId = runtimeId,
+            role = node.role,
+            label = AgentRunShowcase.roleLabel(node.role),
+        )
     }
 }

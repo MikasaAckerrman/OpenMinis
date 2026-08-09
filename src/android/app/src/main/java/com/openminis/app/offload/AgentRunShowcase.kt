@@ -26,6 +26,8 @@ import kotlinx.coroutines.withContext
 internal object AgentRunShowcase {
 
     /** Human labels for roles. The enum name in a chat bubble reads as shouting. */
+    fun roleLabel(role: AgentRole): String = label(role)
+
     private fun label(role: AgentRole): String = when (role) {
         AgentRole.ORCHESTRATOR -> "Orchestrator"
         AgentRole.REQUIREMENTS_ANALYST -> "Requirements Analyst"
