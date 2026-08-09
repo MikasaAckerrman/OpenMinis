@@ -92,6 +92,7 @@ jobs:
             --tests 'com.openminis.app.tools.AgentSystemPromptStoreTest' \
             --tests 'com.openminis.app.ui.chat.VmCacheLruTest' \
             --tests 'com.openminis.app.ui.chat.PartsJsonCacheTest' \
+            --tests 'com.openminis.app.offload.AgentRunProgressTest' \
             --tests 'com.openminis.app.ui.chat.ChatHistoryWindowTest' \
             --tests 'com.openminis.app.ui.chat.MinisTextKitSelectionOrderTest'
         # `offload.*` already covers AgentArtifactStoreTest — the artifact store
