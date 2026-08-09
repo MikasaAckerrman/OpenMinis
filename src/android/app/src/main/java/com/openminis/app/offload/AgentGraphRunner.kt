@@ -220,6 +220,7 @@ internal object AgentGraphRunner {
         for (sid in state.sessionMap.values + state.sessionByGroup.values) {
             com.openminis.app.tools.AgentToolPolicyStore.clearPolicy(sid)
             com.openminis.app.tools.AgentSystemPromptStore.clearPrompt(sid)
+            com.openminis.app.tools.AgentRuntimePolicyStore.clear(sid)
         }
 
         // Write trace
@@ -538,6 +539,7 @@ internal object AgentGraphRunner {
             context = context,
             modelEntryId = modelEntryId,
             allowedTools = node.allowedTools,
+            maxOutputTokens = graph.config.defaultMaxOutputTokens,
             agentRunId = state.taskId,
             agentRole = node.role.name,
         ).also { sessionStore[sessionKey] = it }

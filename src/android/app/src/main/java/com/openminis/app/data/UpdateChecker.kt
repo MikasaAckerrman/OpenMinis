@@ -449,11 +449,11 @@ object UpdateChecker {
             }
             context.startActivity(intent)
             AppLogger.info(TAG, "installApk launched apk=${apk.absolutePath} size=${apk.length()}")
-            // Once the installer is in flight we don't want a subsequent
-            // resume to re-fire the intent (would double-prompt). Clear the
-            // pending record now; if the user backs out, the next "Check for
-            // Updates" tap will re-discover and re-download.
-            PendingUpdateStore.clearPending(context)
+            // `FilePreviewScreen` may use this helper for an arbitrary APK
+            // from the workspace; only an update download owns this record.
+            if (PendingUpdateStore.getPending(context)?.apkPath == apk.absolutePath) {
+                PendingUpdateStore.clearPending(context)
+            }
             true
         } catch (e: Exception) {
             AppLogger.error(TAG, "installApk failed: ${e.javaClass.simpleName}: ${e.message}")

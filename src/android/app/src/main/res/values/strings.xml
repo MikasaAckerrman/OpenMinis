@@ -422,6 +422,10 @@
     <string name="action_print">Print</string>
     <string name="filepreview_save_to_gallery">Save to gallery</string>
     <string name="filepreview_save_as">Save as…</string>
+    <string name="filepreview_install_apk">Install APK</string>
+    <string name="filepreview_apk_unreadable">APK file is unavailable</string>
+    <string name="filepreview_enable_install_permission">Allow Minis to install unknown apps, then tap Install APK again</string>
+    <string name="filepreview_apk_install_failed">Couldn’t open the package installer</string>
     <string name="filepreview_loading">Loading…</string>
     <string name="filepreview_loading_pdf">Loading PDF…</string>
     <string name="filepreview_loading_archive">Reading archive…</string>

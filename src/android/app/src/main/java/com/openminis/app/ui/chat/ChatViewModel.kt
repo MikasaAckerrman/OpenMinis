@@ -5721,11 +5721,21 @@ class ChatViewModel(
      * @param lastContextTokens API-reported input token count from the last call (0 = first call).
      */
     private fun dynamicMaxTokens(provider: LLMProvider, lastContextTokens: Int = 0): Int {
-        val model = currentModel ?: return minOf(GLOBAL_MAX_TOKENS_CEILING, provider.defaultMaxOutputTokens)
-        // Ceiling: min(global cap, model.maxOutputTokens-or-provider-default).
-        // The global cap means we never send more than 128K regardless of
-        // what the model claims it can output.
-        val maxOutputCeiling = minOf(GLOBAL_MAX_TOKENS_CEILING, provider.effectiveMaxOutputTokens(model))
+        val sessionCap = com.openminis.app.tools.AgentRuntimePolicyStore
+            .maxOutputTokensFor(realSessionId.ifEmpty { sessionId })
+        val model = currentModel ?: return minOf(
+            GLOBAL_MAX_TOKENS_CEILING,
+            provider.defaultMaxOutputTokens,
+            sessionCap ?: Int.MAX_VALUE,
+        )
+        val configuredCeiling = minOf(
+            GLOBAL_MAX_TOKENS_CEILING,
+            provider.effectiveMaxOutputTokens(model),
+            sessionCap ?: Int.MAX_VALUE,
+        )
+        // Ceiling: global cap, model/provider cap, and (for graph workers) the
+        // runtime policy registered before the first prompt.
+        val maxOutputCeiling = configuredCeiling
         // Context window: model.contextWindow if known, else the shared
         // model-id heuristic. [T-anthropic-context-window] Route through
         // LLMModel.contextWindowTokens so the corrected Claude-1M / Gemini-1M
@@ -8403,8 +8413,24 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
             // assistant and must answer with a handoff block, not prose), and
             // recency is the only lever available here. It also keeps the
             // cacheable prefix intact for normal chats.
-            val rolePrompt = com.openminis.app.tools.AgentSystemPromptStore
-                .promptFor(realSessionId.ifEmpty { sessionId })
+            val workerSessionId = realSessionId.ifEmpty { sessionId }
+            val rolePrompt = com.openminis.app.tools.AgentSystemPromptStore.promptFor(workerSessionId)
+            // Runtime policy is registered independently when the worker session
+            // is created, so it still identifies an agent when the prompt store
+            // lookup itself is the broken link we are diagnosing.
+            if (
+                rolePrompt != null ||
+                com.openminis.app.tools.AgentRuntimePolicyStore.maxOutputTokensFor(workerSessionId) != null
+            ) {
+                com.openminis.app.logging.AppLogger.info(
+                    "AgentPrompt",
+                    if (rolePrompt != null) {
+                        "[AgentPrompt] applied session=${workerSessionId.take(8)} len=${rolePrompt.length}"
+                    } else {
+                        "[AgentPrompt] MISSING session=${workerSessionId.take(8)}"
+                    },
+                )
+            }
             if (rolePrompt != null) {
                 append("\n\n")
                 append(rolePrompt)

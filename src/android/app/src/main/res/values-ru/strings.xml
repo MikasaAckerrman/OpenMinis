@@ -280,6 +280,10 @@
     <string name="action_print">Печать</string>
     <string name="filepreview_save_to_gallery">Сохранить в галерею</string>
     <string name="filepreview_save_as">Сохранить как…</string>
+    <string name="filepreview_install_apk">Установить APK</string>
+    <string name="filepreview_apk_unreadable">Файл APK недоступен</string>
+    <string name="filepreview_enable_install_permission">Разрешите Minis устанавливать неизвестные приложения и нажмите «Установить APK» ещё раз</string>
+    <string name="filepreview_apk_install_failed">Не удалось открыть установщик пакетов</string>
     <string name="filepreview_loading">Загрузка…</string>
     <string name="filepreview_loading_pdf">Загрузка PDF…</string>
     <string name="filepreview_loading_archive">Чтение архива…</string>

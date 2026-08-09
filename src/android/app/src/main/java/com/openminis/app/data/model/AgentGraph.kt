@@ -182,6 +182,13 @@ data class AgentGraph(
             errors.add("Node id '${it.id}' must not contain '#' — reserved for replica suffixes")
         }
 
+        if (config.defaultMaxOutputTokens <= 0) {
+            errors.add(
+                "Graph config: defaultMaxOutputTokens must be > 0, got " +
+                    config.defaultMaxOutputTokens
+            )
+        }
+
         for (node in nodes) {
             if (node.replicas < 1) {
                 errors.add("Node '${node.id}': replicas must be >= 1, got ${node.replicas}")
@@ -228,6 +235,12 @@ data class AgentGraph(
 data class GraphConfig(
     val maxParallelNodes: Int = 4,
     val defaultTimeoutMs: Long = 120_000,
+    /**
+     * Hard per-request output ceiling for worker sessions in this graph.
+     * Kept below large catalog caps (64K/128K) so an unconfigured implicit
+     * fallback cannot trigger a gateway's large quota pre-authorisation.
+     */
+    val defaultMaxOutputTokens: Int = 16_384,
     val retryPolicy: RetryPolicy = RetryPolicy(),
     val artifactDir: String = "/var/minis/workspace",
     val enableTracing: Boolean = true,

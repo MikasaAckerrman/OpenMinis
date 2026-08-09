@@ -2395,9 +2395,13 @@ class ProviderRepository(private val context: Context) {
             )
         }
 
-        // 3. Whatever the user already uses.
-        val fallback = resolvedAgentLoopEntries().firstOrNull()
-            ?: allVisibleEntries().firstOrNull()
+        // 3. Whatever the user already uses — but never trust catalog order.
+        // Catalogs commonly put flagship models first; that made an absent `agent`
+        // section silently select a 128K-output Opus and fail quota pre-authorisation.
+        // Prefer the smallest known output cap, then stable display/id ordering.
+        val fallbackCandidates = resolvedAgentLoopEntries() + allVisibleEntries()
+        val fallback = com.openminis.app.offload.AgentModelFallbackSelector
+            .select(fallbackCandidates)
             ?: lastUsedVisibleEntry()
         if (fallback != null) {
             resolutionLog?.invoke(

@@ -46,6 +46,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.InstallMobile
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -197,6 +198,11 @@ fun FilePreviewScreen(
                             Icon(Icons.Default.Print, contentDescription = stringResource(R.string.action_print))
                         }
                     }
+                    if (item.file.extension.equals("apk", ignoreCase = true)) {
+                        IconButton(onClick = { installApkFromPreview(context, item.file) }) {
+                            Icon(Icons.Default.InstallMobile, contentDescription = stringResource(R.string.filepreview_install_apk))
+                        }
+                    }
                     if (item.isImageFile) {
                         // T142 image → MediaStore Save to Gallery.
                         IconButton(onClick = {
@@ -246,7 +252,21 @@ fun FilePreviewScreen(
     }
 }
 
-// ==================== Image Preview ====================
+private fun installApkFromPreview(context: Context, apk: File) {
+    if (!apk.isFile || !apk.canRead()) {
+        Toast.makeText(context, R.string.filepreview_apk_unreadable, Toast.LENGTH_SHORT).show()
+        return
+    }
+    if (!com.openminis.app.data.UpdateChecker.canInstall(context)) {
+        com.openminis.app.data.UpdateChecker.openInstallPermissionSettings(context)
+        Toast.makeText(context, R.string.filepreview_enable_install_permission, Toast.LENGTH_LONG).show()
+        return
+    }
+    if (!com.openminis.app.data.UpdateChecker.installApk(context, apk)) {
+        Toast.makeText(context, R.string.filepreview_apk_install_failed, Toast.LENGTH_SHORT).show()
+    }
+}
+
 
 @Composable
 private fun ImagePreview(item: FileItem) {
