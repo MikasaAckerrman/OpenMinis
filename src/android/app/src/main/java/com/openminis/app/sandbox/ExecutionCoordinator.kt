@@ -178,12 +178,17 @@ object ExecutionCoordinator {
 
         // Session-specific directories
         val sessionBase = File(filesDir, "minis-sessions/$sessionId")
-        listOf("attachments", "offloads", "workspace", "browser").forEach { subdir ->
+        val sharedWorkspace = com.openminis.app.tools.AgentWorkspaceStore.get(sessionId)
+        listOf("attachments", "offloads", "browser").forEach { subdir ->
             val hostDir = File(sessionBase, subdir).also { it.mkdirs() }
             val linuxPath = "/var/minis/$subdir"
             mounts[linuxPath] = hostDir.absolutePath
             PRootKernel.addBindMount(linuxPath, hostDir.absolutePath)
         }
+        val workspaceDir = (sharedWorkspace?.let { File(it) }
+            ?: File(sessionBase, "workspace")).also { it.mkdirs() }
+        mounts["/var/minis/workspace"] = workspaceDir.absolutePath
+        PRootKernel.addBindMount("/var/minis/workspace", workspaceDir.absolutePath)
 
         Log.w(TAG, "[diag] buildSessionBindMounts sessionId=$sessionId " +
             "attachments: prev=$prevAttachments new=${mounts["/var/minis/attachments"]}")

@@ -6,6 +6,7 @@ import com.openminis.app.debug.HeadlessChatRunner
 import com.openminis.app.tools.AgentToolPolicyStore
 import com.openminis.app.tools.AgentSystemPromptStore
 import com.openminis.app.tools.AgentRuntimePolicyStore
+import com.openminis.app.tools.AgentWorkspaceStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -49,6 +50,7 @@ internal object AgentSessionManager {
         modelEntryId: String,
         allowedTools: List<String> = emptyList(),
         maxOutputTokens: Int = 16_384,
+        workspaceHostPath: String? = null,
         agentRunId: String? = null,
         agentRole: String? = null,
     ): String = withContext(Dispatchers.IO) {
@@ -56,6 +58,7 @@ internal object AgentSessionManager {
         HeadlessChatRunner.applyModelOverride(context, sessionId, modelEntryId, null)
         AgentToolPolicyStore.setPolicy(sessionId, allowedTools)
         AgentRuntimePolicyStore.setMaxOutputTokens(sessionId, maxOutputTokens)
+        if (workspaceHostPath != null) AgentWorkspaceStore.set(sessionId, workspaceHostPath)
         if (agentRunId != null && agentRole != null) {
             val app = context.applicationContext as com.openminis.app.MinisApp
             app.chatRepository.dao.markAsAgentWorker(sessionId, agentRunId, agentRole)
@@ -96,6 +99,7 @@ internal object AgentSessionManager {
         AgentToolPolicyStore.clearPolicy(sessionId)
         AgentSystemPromptStore.clearPrompt(sessionId)
         AgentRuntimePolicyStore.clear(sessionId)
+        AgentWorkspaceStore.clear(sessionId)
         val app = context.applicationContext as com.openminis.app.MinisApp
         app.chatRepository.deleteSession(sessionId)
     }
