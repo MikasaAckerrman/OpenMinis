@@ -41,6 +41,7 @@ import com.openminis.app.data.repository.ProviderRepository
  *    spread spend across keys, which is a stronger statement of intent.
  */
 private val AGENT_ROLES = listOf(
+    // Order mirrors the pipeline: plan → analyse → design → build → review → test.
     "planner" to R.string.agent_role_planner,
     "analyst" to R.string.agent_role_analyst,
     "architect" to R.string.agent_role_architect,
