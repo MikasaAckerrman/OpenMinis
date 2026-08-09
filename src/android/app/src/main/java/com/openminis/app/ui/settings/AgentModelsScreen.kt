@@ -1,8 +1,14 @@
 package com.openminis.app.ui.settings
 
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -13,6 +19,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.openminis.app.R
+import com.openminis.app.data.model.ModelEntry
 import com.openminis.app.data.repository.ProviderRepository
 
 /**
@@ -133,42 +140,43 @@ fun AgentModelsScreen(
     }
 }
 
-@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AgentRoleModelPickerSheet(
     roleTitle: String,
     currentModelLabel: String?,
-    entries: List<com.openminis.app.data.model.ModelEntry>,
+    entries: List<ModelEntry>,
     selectedEntryId: String?,
     onSelect: (String?) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val sheetState = androidx.compose.material3.rememberModalBottomSheetState()
-    androidx.compose.material3.ModalBottomSheet(
+    val sheetState = rememberModalBottomSheetState()
+    ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
     ) {
-        androidx.compose.foundation.lazy.LazyColumn(Modifier.fillMaxWidth()) {
+        val useCurrentLabel = currentModelLabel
+            ?.let { stringResource(R.string.agent_models_use_current_named, it) }
+            ?: stringResource(R.string.agent_models_use_current)
+        LazyColumn(Modifier.fillMaxWidth()) {
             item {
-                androidx.compose.material3.Text(
+                Text(
                     text = roleTitle,
-                    style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
+                    style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
                 )
             }
             item {
                 SettingsChoiceRow(
-                    title = currentModelLabel
-                        ?.let { stringResource(R.string.agent_models_use_current_named, it) }
-                        ?: stringResource(R.string.agent_models_use_current),
+                    title = useCurrentLabel,
                     selected = selectedEntryId == null,
                     onSelect = { onSelect(null) },
                 )
             }
-            androidx.compose.foundation.lazy.itemsIndexed(
-                entries,
+            itemsIndexed(
+                items = entries,
                 key = { _, entry -> entry.id },
-            ) { index, entry ->
+            ) { index: Int, entry: ModelEntry ->
                 SettingsChoiceRow(
                     title = entry.model.displayName,
                     selected = entry.id == selectedEntryId,
