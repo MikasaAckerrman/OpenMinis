@@ -3085,7 +3085,13 @@ class ChatViewModel(
                     "db.query.end",
                     "count=${rows.size}",
                 )
-                val chatUi = rows.toChatMessages()
+                // [T-android-chat-open-json-reparse] One cache for this whole
+                // load: the toolResult pass, the UI pass and the LLM pass below
+                // all read the SAME parsed document per row. Dropped at the end
+                // of the block so parsed JSON for the entire session doesn't
+                // outlive the load.
+                val jsonCache = PartsJsonCache(rows.size)
+                val chatUi = rows.toChatMessages(jsonCache)
                 val tIoAfterTransform = System.currentTimeMillis()
                 com.openminis.app.diagnostics.PerfLongCtx.step(
                     sessionId,
@@ -3102,13 +3108,16 @@ class ChatViewModel(
                 var totalPartsChars = 0L
                 for (entity in rows) {
                     totalPartsChars += entity.partsJson.length
-                    llm.add(entity.toLLMMessage())
+                    llm.add(entity.toLLMMessage(jsonCache))
                 }
                 com.openminis.app.diagnostics.PerfLongCtx.step(
                     sessionId,
                     "toLLMMessage.end",
-                    "count=${llm.size} totalPartsChars=$totalPartsChars",
+                    "count=${llm.size} totalPartsChars=$totalPartsChars " +
+                        "jsonParsed=${jsonCache.size}",
                 )
+                // Parsed documents were needed only to build the two lists.
+                jsonCache.clear()
                 LoadedSessionData(
                     messages = rows,
                     ordered = chatUi,
@@ -9870,13 +9879,20 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         }
     }
 
-    private fun List<MessageEntity>.toChatMessages(): List<ChatMessage> {
+    private fun List<MessageEntity>.toChatMessages(
+        // [T-android-chat-open-json-reparse] Shared across the two passes below
+        // AND with the toLLMMessage loop in loadSession, so each row's
+        // partsJson is tokenised once per load instead of three times.
+        // Defaults to a private cache so the other call sites (fork, compact
+        // rebuild, snapshot reload) keep working unchanged.
+        jsonCache: PartsJsonCache = PartsJsonCache(size),
+    ): List<ChatMessage> {
         // First pass: extract all toolResult data keyed by toolUseId
         val toolResultMap = mutableMapOf<String, ToolResultData>()
         for (entity in this) {
             if (entity.role != "user") continue
+            val array = jsonCache.get(entity.id, entity.partsJson) ?: continue
             try {
-                val array = org.json.JSONArray(entity.partsJson)
                 for (i in 0 until array.length()) {
                     val obj = array.getJSONObject(i)
                     if (obj.optString("type") == "toolResult") {
@@ -9920,8 +9936,15 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                 ))
             }
 
+            val array = jsonCache.get(entity.id, entity.partsJson)
+            if (array == null) {
+                // Malformed row: same outcome as before (skip its parts), the
+                // difference is the cache already recorded the failure so the
+                // LLM pass doesn't pay the throw again.
+                Log.w(TAG, "toChatMessages: unparsable partsJson for ${entity.id.take(8)}")
+            }
             try {
-                val array = org.json.JSONArray(entity.partsJson)
+                if (array == null) throw IllegalStateException("unparsable")
                 var textBlockCounter = 0
                 for (i in 0 until array.length()) {
                     val obj = array.getJSONObject(i)
@@ -10100,14 +10123,21 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
 
     private data class ToolResultData(val output: String, val success: Boolean)
 
-    private fun MessageEntity.toLLMMessage(): LLMMessage {
+    private fun MessageEntity.toLLMMessage(
+        jsonCache: PartsJsonCache? = null,
+    ): LLMMessage {
         val r = if (role == "user") LLMMessage.Role.USER else LLMMessage.Role.ASSISTANT
         val contentParts = mutableListOf<AgentContentPart>()
         val imageParts = mutableListOf<LLMMessage.ImagePart>()
         var textContent = ""
 
         try {
-            val array = org.json.JSONArray(partsJson)
+            // [T-android-chat-open-json-reparse] Reuse the document the UI pass
+            // already parsed for this row when a load cache is supplied; fall
+            // back to a fresh parse for the single-row callers (live turn
+            // persist, retry, edit) where there is nothing to share with.
+            val array = jsonCache?.get(id, partsJson)
+                ?: org.json.JSONArray(partsJson)
             for (i in 0 until array.length()) {
                 val obj = array.getJSONObject(i)
                 when (obj.optString("type")) {
