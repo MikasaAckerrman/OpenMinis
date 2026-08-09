@@ -2,6 +2,7 @@ package com.openminis.app.data.model
 
 sealed class LLMError(message: String, cause: Throwable? = null) : Exception(message, cause) {
     class InvalidApiKey(val detail: String = "") : LLMError(if (detail.isBlank()) "Invalid API key" else "Invalid API key: $detail")
+    class QuotaExceeded(val detail: String) : LLMError("Quota exceeded: $detail")
     class NetworkError(cause: Throwable) : LLMError("Network error: ${cause.message}", cause)
     class ProviderError(val detail: String) : LLMError("Provider error: $detail")
     class DecodingError(cause: Throwable) : LLMError("Decoding error: ${cause.message}", cause)
@@ -17,13 +18,14 @@ sealed class LLMError(message: String, cause: Throwable? = null) : Exception(mes
     val isRetryable: Boolean get() = this is NetworkError || this is TransientError
 
     /** Should immediately fall back to the next model in the group — same model won't help. */
-    val isFallbackable: Boolean get() = this is RateLimited || this is InvalidApiKey || this is ProviderError
+    val isFallbackable: Boolean get() = this is RateLimited || this is InvalidApiKey || this is QuotaExceeded || this is ProviderError
 
     /** Short user-facing reason shown when a fallback engages. */
     val fallbackReason: String
         get() = when (this) {
             is RateLimited -> "Rate limited"
             is InvalidApiKey -> "Invalid API key"
+            is QuotaExceeded -> "Quota exceeded"
             is ProviderError -> "Provider error"
             is TransientError -> "Transient error"
             is NetworkError -> "Network error"

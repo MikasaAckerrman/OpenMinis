@@ -6268,6 +6268,7 @@ class ChatViewModel(
             // so we catch at collect level and unwrap.
             var collectDone = false
             var retryAttempt = 0  // per-turn auto-retry counter (resets on each new turn)
+            var quotaBackoffAttempt = 0
             while (!collectDone) {
                 try {
                     // [T-android-enhanced-cache] Stamp the per-turn Enhanced
@@ -6636,6 +6637,28 @@ class ChatViewModel(
                     if (e is CancellationException && e.cause == null) throw e  // real job cancellation
                     val actual = unwrapFlowException(e)
                     val isRateLimit = actual is com.openminis.app.data.model.LLMError.RateLimited
+                    val isQuotaExceeded = actual is com.openminis.app.data.model.LLMError.QuotaExceeded
+                    val isAgentWorker = com.openminis.app.tools.AgentRuntimePolicyStore
+                        .maxOutputTokensFor(realSessionId.ifEmpty { sessionId }) != null
+                    if (isQuotaExceeded && isAgentWorker) {
+                        val sessionIdForPolicy = realSessionId.ifEmpty { sessionId }
+                        val currentCap = com.openminis.app.tools.AgentRuntimePolicyStore
+                            .maxOutputTokensFor(sessionIdForPolicy) ?: 16_384
+                        val nextCap = com.openminis.app.offload.AgentQuotaBackoff.nextCap(currentCap)
+                        if (nextCap != null) {
+                            quotaBackoffAttempt += 1
+                            com.openminis.app.tools.AgentRuntimePolicyStore.setMaxOutputTokens(
+                                sessionIdForPolicy, nextCap,
+                            )
+                            AppLogger.warning(
+                                TAG,
+                                "[AgentQuotaBackoff] quota rejected cap=$currentCap; retry=" +
+                                    "$quotaBackoffAttempt nextCap=$nextCap",
+                            )
+                            clearInlineError()
+                            continue
+                        }
+                    }
                     val is5xx = actual is com.openminis.app.data.model.LLMError.ProviderError &&
                         actual.detail.contains(Regex("[5][0-9]{2}"))
                     // Auto-retry on transient network/5xx/transient errors on the SAME provider

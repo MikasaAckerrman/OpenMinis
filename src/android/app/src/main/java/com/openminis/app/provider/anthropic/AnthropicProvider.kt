@@ -1009,7 +1009,12 @@ class AnthropicProvider(
     }
 
     private fun mapHttpError(statusCode: Int, body: String): LLMError {
-        if (statusCode == 401 || statusCode == 403) return LLMError.InvalidApiKey()
+        if (statusCode == 401 || statusCode == 403) {
+            if (body.contains("insufficient_user_quota", ignoreCase = true) ||
+                body.contains("预扣费额度失败", ignoreCase = true)
+            ) return LLMError.QuotaExceeded(body.take(500))
+            return LLMError.InvalidApiKey()
+        }
         if (statusCode == 429) return LLMError.RateLimited()
 
         val message = try {
