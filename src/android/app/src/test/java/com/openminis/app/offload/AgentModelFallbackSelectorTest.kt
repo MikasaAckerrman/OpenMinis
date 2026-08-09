@@ -9,7 +9,7 @@ import org.junit.Test
 class AgentModelFallbackSelectorTest {
     private fun entry(id: String, output: Int?): ModelEntry = ModelEntry(
         providerInstanceId = "provider",
-        baseModel = LLMModel(id, id, "test", maxOutputTokens = output),
+        baseModel = LLMModel(id = id, displayName = id, provider = "test", maxOutputTokens = output),
         uuid = id,
     )
 

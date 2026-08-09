@@ -8,8 +8,13 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class AgentRoleModelResolverTest {
+    // NB: maxOutputTokens MUST be named — LLMModel's 4th positional parameter is
+    // contextWindow, so a positional call silently left the cap null and made the
+    // fallback sort by display name instead (the bug that failed this test in CI).
     private fun entry(id: String, output: Int? = 16_384) = ModelEntry(
-        providerInstanceId = "p", baseModel = LLMModel(id, id, "test", output), uuid = id,
+        providerInstanceId = "p",
+        baseModel = LLMModel(id = id, displayName = id, provider = "test", maxOutputTokens = output),
+        uuid = id,
     )
 
     @Test
