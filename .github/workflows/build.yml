@@ -90,6 +90,7 @@ jobs:
             --tests 'com.openminis.app.config.ConfigPathResolverTest' \
             --tests 'com.openminis.app.provider.QuotaErrorDetectionTest' \
             --tests 'com.openminis.app.tools.AgentSystemPromptStoreTest' \
+            --tests 'com.openminis.app.ui.chat.VmCacheLruTest' \
             --tests 'com.openminis.app.ui.chat.MinisTextKitSelectionOrderTest'
         # `offload.*` already covers AgentArtifactStoreTest — the artifact store
         # lives in that package on purpose, next to the runner that uses it.

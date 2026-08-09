@@ -2649,6 +2649,15 @@ class ChatViewModel(
                 rebuildProviderForNewCredential(pending)
             }
         }
+        // Pin this VM against LRU eviction while a turn is in flight, unpin when
+        // it settles. Same chokepoint as the credential swap above: the flag has
+        // many setters (finally blocks, cancel, fallback), so observing it beats
+        // patching each site — and a missed unpin would leak a resident VM.
+        viewModelScope.launch {
+            _isStreaming.collect { streaming ->
+                ChatViewModelStore.setPinned(realSessionId.ifEmpty { sessionId }, streaming)
+            }
+        }
         // Re-resolve provider when config changes (models may load async)
         viewModelScope.launch {
             // T306: wait for loadSession to finish BEFORE observing config.

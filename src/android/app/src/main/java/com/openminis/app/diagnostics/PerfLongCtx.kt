@@ -30,6 +30,33 @@ object PerfLongCtx {
 
     private const val CATEGORY = "Perf"
 
+    /**
+     * [T-android-perf-diag-costs-perf] Master gate for this whole breadcrumb
+     * stream.
+     *
+     * Why a gate at all: these steps fire on the hot reentry path (click →
+     * loadSession → first frame → per-row compose milestones), and [emit] is
+     * NOT free. It reads `Debug.getNativeHeapAllocatedSize()`, which walks
+     * native allocation bookkeeping rather than returning a cached counter, and
+     * then hands a freshly-built string to `AppLogger`, which always calls
+     * `Log.i` (the file writer can be off, the logcat write never is). On a
+     * 700-message session the tracer measuring the slow open was itself part of
+     * why the open was slow.
+     *
+     * Default OFF: diagnostics must be opt-in, otherwise every user pays for a
+     * measurement nobody reads. Turned on together with file logging — that is
+     * exactly the moment someone is diagnosing something.
+     */
+    @Volatile
+    private var enabled: Boolean = false
+
+    /** Enable/disable the breadcrumb stream. Called when logging is toggled. */
+    fun setEnabled(value: Boolean) {
+        enabled = value
+    }
+
+    fun isEnabled(): Boolean = enabled
+
     private val clickNsBySession = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private val lastNsBySession = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private val seq = AtomicLong(0)
@@ -56,6 +83,7 @@ object PerfLongCtx {
      * timestamp the user is waiting on.
      */
     fun click(sessionId: String) {
+        if (!enabled) return
         val now = System.nanoTime()
         clickNsBySession[sessionId] = now
         lastNsBySession[sessionId] = now
@@ -67,6 +95,7 @@ object PerfLongCtx {
      * callsites can pass `count=405 totalChars=1234567` etc.
      */
     fun step(sessionId: String, name: String, extra: String = "") {
+        if (!enabled) return
         val now = System.nanoTime()
         val last = lastNsBySession[sessionId] ?: clickNsBySession[sessionId] ?: now
         val elapsedMs = (now - last) / 1_000_000
@@ -81,6 +110,7 @@ object PerfLongCtx {
      * `sinceClickMs`; subsequent click() calls reset normally.
      */
     fun end(sessionId: String, name: String = "end", extra: String = "") {
+        if (!enabled) return
         step(sessionId, name, extra)
         lastNsBySession.remove(sessionId)
     }
@@ -94,6 +124,10 @@ object PerfLongCtx {
      * chunks.
      */
     fun maybeReportRowComposed(sessionId: String, itemClassName: String) {
+        // Called from EVERY LazyColumn item's compose lambda — the two
+        // ConcurrentHashMap lookups + increments per row are the reason this
+        // needs the gate first, before any bookkeeping.
+        if (!enabled) return
         val counter = rowComposeCount.computeIfAbsent(sessionId) { AtomicLong(0) }
         val types = rowComposeTypes.computeIfAbsent(sessionId) { java.util.concurrent.ConcurrentHashMap() }
         types.computeIfAbsent(itemClassName) { AtomicLong(0) }.incrementAndGet()

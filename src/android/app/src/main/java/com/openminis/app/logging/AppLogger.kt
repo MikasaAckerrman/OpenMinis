@@ -60,6 +60,10 @@ object AppLogger {
         logDir = File(context.filesDir, LOG_DIR).also { it.mkdirs() }
         enabled = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
             .getBoolean(KEY_ENABLED, false)
+        // Mirror the persisted state into the perf tracer at startup, otherwise
+        // a user who left logging ON would restart with the breadcrumbs silently
+        // off (and vice versa the tracer would stay on after a disable+restart).
+        com.openminis.app.diagnostics.PerfLongCtx.setEnabled(enabled)
         pruneOldLogs()
         if (enabled) startCapture()
     }
@@ -73,6 +77,11 @@ object AppLogger {
         enabled = value
         context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
             .edit().putBoolean(KEY_ENABLED, value).apply()
+        // [T-android-perf-diag-costs-perf] The perf breadcrumb stream rides the
+        // same switch: it is only useful while someone is diagnosing, and its
+        // emit path (native-heap read + a Log.i per step) is too expensive to
+        // leave on for every user. Single toggle, so the two can never disagree.
+        com.openminis.app.diagnostics.PerfLongCtx.setEnabled(value)
         if (value) startCapture() else stopCapture()
     }
 

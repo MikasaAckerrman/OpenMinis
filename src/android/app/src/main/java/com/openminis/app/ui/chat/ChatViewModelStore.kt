@@ -26,6 +26,69 @@ object ChatViewModelStore {
     private val stores = mutableMapOf<String, ViewModelStore>()
 
     /**
+     * [T-android-vm-cache-unbounded] LRU order of canonical session ids, oldest
+     * first. Kept separate from [stores] so eviction order survives lookups.
+     */
+    private val lruOrder = mutableListOf<String>()
+
+    /**
+     * How many session ViewModels stay resident. Each one holds that session's
+     * full `agentHistory` — every message with its `partsJson` already parsed
+     * into objects — so the cache was effectively "every chat the user opened
+     * since launch, forever": nothing evicted it, `release()` only ran when a
+     * session was DELETED. After browsing a few dozen long chats the heap is
+     * carrying tens of thousands of parsed messages, which is what turns a
+     * later chat open into a GC-bound crawl.
+     *
+     * 3 covers the real navigation pattern (current chat + the one you came
+     * from + one more) while keeping the resident set bounded.
+     */
+    private const val MAX_RESIDENT = 3
+
+    /**
+     * Sessions that must never be evicted regardless of LRU position: a
+     * streaming agent loop lives in its VM's `viewModelScope`, so clearing that
+     * store mid-stream would cancel the user's in-flight response. Registered by
+     * the VM while `isStreaming` is true.
+     */
+    private val pinned = mutableSetOf<String>()
+
+    /**
+     * Pin/unpin a session against eviction. Called by ChatViewModel around a
+     * streaming turn — a cancelled scope mid-stream is a lost reply, which is
+     * strictly worse than holding one extra VM in memory.
+     */
+    @Synchronized
+    fun setPinned(sessionId: String, value: Boolean) {
+        val key = resolveKey(sessionId)
+        if (value) pinned.add(key) else pinned.remove(key)
+    }
+
+    /**
+     * Evict least-recently-used stores beyond [MAX_RESIDENT], skipping the
+     * active chat and anything pinned (streaming). Clearing a store cancels its
+     * `viewModelScope` and triggers `onCleared`; the next `ownerFor` rebuilds
+     * the VM from SQLite, so eviction costs a reload, never data.
+     */
+    @Synchronized
+    private fun evictIfNeeded() {
+        val active = activeSessionIdInternal?.let { resolveKey(it) }
+        var i = 0
+        while (stores.size > MAX_RESIDENT && i < lruOrder.size) {
+            val key = lruOrder[i]
+            if (key == active || key in pinned) {
+                i++
+                continue
+            }
+            lruOrder.removeAt(i)
+            stores.remove(key)?.let {
+                it.clear()
+                Log.d(TAG, "evict store for $key (resident=${stores.size})")
+            }
+        }
+    }
+
+    /**
      * Draft → canonical mapping. When a draft ("__new__...") session is
      * persisted, we add `draftKey -> realId` here so lookups via the old key
      * (from a ChatScreen whose `sessionId` parameter is still the draft)
@@ -43,6 +106,10 @@ object ChatViewModelStore {
             Log.d(TAG, "allocate store for $key (total=${stores.size + 1})")
             ViewModelStore()
         }
+        // Touch: move to the MRU end, then evict whatever fell off the tail.
+        lruOrder.remove(key)
+        lruOrder.add(key)
+        evictIfNeeded()
         return object : ViewModelStoreOwner {
             override val viewModelStore: ViewModelStore = store
         }
@@ -57,6 +124,8 @@ object ChatViewModelStore {
     fun release(sessionId: String) {
         val key = resolveKey(sessionId)
         aliases.entries.removeAll { it.value == key }
+        lruOrder.remove(key)
+        pinned.remove(key)
         stores.remove(key)?.let {
             it.clear()
             Log.d(TAG, "release store for $key (remaining=${stores.size})")
@@ -96,6 +165,12 @@ object ChatViewModelStore {
         if (store != null) {
             stores[toSessionId] = store
         }
+        // Carry LRU position + pin across the rename, otherwise a draft that
+        // just became a real session looks brand-new to the evictor (or, worse,
+        // keeps a stale key pinned forever).
+        val lruIdx = lruOrder.indexOf(fromSessionId)
+        if (lruIdx >= 0) lruOrder[lruIdx] = toSessionId
+        if (pinned.remove(fromSessionId)) pinned.add(toSessionId)
         aliases[fromSessionId] = toSessionId
         Log.d(TAG, "rename store $fromSessionId -> $toSessionId (alias kept)")
     }
