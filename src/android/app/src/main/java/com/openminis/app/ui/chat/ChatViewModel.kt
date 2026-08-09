@@ -731,6 +731,14 @@ class ChatViewModel(
     private var currentProvider: LLMProvider? = null
     private var currentModel: LLMModel? = null
 
+    /**
+     * [T-stale-credential-after-key-swap] Credential generation observed while
+     * a stream was running, to be applied once the stream ends. Without this,
+     * a key swapped mid-stream would be dropped: the collector already fired
+     * and the deferred rebuild had nothing to re-trigger it.
+     */
+    private var pendingCredentialGeneration: Int? = null
+
     /** Structured agent history for the agent loop (contentParts-based). */
     private val agentHistory = mutableListOf<LLMMessage>()
 
@@ -2630,6 +2638,17 @@ class ChatViewModel(
                 rebuildProviderForNewCredential(generation)
             }
         }
+        // Apply a credential swap that landed mid-stream, once the stream ends.
+        // _isStreaming has many setters (finally blocks, cancel, fallback), so
+        // observing the flag is the single chokepoint instead of patching each.
+        viewModelScope.launch {
+            _isStreaming.collect { streaming ->
+                if (streaming) return@collect
+                val pending = pendingCredentialGeneration ?: return@collect
+                pendingCredentialGeneration = null
+                rebuildProviderForNewCredential(pending)
+            }
+        }
         // Re-resolve provider when config changes (models may load async)
         viewModelScope.launch {
             // T306: wait for loadSession to finish BEFORE observing config.
@@ -3663,6 +3682,60 @@ class ChatViewModel(
             currentProvider = ProviderFactory.create(instance, apiKey, entry.model, context)
         }
         return true
+    }
+
+    /**
+     * [T-stale-credential-after-key-swap] Re-create [currentProvider] from the
+     * freshly-stored credential, keeping the session's model/entry choice.
+     *
+     * Called on every [ProviderRepository.credentialGeneration] bump. Cheap and
+     * idempotent: it only touches the provider object, not the model binding,
+     * so a key rotation never silently moves the user to a different model.
+     *
+     * Skips while a stream is in flight — swapping the provider mid-stream
+     * would leave the running collector reading from an object nobody owns.
+     * The in-flight request keeps the old key (it was already authorized when
+     * it started, or it fails and the retry picks up the new provider).
+     */
+    private fun rebuildProviderForNewCredential(generation: Int) {
+        if (currentProvider == null) return  // nothing cached yet; normal resolution will read the new key
+        if (_isStreaming.value) {
+            AppLogger.info(
+                TAG,
+                "[CredentialSwap] gen=$generation deferred — stream in flight",
+            )
+            pendingCredentialGeneration = generation
+            return
+        }
+        val entryId = _activeEntryId.value ?: return
+        val entry = providerRepository.config.value.modelEntries.find { it.id == entryId } ?: return
+        val instance = providerRepository.instance(entry.providerInstanceId) ?: return
+        val apiKey = providerRepository.loadApiKey(instance.id)
+        if (apiKey.isNullOrEmpty()) {
+            // Credential was cleared, not replaced. Drop the cached provider so
+            // the config collector re-resolves (possibly to another group member)
+            // instead of calling with a key we know is gone.
+            currentProvider = null
+            AppLogger.warning(
+                TAG,
+                "[CredentialSwap] gen=$generation credential cleared for ${instance.label} — provider dropped",
+            )
+            return
+        }
+        currentProvider = try {
+            ProviderFactory.create(instance, apiKey, entry.model, context)
+        } catch (e: Exception) {
+            AppLogger.warning(
+                TAG,
+                "[CredentialSwap] gen=$generation rebuild failed for ${instance.label}: ${e.message}",
+            )
+            return
+        }
+        pendingCredentialGeneration = null
+        AppLogger.info(
+            TAG,
+            "[CredentialSwap] gen=$generation provider rebuilt provider=${instance.label} model=${entry.model.id}",
+        )
     }
 
     /** Select a specific model entry (bypasses group selection). */
