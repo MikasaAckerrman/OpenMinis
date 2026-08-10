@@ -64,13 +64,13 @@ interface ChatDao {
     // stands in for the whole run. Keeping the run id on BOTH means deleting the
     // showcase can find and remove its workers.
     @Query(
-        "SELECT * FROM sessions WHERE agent_run_id IS NULL OR is_agent_showcase = 1 " +
+        "SELECT * FROM sessions WHERE agent_run_id IS NULL " +
             "ORDER BY updated_at DESC"
     )
     fun observeSessions(): Flow<List<ChatSessionEntity>>
 
     @Query(
-        "SELECT * FROM sessions WHERE agent_run_id IS NULL OR is_agent_showcase = 1 " +
+        "SELECT * FROM sessions WHERE agent_run_id IS NULL " +
             "ORDER BY updated_at DESC"
     )
     suspend fun listSessions(): List<ChatSessionEntity>
@@ -270,11 +270,13 @@ interface ChatDao {
     suspend fun updateLastAssistantError(sessionId: String, errorInfo: String?)
 
     // Pinned sessions first, then by updated_at.
-    // [T-agent-graph-showcase] Same worker filter as observeSessions: an agent
-    // run's worker sessions must not surface here either, or the list this feeds
-    // would show them despite the main list hiding them.
+    // [T-agent-graph-showcase-hide] Worker AND showcase sessions are hidden: a
+    // run now surfaces as a live card inside the chat that started it (see
+    // AgentRunProgressCard), so a separate showcase chat in the list is just
+    // noise the user did not create. The showcase session still exists (kept for
+    // its transcript, reachable via the card), it is only excluded from the list.
     @Query(
-        "SELECT * FROM sessions WHERE agent_run_id IS NULL OR is_agent_showcase = 1 " +
+        "SELECT * FROM sessions WHERE agent_run_id IS NULL " +
             "ORDER BY CASE WHEN pinned_at IS NOT NULL THEN 0 ELSE 1 END, pinned_at DESC, updated_at DESC"
     )
     fun observeSessionsSorted(): Flow<List<ChatSessionEntity>>
