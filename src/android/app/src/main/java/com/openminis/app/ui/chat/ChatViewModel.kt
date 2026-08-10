@@ -8526,6 +8526,26 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         val globalMemoryFragment = if (memoryOn) memoryRepository?.loadGlobalMemoryFragment() else null
         val dailyMemoryFragment = if (memoryOn) memoryRepository?.loadRecentDailyMemoryFragment() else null
 
+        val workerSessionId = realSessionId.ifEmpty { sessionId }
+        val rolePrompt = com.openminis.app.tools.AgentSystemPromptStore.promptFor(workerSessionId)
+        // [T-agent-worker-prompt] A graph worker's prompt REPLACES everything
+        // above instead of being appended to it. Returning early is the whole
+        // point: `base` is 22 000 chars (~5 500 tokens) documenting android-*,
+        // minis-config, browser_use, memory, skills and MCP — none of which is in
+        // a worker's tool schema. Paying that on every call of every role is what
+        // made adding a role expensive, and it framed the role contract as a
+        // footnote under "you are a general assistant".
+        //
+        // Skills / MCP / memory fragments are skipped for the same reason: a
+        // worker cannot act on them, and the fragments cost a disk read each.
+        if (rolePrompt != null && com.openminis.app.tools.AgentSystemPromptStore.isStandalone(workerSessionId)) {
+            com.openminis.app.logging.AppLogger.info(
+                "AgentPrompt",
+                "[AgentPrompt] standalone session=${workerSessionId.take(8)} " +
+                    "len=${rolePrompt.length} (general prompt skipped: ${base.length} chars)",
+            )
+            return rolePrompt
+        }
         return buildString {
             append(base)
             if (skillFragment != null) {
@@ -8562,25 +8582,25 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
             // cacheable prefix intact for normal chats.
             val workerSessionId = realSessionId.ifEmpty { sessionId }
             val rolePrompt = com.openminis.app.tools.AgentSystemPromptStore.promptFor(workerSessionId)
-            // Runtime policy is registered independently when the worker session
-            // is created, so it still identifies an agent when the prompt store
-            // lookup itself is the broken link we are diagnosing.
-            if (
-                rolePrompt != null ||
-                com.openminis.app.tools.AgentRuntimePolicyStore.maxOutputTokensFor(workerSessionId) != null
-            ) {
+            // Non-standalone path: a role addendum appended after Runtime context.
+            // The standalone worker case returned early above.
+            if (rolePrompt != null) {
                 com.openminis.app.logging.AppLogger.info(
                     "AgentPrompt",
-                    if (rolePrompt != null) {
-                        "[AgentPrompt] applied session=${workerSessionId.take(8)} len=${rolePrompt.length}"
-                    } else {
-                        "[AgentPrompt] MISSING session=${workerSessionId.take(8)}"
-                    },
+                    "[AgentPrompt] appended session=${workerSessionId.take(8)} len=${rolePrompt.length}",
                 )
-            }
-            if (rolePrompt != null) {
                 append("\n\n")
                 append(rolePrompt)
+            } else if (
+                com.openminis.app.tools.AgentRuntimePolicyStore.maxOutputTokensFor(workerSessionId) != null
+            ) {
+                // Runtime policy is registered independently when the worker
+                // session is created, so it still identifies an agent when the
+                // prompt store lookup itself is the broken link being diagnosed.
+                com.openminis.app.logging.AppLogger.info(
+                    "AgentPrompt",
+                    "[AgentPrompt] MISSING session=${workerSessionId.take(8)}",
+                )
             }
         }
     }

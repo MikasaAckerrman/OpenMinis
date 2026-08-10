@@ -33,16 +33,38 @@ object AgentSystemPromptStore {
     private val prompts = ConcurrentHashMap<String, String>()
 
     /**
+     * [T-agent-worker-prompt] Sessions whose prompt REPLACES the general
+     * assistant prompt instead of being appended to it.
+     *
+     * Why a flag rather than always replacing: the store is also the route for a
+     * plain role addendum, and silently discarding the general prompt for every
+     * caller would be a behaviour change nobody asked for. A graph worker opts
+     * in; anything else keeps the additive semantics it was written against.
+     */
+    private val standaloneSessions = java.util.Collections.newSetFromMap(
+        ConcurrentHashMap<String, Boolean>(),
+    )
+
+    /**
      * Attach [systemPrompt] to [sessionId]. A blank prompt clears the entry
      * instead of appending an empty section.
+     *
+     * [standalone] = true means this prompt is the ENTIRE system prompt for the
+     * session — used by graph workers, which must not carry 5 500 tokens of
+     * documentation for tools their schema does not expose.
      */
-    fun setPrompt(sessionId: String, systemPrompt: String) {
+    fun setPrompt(sessionId: String, systemPrompt: String, standalone: Boolean = false) {
         if (systemPrompt.isBlank()) {
             prompts.remove(sessionId)
+            standaloneSessions.remove(sessionId)
         } else {
             prompts[sessionId] = systemPrompt
+            if (standalone) standaloneSessions.add(sessionId) else standaloneSessions.remove(sessionId)
         }
     }
+
+    /** True when [sessionId]'s prompt replaces the general prompt entirely. */
+    fun isStandalone(sessionId: String): Boolean = sessionId in standaloneSessions
 
     /** Role prompt for [sessionId], or null for an ordinary chat. */
     fun promptFor(sessionId: String): String? = prompts[sessionId]
@@ -50,10 +72,12 @@ object AgentSystemPromptStore {
     /** Drop the entry — called when a graph run ends or its session is deleted. */
     fun clearPrompt(sessionId: String) {
         prompts.remove(sessionId)
+        standaloneSessions.remove(sessionId)
     }
 
     /** Drop every entry. Used by tests and on a full graph-engine reset. */
     fun clearAll() {
         prompts.clear()
+        standaloneSessions.clear()
     }
 }

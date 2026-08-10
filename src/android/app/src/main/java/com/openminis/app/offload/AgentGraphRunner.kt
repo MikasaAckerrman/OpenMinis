@@ -596,7 +596,25 @@ internal object AgentGraphRunner {
         // sessionGroup nodes share one session: the next role in the group
         // must overwrite the previous role's contract, not inherit it.
         val systemPrompt = buildSystemPrompt(node, state, replicaIndex)
-        com.openminis.app.tools.AgentSystemPromptStore.setPrompt(sessionId, systemPrompt)
+        // [T-agent-worker-prompt] Marked as a WORKER prompt: the chat layer uses
+        // it as the WHOLE system prompt instead of appending it under the general
+        // assistant prompt. Measured on PROBE-10, that general prompt is 22 000
+        // chars (~5 500 tokens) of android-*/minis-config/browser_use/memory docs
+        // the worker's schema does not even expose — paid on every call of every
+        // role, and it framed the role contract as a footnote to argue against.
+        com.openminis.app.tools.AgentSystemPromptStore.setPrompt(
+            sessionId,
+            com.openminis.app.tools.AgentWorkerPrompt.build(
+                assistantName = com.openminis.app.agent.SoulStore
+                    .cachedMetadata.value.name.trim().ifEmpty { "Minis" },
+                roleContract = systemPrompt,
+                allowedTools = node.allowedTools.map {
+                    com.openminis.app.tools.AgentTools.canonicalToolName(it)
+                },
+                workspaceDir = state.artifactDir,
+            ),
+            standalone = true,
+        )
 
         // Build user message with handoff from predecessors + input
         val userMessage = buildUserMessage(node, state, runtimeId)
