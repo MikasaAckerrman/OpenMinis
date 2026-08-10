@@ -2814,6 +2814,19 @@ class OpenAIProvider private constructor(
 
         val transientCodes = setOf(500, 502, 503, 504, 529)
         if (statusCode in transientCodes) {
+            // A moderation rejection arrives as 500 but is DETERMINISTIC: the
+            // same body trips the same keyword filter every time. Retrying it
+            // three times is exactly what the user saw ("Transient error:
+            // [500] sensitive words detected — retrying (2/3)"). Route it to
+            // ProviderError so the model group falls back to a provider whose
+            // blocklist differs — or has none. See ContentFilterDetection.
+            if (com.openminis.app.provider.ContentFilterDetection
+                    .isContentFilterRejection(body)
+            ) {
+                return LLMError.ProviderError(
+                    com.openminis.app.provider.ContentFilterDetection.describe(body),
+                )
+            }
             // 503 with permanent failure indicators → ProviderError (trigger group fallback)
             if (statusCode == 503 && (body.contains("no_available_providers") || body.contains("model_not_found"))) {
                 return LLMError.ProviderError(message)

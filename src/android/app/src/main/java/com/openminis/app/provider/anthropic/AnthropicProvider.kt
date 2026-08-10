@@ -1033,6 +1033,17 @@ class AnthropicProvider(
 
         val transientCodes = setOf(500, 502, 503, 504, 529)
         if (statusCode in transientCodes) {
+            // Same trap as in OpenAIProvider: relays that expose an
+            // Anthropic-shaped endpoint run the same keyword filter and report
+            // it as 500. A moderation verdict is deterministic, so retrying is
+            // three doomed round-trips; fall back to another provider instead.
+            if (com.openminis.app.provider.ContentFilterDetection
+                    .isContentFilterRejection(body)
+            ) {
+                return LLMError.ProviderError(
+                    com.openminis.app.provider.ContentFilterDetection.describe(body),
+                )
+            }
             return LLMError.TransientError(message)
         }
         return LLMError.ProviderError(message)

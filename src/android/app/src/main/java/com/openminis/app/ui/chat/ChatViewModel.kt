@@ -7600,6 +7600,34 @@ class ChatViewModel(
                 nodeBinding.taskId, nodeBinding.runtimeId, name,
             )
         }
+
+        // Per-node tool budget. A role that keeps gathering instead of
+        // delivering is refused here rather than killed: the model still gets to
+        // finish with what it read, which beats a cancelled run. Measured need —
+        // run 9eb70345's planner made 14 calls and produced no plan.
+        val budgetLimit = com.openminis.app.tools.AgentToolBudgetStore.limitFor(sessionId)
+        if (budgetLimit != null) {
+            val used = com.openminis.app.tools.AgentToolBudgetStore.usedBy(sessionId)
+            val verdict = com.openminis.app.offload.AgentToolBudget.check(
+                used = used,
+                budget = budgetLimit,
+                roleLabel = com.openminis.app.tools.AgentToolBudgetStore.roleLabelFor(sessionId),
+                artifact = com.openminis.app.tools.AgentToolBudgetStore.artifactFor(sessionId),
+            )
+            if (!verdict.allowed) {
+                AppLogger.warning(
+                    "AgentRoute",
+                    "tool budget spent sid=${sessionId.take(8)} tool=$name used=$used/$budgetLimit",
+                )
+                if (nodeBinding != null) {
+                    com.openminis.app.offload.AgentRunProgress.nodeTool(
+                        nodeBinding.taskId, nodeBinding.runtimeId, null,
+                    )
+                }
+                return ToolExecutionResult(verdict.message, false)
+            }
+            com.openminis.app.tools.AgentToolBudgetStore.recordCall(sessionId)
+        }
         try {
             return when (name) {
             FileReadTool.NAME -> {

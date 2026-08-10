@@ -482,7 +482,16 @@ class GeminiProvider(
         if (statusCode == 429) return LLMError.RateLimited()
         val message = "Gemini API error $statusCode: ${body.take(200)}"
         val transientCodes = setOf(500, 502, 503, 504, 529)
-        if (statusCode in transientCodes) return LLMError.TransientError(message)
+        if (statusCode in transientCodes) {
+            if (com.openminis.app.provider.ContentFilterDetection
+                    .isContentFilterRejection(body)
+            ) {
+                return LLMError.ProviderError(
+                    com.openminis.app.provider.ContentFilterDetection.describe(body),
+                )
+            }
+            return LLMError.TransientError(message)
+        }
         return LLMError.ProviderError(message)
     }
 

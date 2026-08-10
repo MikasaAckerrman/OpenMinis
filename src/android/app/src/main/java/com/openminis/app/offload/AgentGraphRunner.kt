@@ -233,6 +233,7 @@ internal object AgentGraphRunner {
             com.openminis.app.tools.AgentRuntimePolicyStore.clear(sid)
             com.openminis.app.tools.AgentWorkspaceStore.clear(sid)
             com.openminis.app.tools.AgentNodeBinding.unbind(sid)
+            com.openminis.app.tools.AgentToolBudgetStore.clear(sid)
         }
 
         // Write trace
@@ -585,6 +586,17 @@ internal object AgentGraphRunner {
         // [A3] Let the tool executor find this node from its session id, so the
         // card can name the tool a long-running agent is currently in.
         com.openminis.app.tools.AgentNodeBinding.bind(sessionId, state.taskId, runtimeId)
+        // Arm the per-node tool budget. `maxTurns` had been a dead field since
+        // the graph model was written; run 9eb70345 showed the cost — the
+        // planner made 14 tool calls and never produced a plan. Set here rather
+        // than at session creation because a sessionGroup shares one session
+        // across roles, and each role must start with its own budget.
+        com.openminis.app.tools.AgentToolBudgetStore.set(
+            sessionId,
+            if (node.maxTurns > 0) node.maxTurns else AgentToolBudget.DEFAULT_BUDGET,
+            roleLabel = AgentRunShowcase.roleLabel(node.role),
+            artifact = node.ownedArtifact.ifBlank { "your artifact" },
+        )
 
         // Build system prompt with role + tool allowlist + scope contract.
         //

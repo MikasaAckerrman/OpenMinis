@@ -116,7 +116,10 @@ internal object BuiltinGraphs {
                     first line of DELIVERABLES.
 
                     I read the codebase first — a plan written without looking is a guess
-                    with formatting.
+                    with formatting. But I have a small tool budget on purpose: a handful of
+                    targeted reads, then the plan. If I find myself exploring instead of
+                    deciding, the answer is to plan with what I have and name the unknowns
+                    in REMAINING_RISKS.
 
                     $NO_CODE
                     $NO_GUESS
@@ -182,9 +185,12 @@ internal object BuiltinGraphs {
     )
 
     /**
-     * Seven nodes with two parallel review lanes and two implementer replicas.
-     * Exercises everything the engine can do — replicas, sharding, fan-in,
-     * conditional routing — which is what makes it useful as a test target.
+     * Seven nodes with two parallel review lanes and fan-in.
+     *
+     * Review parallelises safely — two reviewers reading the same diff cannot
+     * corrupt each other's work, and they answer independent questions
+     * (correctness vs security). Implementation does not, which is why there is
+     * exactly one implementer; see the note on that node.
      */
     fun full(): AgentGraph = AgentGraph(
         id = ID_FULL,
@@ -261,7 +267,7 @@ internal object BuiltinGraphs {
             AgentNode(
                 id = "architect",
                 role = AgentRole.SOLUTION_ARCHITECT,
-                ownedArtifact = "a design document with interface contracts and a two-way shard split",
+                ownedArtifact = "a design document with interface contracts and an implementation order",
                 mayDelegateTo = listOf(AgentRole.SENIOR_IMPLEMENTER),
                 modelRole = "architect",
                 thinkingLevel = ThinkingLevel.HIGH,
@@ -275,11 +281,10 @@ internal object BuiltinGraphs {
                     a file ownership map; migration order when the change is not additive;
                     risks with mitigations.
 
-                    SHARDING — two implementers run in parallel. My ownership map MUST split
-                    into two DISJOINT groups, stated as `SHARD A: <files>` and
-                    `SHARD B: <files>`. Two implementers touching one file means one loses
-                    work. If the change genuinely cannot be split, I say so and put
-                    everything in SHARD A, leaving SHARD B empty.
+                    ORDER — a single implementer works through my map sequentially, so I
+                    state the order explicitly and put anything another step depends on
+                    first. I do not split the work into parallel lanes: one implementer with
+                    the whole picture makes consistent decisions, two make conflicting ones.
 
                     I write a DESIGN DOCUMENT. $NO_CODE
                     I MUST NEVER optimise for cleverness: the simplest design that satisfies
@@ -290,7 +295,7 @@ internal object BuiltinGraphs {
             AgentNode(
                 id = "implementer",
                 role = AgentRole.SENIOR_IMPLEMENTER,
-                ownedArtifact = "production code confined to MY shard",
+                ownedArtifact = "production code implementing the approved design",
                 mayDelegateTo = listOf(
                     AgentRole.CODE_CORRECTNESS_REVIEWER,
                     AgentRole.SECURITY_REVIEWER,
@@ -298,23 +303,30 @@ internal object BuiltinGraphs {
                 modelRole = "coder",
                 thinkingLevel = ThinkingLevel.MEDIUM,
                 maxTurns = 15,
-                replicas = 2,
-                shardHint = listOf(
-                    "SHARD A from the architect's ownership map. I read SHARD B only to " +
-                        "honour its interfaces; I never edit a file in it.",
-                    "SHARD B from the architect's ownership map. I read SHARD A only to " +
-                        "honour its interfaces; I never edit a file in it.",
-                ),
+                // Single implementer, not two replicas.
+                //
+                // This node ran `replicas = 2` with a shard map, which is the
+                // exact architecture Cognition's "Don't Build Multi-Agents"
+                // documents as the fragile one: two workers cannot see each
+                // other's reasoning, so their ACTIONS carry conflicting implicit
+                // decisions even when they never touch the same file — their
+                // Flappy Bird example produced a Mario-styled background beside
+                // a bird with the wrong physics, both individually correct.
+                // Anthropic's own multi-agent write-up says the same about this
+                // domain specifically: coding has few genuinely parallel
+                // subtasks and today's models coordinate poorly in real time.
+                // Sharding is still supported by the engine for graphs that want
+                // it; the built-in stops advertising it as the default.
+                replicas = 1,
+                shardHint = emptyList(),
                 allowedTools = listOf("file_read", "file_write", "file_edit", "shell"),
                 systemPrompt = """
-                    You implement the approved design inside your shard, and nowhere else.
+                    You implement the approved design.
 
-                    SHARD DISCIPLINE — a sibling implementer works the other shard right
-                    now. Before editing any file I ask: is this file in MY shard? If not, I
-                    stop. Editing outside my shard means we overwrite each other and one of
-                    us loses work. If my shard cannot be finished without a change on the
-                    other side, I return STATUS: BLOCKED naming the file and the change. I
-                    do NOT make it myself, however small.
+                    SCOPE DISCIPLINE — I implement what the design specifies and nothing
+                    adjacent. If the design cannot be finished without a change it did not
+                    call for, I return STATUS: BLOCKED naming the file and the change rather
+                    than making it myself, however small.
 
                     I MUST NEVER: change a public interface without approval; write or edit
                     tests; expand scope; "improve" code beyond what the design requires.
