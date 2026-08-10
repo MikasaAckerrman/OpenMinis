@@ -936,6 +936,9 @@
     <string name="add_models_to_group_no_match">Подходящие модели не найдены.</string>
     <string name="chat_longpress_edit">Изменить</string>
     <string name="chat_edit_exit_button">Выйти из режима редактирования</string>
+    <!-- A1 — переключатель «Агенты» в композере -->
+    <string name="chat_agents_toggle_on">Агенты включены — этот чат ведёт команда агентов</string>
+    <string name="chat_agents_toggle_off">Агенты выключены — маршрутизация решает сама</string>
     <string name="chat_clear_dialog_body">Удалить все сообщения из этой сессии? Файлы в рабочей области, вложения и выгрузки сохранятся.</string>
     <string name="chat_clear_dialog_confirm">Очистить</string>
     <string name="settings_shared_folders">Общие папки</string>

@@ -94,6 +94,7 @@ jobs:
             --tests 'com.openminis.app.tools.AgentSystemPromptStandaloneTest' \
             --tests 'com.openminis.app.ui.chat.VmCacheLruTest' \
             --tests 'com.openminis.app.ui.chat.PartsJsonCacheTest' \
+            --tests 'com.openminis.app.ui.chat.AgentModePrefsTest' \
             --tests 'com.openminis.app.offload.AgentRunProgressTest' \
             --tests 'com.openminis.app.ui.chat.ChatHistoryWindowTest' \
             --tests 'com.openminis.app.ui.chat.MinisTextKitSelectionOrderTest'

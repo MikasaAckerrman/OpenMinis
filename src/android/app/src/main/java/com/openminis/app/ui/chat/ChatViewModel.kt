@@ -601,6 +601,20 @@ class ChatViewModel(
     private val _editingMessageId = MutableStateFlow<String?>(null)
     val editingMessageId: StateFlow<String?> = _editingMessageId.asStateFlow()
 
+    /**
+     * [A1] Composer "Agents" toggle for THIS chat. ON forces the agent team for
+     * every turn; OFF leaves the decision to the `agent.autoRoute` classifier,
+     * which is where it was before this button existed.
+     *
+     * Seeded from disk so the toggle survives process death mid-task, and
+     * written through on every change — see AgentModePrefs for why it is
+     * per-session rather than global.
+     */
+    private val _forceAgents = MutableStateFlow(
+        AgentModePrefs.isForced(context, sessionId),
+    )
+    val forceAgents: StateFlow<Boolean> = _forceAgents.asStateFlow()
+
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
@@ -2834,6 +2848,10 @@ class ChatViewModel(
         // sessionId so re-entering the session reuses the same instance.
         if (isDraft) {
             ChatViewModelStore.rename(sessionId, session.id)
+            // [A1] The composer's Agents toggle is stored per session id, so a
+            // draft's flag has to follow the promotion or it would persist under
+            // an id that no longer exists.
+            AgentModePrefs.migrate(context, fromDraft = sessionId, toReal = session.id)
             // Bring every disk/shell resource that was opened with the draft
             // id over to the real id *before* agent tools start running against
             // the persisted session — otherwise the first tool call (e.g.
@@ -4531,6 +4549,25 @@ class ChatViewModel(
     }
 
     /**
+     * [A1] Flip the composer's "Agents" toggle for this chat.
+     *
+     * Writes through to disk immediately rather than on send: the user may set
+     * it and then compose for a while, and the whole point of persisting is to
+     * survive the process dying during exactly that window.
+     */
+    fun setForceAgents(enabled: Boolean) {
+        if (_forceAgents.value == enabled) return
+        _forceAgents.value = enabled
+        // Effective id, not the constructor's: after a draft is promoted the
+        // flag must be written under the real session id. Cannot be used for the
+        // seed above — `realSessionId` is declared further down this file and is
+        // therefore still uninitialised during property construction.
+        val sid = realSessionId.ifEmpty { sessionId }
+        AgentModePrefs.setForced(context, sid, enabled)
+        AppLogger.info("AgentRoute", "composer agents toggle -> $enabled sid=${sid.take(8)}")
+    }
+
+    /**
      * T187: drop the message at [messageId] *and* every later message
      * (in UI, in agentHistory, and on disk) so the new sendMessage()
      * call below this can persist the edited text as a fresh user
@@ -5064,6 +5101,15 @@ class ChatViewModel(
             val isGraphWorker = com.openminis.app.tools.AgentSystemPromptStore
                 .promptFor(realSessionId.ifEmpty { sessionId }) != null
             val routingEnabled = com.openminis.app.offload.AgentDispatcher.isEnabled(context)
+            // [A1] The composer toggle is the user's explicit decision, so it
+            // outranks the classifier. AgentRouteGate holds the whole rule as
+            // pure data — it is unit-tested, which the surrounding coroutine
+            // cannot be.
+            val gate = com.openminis.app.offload.AgentRouteGate.decide(
+                forcedByUser = _forceAgents.value,
+                autoRouteEnabled = routingEnabled,
+                isGraphWorker = isGraphWorker,
+            )
             // [T-agent-route-observability] Routing decisions were only visible
             // through android.util.Log, which the in-app log file captures via a
             // logcat tailer that is not always attached — so a run that never
@@ -5071,21 +5117,27 @@ class ChatViewModel(
             // writes straight to the file the user and `debug.logs.read` see.
             com.openminis.app.logging.AppLogger.info(
                 "AgentRoute",
-                "send: autoRoute=$routingEnabled graphWorker=$isGraphWorker " +
+                "send: intent=${gate.intent} (${gate.reason}) forced=${_forceAgents.value} " +
+                    "autoRoute=$routingEnabled graphWorker=$isGraphWorker " +
                     "chars=${trimmed.length}",
             )
-            val routing = if (
-                !isGraphWorker && routingEnabled
-            ) {
-                withContext(Dispatchers.IO) {
-                    com.openminis.app.offload.AgentDispatcher.decide(
-                        context = context,
-                        providerRepository = providerRepository,
-                        userMessage = trimmed,
-                    )
-                }
-            } else {
-                null
+            val routing = when (gate.intent) {
+                com.openminis.app.offload.AgentRouteGate.Intent.FORCE_GRAPH ->
+                    withContext(Dispatchers.IO) {
+                        com.openminis.app.offload.AgentDispatcher.forced(
+                            context = context,
+                            providerRepository = providerRepository,
+                        )
+                    }
+                com.openminis.app.offload.AgentRouteGate.Intent.CLASSIFY ->
+                    withContext(Dispatchers.IO) {
+                        com.openminis.app.offload.AgentDispatcher.decide(
+                            context = context,
+                            providerRepository = providerRepository,
+                            userMessage = trimmed,
+                        )
+                    }
+                com.openminis.app.offload.AgentRouteGate.Intent.NORMAL_CHAT -> null
             }
             if (routing is com.openminis.app.offload.AgentDispatcher.Decision.RunGraph) {
                 com.openminis.app.logging.AppLogger.info(

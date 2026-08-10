@@ -105,6 +105,7 @@ import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Extension
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.CheckCircle
@@ -5026,6 +5027,44 @@ fun ChatScreen(
                                 fontWeight = FontWeight.Bold,
                                 fontStyle = FontStyle.Italic,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+
+                        // [A1] Agents toggle: ON forces the agent team for every
+                        // turn in this chat, OFF hands the decision back to the
+                        // auto-route classifier. Placed next to + and / because
+                        // it is a composer mode, not a settings option — the
+                        // choice to spend minutes and money belongs on the same
+                        // row as the send button.
+                        val forceAgents by viewModel.forceAgents.collectAsState()
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Box(
+                            modifier = Modifier
+                                .size(38.dp)
+                                .background(
+                                    if (forceAgents) MaterialTheme.colorScheme.primary
+                                    else ChatColors.inputIconBg,
+                                    CircleShape,
+                                )
+                                .border(
+                                    0.5.dp,
+                                    if (forceAgents) Color.Transparent
+                                    else ChatColors.inputIconBorder,
+                                    CircleShape,
+                                )
+                                .clip(CircleShape)
+                                .clickable { viewModel.setForceAgents(!forceAgents) },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                Icons.Default.Groups,
+                                contentDescription = stringResource(
+                                    if (forceAgents) R.string.chat_agents_toggle_on
+                                    else R.string.chat_agents_toggle_off,
+                                ),
+                                tint = if (forceAgents) MaterialTheme.colorScheme.onPrimary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp),
                             )
                         }
 
