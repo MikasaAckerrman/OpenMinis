@@ -93,4 +93,65 @@ class AgentRunProgressTest {
         AgentRunProgress.nodeStarted("t1", "impl#1", AgentRole.SENIOR_IMPLEMENTER, "Implementer", "1/2", "m")
         assertEquals("1/2", AgentRunProgress.snapshotFor("t1")!!.nodes.single().replicaInfo)
     }
+
+    @Test
+    fun `attempt and timeout are surfaced so a retry is not silent`() {
+        AgentRunProgress.begin("t1", "Light")
+        AgentRunProgress.nodeStarted("t1", "planner", AgentRole.ORCHESTRATOR, "Orchestrator", null, "m")
+        AgentRunProgress.nodeAttempt("t1", "planner", 2, 3, 360_000L)
+        val node = AgentRunProgress.snapshotFor("t1")!!.nodes.single()
+        assertEquals(2, node.attempt)
+        assertEquals(3, node.maxAttempts)
+        assertEquals(360_000L, node.timeoutMs)
+    }
+
+    @Test
+    fun `a new attempt clears the previous tool`() {
+        AgentRunProgress.begin("t1", "Light")
+        AgentRunProgress.nodeStarted("t1", "coder", AgentRole.SENIOR_IMPLEMENTER, "Implementer", null, "m")
+        AgentRunProgress.nodeTool("t1", "coder", "shell_execute")
+        AgentRunProgress.nodeAttempt("t1", "coder", 2, 3, 480_000L)
+        assertNull(AgentRunProgress.snapshotFor("t1")!!.nodes.single().tool)
+    }
+
+    @Test
+    fun `running node reports the tool it is in`() {
+        AgentRunProgress.begin("t1", "Light")
+        AgentRunProgress.nodeStarted("t1", "coder", AgentRole.SENIOR_IMPLEMENTER, "Implementer", null, "m")
+        AgentRunProgress.nodeTool("t1", "coder", "file_write")
+        assertEquals("file_write", AgentRunProgress.snapshotFor("t1")!!.nodes.single().tool)
+        AgentRunProgress.nodeTool("t1", "coder", null)
+        assertNull(AgentRunProgress.snapshotFor("t1")!!.nodes.single().tool)
+    }
+
+    @Test
+    fun `settling a node drops its tool`() {
+        AgentRunProgress.begin("t1", "Light")
+        AgentRunProgress.nodeStarted("t1", "coder", AgentRole.SENIOR_IMPLEMENTER, "Implementer", null, "m")
+        AgentRunProgress.nodeTool("t1", "coder", "shell_execute")
+        AgentRunProgress.nodeSettled("t1", "coder", AgentRunProgress.NodeState.COMPLETED)
+        assertNull(AgentRunProgress.snapshotFor("t1")!!.nodes.single().tool)
+    }
+
+    @Test
+    fun `a settled node ignores late tool events`() {
+        // A tool result can land after the node was settled (cancellation race).
+        // Reanimating a finished row would be a lie.
+        AgentRunProgress.begin("t1", "Light")
+        AgentRunProgress.nodeStarted("t1", "coder", AgentRole.SENIOR_IMPLEMENTER, "Implementer", null, "m")
+        AgentRunProgress.nodeSettled("t1", "coder", AgentRunProgress.NodeState.FAILED)
+        AgentRunProgress.nodeTool("t1", "coder", "shell_execute")
+        assertNull(AgentRunProgress.snapshotFor("t1")!!.nodes.single().tool)
+    }
+
+    @Test
+    fun `finish clears the tool of a node left running`() {
+        AgentRunProgress.begin("t1", "Light")
+        AgentRunProgress.nodeStarted("t1", "coder", AgentRole.SENIOR_IMPLEMENTER, "Implementer", null, "m")
+        AgentRunProgress.nodeTool("t1", "coder", "shell_execute")
+        AgentRunProgress.finish("t1", "CANCELLED")
+        val node = AgentRunProgress.snapshotFor("t1")!!.nodes.single()
+        assertEquals(AgentRunProgress.NodeState.FAILED, node.state)
+        assertNull(node.tool)
+    }
 }

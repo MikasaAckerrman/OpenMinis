@@ -33,6 +33,26 @@ object AgentRunProgress {
         /** Replica marker like "1/2", or null for a single-instance node. */
         val replicaInfo: String? = null,
         val model: String = "",
+        /**
+         * Which attempt is in flight, and how many are allowed.
+         *
+         * Surfaced because a silent retry is the most confusing thing a run can
+         * do: on run f0949263 the planner timed out and started over, and from
+         * the chat that was three minutes of an unchanging spinner. "attempt 2/3"
+         * is the difference between "working" and "stuck".
+         */
+        val attempt: Int = 1,
+        val maxAttempts: Int = 1,
+        /** Budget for THIS attempt, so the card can say how long it may wait. */
+        val timeoutMs: Long = 0L,
+        /**
+         * Tool the node is currently running, or null between calls.
+         *
+         * [A3] The single most informative thing about a long-running node is
+         * which tool it is in — "Implementer · shell_execute" tells the user work
+         * is happening, where a bare spinner does not.
+         */
+        val tool: String? = null,
     )
 
     data class Snapshot(
@@ -81,10 +101,63 @@ object AgentRunProgress {
         snap.copy(nodes = snap.nodes.filterNot { it.runtimeId == runtimeId } + node)
     }
 
+    /**
+     * A node is starting attempt [attempt] of [maxAttempts], with [timeoutMs] to
+     * spend on it.
+     *
+     * Separate from [nodeStarted] because the first attempt is announced before
+     * the timeout is known, and because retries must not reset the row's other
+     * fields (model, replica) that were resolved once.
+     */
+    fun nodeAttempt(
+        taskId: String,
+        runtimeId: String,
+        attempt: Int,
+        maxAttempts: Int,
+        timeoutMs: Long,
+    ) = mutate(taskId) { snap ->
+        snap.copy(
+            nodes = snap.nodes.map {
+                if (it.runtimeId == runtimeId) {
+                    it.copy(
+                        attempt = attempt,
+                        maxAttempts = maxAttempts,
+                        timeoutMs = timeoutMs,
+                        // A new attempt starts with no tool in flight; leaving
+                        // the previous one would claim work that is not running.
+                        tool = null,
+                    )
+                } else {
+                    it
+                }
+            },
+        )
+    }
+
+    /**
+     * [A3] The node is now running [tool], or between calls when null.
+     *
+     * Updates for a node that is not RUNNING are ignored: a late tool event from
+     * a settled node would reanimate a finished row.
+     */
+    fun nodeTool(taskId: String, runtimeId: String, tool: String?) = mutate(taskId) { snap ->
+        snap.copy(
+            nodes = snap.nodes.map {
+                if (it.runtimeId == runtimeId && it.state == NodeState.RUNNING) {
+                    it.copy(tool = tool)
+                } else {
+                    it
+                }
+            },
+        )
+    }
+
     fun nodeSettled(taskId: String, runtimeId: String, state: NodeState) = mutate(taskId) { snap ->
         snap.copy(
             nodes = snap.nodes.map {
-                if (it.runtimeId == runtimeId) it.copy(state = state) else it
+                // Clear the tool along with the state: a settled row must not
+                // keep advertising a tool call that is no longer running.
+                if (it.runtimeId == runtimeId) it.copy(state = state, tool = null) else it
             },
         )
     }
@@ -111,7 +184,8 @@ object AgentRunProgress {
         // the UI would be a lie, so settle it as FAILED.
         snap.copy(
             nodes = snap.nodes.map {
-                if (it.state == NodeState.RUNNING) it.copy(state = NodeState.FAILED) else it
+                if (it.state == NodeState.RUNNING) it.copy(state = NodeState.FAILED, tool = null)
+                else it
             },
             finalStatus = status,
         )

@@ -232,6 +232,7 @@ internal object AgentGraphRunner {
             com.openminis.app.tools.AgentSystemPromptStore.clearPrompt(sid)
             com.openminis.app.tools.AgentRuntimePolicyStore.clear(sid)
             com.openminis.app.tools.AgentWorkspaceStore.clear(sid)
+            com.openminis.app.tools.AgentNodeBinding.unbind(sid)
         }
 
         // Write trace
@@ -581,6 +582,9 @@ internal object AgentGraphRunner {
             replicaInfo = if (node.replicas > 1) "${replicaIndex + 1}/${node.replicas}" else null,
             model = modelEntryId.take(24),
         )
+        // [A3] Let the tool executor find this node from its session id, so the
+        // card can name the tool a long-running agent is currently in.
+        com.openminis.app.tools.AgentNodeBinding.bind(sessionId, state.taskId, runtimeId)
 
         // Build system prompt with role + tool allowlist + scope contract.
         //
@@ -623,23 +627,52 @@ internal object AgentGraphRunner {
         var response: String? = null
         var attempts = 0
         val maxAttempts = graph.config.retryPolicy.maxRetries + 1
+        // Per-role budget. The graph's flat default is a chat-turn number and cut
+        // the planner off mid-thought on run f0949263; see AgentNodeTimeout.
+        val nodeTimeoutMs = AgentNodeTimeout.timeoutMsFor(node.role, graph.config.defaultTimeoutMs)
 
         while (attempts < maxAttempts && response == null) {
             attempts++
-            addTrace(state, runtimeId, node.role, "ATTEMPT", "Attempt $attempts/$maxAttempts")
+            addTrace(
+                state, runtimeId, node.role, "ATTEMPT",
+                "Attempt $attempts/$maxAttempts (timeout ${nodeTimeoutMs / 1000}s)",
+            )
+            // Surface the attempt in the chat card: a silent retry looks exactly
+            // like a hang from the user's seat.
+            AgentRunProgress.nodeAttempt(
+                state.taskId, runtimeId, attempts, maxAttempts, nodeTimeoutMs,
+            )
 
+            val startedAtMs = System.currentTimeMillis()
             val promptResult = AgentSessionManager.sendAndWait(
                 context = context,
                 sessionId = sessionId,
                 text = userMessage,
                 thinkingLevel = node.thinkingLevel,
-                timeoutMs = graph.config.defaultTimeoutMs,
+                timeoutMs = nodeTimeoutMs,
             )
+            val elapsedMs = System.currentTimeMillis() - startedAtMs
 
             if (promptResult.status == "Completed" && promptResult.responseText != null) {
                 response = promptResult.responseText
             } else if (graph.config.retryPolicy.retryOn.contains(promptResult.status)) {
-                addTrace(state, runtimeId, node.role, "RETRY", "Status: ${promptResult.status}, waiting ${graph.config.retryPolicy.backoffMs}ms")
+                // A node that consumed its whole budget was working, not broken.
+                // Retrying pays the full price to hit the identical wall — that
+                // is precisely how run f0949263 spent three minutes producing
+                // nothing. Stop and let the run report why.
+                if (!AgentNodeTimeout.shouldRetryAfterTimeout(elapsedMs, nodeTimeoutMs)) {
+                    addTrace(
+                        state, runtimeId, node.role, "RETRY_SKIPPED",
+                        "Status: ${promptResult.status} after ${elapsedMs / 1000}s of " +
+                            "${nodeTimeoutMs / 1000}s — the model needed more time, not another try",
+                    )
+                    break
+                }
+                addTrace(
+                    state, runtimeId, node.role, "RETRY",
+                    "Status: ${promptResult.status} after ${elapsedMs / 1000}s, " +
+                        "waiting ${graph.config.retryPolicy.backoffMs}ms",
+                )
                 kotlinx.coroutines.delay(graph.config.retryPolicy.backoffMs)
             } else {
                 // Non-retryable error
@@ -676,7 +709,11 @@ internal object AgentGraphRunner {
                 sessionId = sessionId,
                 text = retryMessage,
                 thinkingLevel = node.thinkingLevel,
-                timeoutMs = graph.config.defaultTimeoutMs,
+                // Same per-role budget as the main attempt: reformatting a
+                // handoff is cheaper than producing it, but the model still has
+                // the whole task in context and a chat-length timeout would cut
+                // off a correction that was about to land.
+                timeoutMs = nodeTimeoutMs,
             )
             val retryText = retryResult.responseText
             if (retryResult.status == "Completed" && retryText != null) {

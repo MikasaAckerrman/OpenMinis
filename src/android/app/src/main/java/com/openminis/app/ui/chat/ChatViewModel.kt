@@ -7590,7 +7590,18 @@ class ChatViewModel(
         // bridge, which is now where checkPermission runs.
         val toolTitle = try { JSONObject(argsJson).optString("tool_title", name) } catch (_: Exception) { name }
 
-        return when (name) {
+        // [A3] When this session is a graph worker, publish the tool it is
+        // entering so the originating chat's progress card can say
+        // "Implementer · shell_execute". A node can sit in one tool for minutes;
+        // without this the card shows a spinner and nothing else.
+        val nodeBinding = com.openminis.app.tools.AgentNodeBinding.of(sessionId)
+        if (nodeBinding != null) {
+            com.openminis.app.offload.AgentRunProgress.nodeTool(
+                nodeBinding.taskId, nodeBinding.runtimeId, name,
+            )
+        }
+        try {
+            return when (name) {
             FileReadTool.NAME -> {
                 val result = FileReadTool.execute(argsJson, activeSessionId, context)
                 // Record skill usage when SKILL.md under /var/minis/skills/<id>/ is read.
@@ -7623,6 +7634,16 @@ class ChatViewModel(
             "memory_write" -> executeMemoryWriteTool(argsJson)
             "memory_get" -> executeMemoryGetTool(argsJson)
             else -> ToolExecutionResult("Unknown tool: $name", false)
+            }
+        } finally {
+            // Clear the tool marker whether the call succeeded, failed, or threw.
+            // A row that keeps naming a finished tool is worse than naming none:
+            // it claims work that is not happening.
+            if (nodeBinding != null) {
+                com.openminis.app.offload.AgentRunProgress.nodeTool(
+                    nodeBinding.taskId, nodeBinding.runtimeId, null,
+                )
+            }
         }
     }
 

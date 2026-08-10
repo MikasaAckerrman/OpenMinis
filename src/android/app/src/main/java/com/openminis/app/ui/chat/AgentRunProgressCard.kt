@@ -104,6 +104,22 @@ internal fun AgentRunProgressCard(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+                // [A3] Everything that explains a long wait, only while running.
+                // A settled row keeps just its name: the attempt count and tool
+                // of a finished node are noise, and a stale tool name would claim
+                // work that is not happening.
+                val detail = runningDetail(node)
+                if (detail != null) {
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = detail,
+                        fontSize = 11.sp,
+                        color = ChatColors.tertiaryText,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                }
             }
         }
 
@@ -116,6 +132,27 @@ internal fun AgentRunProgressCard(
             )
         }
     }
+}
+
+/**
+ * Trailing detail for a running node: the tool it is in, the attempt number when
+ * it is past the first, and how long this attempt may take.
+ *
+ * Returns null for anything settled, and for a first attempt with no tool yet —
+ * "· 1/1" would be noise on every row.
+ *
+ * Kept pure and file-private so the formatting rule is one place; the strings are
+ * technical tool names the user already sees elsewhere in the transcript.
+ */
+private fun runningDetail(node: AgentRunProgress.Node): String? {
+    if (node.state != AgentRunProgress.NodeState.RUNNING) return null
+    val parts = mutableListOf<String>()
+    node.tool?.let { parts.add(it) }
+    // A retry is the single most confusing thing a run does silently: on run
+    // f0949263 the planner restarted after a timeout and the card looked frozen.
+    if (node.attempt > 1) parts.add("attempt ${node.attempt}/${node.maxAttempts}")
+    if (node.timeoutMs > 0L) parts.add("up to ${node.timeoutMs / 1000}s")
+    return if (parts.isEmpty()) null else "· " + parts.joinToString(" · ")
 }
 
 /**
