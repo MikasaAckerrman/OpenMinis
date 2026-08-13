@@ -276,7 +276,10 @@ import com.openminis.app.ui.theme.ChatColors
 import com.openminis.app.ui.components.MinisTextButton
 
 @Composable
-internal fun AssistantHeader() {
+internal fun AssistantHeader(
+    onRewrite: (() -> Unit)? = null,
+    onDelete: (() -> Unit)? = null,
+) {
     // [T-soul-md] Identity header = locked ✨ sparkle gradient icon +
     // SOUL.md-driven `name`. The emoji-customization field was removed,
     // so we no longer branch on `SoulMetadata.emoji`; the icon stays the
@@ -285,6 +288,13 @@ internal fun AssistantHeader() {
     // SOUL.md is missing the field or set to the default value.
     val soulMeta by com.openminis.app.agent.SoulStore.cachedMetadata.collectAsState()
     val displayName = soulMeta.name.ifBlank { com.openminis.app.agent.SoulMetadata.DEFAULT.name }
+    // [T-message-surgery] The header row is the long-press handle for
+    // assistant-turn surgery. The body itself can't host it: assistant text is
+    // inside a SelectionContainer where a long press starts text selection,
+    // and hijacking that would break copy — which users need far more often
+    // than they need to delete a turn.
+    var showMenu by remember { mutableStateOf(false) }
+    val hasActions = onRewrite != null || onDelete != null
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
@@ -292,7 +302,14 @@ internal fun AssistantHeader() {
             // User→Assistant boundary reads ~16dp: user-bubble bottom(4) +
             // LazyColumn spacedBy(2) + this top(10) = 16. The header→body gap
             // inside the turn is unaffected (that's this row's bottom=2).
-            .padding(top = 10.dp, bottom = 2.dp),
+            .padding(top = 10.dp, bottom = 2.dp)
+            .then(
+                if (hasActions) {
+                    Modifier.pointerInput(onRewrite, onDelete) {
+                        detectTapGestures(onLongPress = { showMenu = true })
+                    }
+                } else Modifier
+            ),
     ) {
         val sparkleGradient = Brush.linearGradient(
             colors = listOf(SparkleColor1, SparkleColor2),
@@ -316,6 +333,36 @@ internal fun AssistantHeader() {
             fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.onSurface,
         )
+        if (hasActions) {
+            DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                if (onRewrite != null) {
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.msg_longpress_rewrite)) },
+                        onClick = { showMenu = false; onRewrite() },
+                        leadingIcon = {
+                            Icon(
+                                Icons.Filled.EditNote,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        },
+                    )
+                }
+                if (onDelete != null) {
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.msg_longpress_delete)) },
+                        onClick = { showMenu = false; onDelete() },
+                        leadingIcon = {
+                            Icon(
+                                Icons.Filled.Delete,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        },
+                    )
+                }
+            }
+        }
     }
 }
 

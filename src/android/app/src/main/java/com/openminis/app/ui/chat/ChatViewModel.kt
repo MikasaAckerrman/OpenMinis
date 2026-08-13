@@ -709,6 +709,12 @@ class ChatViewModel(
     // [T-context-autocompact] Cooldown marker for the auto-compact trigger
     // in [checkContextBeforeSend] — see ContextAutoCompact.COOLDOWN_MS.
     private var lastAutoCompactAtMs = 0L
+    // [T-context-maintenance] User sends since the last full (LLM) compaction
+    // pass. Drives the cadence gate in [ContextMaintenance.decide]. Not
+    // persisted: after a process restart a fresh count is harmless (the
+    // pressure gate still governs), and persisting it would need a schema
+    // change for a heuristic counter.
+    private var userTurnsSinceFullCompact = 0
     val lastTurnContextTokens: StateFlow<Int> = _lastTurnContextTokens.asStateFlow()
 
     /**
@@ -2079,11 +2085,29 @@ class ChatViewModel(
                 // joined transcript exceeds the model's context window, halve
                 // the message list and summarize each half independently, then
                 // merge. depth cap=3 prevents pathological recursion.
-                val summary = generateCompactSummaryWithSplitting(
+                val rawSummary = generateCompactSummaryWithSplitting(
                     messages = toCompact,
                     previousSummary = existing,
                     depth = 0,
                 ).trim()
+                // [T-context-maintenance] Post-process before storing. A
+                // summarisation model reliably adds filler ("Sure, here is
+                // the summary...") and paraphrases exact strings — the first
+                // wastes the context the summary was meant to save, the second
+                // destroys its only irreplaceable content. Filler is stripped;
+                // any identifier the model dropped is re-appended verbatim
+                // from the transcript. Never worse than what came back.
+                val summary = com.openminis.app.data.CompactQuality.polish(
+                    transcript = buildConversationTextForSummary(toCompact),
+                    summary = rawSummary,
+                ).trim()
+                if (summary.length != rawSummary.length) {
+                    AppLogger.info(
+                        TAG,
+                        "[Compact] polish: ${rawSummary.length} → ${summary.length} chars " +
+                            "(filler stripped / exact refs restored)",
+                    )
+                }
                 if (summary.isEmpty()) {
                     withContext(Dispatchers.Main) {
                         appendSystemInfo("Compaction produced no output — try again later.", "compact")
@@ -2339,6 +2363,224 @@ class ChatViewModel(
      * function reads `_cachedLatestMarker` we just refreshed and routes
      * through [applyCompactMarkerGraying] to (re)position the divider.
      */
+    /**
+     * [T-message-surgery] Delete ONE message from the middle of the session —
+     * user turn or assistant turn — keeping everything after it.
+     *
+     * This is not the same operation as Retry/Edit, which truncate the tail.
+     * Here the session continues; only the selected turn disappears. Because a
+     * history is a protocol and not a list ([MessageSurgery] explains why), the
+     * deletion is planned first: tool results whose call is going away, and
+     * tool calls whose only answer is going away, are stripped alongside it, or
+     * the next request would be rejected for unpaired tool ids.
+     *
+     * Any additional row the plan had to touch is reported to the user — a
+     * "delete one message" that silently removed three is worse than a refusal.
+     */
+    fun deleteMessage(messageId: String) {
+        if (_isStreaming.value) {
+            appendSystemInfo(
+                text = context.getString(R.string.msg_delete_busy_streaming),
+                iconKind = "compact",
+            )
+            return
+        }
+        if (_isCompacting.value) {
+            appendSystemInfo(
+                text = context.getString(R.string.msg_delete_busy_compacting),
+                iconKind = "compact",
+            )
+            return
+        }
+        val sid = realSessionId.ifEmpty { sessionId }
+        if (sid.isEmpty()) return
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val rows = chatRepository.loadMessages(sid)
+                val surgical = rows.map {
+                    com.openminis.app.data.MessageSurgery.Msg(
+                        id = it.id, role = it.role, partsJson = it.partsJson, sortOrder = it.sortOrder,
+                    )
+                }
+                // The UI bubble id and the DB row id are not always the same
+                // object (a bubble can span several rows), so resolve through
+                // sourceDbIds the way the compact divider does.
+                val uiMsg = _messages.value.firstOrNull { it.id == messageId }
+                val candidateIds = buildList {
+                    add(messageId)
+                    uiMsg?.sourceDbIds?.let { addAll(it) }
+                }
+                val targetId = candidateIds.firstOrNull { cand -> surgical.any { it.id == cand } }
+                if (targetId == null) {
+                    AppLogger.warning(TAG, "[Surgery] delete: id=${messageId.take(8)} not in DB rows")
+                    withContext(Dispatchers.Main) {
+                        appendSystemInfo(
+                            text = context.getString(R.string.msg_delete_not_found),
+                            iconKind = "compact",
+                        )
+                    }
+                    return@launch
+                }
+
+                val plan = com.openminis.app.data.MessageSurgery.planDelete(surgical, targetId)
+                if (plan.isNoOp) {
+                    withContext(Dispatchers.Main) {
+                        appendSystemInfo(
+                            text = context.getString(R.string.msg_delete_not_found),
+                            iconKind = "compact",
+                        )
+                    }
+                    return@launch
+                }
+                AppLogger.info(
+                    TAG,
+                    "[Surgery] delete id=${targetId.take(8)}: dropping ${plan.deleteIds.size} row(s), " +
+                        "rewriting ${plan.rewrites.size}; notes=${plan.notes}",
+                )
+
+                // Rewrites first: if the process dies between the two steps,
+                // a stripped-but-present row is still a valid history, whereas
+                // a deleted row with un-stripped partners is not.
+                for ((id, json) in plan.rewrites) {
+                    runCatching { chatRepository.dao.updateMessageParts(id, json) }
+                        .onFailure { AppLogger.warning(TAG, "[Surgery] rewrite $id failed: ${it.message}") }
+                }
+                var removed = 0
+                for (id in plan.deleteIds) {
+                    removed += runCatching { chatRepository.dao.deleteMessageById(sid, id) }.getOrDefault(0)
+                }
+
+                // Memory writes made by a turn that no longer exists must be
+                // revoked, same contract as the edit/retry truncation path.
+                val deletedUi = _messages.value.filter { m ->
+                    m.id in plan.deleteIds || m.sourceDbIds.any { it in plan.deleteIds }
+                }
+                withContext(Dispatchers.Main) {
+                    revokeMemoryWritesInDeletedMessages(deletedUi)
+                    reloadSessionFromDb()
+                    val note = if (plan.notes.isEmpty()) {
+                        context.getString(R.string.msg_delete_done, removed)
+                    } else {
+                        context.getString(
+                            R.string.msg_delete_done_with_notes,
+                            removed,
+                            plan.notes.joinToString("; "),
+                        )
+                    }
+                    appendSystemInfo(text = note, iconKind = "compact")
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                AppLogger.warning(TAG, "[Surgery] delete failed: ${e.message}")
+                withContext(Dispatchers.Main) {
+                    appendSystemInfo(
+                        text = context.getString(
+                            R.string.msg_delete_failed,
+                            e.message ?: e.javaClass.simpleName,
+                        ),
+                        iconKind = "compact",
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * [T-message-surgery] Rewrite a message's text IN PLACE — no truncation,
+     * no re-send, nothing downstream discarded.
+     *
+     * Distinct from [editMessage], which is "edit my prompt and run the
+     * conversation again from there". This one is for fixing what the history
+     * SAYS: correcting a typo the model then copied, removing a wrong
+     * instruction that keeps steering later turns, or trimming a wall of
+     * pasted text that is eating the context window. Works on assistant turns
+     * too, which is the only way to correct a false statement the model will
+     * otherwise keep treating as established fact.
+     *
+     * Tool calls, tool results, media and the attachments inventory are
+     * preserved untouched — only prose changes.
+     */
+    fun rewriteMessageText(messageId: String, newText: String) {
+        if (_isStreaming.value) {
+            appendSystemInfo(
+                text = context.getString(R.string.msg_delete_busy_streaming),
+                iconKind = "compact",
+            )
+            return
+        }
+        val sid = realSessionId.ifEmpty { sessionId }
+        if (sid.isEmpty()) return
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val rows = chatRepository.loadMessages(sid)
+                val uiMsg = _messages.value.firstOrNull { it.id == messageId }
+                val candidateIds = buildList {
+                    add(messageId)
+                    uiMsg?.sourceDbIds?.let { addAll(it) }
+                }
+                val row = candidateIds.firstNotNullOfOrNull { cand -> rows.firstOrNull { it.id == cand } }
+                if (row == null) {
+                    withContext(Dispatchers.Main) {
+                        appendSystemInfo(
+                            text = context.getString(R.string.msg_delete_not_found),
+                            iconKind = "compact",
+                        )
+                    }
+                    return@launch
+                }
+                val rewritten = com.openminis.app.data.MessageSurgery
+                    .rewriteText(row.partsJson, newText)
+                if (rewritten == null) {
+                    // No text part to replace — refuse rather than inventing
+                    // one and changing the message's shape.
+                    withContext(Dispatchers.Main) {
+                        appendSystemInfo(
+                            text = context.getString(R.string.msg_rewrite_no_text),
+                            iconKind = "compact",
+                        )
+                    }
+                    return@launch
+                }
+                runCatching { chatRepository.dao.updateMessageParts(row.id, rewritten) }
+                    .onFailure { AppLogger.warning(TAG, "[Surgery] rewrite failed: ${it.message}") }
+                AppLogger.info(
+                    TAG,
+                    "[Surgery] rewrote text of ${row.id.take(8)} (${row.role}): " +
+                        "${com.openminis.app.data.MessageSurgery.textOf(row.partsJson).length} → ${newText.length} chars",
+                )
+                withContext(Dispatchers.Main) {
+                    reloadSessionFromDb()
+                    appendSystemInfo(
+                        text = context.getString(R.string.msg_rewrite_done),
+                        iconKind = "compact",
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                AppLogger.warning(TAG, "[Surgery] rewrite failed: ${e.message}")
+                withContext(Dispatchers.Main) {
+                    appendSystemInfo(
+                        text = context.getString(
+                            R.string.msg_delete_failed,
+                            e.message ?: e.javaClass.simpleName,
+                        ),
+                        iconKind = "compact",
+                    )
+                }
+            }
+        }
+    }
+
+    /** Current stored text of a message, for pre-filling the rewrite editor. */
+    fun messageTextForRewrite(messageId: String): String? {
+        val uiMsg = _messages.value.firstOrNull { it.id == messageId } ?: return null
+        return uiMsg.content
+    }
+
     private fun reloadSessionFromDb() {
         if (realSessionId.isEmpty() && sessionId.isEmpty()) return
         loadSession()
@@ -2978,54 +3220,111 @@ class ChatViewModel(
     }
 
     /**
-     * Consult [ContextPolicy] before sending. Returns true to proceed. The
-     * Android MVP doesn't surface a "Compact before send" dialog (iOS does),
-     * so we only warn via [appendSystemInfo] at the `needsCompact` /
-     * `exhausted` boundaries and still allow the send. That gives the user
-     * a signal to invoke `/compact` explicitly without blocking their turn.
+     * Consult [ContextPolicy] before sending, then run the maintenance tier
+     * [ContextMaintenance] selects. Always returns true — context work never
+     * blocks the user's turn.
+     *
+     * [T-context-maintenance] Three tiers, cheapest first:
+     *   - LIGHT (every send, free): offload oversized tool payloads to disk.
+     *     No tokens, no request, so there is no reason to ration it — and it
+     *     is what keeps a tool-heavy session from spiking into the wall
+     *     between two full passes.
+     *   - FULL (cadence + pressure + cooldown gated): the LLM summarisation
+     *     pass. Costs a request, so all three gates must agree.
+     *   - RESCUE (past the ceiling): the local digest. Beyond ~85% of the
+     *     window an LLM compact is itself likely to be dropped by the
+     *     provider, which is exactly the stall being designed out — so at
+     *     that point we stop asking the model and compress on-device.
+     *
+     * The ContextPolicy notice below is kept for the boundaries the tiers do
+     * not cover (small-window tiers where compaction is unavailable).
      */
     private fun checkContextBeforeSend(): Boolean {
         val tokens = _lastTurnContextTokens.value
-        if (tokens <= 0) return true
         // [T-context-window-live-read] Live window (entry re-resolved + group
         // contextLimitTokens folded in) — not the currentModel snapshot.
         val window = effectiveContextWindowTokens() ?: return true
         val policy = ContextPolicy.forContextWindow(window)
-        return when (val check = policy.check(tokens, window)) {
-            ContextPolicy.CheckResult.OK -> true
-            ContextPolicy.CheckResult.NEEDS_COMPACT -> {
-                // [T-context-autocompact] Instead of only nudging the user
-                // toward /compact (which in practice nobody runs), kick off
-                // the compact ourselves. The policy thresholds leave 10-20K
-                // tokens of headroom, so THIS turn still fits; the summary
-                // lands in time for the NEXT one. Cooldown guards against
-                // retriggering every send when a summary didn't shrink enough.
-                val nowMs = System.currentTimeMillis()
-                if (com.openminis.app.data.ContextAutoCompact.shouldTrigger(
-                        check = check,
-                        enabled = com.openminis.app.data.ContextAutoCompactPrefs.isEnabled(context),
-                        isCompacting = _isCompacting.value,
-                        lastRunAtMs = lastAutoCompactAtMs,
-                        nowMs = nowMs,
-                    )
-                ) {
+        val nowMs = System.currentTimeMillis()
+
+        if (com.openminis.app.data.ContextAutoCompactPrefs.isEnabled(context)) {
+            userTurnsSinceFullCompact += 1
+            val action = com.openminis.app.data.ContextMaintenance.decide(
+                userTurnsSinceFull = userTurnsSinceFullCompact,
+                contextTokens = tokens,
+                contextWindow = window,
+                compactSupported = policy.manualCompactAllowed && policy.compactThreshold > 0,
+                isCompacting = _isCompacting.value,
+                lastFullAtMs = lastAutoCompactAtMs,
+                nowMs = nowMs,
+                fullEveryNTurns = com.openminis.app.data.ContextMaintenancePrefs
+                    .fullEveryNTurns(context),
+            )
+            AppLogger.info(
+                TAG,
+                "[Maintenance] turn=$userTurnsSinceFullCompact tokens=$tokens/$window " +
+                    "(${if (window > 0) tokens * 100 / window else 0}%) → $action",
+            )
+            when (action) {
+                com.openminis.app.data.ContextMaintenance.Action.NONE -> Unit
+                com.openminis.app.data.ContextMaintenance.Action.LIGHT -> {
+                    // Local, free, silent. Threshold-gated inside, so calling
+                    // it every turn is a no-op until there is something big.
+                    runCatching {
+                        offloadContextIfNeeded(
+                            contextWindow = window,
+                            lastContextTokens = tokens,
+                        )
+                    }.onFailure {
+                        AppLogger.warning(TAG, "[Maintenance] light pass failed: ${it.message}")
+                    }
+                }
+                com.openminis.app.data.ContextMaintenance.Action.FULL -> {
                     lastAutoCompactAtMs = nowMs
+                    userTurnsSinceFullCompact = 0
                     appendSystemInfo(
-                        text = "Context crossed the auto-compact threshold ($tokens / $window tokens) — folding older turns into a summary in the background. Turn it off via minis-config: context.autoCompact.",
+                        text = context.getString(
+                            R.string.maintenance_full_compact,
+                            tokens,
+                            window,
+                        ),
                         iconKind = "compact",
                     )
                     compactAll()
-                } else {
+                    return true
+                }
+                com.openminis.app.data.ContextMaintenance.Action.RESCUE -> {
+                    lastAutoCompactAtMs = nowMs
+                    userTurnsSinceFullCompact = 0
                     appendSystemInfo(
-                        text = "Context is getting full ($tokens / $window tokens). Consider running /compact to fold older turns into a summary.",
+                        text = context.getString(
+                            R.string.maintenance_rescue_compact,
+                            tokens,
+                            window,
+                        ),
                         iconKind = "compact",
                     )
+                    rescueCompactNow()
+                    return true
                 }
+            }
+        }
+
+        if (tokens <= 0) return true
+        return when (policy.check(tokens, window)) {
+            ContextPolicy.CheckResult.OK -> true
+            ContextPolicy.CheckResult.NEEDS_COMPACT -> {
+                // Reached only when auto-maintenance is disabled or on
+                // cooldown — otherwise the tier above already acted.
+                appendSystemInfo(
+                    text = "Context is getting full ($tokens / $window tokens). Consider running /compact to fold older turns into a summary.",
+                    iconKind = "compact",
+                )
                 true
             }
             ContextPolicy.CheckResult.EXHAUSTED -> {
                 appendSystemInfo(
-                    text = "Context is near the model's limit ($tokens / $window tokens). Start a new chat or /compact to continue reliably.",
+                    text = "Context is near the model's limit ($tokens / $window tokens). Start a new chat, /compact, or /rescue to continue reliably.",
                     iconKind = "compact",
                 )
                 true
@@ -3057,6 +3356,10 @@ class ChatViewModel(
         PRIORITIZE recent context over older history — recent decisions and recent file/path references are most useful for continuity.
 
         Do NOT translate or alter code snippets, file paths, identifiers, or error messages. Be concise but never lose information the agent needs.
+
+        NO FILLER. Your output is machine context, not a reply to a person. Do not open with "Sure", "Certainly" or "Here is the summary". Do not describe what you are about to do, do not comment on these instructions, and do not close with an offer to help. Do not hedge ("it appears that", "possibly"): state what happened. Every sentence must carry a fact the agent could act on — if a sentence could be deleted without losing information, delete it yourself.
+
+        Merge repetition instead of listing it: forty successful build steps are one sentence ("ran 40 build steps, all succeeded"), not forty lines. But never merge a FAILURE into a success summary — failures are listed individually with their exact error text, because they are what stops the agent repeating a mistake.
     """.trimIndent()
 
     // T203 part 2: these MUST be declared before `init { loadSession() }` below.

@@ -705,6 +705,12 @@ fun ChatScreen(
     var showNewChatStopDialog by remember { mutableStateOf(false) }
     // [T-android-enhanced-cache] First-enable confirmation dialog visibility.
     var showEnhancedCacheDialog by remember { mutableStateOf(false) }
+    // [T-message-surgery] Pending single-message operations. Deleting is
+    // irreversible and may take related tool rows with it, so it is confirmed;
+    // rewriting opens an editor pre-filled with the stored text.
+    var pendingDeleteMessageId by remember { mutableStateOf<String?>(null) }
+    var pendingRewriteMessageId by remember { mutableStateOf<String?>(null) }
+    var pendingRewriteText by remember { mutableStateOf("") }
 
     // Bridge VM's slash-command "/clear" request into local Compose state so
     // the menu and slash-command entry points share a single confirmation
@@ -3335,6 +3341,21 @@ fun ChatScreen(
                                 onWithdraw = if (item.message.isQueued) {
                                     { safeMutate { viewModel.withdrawQueuedMessage(item.message.id) } }
                                 } else null,
+                                // [T-message-surgery] Real history mutation on
+                                // the user's own turn: rewrite the stored text
+                                // in place, or drop the turn and keep the rest
+                                // of the session. Queued bubbles aren't in the
+                                // DB yet — Withdraw is their remove action.
+                                onRewrite = if (isStreaming || item.message.isQueued) null else ({
+                                    val prefill = viewModel.messageTextForRewrite(item.message.id)
+                                    if (prefill != null) {
+                                        pendingRewriteText = prefill
+                                        pendingRewriteMessageId = item.message.id
+                                    }
+                                }),
+                                onDelete = if (isStreaming || item.message.isQueued) null else ({
+                                    pendingDeleteMessageId = item.message.id
+                                }),
                                 onPreviewFile = { uri, name ->
                                     // T150: turn the persisted file:// URI back
                                     // into a FileItem and hand off to the host
@@ -3357,7 +3378,27 @@ fun ChatScreen(
                                 },
                             )
                             } // close UserBubble SideEffect + UserMessageBubble block
-                            is FlatChatItem.AssistantHeader -> AssistantHeader()
+                            is FlatChatItem.AssistantHeader -> AssistantHeader(
+                                // [T-message-surgery] Long-press the assistant
+                                // name row → rewrite / delete that turn for
+                                // real. Hidden mid-stream, like every other
+                                // history-mutating action.
+                                // buildFlatChatItems appends a "#2" dedupe
+                                // suffix when one message yields several header
+                                // rows, so strip it — the VM resolves against
+                                // real message ids.
+                                onRewrite = if (isStreaming) null else ({
+                                    val realId = originalMessageId(item.messageId)
+                                    val prefill = viewModel.messageTextForRewrite(realId)
+                                    if (prefill != null) {
+                                        pendingRewriteText = prefill
+                                        pendingRewriteMessageId = realId
+                                    }
+                                }),
+                                onDelete = if (isStreaming) null else ({
+                                    pendingDeleteMessageId = originalMessageId(item.messageId)
+                                }),
+                            )
                             is FlatChatItem.AssistantText -> BoundsTrackedBlock(
                                 messageId = item.messageId,
                                 slotKey = "text:${item.block.id}",
@@ -5464,6 +5505,75 @@ fun ChatScreen(
                 )
             }
 
+            // [T-message-surgery] Delete confirmation. Irreversible, and the
+            // plan may take paired tool rows along, so the body says so.
+            pendingDeleteMessageId?.let { targetId ->
+                MinisAlertDialog(
+                    onDismissRequest = { pendingDeleteMessageId = null },
+                    title = stringResource(R.string.msg_delete_confirm_title),
+                    text = stringResource(R.string.msg_delete_confirm_body),
+                    confirmText = stringResource(R.string.msg_longpress_delete),
+                    isDestructive = true,
+                    onConfirm = {
+                        pendingDeleteMessageId = null
+                        safeMutate { viewModel.deleteMessage(targetId) }
+                    },
+                )
+            }
+            // [T-message-surgery] Rewrite editor. Not MinisAlertDialog: this
+            // needs a multi-line text field, and the confirm action must be
+            // disabled while the text is unchanged or blank.
+            pendingRewriteMessageId?.let { targetId ->
+                androidx.compose.ui.window.Dialog(
+                    onDismissRequest = { pendingRewriteMessageId = null },
+                ) {
+                    androidx.compose.material3.Surface(
+                        shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                        tonalElevation = 6.dp,
+                    ) {
+                        Column(modifier = Modifier.padding(20.dp)) {
+                            Text(
+                                text = stringResource(R.string.msg_rewrite_dialog_title),
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                text = stringResource(R.string.msg_rewrite_dialog_hint),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.height(12.dp))
+                            androidx.compose.material3.OutlinedTextField(
+                                value = pendingRewriteText,
+                                onValueChange = { pendingRewriteText = it },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 120.dp, max = 320.dp),
+                                textStyle = MaterialTheme.typography.bodyMedium,
+                            )
+                            Spacer(Modifier.height(16.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End,
+                            ) {
+                                androidx.compose.material3.TextButton(
+                                    onClick = { pendingRewriteMessageId = null },
+                                ) { Text(stringResource(R.string.common_cancel)) }
+                                Spacer(Modifier.width(8.dp))
+                                androidx.compose.material3.TextButton(
+                                    enabled = pendingRewriteText.isNotBlank(),
+                                    onClick = {
+                                        val text = pendingRewriteText
+                                        pendingRewriteMessageId = null
+                                        safeMutate { viewModel.rewriteMessageText(targetId, text) }
+                                    },
+                                ) { Text(stringResource(R.string.msg_rewrite_save)) }
+                            }
+                        }
+                    }
+                }
+            }
             // T137: Clear Chat confirmation. Wipes messages + agent history +
             // compact markers; the session row, workspace files, attachments,
             // and offload payloads are intentionally preserved (iOS parity).

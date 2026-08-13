@@ -62,8 +62,8 @@ internal object ConfigBuiltins {
         r.register(
             PrefsBoolField(
                 path = "context.autoCompact",
-                displayName = "Auto-compact on context pressure",
-                description = "When on (default), crossing the model's compact threshold at send time automatically folds older turns into a summary in the background, instead of only showing a 'consider /compact' notice. The policy thresholds leave 10-20K tokens of headroom, so the in-flight turn still completes; the next turn starts on the compacted history. A 10-minute cooldown prevents retriggering every send.",
+                displayName = "Automatic context upkeep",
+                description = "Master switch for automatic context management (default on). Every message you send runs a free local pass that offloads large tool outputs to disk. Once the context passes ~35% of the model's window, a model-assisted summarisation pass also runs — no more often than the cadence in context.fullCompactEveryNTurns, sooner if the window is filling fast, and never while a pass is already running. Past ~85% of the window the summarisation request itself becomes unreliable, so compression happens on-device instead. Turn this off to manage context by hand with /compact and /rescue.",
                 prefs = prefs,
                 key = "context.autocompact.enabled",
                 defaultValue = true,
@@ -91,6 +91,19 @@ internal object ConfigBuiltins {
                 prefs = prefs,
                 key = "context.rescue.refine",
                 defaultValue = true,
+            )
+        )
+        // [T-context-maintenance] Cadence floor for the periodic full pass.
+        r.register(
+            PrefsIntField(
+                path = "context.fullCompactEveryNTurns",
+                displayName = "Full compaction cadence (user turns)",
+                description = "How many of your messages may pass before a full (model-assisted) compaction runs. Default 5. This is a FLOOR, not a schedule: a pass runs earlier when the context is filling fast, is skipped entirely while the session is small enough that summarising costs more than it saves, and is replaced by on-device compression past ~85% of the window (where a summarisation request would itself likely be dropped). Every turn also gets a free local pass that offloads large tool outputs to disk.",
+                prefs = prefs,
+                key = "context.maintenance.fulleveryn",
+                defaultValue = com.openminis.app.data.ContextMaintenance.DEFAULT_FULL_EVERY_N_TURNS,
+                minValue = com.openminis.app.data.ContextMaintenancePrefs.MIN_TURNS,
+                maxValue = com.openminis.app.data.ContextMaintenancePrefs.MAX_TURNS,
             )
         )
     }

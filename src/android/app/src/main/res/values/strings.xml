@@ -1235,6 +1235,25 @@
     <string name="rescue_refine_done">Summary rewritten by the model: %1$d chars (~%2$d tokens). All paths, URLs and hashes were verified present.</string>
     <string name="rescue_refine_rejected">The model\'s rewrite dropped some verbatim details, so the on-device summary was kept. Nothing was lost.</string>
     <string name="rescue_refine_unavailable">The model was unreachable for the rewrite step — keeping the on-device summary. The session is usable either way.</string>
+    <!-- [T-message-surgery] Real (persisted) message delete / rewrite. -->
+    <string name="msg_longpress_delete">Delete message</string>
+    <string name="msg_longpress_rewrite">Rewrite text</string>
+    <string name="msg_delete_busy_streaming">Stop the current response before editing the history.</string>
+    <string name="msg_delete_busy_compacting">Wait for compaction to finish before editing the history.</string>
+    <string name="msg_delete_not_found">That message is no longer in this session.</string>
+    <string name="msg_delete_done">Deleted %1$d message(s) from the session and from the model\'s history.</string>
+    <string name="msg_delete_done_with_notes">Deleted %1$d message(s). To keep the history valid: %2$s.</string>
+    <string name="msg_delete_failed">Could not delete: %1$s</string>
+    <string name="msg_rewrite_done">Message text rewritten. The model will read the new text from now on.</string>
+    <string name="msg_rewrite_no_text">That message has no editable text (tool calls / attachments only).</string>
+    <string name="msg_rewrite_dialog_title">Rewrite message</string>
+    <string name="msg_rewrite_dialog_hint">This replaces the stored text for real — the model reads the new version on the next turn. Tool calls and attachments are kept.</string>
+    <string name="msg_rewrite_save">Save</string>
+    <string name="msg_delete_confirm_title">Delete this message?</string>
+    <string name="msg_delete_confirm_body">It will be removed from the chat and from what the model sees. Related tool calls or results may be removed too, to keep the history valid. This cannot be undone.</string>
+    <!-- [T-context-maintenance] Tiered upkeep notices. -->
+    <string name="maintenance_full_compact">Context at %1$d / %2$d tokens — folding older turns into a summary in the background. This turn still goes through.</string>
+    <string name="maintenance_rescue_compact">Context at %1$d / %2$d tokens — too full to summarise via the model reliably, so compressing on-device instead. Undo via Revert compact.</string>
     <string name="thinking_level_off">Off</string>
     <string name="thinking_level_low">Low</string>
     <string name="thinking_level_medium">Medium</string>

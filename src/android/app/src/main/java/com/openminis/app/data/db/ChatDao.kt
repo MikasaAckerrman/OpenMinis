@@ -173,6 +173,18 @@ interface ChatDao {
     @Query("DELETE FROM messages WHERE session_id = :sessionId AND sort_order >= :keepCount")
     suspend fun deleteMessagesAfter(sessionId: String, keepCount: Int)
 
+    /**
+     * [T-message-surgery] Delete ONE message row, leaving everything after it
+     * in place. Distinct from [deleteMessagesAfter], which is the retry/edit
+     * "truncate the tail" primitive — here the user is removing a single turn
+     * from the middle of a session they want to keep going.
+     *
+     * Returns the number of rows removed (0 = id not in this session), so the
+     * caller can tell a real deletion from a stale id instead of guessing.
+     */
+    @Query("DELETE FROM messages WHERE session_id = :sessionId AND id = :messageId")
+    suspend fun deleteMessageById(sessionId: String, messageId: String): Int
+
     @Query("SELECT COUNT(*) FROM messages")
     suspend fun totalMessageCount(): Int
 

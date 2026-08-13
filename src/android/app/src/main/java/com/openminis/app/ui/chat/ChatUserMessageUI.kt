@@ -288,6 +288,10 @@ internal fun UserMessageBubble(
     onRetry: (() -> Unit)? = {},
     onEdit: (() -> Unit)? = null,
     onWithdraw: (() -> Unit)? = null,
+    // [T-message-surgery] Real history mutation, distinct from onEdit (which
+    // re-runs the conversation from this turn). Null hides the row.
+    onRewrite: (() -> Unit)? = null,
+    onDelete: (() -> Unit)? = null,
     onPreviewFile: (Uri, String) -> Unit = { _, _ -> },
 ) {
     var showMenu by remember { mutableStateOf(false) }
@@ -494,6 +498,24 @@ internal fun UserMessageBubble(
                         text = { Text(stringResource(R.string.chat_longpress_edit)) },
                         onClick = { showMenu = false; onEdit() },
                         leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                    )
+                }
+                // [T-message-surgery] Rewrite = change what the history SAYS,
+                // in place, without re-running anything. Delete = drop this
+                // turn and keep the rest of the session. Both mutate the DB,
+                // so both are hidden mid-stream by the caller.
+                if (onRewrite != null) {
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.msg_longpress_rewrite)) },
+                        onClick = { showMenu = false; onRewrite() },
+                        leadingIcon = { Icon(Icons.Default.EditNote, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                    )
+                }
+                if (onDelete != null) {
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.msg_longpress_delete)) },
+                        onClick = { showMenu = false; onDelete() },
+                        leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp)) },
                     )
                 }
             }

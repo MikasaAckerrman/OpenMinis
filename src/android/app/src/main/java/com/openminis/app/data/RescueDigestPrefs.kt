@@ -63,6 +63,38 @@ object RescueRefinementPrefs {
 }
 
 /**
+ * [T-context-maintenance] How often the periodic FULL (LLM) compaction pass is
+ * allowed to fire, counted in user sends.
+ *
+ * This is a cadence FLOOR, not a schedule: the pressure gates in
+ * [ContextMaintenance] can run a pass earlier when the window is filling fast,
+ * and will skip it entirely on a session too small to repay the request. So
+ * raising this number reduces spend without risking a stall; lowering it keeps
+ * the context tighter at the cost of more summarisation requests.
+ */
+object ContextMaintenancePrefs {
+    private const val PREFS = "minis_context_prefs"
+    private const val KEY_FULL_EVERY_N = "context.maintenance.fulleveryn"
+
+    const val MIN_TURNS = 1
+    const val MAX_TURNS = 50
+
+    private fun prefs(context: Context): SharedPreferences =
+        context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+    fun fullEveryNTurns(context: Context): Int =
+        prefs(context)
+            .getInt(KEY_FULL_EVERY_N, ContextMaintenance.DEFAULT_FULL_EVERY_N_TURNS)
+            .coerceIn(MIN_TURNS, MAX_TURNS)
+
+    fun setFullEveryNTurns(context: Context, value: Int) {
+        prefs(context).edit()
+            .putInt(KEY_FULL_EVERY_N, value.coerceIn(MIN_TURNS, MAX_TURNS))
+            .apply()
+    }
+}
+
+/**
  * [T-session-rescue] Decides whether a failed turn should be blamed on an
  * oversized session, and therefore whether to point the user at `/rescue`.
  *
