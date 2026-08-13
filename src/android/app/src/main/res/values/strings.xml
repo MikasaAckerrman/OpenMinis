@@ -1231,6 +1231,10 @@
     <string name="rescue_done">Session rescued locally: ~%1$d → ~%2$d tokens (digest %3$d chars). Large tool outputs were moved to /var/minis/offloads/ and can be re-read with file_read. Undo via Revert compact.</string>
     <string name="rescue_failed">Rescue failed: %1$s</string>
     <string name="rescue_hint_suffix">This session\'s history may be too large to send. Type /rescue to compress it on-device (no model call needed) and try again — nothing is deleted, and you can undo it with Revert compact.</string>
+    <!-- [T-session-rescue-refine] Stage 2: model rewrite of the local digest. -->
+    <string name="rescue_refine_done">Summary rewritten by the model: %1$d chars (~%2$d tokens). All paths, URLs and hashes were verified present.</string>
+    <string name="rescue_refine_rejected">The model\'s rewrite dropped some verbatim details, so the on-device summary was kept. Nothing was lost.</string>
+    <string name="rescue_refine_unavailable">The model was unreachable for the rewrite step — keeping the on-device summary. The session is usable either way.</string>
     <string name="thinking_level_off">Off</string>
     <string name="thinking_level_low">Low</string>
     <string name="thinking_level_medium">Medium</string>

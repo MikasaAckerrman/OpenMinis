@@ -38,6 +38,31 @@ object RescueDigestPrefs {
 }
 
 /**
+ * [T-session-rescue-refine] Toggle for the second, LLM-based rescue stage.
+ *
+ * On by default: the model rewrite is strictly better prose when it works, and
+ * it cannot make things worse — the local digest is already committed before
+ * the call, and a refinement that drops a verbatim fact is rejected. Turn it
+ * off to keep rescue fully offline / zero-cost (one small extra request per
+ * rescue), or when the provider is known to be unreachable and you don't want
+ * to wait for the attempt.
+ */
+object RescueRefinementPrefs {
+    private const val PREFS = "minis_context_prefs"
+    private const val KEY_ENABLED = "context.rescue.refine"
+
+    private fun prefs(context: Context): SharedPreferences =
+        context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+    fun isEnabled(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_ENABLED, true)
+
+    fun setEnabled(context: Context, enabled: Boolean) {
+        prefs(context).edit().putBoolean(KEY_ENABLED, enabled).apply()
+    }
+}
+
+/**
  * [T-session-rescue] Decides whether a failed turn should be blamed on an
  * oversized session, and therefore whether to point the user at `/rescue`.
  *

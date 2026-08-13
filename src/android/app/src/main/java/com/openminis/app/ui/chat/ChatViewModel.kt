@@ -1769,6 +1769,19 @@ class ChatViewModel(
                         payload = digest,
                     )
                 }
+
+                // ── Stage 2: optional LLM refinement ──────────────────────
+                //
+                // The session is ALREADY usable at this point (local digest
+                // written above). Now try to make the summary better written
+                // by handing the digest — not the history — to the model. The
+                // input is a few thousand tokens by construction, so this call
+                // is small even on a session that was completely unsendable.
+                // Any failure, or a result that drops a verbatim fact, leaves
+                // the local digest in place.
+                if (com.openminis.app.data.RescueRefinementPrefs.isEnabled(context)) {
+                    refineRescueDigest(marker, digest, digestBudget)
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -1784,6 +1797,100 @@ class ChatViewModel(
                 }
             } finally {
                 _isCompacting.value = false
+            }
+        }
+    }
+
+    /**
+     * [T-session-rescue-refine] Stage 2 of rescue: ask the model to rewrite
+     * the local digest, and accept the result only if it survives
+     * [RescueRefinement.verify].
+     *
+     * Failure is not an error path here — it is the expected outcome whenever
+     * the provider is unreachable (the very situation rescue exists for). So
+     * every failure is logged and swallowed, and the already-written local
+     * digest stays as the marker's summary. The user is told which of the two
+     * they ended up with, because "the model rewrote it" and "your device
+     * built it" are different quality levels and they should know which.
+     */
+    private suspend fun refineRescueDigest(
+        marker: com.openminis.app.data.db.CompactMarkerEntity,
+        digest: String,
+        budget: Int,
+    ) {
+        val provider = currentProvider
+        if (provider == null) {
+            AppLogger.info(TAG, "[Rescue] refinement skipped: no provider configured")
+            return
+        }
+        val refined = try {
+            val response = provider.sendMessage(
+                messages = listOf(
+                    LLMMessage(
+                        role = LLMMessage.Role.USER,
+                        content = com.openminis.app.data.RescueRefinement.buildUserMessage(digest),
+                    )
+                ),
+                systemPrompt = com.openminis.app.data.RescueRefinement.SYSTEM_PROMPT,
+                // The output must be SMALLER than the digest; leaving the cap
+                // generous just invites the model to pad.
+                maxTokens = maxOf(1024, (budget / 3)),
+                temperature = null,
+                imageParts = emptyList(),
+                tools = emptyList(),
+                thinkingLevel = ThinkingLevel.OFF,
+            )
+            response.text
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            AppLogger.info(TAG, "[Rescue] refinement call failed (keeping local digest): ${e.message}")
+            withContext(Dispatchers.Main) {
+                appendSystemInfo(
+                    text = context.getString(R.string.rescue_refine_unavailable),
+                    iconKind = "compact",
+                )
+            }
+            return
+        }
+
+        when (val verdict = com.openminis.app.data.RescueRefinement.verify(digest, refined, budget)) {
+            is com.openminis.app.data.RescueRefinement.Verdict.Rejected -> {
+                AppLogger.warning(
+                    TAG,
+                    "[Rescue] refinement REJECTED (keeping local digest): ${verdict.reason}",
+                )
+                withContext(Dispatchers.Main) {
+                    appendSystemInfo(
+                        text = context.getString(R.string.rescue_refine_rejected),
+                        iconKind = "compact",
+                    )
+                }
+            }
+            is com.openminis.app.data.RescueRefinement.Verdict.Accepted -> {
+                val updated = marker.copy(summary = verdict.text)
+                runCatching { chatRepository.dao.updateCompactMarker(updated) }
+                    .onFailure {
+                        AppLogger.warning(TAG, "[Rescue] refinement marker update failed: ${it.message}")
+                    }
+                _compactSummary.value = verdict.text
+                _cachedLatestMarker = updated
+                val savedPct = 100 - (verdict.text.length * 100 / digest.length.coerceAtLeast(1))
+                AppLogger.info(
+                    TAG,
+                    "[Rescue] refinement ACCEPTED: ${digest.length} → ${verdict.text.length} chars (-$savedPct%)",
+                )
+                withContext(Dispatchers.Main) {
+                    appendSystemInfo(
+                        text = context.getString(
+                            R.string.rescue_refine_done,
+                            verdict.text.length,
+                            (verdict.text.length + 3) / 4,
+                        ),
+                        iconKind = "compact",
+                        payload = verdict.text,
+                    )
+                }
             }
         }
     }
@@ -2734,6 +2841,16 @@ class ChatViewModel(
      * halve by message count, summarize each half independently, then ask the
      * LLM to merge the two partial summaries into one — prioritizing Part 2
      * (more recent) when space is tight, again matching iOS behavior.
+     *
+     * [T-session-rescue-refine] The split trigger also fires on a VAGUE
+     * transport failure, not just an explicit size error. An upstream that
+     * stops reading an oversized body produces a dropped connection or a TTFB
+     * timeout, never "context length exceeded" — and the old condition
+     * rethrew on exactly those, so `/compact` gave up without ever trying a
+     * smaller input. That is the failure the user hit as "no response from
+     * server". Split-and-retry is cheap and bounded (depth 3), so treating an
+     * ambiguous failure as "maybe too big" costs at most a couple of small
+     * calls, while the previous behaviour cost the whole session.
      */
     private suspend fun generateCompactSummaryWithSplitting(
         messages: List<LLMMessage>,
@@ -2752,9 +2869,18 @@ class ChatViewModel(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            if (!isContextTooLargeError(e) || messages.size < 2 || depth >= 3) {
+            val msg = e.message ?: e.toString()
+            val worthSplitting = isContextTooLargeError(e) ||
+                com.openminis.app.data.RescueAdvisor.isVagueTransportFailure(msg)
+            if (!worthSplitting || messages.size < 2 || depth >= 3) {
                 throw e
             }
+            AppLogger.info(
+                TAG,
+                "[Compact] split trigger: explicitSize=${isContextTooLargeError(e)} " +
+                    "vagueTransport=${com.openminis.app.data.RescueAdvisor.isVagueTransportFailure(msg)} " +
+                    "depth=$depth msg=${msg.take(120)}",
+            )
             val mid = messages.size / 2
             val firstHalf = messages.subList(0, mid).toList()
             val secondHalf = messages.subList(mid, messages.size).toList()

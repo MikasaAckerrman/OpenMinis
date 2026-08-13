@@ -995,6 +995,9 @@
     <string name="rescue_done">Сессия спасена локально: ~%1$d → ~%2$d токенов (дайджест %3$d симв.). Большие выводы инструментов перенесены в /var/minis/offloads/ и доступны через file_read. Отменить — «Откатить сжатие».</string>
     <string name="rescue_failed">Спасение не удалось: %1$s</string>
     <string name="rescue_hint_suffix">Похоже, история этой сессии слишком велика для отправки. Введите /rescue — она будет сжата прямо на устройстве, без запроса к модели. Ничего не удаляется, отменить можно через «Откатить сжатие».</string>
+    <string name="rescue_refine_done">Сводку переписала модель: %1$d симв. (~%2$d токенов). Все пути, ссылки и хеши проверены — на месте.</string>
+    <string name="rescue_refine_rejected">Модель при переписывании потеряла часть дословных деталей, поэтому оставлена сводка, собранная на устройстве. Ничего не потеряно.</string>
+    <string name="rescue_refine_unavailable">Модель недоступна для шага переписывания — оставлена сводка, собранная на устройстве. Сессия работоспособна в любом случае.</string>
     <string name="thinking_level_off">Выкл.</string>
     <string name="thinking_level_low">Низкое</string>
     <string name="thinking_level_medium">Среднее</string>

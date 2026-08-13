@@ -82,6 +82,17 @@ internal object ConfigBuiltins {
                 maxValue = com.openminis.app.data.RescueDigestPrefs.MAX_MAX_CHARS,
             )
         )
+        // [T-session-rescue-refine] Stage-2 LLM rewrite of the rescue digest.
+        r.register(
+            PrefsBoolField(
+                path = "context.rescueRefine",
+                displayName = "Let the model rewrite the rescue summary",
+                description = "After /rescue builds its on-device digest (which is committed first, so the session already works), send that digest — NOT the oversized history — to the model for a better-written summary. The input is a few thousand tokens by construction, so this succeeds even on a session that could not send at all. The result is accepted only if every path, URL and hash from the digest is still present verbatim and it is actually shorter; otherwise the on-device digest is kept. Turn off to keep /rescue fully offline.",
+                prefs = prefs,
+                key = "context.rescue.refine",
+                defaultValue = true,
+            )
+        )
     }
 
     // -- Memory — global default toggle for the persistent memory feature --
