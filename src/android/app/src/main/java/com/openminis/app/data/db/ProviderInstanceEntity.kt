@@ -31,6 +31,11 @@ data class ProviderInstanceEntity(
     @ColumnInfo(name = "image_endpoint_mode") val imageEndpointMode: String? = null,
     @ColumnInfo(name = "image_endpoint_resolved") val imageEndpointResolved: String? = null,
     @ColumnInfo(name = "custom_user_agent") val customUserAgent: String? = null,
+    // [T-provider-folders] User-defined folder name for organizing the
+    // provider list. Nullable TEXT; null = ungrouped. Backfilled by
+    // MIGRATION_4_5 as NULL on existing rows (no data rewrite). Mirrors the
+    // ProviderInstance.folder field.
+    @ColumnInfo(name = "folder") val folder: String? = null,
     @ColumnInfo(name = "is_enabled") val isEnabled: Int = 1,
     @ColumnInfo(name = "sort_order") val sortOrder: Int = 0,
     @ColumnInfo(name = "created_at") val createdAt: Long,

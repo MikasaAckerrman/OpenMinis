@@ -88,6 +88,7 @@ fun ProviderConfig.toSnapshot(
             imageEndpointMode = inst.imageEndpointMode.name,
             imageEndpointResolved = inst.imageEndpointResolved?.name,
             customUserAgent = inst.customUserAgent,
+            folder = inst.folder,
             isEnabled = if (inst.isEnabled) 1 else 0,
             sortOrder = idx,
             createdAt = inst.createdAt,
@@ -200,6 +201,7 @@ fun ProviderConfigSnapshot.toProviderConfig(jsonForBlobs: Json): ProviderConfig 
             customBaseURL = row.customBaseURL,
             appendV1Suffix = row.appendV1Suffix != 0,
             customUserAgent = row.customUserAgent,
+            folder = row.folder,
             useResponsesAPI = row.useResponsesAPI != 0,
             azureMode = row.azureMode != 0,
             // [GH#68] Safe parse: null (pre-migration rows) or an unknown

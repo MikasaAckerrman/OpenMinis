@@ -60,6 +60,7 @@ class ProvidersCollection(
             useResponsesAPI(forId),
             azureMode(forId),
             customUserAgent(forId),
+            folder(forId),
             apiKeyField(forId),
             // OAuth token stays fully hidden — the flow is browser-driven
             // and can't be expressed as a single value.
@@ -85,6 +86,7 @@ class ProvidersCollection(
      *     "appendV1Suffix":   true,                                     // optional, default true
      *     "useResponsesAPI":  false,                                    // optional, default false
      *     "azureMode":        false,                                    // optional, default false (OpenAI api-key only)
+     *     "folder":           "GoRouter",                               // optional; groups the provider in the list UI
      *     "apiKey":           "sk-…" | "$\$DEEPSEEK_KEY",                 // optional; literal OR env ref
      *   }
      *
@@ -120,6 +122,9 @@ class ProvidersCollection(
         val appendV1Suffix = (obj["appendV1Suffix"] as? ConfigValue.Bool)?.value ?: true
         val useResponsesAPI = (obj["useResponsesAPI"] as? ConfigValue.Bool)?.value ?: false
         val azureMode = (obj["azureMode"] as? ConfigValue.Bool)?.value ?: false
+        // [T-provider-folders] Optional list-organization folder. Trimmed;
+        // blank → null (ungrouped).
+        val folder = (obj["folder"] as? ConfigValue.Str)?.value?.trim()?.takeIf { it.isNotEmpty() }
 
         // Resolve apiKey BEFORE addInstance, so a bad $$ENV ref aborts
         // the whole operation without leaving a half-created instance.
@@ -135,6 +140,7 @@ class ProvidersCollection(
             appendV1Suffix = appendV1Suffix,
             useResponsesAPI = useResponsesAPI,
             azureMode = azureMode,
+            folder = folder,
         )
         repo.addInstance(instance)
         if (apiKeyValue != null) repo.saveApiKey(instance.id, apiKeyValue)
@@ -346,6 +352,33 @@ class ProvidersCollection(
                     throw ConfigError.InvalidValue("Custom User-Agent is only supported for third-party API-key providers. OAuth providers (Anthropic/Codex) use their own authentication UA and cannot be overridden.")
                 }
                 mutate(id) { it.copy(customUserAgent = s.ifEmpty { null }) }
+            },
+        )
+
+    /**
+     * [T-provider-folders] User-defined folder name that groups this instance
+     * with others in the provider list. Purely organizational — it never
+     * affects routing, credentials or model resolution, so this is a NORMAL
+     * risk, fully revertable field. Empty string clears the folder (stored as
+     * null → the instance renders under its providerType section as before).
+     * The name is trimmed so " GoRouter" and "GoRouter" can't split into two
+     * visually identical folders.
+     */
+    private fun folder(id: String): ConfigField =
+        ClosureField(
+            path = "providers.$id.folder",
+            displayName = "Folder",
+            description = "Groups this provider with others under one folder in the provider list. Empty string = no folder.",
+            valueSchema = ConfigSchema.Str(maxLength = 200),
+            risk = ConfigRisk.NORMAL,
+            revertable = true,
+            reader = {
+                val inst = repo.instance(id) ?: return@ClosureField ConfigValue.Null
+                ConfigValue.Str(inst.folder ?: "")
+            },
+            writer = { v ->
+                val s = (v as? ConfigValue.Str)?.value ?: throw ConfigError.TypeMismatch("string")
+                mutate(id) { it.copy(folder = s.trim().ifEmpty { null }) }
             },
         )
 

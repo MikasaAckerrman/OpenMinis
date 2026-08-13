@@ -88,6 +88,7 @@ jobs:
           ./gradlew :app:testCloneUnitTest --no-daemon -Dorg.gradle.jvmargs="-Xmx4g" \
             --tests 'com.openminis.app.offload.*' \
             --tests 'com.openminis.app.config.ConfigPathResolverTest' \
+            --tests 'com.openminis.app.data.model.ProviderFoldersTest' \
             --tests 'com.openminis.app.provider.QuotaErrorDetectionTest' \
             --tests 'com.openminis.app.provider.ContentFilterDetectionTest' \
             --tests 'com.openminis.app.tools.AgentSystemPromptStoreTest' \

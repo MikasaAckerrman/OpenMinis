@@ -22,6 +22,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.VpnKey
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -36,6 +38,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -46,6 +49,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.res.stringResource
+import com.openminis.app.data.model.ProviderFolders
 import com.openminis.app.data.model.ProviderInstance
 import com.openminis.app.data.repository.ProviderRepository
 import com.openminis.app.R
@@ -61,8 +65,18 @@ fun ProviderListScreen(
 ) {
     val config by providerRepository.config.collectAsState()
     val instances = config.instances
-    val groupedInstances = instances.groupBy { it.providerType }
+    // [T-provider-folders] Folder layout comes from ProviderFolders (pure,
+    // unit-tested): user-defined folders first (alphabetical, spelling variants
+    // merged case-insensitively), then everything ungrouped by providerType
+    // exactly as before.
+    val folderLayout = remember(config) { ProviderFolders.layout(instances) }
+    val groupedInstances = folderLayout.ungrouped.groupBy { it.providerType }
     val context = LocalContext.current
+
+    // [T-provider-folders] Per-folder expand/collapse state, keyed by the
+    // case-folded folder name. Default expanded so naming a folder immediately
+    // shows its contents; collapsing is opt-in.
+    val expandedFolders = remember { mutableStateMapOf<String, Boolean>() }
 
     var showMenu by remember { mutableStateOf(false) }
 
@@ -145,29 +159,83 @@ fun ProviderListScreen(
                 )
             }
         } else {
+            // [T-provider-folders] User-defined folders first — each is a
+            // section headed by the folder name with a tappable expand/collapse
+            // chevron and a "N keys" count. Collapsing hides the rows but keeps
+            // the header so the user can re-open it. Ungrouped providers follow,
+            // grouped by providerType exactly as before.
+            folderLayout.folders.forEach { section ->
+                val folderKey = section.name.lowercase()
+                val folderInstances = section.instances
+                val expanded = expandedFolders[folderKey] ?: true
+                SettingsSection(
+                    header = section.name,
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { expandedFolders[folderKey] = !expanded }
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Folder,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.width(12.dp))
+                        Text(
+                            text = stringResource(R.string.provider_list_folder_key_count, folderInstances.size),
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Icon(
+                            imageVector = if (expanded) Icons.Default.KeyboardArrowDown
+                            else Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                            contentDescription = null,
+                            modifier = Modifier.size(22.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (expanded) {
+                        val divider = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 38.dp, end = 14.dp)
+                                .height(0.5.dp)
+                                .background(divider),
+                        )
+                        folderInstances.forEachIndexed { index, instance ->
+                            ProviderInstanceRowResolved(
+                                instance = instance,
+                                providerRepository = providerRepository,
+                                context = context,
+                                onClick = { onProviderClick(instance.id) },
+                            )
+                            if (index < folderInstances.size - 1) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(start = 38.dp, end = 14.dp)
+                                        .height(0.5.dp)
+                                        .background(divider),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
             groupedInstances.forEach { (providerType, typeInstances) ->
                 SettingsSection(header = providerType.displayName) {
                     typeInstances.forEachIndexed { index, instance ->
-                        val modelCount = providerRepository.visibleEntries(instance.id).size
-                        val apiKey = providerRepository.loadApiKey(instance.id)
-                        // Mirrors iOS `isConfigured` on ProviderInstancesView:
-                        // for OAuth providers, having a manual bearer token OR
-                        // a stored OAuth credential counts as "configured" — not
-                        // just the presence of an API key. Without this, OAuth
-                        // instances always show the gray dot even after a
-                        // successful sign-in or manual token paste.
-                        val isConfigured = if (instance.credentialType ==
-                            com.openminis.app.data.model.ProviderCredential.oauth) {
-                            val mgr = com.openminis.app.auth.OAuthManager.forInstance(context, instance)
-                            mgr?.isAuthenticated() == true
-                        } else {
-                            !apiKey.isNullOrBlank()
-                        }
-                        ProviderInstanceRow(
+                        ProviderInstanceRowResolved(
                             instance = instance,
-                            modelCount = modelCount,
-                            apiKey = apiKey,
-                            isConfigured = isConfigured,
+                            providerRepository = providerRepository,
+                            context = context,
                             onClick = { onProviderClick(instance.id) },
                         )
                         if (index < typeInstances.size - 1) {
@@ -264,6 +332,44 @@ fun ProviderListScreen(
             }
         }
     }
+}
+
+/**
+ * [T-provider-folders] Resolves the per-instance display state (model count,
+ * stored key, configured dot) and renders a [ProviderInstanceRow]. Extracted so
+ * the folder sections and the providerType sections share one code path — the
+ * resolution logic (notably the OAuth `isConfigured` rule) was previously
+ * inlined in the single render loop and would have had to be duplicated.
+ */
+@Composable
+private fun ProviderInstanceRowResolved(
+    instance: ProviderInstance,
+    providerRepository: ProviderRepository,
+    context: android.content.Context,
+    onClick: () -> Unit,
+) {
+    val modelCount = providerRepository.visibleEntries(instance.id).size
+    val apiKey = providerRepository.loadApiKey(instance.id)
+    // Mirrors iOS `isConfigured` on ProviderInstancesView: for OAuth providers,
+    // having a manual bearer token OR a stored OAuth credential counts as
+    // "configured" — not just the presence of an API key. Without this, OAuth
+    // instances always show the gray dot even after a successful sign-in or
+    // manual token paste.
+    val isConfigured = if (instance.credentialType ==
+        com.openminis.app.data.model.ProviderCredential.oauth
+    ) {
+        val mgr = com.openminis.app.auth.OAuthManager.forInstance(context, instance)
+        mgr?.isAuthenticated() == true
+    } else {
+        !apiKey.isNullOrBlank()
+    }
+    ProviderInstanceRow(
+        instance = instance,
+        modelCount = modelCount,
+        apiKey = apiKey,
+        isConfigured = isConfigured,
+        onClick = onClick,
+    )
 }
 
 @Composable

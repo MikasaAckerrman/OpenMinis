@@ -140,6 +140,14 @@ data class ProviderInstance(
     val credentialType: ProviderCredential,
     var isEnabled: Boolean = true,
     val createdAt: Long = System.currentTimeMillis(),
+    // [T-provider-folders] Optional user-defined folder name used purely to
+    // organize the provider list UI (e.g. group many gorouter.app keys under
+    // one "GoRouter" folder). null/blank → the instance is ungrouped and
+    // renders under its providerType section as before. Nullable-with-default
+    // so old persisted JSON (which lacks the key) round-trips cleanly under
+    // kotlinx.serialization ignoreUnknownKeys + declared defaults. Field name
+    // matches iOS for cross-platform export/import interop.
+    var folder: String? = null,
     var customBaseURL: String? = null,
     var appendV1Suffix: Boolean = true,
     // [T-provider-custom-user-agent] Optional per-provider User-Agent

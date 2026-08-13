@@ -1960,6 +1960,10 @@ class ProviderRepository(private val context: Context) {
             // when set; old/new readers without the key decode to null →
             // default UA. Field name matches iOS for cross-platform interop.
             instance.customUserAgent?.takeIf { it.isNotBlank() }?.let { put("customUserAgent", it) }
+            // [T-provider-folders] Additive, optional. Carries the list-UI
+            // folder across export/import so re-importing a bundle of keys
+            // lands them back in the same folder instead of ungrouped.
+            instance.folder?.takeIf { it.isNotBlank() }?.let { put("folder", it) }
         }
         return obj.toString(2)
     }
@@ -1995,6 +1999,8 @@ class ProviderRepository(private val context: Context) {
         // [T-provider-custom-user-agent] Additive: old exports lack the key →
         // empty → null → default UA. Field name matches iOS.
         val customUserAgent = dict.optString("customUserAgent", "").ifEmpty { null }
+        // [T-provider-folders] Additive: old exports lack the key → ungrouped.
+        val folder = dict.optString("folder", "").trim().ifEmpty { null }
 
         val instance = ProviderInstance(
             id = java.util.UUID.randomUUID().toString(),
@@ -2005,6 +2011,7 @@ class ProviderRepository(private val context: Context) {
             appendV1Suffix = appendV1,
             useResponsesAPI = useResponsesAPI,
             customUserAgent = customUserAgent,
+            folder = folder,
         )
         addInstance(instance)
 

@@ -897,6 +897,11 @@
     <string name="share_provider_json_import_failed">Invalid provider configuration file</string>
     <string name="provider_list_api_key">API Key</string>
     <string name="provider_list_disabled">Disabled</string>
+    <!-- [T-provider-folders] User-defined folders in the provider list. -->
+    <string name="provider_list_folder_key_count">%1$d providers</string>
+    <string name="provider_detail_folder">Folder</string>
+    <string name="provider_detail_folder_placeholder">No folder</string>
+    <string name="provider_detail_folder_footer">Group providers from the same source under one folder in the provider list. Leave blank to keep this provider ungrouped.</string>
     <string name="provider_detail_export">Export</string>
     <string name="provider_detail_label">Label</string>
     <string name="provider_detail_manual_bearer_token">Manual Bearer Token</string>

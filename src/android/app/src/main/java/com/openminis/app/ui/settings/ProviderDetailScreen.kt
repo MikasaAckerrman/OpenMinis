@@ -4,6 +4,8 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -104,6 +106,17 @@ fun ProviderDetailScreen(
     var label by remember { mutableStateOf(instance.label) }
     val labelChanged = label != instance.label
 
+    // [T-provider-folders] Folder name input. Empty string == "no folder"
+    // (stored as null). `folderChanged` compares against the normalized stored
+    // value so re-typing the same name doesn't surface a pointless Save button.
+    var folder by remember { mutableStateOf(instance.folder ?: "") }
+    val folderChanged = folder.trim() != (instance.folder ?: "").trim()
+    // Existing folder names across all instances, offered as one-tap chips so
+    // the user doesn't have to retype (and can't typo a name into a second,
+    // near-identical folder).
+    val existingFolders = com.openminis.app.data.model.ProviderFolders
+        .existingNames(config.instances)
+
     // [T-android-provider-apikey-save-stale] Hold the stored API key in Compose
     // state, NOT as a plain val that re-reads EncryptedSharedPreferences on every
     // recomposition. saveApiKey() writes with .apply() (async); a recomposition
@@ -158,6 +171,58 @@ fun ProviderDetailScreen(
                             AppLogger.info(TAG, "Updated label for ${instance.id}: '$label'")
                         }) {
                             Text(stringResource(R.string.common_save))
+                        }
+                    }
+                }
+            }
+        }
+
+        // ─── Folder ─────────────────────────────────────────────────
+        // [T-provider-folders] Purely organizational: the folder name groups
+        // this instance with others in the provider list. It never affects
+        // routing, credentials or the model list, so no cache invalidation is
+        // needed on save (see ProviderRepository.updateInstance).
+        SettingsSection(
+            header = stringResource(R.string.provider_detail_folder),
+            footer = stringResource(R.string.provider_detail_folder_footer),
+        ) {
+            SettingsCardBlock {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    SectionTextField(
+                        value = folder,
+                        onValueChange = { folder = it },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        placeholder = stringResource(R.string.provider_detail_folder_placeholder),
+                        fieldModifier = Modifier.bringIntoViewOnFocus(),
+                    )
+                    if (folderChanged) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        MinisSmallButton(onClick = {
+                            val normalized = folder.trim().ifEmpty { null }
+                            providerRepository.updateInstance(instance.copy(folder = normalized))
+                            AppLogger.info(TAG, "Updated folder for ${instance.id}: '${normalized ?: "<none>"}'")
+                        }) {
+                            Text(stringResource(R.string.common_save))
+                        }
+                    }
+                }
+                // One-tap reuse of a folder name that already exists. Typing is
+                // still allowed — this only removes the retype/typo path that
+                // would otherwise split one logical folder into two.
+                if (existingFolders.isNotEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        for (name in existingFolders) {
+                            MinisSmallOutlinedButton(onClick = { folder = name }) {
+                                Text(name)
+                            }
                         }
                     }
                 }
