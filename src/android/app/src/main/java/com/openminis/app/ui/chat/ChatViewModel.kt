@@ -2826,8 +2826,17 @@ class ChatViewModel(
                 agentHistory.indexOfLast { it.dbMessageId == id }
             } ?: -1
             if (anchorIdx < 0) {
-                Log.w(TAG, "[Compact] effectiveAgentHistory v2: anchorId=${anchorId?.take(8) ?: "nil"} not in agentHistory(size=${agentHistory.size}) — degrading to full history (no summary)")
-                return agentHistory.toList()
+                // [T-degraded-history-budget] The anchor is gone (rows deleted,
+                // ids rewritten by an edit, marker healed against a different
+                // ordering). Sending the FULL history here — the old behaviour —
+                // is the worst possible answer on the session that most needs
+                // help: everything the compaction folded away goes back out and
+                // the request fails again, which is exactly the "it read the
+                // whole session, even the uncompacted part" symptom. Send the
+                // summary plus a budgeted tail instead, cut only at a clean
+                // user turn so no tool_result is orphaned.
+                Log.w(TAG, "[Compact] effectiveAgentHistory v2: anchorId=${anchorId?.take(8) ?: "nil"} not in agentHistory(size=${agentHistory.size}) — degrading to summary + budgeted tail")
+                return degradedHistoryWithSummary(summaryWrappedText, summary)
             }
 
             // [T-session-rescue] A rescue digest must REPLACE the history,
@@ -3001,8 +3010,79 @@ class ChatViewModel(
             }
         }
 
-        Log.w(TAG, "[Compact] effectiveAgentHistory: marker ${marker.id.take(8)} unresolvable in agentHistory (size=${agentHistory.size}); returning full history")
-        return agentHistory.toList()
+        Log.w(TAG, "[Compact] effectiveAgentHistory: marker ${marker.id.take(8)} unresolvable in agentHistory (size=${agentHistory.size}); degrading to summary + budgeted tail")
+        return degradedHistoryWithSummary(summaryWrappedText, summary)
+    }
+
+    /**
+     * [T-degraded-history-budget] Fallback view when a compact marker exists
+     * but its anchor cannot be located in the current history.
+     *
+     * Sends the summary followed by as much of the RECENT tail as fits the
+     * window, cut only at a user turn carrying no tool results — cutting inside
+     * a tool round would orphan a `tool_result` and get the request rejected for
+     * a protocol error instead of a size one.
+     *
+     * The previous behaviour ("return the full history, drop the summary") is
+     * safe on a small session and catastrophic on the large one that actually
+     * hits this path: it re-sends everything the compaction folded away.
+     */
+    private fun degradedHistoryWithSummary(
+        summaryWrappedText: String,
+        summary: String,
+    ): List<LLMMessage> {
+        val window = effectiveContextWindowTokens()?.takeIf { it > 0 } ?: 128_000
+        val summaryTokens = (summary.length + 3) / 4
+        val budget = com.openminis.app.data.HistoryTailBudget.tailBudget(window, summaryTokens)
+        val candidates = agentHistory.map { msg ->
+            val hasToolResult = msg.contentParts.any { it is AgentContentPart.ToolResult }
+            var chars = msg.content.length
+            for (part in msg.contentParts) {
+                chars += when (part) {
+                    is AgentContentPart.Text -> part.text.length
+                    is AgentContentPart.ToolUse -> part.input.toString().length
+                    is AgentContentPart.ToolResult -> part.content.length
+                    is AgentContentPart.ImageData -> 0
+                }
+            }
+            com.openminis.app.data.HistoryTailBudget.Candidate(
+                isCleanUserTurn = msg.role == LLMMessage.Role.USER && !hasToolResult,
+                tokens = (chars / 3.5).toInt() + 1,
+            )
+        }
+        val start = com.openminis.app.data.HistoryTailBudget.startIndex(candidates, budget)
+        val tail = if (start in 1 until agentHistory.size) {
+            agentHistory.subList(start, agentHistory.size).toList()
+        } else {
+            agentHistory.toList()
+        }
+        AppLogger.info(
+            TAG,
+            "[Compact] degraded view: summaryTokens=$summaryTokens budget=$budget " +
+                "tailStart=$start of ${agentHistory.size} → sending ${tail.size} message(s)",
+        )
+        // Splice the summary into the first user turn of the tail so role
+        // alternation is preserved (same approach the anchored path uses); if
+        // the tail opens on an assistant turn, prepend a standalone user turn.
+        val firstUserOffset = tail.indexOfFirst { it.role == LLMMessage.Role.USER }
+        if (firstUserOffset < 0) {
+            return buildList(tail.size + 1) {
+                add(LLMMessage(role = LLMMessage.Role.USER, content = summaryWrappedText))
+                addAll(tail)
+            }
+        }
+        return buildList(tail.size + 1) {
+            if (firstUserOffset > 0) {
+                // Leading non-user entries would break "first message must be
+                // user"; the summary turn goes in front of them.
+                add(LLMMessage(role = LLMMessage.Role.USER, content = summaryWrappedText))
+                addAll(tail)
+            } else {
+                val target = tail[0]
+                add(target.copy(content = summaryWrappedText + "\n\n" + target.content))
+                addAll(tail.subList(1, tail.size))
+            }
+        }
     }
 
     /** Latest in-memory compact marker, used by [effectiveAgentHistory] to
@@ -3401,12 +3481,32 @@ class ChatViewModel(
      * not cover (small-window tiers where compaction is unavailable).
      */
     private fun checkContextBeforeSend(): Boolean {
-        val tokens = _lastTurnContextTokens.value
+        // [T-context-pressure-blind] _lastTurnContextTokens only ever gets a
+        // value from a SUCCESSFUL response's usage block. On a session that has
+        // started failing — the one that needs help — it stays 0 forever, and
+        // an in-memory counter is 0 again after every app restart. Everything
+        // gated on it then silently no-ops: maintenance read "pressure
+        // unknown" and returned LIGHT on every send, so the full history kept
+        // going out. Fall back to the local char estimate: cruder than the
+        // provider's tokeniser, but being 20% off still picks the right tier,
+        // whereas 0 picks nothing.
+        val reportedTokens = _lastTurnContextTokens.value
+        val tokens = com.openminis.app.data.ContextPressure.resolve(
+            usageTokens = reportedTokens,
+            estimatedTokens = estimateContextTokens(),
+        )
         // [T-context-window-live-read] Live window (entry re-resolved + group
         // contextLimitTokens folded in) — not the currentModel snapshot.
         val window = effectiveContextWindowTokens() ?: return true
         val policy = ContextPolicy.forContextWindow(window)
         val nowMs = System.currentTimeMillis()
+        if (com.openminis.app.data.ContextPressure.isEstimated(reportedTokens, tokens)) {
+            AppLogger.info(
+                TAG,
+                "[Maintenance] no usage reported yet — using local estimate $tokens tokens " +
+                    "(window=$window)",
+            )
+        }
 
         if (com.openminis.app.data.ContextAutoCompactPrefs.isEnabled(context)) {
             userTurnsSinceFullCompact += 1
@@ -6415,7 +6515,14 @@ class ChatViewModel(
      */
     private fun withRescueHint(errorText: String): String {
         val window = effectiveContextWindowTokens() ?: 0
-        val tokens = _lastTurnContextTokens.value
+        // [T-context-pressure-blind] Same blindness as the maintenance gate:
+        // a failing session never reports usage, so the reported counter is 0
+        // and the advisor concluded "small session, must be the network" —
+        // suppressing the hint on exactly the errors it exists to explain.
+        val tokens = com.openminis.app.data.ContextPressure.resolve(
+            usageTokens = _lastTurnContextTokens.value,
+            estimatedTokens = estimateContextTokens(),
+        )
         if (!com.openminis.app.data.RescueAdvisor.shouldSuggestRescue(errorText, tokens, window)) {
             return errorText
         }
@@ -6874,7 +6981,18 @@ class ChatViewModel(
         // copy that under-reported modern Claude/Gemini windows.
         val contextWindow = model.contextWindowTokens
         if (contextWindow <= 0) return maxOutputCeiling
-        val inputTokens = if (lastContextTokens > 0) lastContextTokens else 0
+        // [T-context-pressure-blind] Same blind spot as the maintenance gate,
+        // with a nastier consequence here. `lastContextTokens` is 0 until a
+        // response reports usage, so on a failing session `remaining` was the
+        // WHOLE window and we asked for the maximum output. Relays pre-charge
+        // the worst case of max_tokens (see CompactRoute), so a huge ask on an
+        // already-huge history is itself a reason to get "quota exceeded" —
+        // the request never even ran. Fall back to the local estimate: it is
+        // crude, but asking for a sane output size beats asking for the ceiling.
+        val inputTokens = com.openminis.app.data.ContextPressure.resolve(
+            usageTokens = lastContextTokens,
+            estimatedTokens = estimateContextTokens(),
+        )
         val remaining = contextWindow - inputTokens
         val clamped = maxOf(remaining, MIN_MAX_TOKENS)
         val result = minOf(maxOutputCeiling, clamped)
