@@ -711,6 +711,15 @@ fun ChatScreen(
     var pendingDeleteMessageId by remember { mutableStateOf<String?>(null) }
     var pendingRewriteMessageId by remember { mutableStateOf<String?>(null) }
     var pendingRewriteText by remember { mutableStateOf("") }
+    // The `safeMutate` wrapper (which tears down the selection toolbar before
+    // the message list is reshuffled — see its declaration for the crash it
+    // prevents) lives in a nested scope further down, but these dialogs are
+    // hosted out here. Publish it through a holder so the dialogs get the same
+    // protection instead of mutating the list with a live toolbar attached.
+    val safeMutateRef = remember { mutableStateOf<((() -> Unit) -> Unit)?>(null) }
+    val safeMutateFromDialog: (() -> Unit) -> Unit = { block ->
+        safeMutateRef.value?.invoke(block) ?: block()
+    }
 
     // Bridge VM's slash-command "/clear" request into local Compose state so
     // the menu and slash-command entry points share a single confirmation
@@ -3027,6 +3036,9 @@ fun ChatScreen(
                     focusManager.clearFocus()
                     block()
                 }
+                // [T-message-surgery] Publish it to the outer scope so the
+                // delete/rewrite dialogs hosted there get the same teardown.
+                androidx.compose.runtime.SideEffect { safeMutateRef.value = safeMutate }
                 // Hoist slash-menu state up so the LazyColumn pointerInput
                 // tap-spy below can react to it. The popup itself, declared
                 // further down near the composer, reads viewModel.showSlashMenu
@@ -5516,7 +5528,7 @@ fun ChatScreen(
                     isDestructive = true,
                     onConfirm = {
                         pendingDeleteMessageId = null
-                        safeMutate { viewModel.deleteMessage(targetId) }
+                        safeMutateFromDialog { viewModel.deleteMessage(targetId) }
                     },
                 )
             }
@@ -5566,7 +5578,7 @@ fun ChatScreen(
                                     onClick = {
                                         val text = pendingRewriteText
                                         pendingRewriteMessageId = null
-                                        safeMutate { viewModel.rewriteMessageText(targetId, text) }
+                                        safeMutateFromDialog { viewModel.rewriteMessageText(targetId, text) }
                                     },
                                 ) { Text(stringResource(R.string.msg_rewrite_save)) }
                             }
