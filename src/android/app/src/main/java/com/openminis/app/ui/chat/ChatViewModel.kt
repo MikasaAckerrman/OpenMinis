@@ -707,6 +707,25 @@ class ChatViewModel(
      */
     private val _lastTurnContextTokens = MutableStateFlow(0)
     /**
+     * [T-no-compact-mid-request] The in-flight payload-reshaping job
+     * (compaction or rescue), so a send can WAIT for it instead of racing it.
+     *
+     * Maintenance is triggered from `checkContextBeforeSend()`, which runs at
+     * the top of `send()` — before `_isStreaming` is set — and does its work in
+     * a detached coroutine. So the compaction landed while the very turn it was
+     * meant to help was already building its request: the marker changed under
+     * the request builder, the slice boundary fell between an assistant
+     * `tool_use` and its `tool_result`, and the provider answered
+     * `400 TOOL_USE_RESULT_MISMATCH`. The `_isStreaming` guards inside
+     * compactAll could not catch it — at that instant the flag was still false.
+     *
+     * Awaiting the job is better than deferring it: the turn that triggered a
+     * ceiling-level compaction is exactly the one that would otherwise be
+     * refused for "context window is full". So we shrink FIRST, then send.
+     */
+    @Volatile
+    private var maintenanceJob: kotlinx.coroutines.Job? = null
+    /**
      * [T-stale-pressure-after-compact] Drop the provider-reported context size
      * whenever the payload changes shape under us (compaction, rescue,
      * refinement, revert, message surgery).
@@ -1685,7 +1704,7 @@ class ChatViewModel(
 
         val beforeTokens = estimateRawHistoryTokens()
         _isCompacting.value = true
-        viewModelScope.launch(Dispatchers.IO) {
+        maintenanceJob = viewModelScope.launch(Dispatchers.IO) {
             try {
                 val sid = realSessionId.ifEmpty { sessionId }
                 // Force-offload every eligible large payload. Lossless: the
@@ -2136,7 +2155,7 @@ class ChatViewModel(
             return
         }
         _isCompacting.value = true
-        viewModelScope.launch(Dispatchers.IO) {
+        maintenanceJob = viewModelScope.launch(Dispatchers.IO) {
             // [T-android-compact-queued-drain] Only a SUCCESSFUL compact kicks
             // the queued-prompt drain below; failure/cancel/empty-summary paths
             // keep today's behavior (queued bubbles stay pending + cancellable).
@@ -2830,6 +2849,36 @@ class ChatViewModel(
     private fun effectiveAgentHistory(): List<LLMMessage> = effectiveAgentHistory(verbose = true)
 
     /**
+     * [T-payload-pairing-guard] The single place a request payload is built.
+     *
+     * Four independent code paths reshape the message list — the compaction
+     * slicer, the degraded-tail fallback, the offload rewriter and message
+     * surgery. If any of them lands a `tool_result` whose `tool_use` is no
+     * longer in the payload, the provider answers 400 TOOL_USE_RESULT_MISMATCH
+     * on EVERY send, and the user cannot recover because the broken pair sits
+     * in the persisted history.
+     *
+     * So pairing is enforced here, once, on the way out. This does not excuse
+     * a slicing bug — the callers still log what they dropped — it just makes
+     * the difference between "one turn is degraded" and "the session is
+     * bricked".
+     */
+    private fun buildRequestPayload(): List<LLMMessage> {
+        val budgeted = applyRequestImageBudget(effectiveAgentHistory())
+        val guarded = com.openminis.app.data.PayloadPairingGuard.enforce(budgeted)
+        if (guarded.mutated) {
+            AppLogger.warning(
+                TAG,
+                "[PairingGuard] dropped ${guarded.droppedResults} unpaired tool_result(s) and " +
+                    "${guarded.droppedUses} unanswered tool_use(s) from the outgoing payload " +
+                    "(${budgeted.size} → ${guarded.messages.size} messages). A slicing path " +
+                    "produced an invalid pairing — see the [Compact]/[Rescue] lines above.",
+            )
+        }
+        return guarded.messages
+    }
+
+    /**
      * @param verbose false for the estimation path. [estimateContextTokens]
      *   calls this to measure the payload, and it runs several times per turn —
      *   emitting the full CompactDiag block each time would bury the one line
@@ -3501,7 +3550,17 @@ class ChatViewModel(
             desc.contains("request too large") ||
             desc.contains("prompt is too long") ||
             desc.contains("token limit") ||
-            desc.contains("context window")
+            desc.contains("context window") ||
+            // [T-recover-context-full-mid-loop] Observed live from a relay,
+            // Chinese first with an English parenthetical: "请精简对话历史或缩小
+            // 工具/文件输出后重试。(Context window is full — reduce conversation
+            // history, tool/file output, or system prompt.)" The English half
+            // matches "context window" above, but relays localise freely and
+            // some send only the Chinese, so match that independently.
+            desc.contains("请精简对话历史") ||
+            desc.contains("对话历史") ||
+            desc.contains("context is full") ||
+            desc.contains("context window is full")
     }
 
     /**
@@ -3588,32 +3647,42 @@ class ChatViewModel(
                         AppLogger.warning(TAG, "[Maintenance] light pass failed: ${it.message}")
                     }
                 }
-                com.openminis.app.data.ContextMaintenance.Action.FULL -> {
-                    lastAutoCompactAtMs = nowMs
-                    userTurnsSinceFullCompact = 0
-                    appendSystemInfo(
-                        text = context.getString(
-                            R.string.maintenance_full_compact,
-                            tokens,
-                            window,
-                        ),
-                        iconKind = "compact",
-                    )
-                    compactAll()
-                    return true
-                }
+                com.openminis.app.data.ContextMaintenance.Action.FULL,
                 com.openminis.app.data.ContextMaintenance.Action.RESCUE -> {
+                    // [T-no-compact-mid-request] Reshaping the payload is only
+                    // safe when nothing is reading it. `_isStreaming` is false
+                    // at the top of a fresh send (the stream job awaits the
+                    // pass before building its request), but this method is
+                    // also reached from the queued-prompt drain, where a turn
+                    // IS live — compacting there is what produced
+                    // 400 TOOL_USE_RESULT_MISMATCH.
+                    val maintenanceWindow = com.openminis.app.data.MaintenanceWindow.decide(
+                        wanted = true,
+                        turnInFlight = _isStreaming.value,
+                        compactionInFlight = _isCompacting.value,
+                    )
+                    if (maintenanceWindow != com.openminis.app.data.MaintenanceWindow.Decision.RUN_NOW) {
+                        AppLogger.info(
+                            TAG,
+                            "[Maintenance] $action wanted but $maintenanceWindow " +
+                                "(streaming=${_isStreaming.value} compacting=${_isCompacting.value}) — " +
+                                "the next idle send will run it",
+                        )
+                        return true
+                    }
                     lastAutoCompactAtMs = nowMs
                     userTurnsSinceFullCompact = 0
+                    val isRescue = action == com.openminis.app.data.ContextMaintenance.Action.RESCUE
                     appendSystemInfo(
                         text = context.getString(
-                            R.string.maintenance_rescue_compact,
+                            if (isRescue) R.string.maintenance_rescue_compact
+                            else R.string.maintenance_full_compact,
                             tokens,
                             window,
                         ),
                         iconKind = "compact",
                     )
-                    rescueCompactNow()
+                    if (isRescue) rescueCompactNow() else compactAll()
                     return true
                 }
             }
@@ -6293,6 +6362,28 @@ class ChatViewModel(
                     // Acquire concurrency slot (suspends if at max)
                     SessionConcurrencyManager.acquireSlot(activeSessionId)
                     AppLogger.debug(TAG_STREAM, "send streamJob slot acquired")
+                    // [T-no-compact-mid-request] Wait for any payload-reshaping
+                    // pass (compaction / rescue) that checkContextBeforeSend
+                    // kicked off for THIS send. Without this the compaction ran
+                    // concurrently with the request being built: the marker
+                    // moved under the builder, the slice landed between an
+                    // assistant tool_use and its tool_result, and the provider
+                    // answered 400 TOOL_USE_RESULT_MISMATCH. Awaiting (rather
+                    // than skipping the compaction) is deliberate — this turn is
+                    // the one that would otherwise be refused for "context
+                    // window is full", so it must send the SHRUNK payload.
+                    maintenanceJob?.let { job ->
+                        if (job.isActive) {
+                            AppLogger.info(
+                                TAG_STREAM,
+                                "send: awaiting in-flight context maintenance before building the request",
+                            )
+                            runCatching { job.join() }
+                                .onFailure { AppLogger.warning(TAG_STREAM, "maintenance join failed: ${it.message}") }
+                            AppLogger.info(TAG_STREAM, "send: maintenance finished, proceeding")
+                        }
+                        maintenanceJob = null
+                    }
                     SessionActivityTracker.setActive(activeSessionId, onStop = { cancelStream() })
 
                     // Resolve the active group's fallback strategy
@@ -7500,6 +7591,11 @@ class ChatViewModel(
         // we surface a real error instead of a silent blank bubble. Mirrors iOS
         // AIChatViewModel.didInjectEmptyToolReminderThisRun.
         var didInjectEmptyToolReminder = false
+        // [T-recover-context-full-mid-loop] One-shot: the provider reported a
+        // full context window mid-loop, we compressed on-device and retried.
+        // A second occurrence means shrinking did not help, so the error is
+        // surfaced instead of looping.
+        var didRescueForContextFull = false
         for (turn in 0 until MAX_AGENT_TURNS) {
             // Sanitize history before each API call (mirrors iOS pre-API validation)
             sanitizeAgentHistory()
@@ -7635,7 +7731,7 @@ class ChatViewModel(
                     // user message. Falls through to the raw agentHistory when
                     // no compact has happened, so the common path stays zero-copy.
                     currentProvider.streamMessage(
-                        applyRequestImageBudget(effectiveAgentHistory()),
+                        buildRequestPayload(),
                         systemPrompt, dynamicMaxTokens(currentProvider, lastContextTokens),
                         tools = agentTools,
                         thinkingLevel = if (currentModelSupportsReasoning) _thinkingLevel.value else ThinkingLevel.OFF,
@@ -8098,6 +8194,45 @@ class ChatViewModel(
                     // makes the intent explicit and avoids a one-frame
                     // flash of the stale banner.
                     withContext(Dispatchers.Main) { clearInlineError() }
+                    // [T-recover-context-full-mid-loop] "Context window is
+                    // full" mid-loop is recoverable and MUST be handled here.
+                    // Falling back to another model does not help — the payload
+                    // is too big for any of them — and throwing strands the
+                    // session: the user is told to reduce history by an app that
+                    // has a compressor built in. So shrink and retry the same
+                    // turn once. Bounded by a one-shot flag: if it happens again
+                    // after a rescue, the payload is not the problem and the
+                    // error surfaces normally.
+                    val isContextFull = isContextTooLargeError(actual)
+                    if (isContextFull && !didRescueForContextFull) {
+                        didRescueForContextFull = true
+                        AppLogger.warning(
+                            TAG,
+                            "[Maintenance] provider says the context is full mid-loop — " +
+                                "compressing on-device and retrying this turn",
+                        )
+                        withContext(Dispatchers.Main) {
+                            appendSystemInfo(
+                                text = context.getString(R.string.maintenance_context_full_retry),
+                                iconKind = "compact",
+                            )
+                            // Runs on Main and publishes maintenanceJob; the
+                            // join below waits for it. rescueCompactNow needs
+                            // isStreaming=false to start, so drop the flag for
+                            // the duration and restore it after — the turn is
+                            // still ours, we are not ending it.
+                            _isStreaming.value = false
+                            rescueCompactNow()
+                        }
+                        maintenanceJob?.let { job ->
+                            runCatching { job.join() }
+                                .onFailure { AppLogger.warning(TAG, "rescue join failed: ${it.message}") }
+                            maintenanceJob = null
+                        }
+                        withContext(Dispatchers.Main) { _isStreaming.value = true }
+                        clearInlineError()
+                        continue
+                    }
                     val shouldFallback = isRateLimit || is5xx ||
                         fallbackStrategy == com.openminis.app.data.model.FallbackStrategy.always
                     val next = if (shouldFallback) remainingFallbacks.removeFirstOrNull() else null

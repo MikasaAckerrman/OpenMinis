@@ -1254,6 +1254,7 @@
     <!-- [T-context-maintenance] Tiered upkeep notices. -->
     <string name="maintenance_full_compact">Context at %1$d / %2$d tokens — folding older turns into a summary in the background. This turn still goes through.</string>
     <string name="maintenance_rescue_compact">Context at %1$d / %2$d tokens — too full to summarise via the model reliably, so compressing on-device instead. Undo via Revert compact.</string>
+    <string name="maintenance_context_full_retry">The provider says the context window is full. Compressing on-device and retrying this turn — nothing is lost, and you can undo it with Revert compact.</string>
     <!-- [T-compact-route] Compaction refusal ladder. -->
     <string name="compact_retry_smaller">The model refused on cost — asking for a shorter summary (%1$d tokens) on the same model.</string>
     <string name="compact_switching_model">That model is rate limited or out of quota — trying %1$s from this group instead.</string>
