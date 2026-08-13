@@ -1824,33 +1824,68 @@ class ChatViewModel(
         digest: String,
         budget: Int,
     ) {
-        val provider = currentProvider
-        if (provider == null) {
+        val primary = currentProvider
+        if (primary == null) {
             AppLogger.info(TAG, "[Rescue] refinement skipped: no provider configured")
             return
         }
-        val refined = try {
-            val response = provider.sendMessage(
-                messages = listOf(
-                    LLMMessage(
-                        role = LLMMessage.Role.USER,
-                        content = com.openminis.app.data.RescueRefinement.buildUserMessage(digest),
+        // [T-compact-route] The bound model being rate limited is one of the
+        // main reasons a user reaches for /rescue in the first place, so try
+        // the other models in the group before giving up on refinement. No
+        // shrink ladder here: the digest is already small, so a quota refusal
+        // on it is about the account, not the request size.
+        val candidates = buildList {
+            add(primary)
+            addAll(runCatching { buildFallbackProviders(primary) }.getOrDefault(emptyList()))
+        }
+        var refined: String? = null
+        var lastFailure: String? = null
+        for ((idx, provider) in candidates.withIndex()) {
+            try {
+                val response = provider.sendMessage(
+                    messages = listOf(
+                        LLMMessage(
+                            role = LLMMessage.Role.USER,
+                            content = com.openminis.app.data.RescueRefinement.buildUserMessage(digest),
+                        )
+                    ),
+                    systemPrompt = com.openminis.app.data.RescueRefinement.SYSTEM_PROMPT,
+                    // The output must be SMALLER than the digest; leaving the cap
+                    // generous just invites the model to pad.
+                    maxTokens = maxOf(1024, (budget / 3)),
+                    temperature = null,
+                    imageParts = emptyList(),
+                    tools = emptyList(),
+                    thinkingLevel = ThinkingLevel.OFF,
+                )
+                refined = response.text
+                if (idx > 0) {
+                    AppLogger.info(
+                        TAG,
+                        "[Rescue] refinement served by fallback #$idx ${provider.model.id}",
                     )
-                ),
-                systemPrompt = com.openminis.app.data.RescueRefinement.SYSTEM_PROMPT,
-                // The output must be SMALLER than the digest; leaving the cap
-                // generous just invites the model to pad.
-                maxTokens = maxOf(1024, (budget / 3)),
-                temperature = null,
-                imageParts = emptyList(),
-                tools = emptyList(),
-                thinkingLevel = ThinkingLevel.OFF,
+                }
+                break
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val msg = e.message ?: e.toString()
+                lastFailure = msg
+                val worthNextModel = com.openminis.app.data.CompactRoute.isRateLimit(msg) ||
+                    com.openminis.app.data.CompactRoute.isQuota(msg)
+                AppLogger.info(
+                    TAG,
+                    "[Rescue] refinement on ${provider.model.id} failed: ${msg.take(120)} " +
+                        "(tryNextModel=$worthNextModel)",
+                )
+                if (!worthNextModel) break
+            }
+        }
+        if (refined == null) {
+            AppLogger.info(
+                TAG,
+                "[Rescue] refinement unavailable, keeping local digest: ${lastFailure?.take(160)}",
             )
-            response.text
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            AppLogger.info(TAG, "[Rescue] refinement call failed (keeping local digest): ${e.message}")
             withContext(Dispatchers.Main) {
                 appendSystemInfo(
                     text = context.getString(R.string.rescue_refine_unavailable),
@@ -2079,6 +2114,9 @@ class ChatViewModel(
             // the queued-prompt drain below; failure/cancel/empty-summary paths
             // keep today's behavior (queued bubbles stay pending + cancellable).
             var compactSucceeded = false
+            // [T-compact-route] Set when every LLM route refused; consumed
+            // after the finally block to hand off to the local digest.
+            var localFallbackReason: String? = null
             try {
                 val existing = _compactSummary.value
                 // Mirrors iOS `generateCompactSummaryWithSplitting` — when the
@@ -2252,6 +2290,15 @@ class ChatViewModel(
                 compactSucceeded = true
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: CompactRoutesExhausted) {
+                // [T-compact-route] Every LLM route refused (rate limit /
+                // quota on the bound model and on all group fallbacks). The
+                // session still has to shrink, or the user is left with a chat
+                // that can neither send nor compact — the exact dead end this
+                // whole line of work is about. Fall back to the local digest,
+                // which needs no provider and cannot be rate limited.
+                AppLogger.warning(TAG, "[Compact] all routes refused → local digest: ${e.lastMessage.take(160)}")
+                localFallbackReason = e.lastMessage
             } catch (e: Exception) {
                 Log.w(TAG, "Compact failed", e)
                 withContext(Dispatchers.Main) {
@@ -2262,6 +2309,22 @@ class ChatViewModel(
                 }
             } finally {
                 _isCompacting.value = false
+            }
+            // [T-compact-route] Runs AFTER the finally that clears
+            // _isCompacting — rescueCompactNow refuses to start while a
+            // compaction is in flight, so kicking it from inside the catch
+            // would silently no-op.
+            localFallbackReason?.let { reason ->
+                withContext(Dispatchers.Main) {
+                    appendSystemInfo(
+                        text = context.getString(
+                            R.string.compact_all_routes_refused,
+                            reason.take(160),
+                        ),
+                        iconKind = "compact",
+                    )
+                    rescueCompactNow()
+                }
             }
             // [T-android-compact-queued-drain] A successful compact must let
             // any queued prompts proceed — previously nothing re-triggered the
@@ -3110,6 +3173,12 @@ class ChatViewModel(
             generateCompactSummary(conversationText)
         } catch (e: CancellationException) {
             throw e
+        } catch (e: CompactRoutesExhausted) {
+            // [T-compact-route] Every model refused. Splitting the input can't
+            // change that (the refusal is about quota/rate, not size), and the
+            // caller needs this type intact to route to the local digest — so
+            // it must not be swallowed by the split heuristic below.
+            throw e
         } catch (e: Exception) {
             val msg = e.message ?: e.toString()
             val worthSplitting = isContextTooLargeError(e) ||
@@ -3179,27 +3248,119 @@ class ChatViewModel(
         val model = currentModel
         val contextWindow = model?.contextWindow ?: 128_000
         val estimatedInput = userMessage.length / 4
-        val maxOut = maxOf(1024, minOf(8192, contextWindow - estimatedInput))
-        val provider = currentProvider
+        val startMaxOut = maxOf(1024, minOf(8192, contextWindow - estimatedInput))
+        val primary = currentProvider
             ?: throw IllegalStateException("No LLM provider available for compaction")
-        val response = provider.sendMessage(
-            messages = listOf(
-                LLMMessage(role = LLMMessage.Role.USER, content = userMessage)
-            ),
-            systemPrompt = compactSummarySystemPrompt,
-            maxTokens = maxOut,
-            // Mirror iOS AIChatViewModel.swift:12926 — null lets the
-            // provider/model use its default. gpt-5.x family rejects any
-            // temperature != 1 with HTTP 400, and Android
-            // OpenAIProvider.buildRequestBody omits the field entirely when
-            // temperature is null.
-            temperature = null,
-            imageParts = emptyList(),
-            tools = emptyList(),
-            thinkingLevel = ThinkingLevel.OFF,
-        )
-        return response.text
+
+        // [T-compact-route] Compaction used to be a single call on the bound
+        // model: a 429 or a 403-quota killed it, leaving the session too big to
+        // send AND unable to shrink itself. Now a refusal walks a ladder —
+        // smaller request (quota only; relays pre-charge on max_tokens, so a
+        // shorter summary is often affordable on the same key), then the other
+        // models in the group, and the caller falls back to the local digest
+        // when every route refuses. Rate limits skip the shrink step: the limit
+        // counts requests, not tokens.
+        val fallbacks = runCatching { buildFallbackProviders(primary) }.getOrDefault(emptyList())
+        var provider: LLMProvider = primary
+        var providerIdx = -1  // -1 = primary, >=0 = index into fallbacks
+        var maxOut = startMaxOut
+        var shrinkSteps = 0
+        var lastError: Exception? = null
+
+        while (true) {
+            try {
+                val response = provider.sendMessage(
+                    messages = listOf(
+                        LLMMessage(role = LLMMessage.Role.USER, content = userMessage)
+                    ),
+                    systemPrompt = compactSummarySystemPrompt,
+                    maxTokens = maxOut,
+                    // Mirror iOS AIChatViewModel.swift:12926 — null lets the
+                    // provider/model use its default. gpt-5.x family rejects any
+                    // temperature != 1 with HTTP 400, and Android
+                    // OpenAIProvider.buildRequestBody omits the field entirely when
+                    // temperature is null.
+                    temperature = null,
+                    imageParts = emptyList(),
+                    tools = emptyList(),
+                    thinkingLevel = ThinkingLevel.OFF,
+                )
+                if (providerIdx >= 0 || maxOut != startMaxOut) {
+                    AppLogger.info(
+                        TAG,
+                        "[Compact] summary produced by ${provider.model.id} maxTokens=$maxOut " +
+                            "(after ${if (providerIdx >= 0) "fallback #$providerIdx" else "shrink"})",
+                    )
+                }
+                return response.text
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                lastError = e
+                val msg = e.message ?: e.toString()
+                val nextIdx = (providerIdx + 1).takeIf { it < fallbacks.size }
+                val step = com.openminis.app.data.CompactRoute.next(
+                    errorMessage = msg,
+                    currentMaxTokens = maxOut,
+                    shrinkStepsUsed = shrinkSteps,
+                    nextProviderIndex = nextIdx,
+                )
+                AppLogger.info(
+                    TAG,
+                    "[Compact] route: provider=${provider.model.id} maxTokens=$maxOut " +
+                        "err=${msg.take(120)} → $step",
+                )
+                when (step) {
+                    is com.openminis.app.data.CompactRoute.Step.RetrySmaller -> {
+                        shrinkSteps += 1
+                        maxOut = step.maxTokens
+                        withContext(Dispatchers.Main) {
+                            appendSystemInfo(
+                                text = context.getString(
+                                    R.string.compact_retry_smaller,
+                                    step.maxTokens,
+                                ),
+                                iconKind = "compact",
+                            )
+                        }
+                    }
+                    is com.openminis.app.data.CompactRoute.Step.NextProvider -> {
+                        providerIdx = step.index
+                        provider = fallbacks[step.index]
+                        shrinkSteps = 0
+                        maxOut = startMaxOut
+                        withContext(Dispatchers.Main) {
+                            appendSystemInfo(
+                                text = context.getString(
+                                    R.string.compact_switching_model,
+                                    provider.model.displayName.ifBlank { provider.model.id },
+                                ),
+                                iconKind = "compact",
+                            )
+                        }
+                    }
+                    // Signal to the caller that no LLM route worked. A dedicated
+                    // exception type (not the provider's own error) so the
+                    // compactAll catch can tell "every model refused" apart from
+                    // "this one call failed" and go local instead of giving up.
+                    is com.openminis.app.data.CompactRoute.Step.LocalDigest ->
+                        throw CompactRoutesExhausted(msg, e)
+                    is com.openminis.app.data.CompactRoute.Step.Surface -> throw e
+                }
+            }
+        }
     }
+
+    /**
+     * [T-compact-route] Raised when every LLM route for compaction refused
+     * (rate limit / quota on the bound model and on every group fallback).
+     * The caller answers by building the local digest, so the session shrinks
+     * regardless.
+     */
+    private class CompactRoutesExhausted(
+        val lastMessage: String,
+        cause: Throwable?,
+    ) : Exception("All compaction routes refused: $lastMessage", cause)
 
     /**
      * Match provider error text against the substring set iOS
