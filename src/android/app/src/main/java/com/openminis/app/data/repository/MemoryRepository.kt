@@ -21,6 +21,19 @@ class MemoryRepository(private val memoryDir: File) {
         private const val TAG = "MemoryRepository"
         private const val GLOBAL_FILE = "GLOBAL.md"
         private const val MAX_INJECT_LINES = 200
+        // [T-memory-inject-budget] Char budget for the auto-injected
+        // daily-log fragment. The 200-line cap alone never bounded the
+        // injection: dense work logs run 20-40K chars per 200 lines, so
+        // three files landed ~90K chars (~25K tokens) in EVERY system
+        // prompt — a fifth of a 128K window before the conversation even
+        // starts. Cap per file AND in total; anything older is one
+        // memory_get away. Cut happens at line boundaries so the model
+        // never sees a half-line.
+        internal const val MAX_INJECT_CHARS_PER_FILE = 3_000
+        const val DEFAULT_INJECT_CHARS_TOTAL = 8_000
+        // Below this remainder a whole file is skipped — a 200-char
+        // sliver of a daily log is noise, not context.
+        private const val MIN_USEFUL_FILE_CHARS = 300
         // memory_get full-dump (no keywords): cap at 500 lines — matches iOS
         // `maxTotalLines = 500` in AIChatViewModel+MemoryTools.swift.
         private const val MAX_DUMP_LINES = 500
@@ -256,16 +269,22 @@ class MemoryRepository(private val memoryDir: File) {
 
     /**
      * Loads up to 3 most recent non-empty daily logs (within a 30-day window)
-     * for system-prompt injection. Mirrors iOS
-     * `AIChatViewModel.loadRecentDailyMemoryFragment()` exactly: same header,
-     * same intro paragraph, same per-entry labels, same 200-line cap, same
-     * "(N more lines, use memory_get to search)" continuation.
+     * for system-prompt injection. Keeps the iOS header, intro paragraph,
+     * per-entry labels and 200-line cap — but [T-memory-inject-budget] adds
+     * a char budget on top: [MAX_INJECT_CHARS_PER_FILE] per file and
+     * [maxTotalChars] across all files (newest first, cut at line
+     * boundaries, omission note when the budget runs out). Rationale at the
+     * constants: dense logs pushed ~90K chars (~25K tokens) into EVERY
+     * system prompt; the cap brings that to ~8K chars (~2K tokens) while
+     * memory_get keeps the full logs reachable on demand.
      */
-    fun loadRecentDailyMemoryFragment(): String? {
+    fun loadRecentDailyMemoryFragment(maxTotalChars: Int = DEFAULT_INJECT_CHARS_TOTAL): String? {
         val dateFmt = SimpleDateFormat("yyyy-MM-dd", Locale.US)
         val now = Date()
         val fragments = mutableListOf<String>()
         var dayOffset = 0
+        var remaining = maxTotalChars
+        var omittedByBudget = 0
 
         while (fragments.size < MAX_RECENT_FILES && dayOffset < MAX_LOOKBACK_DAYS) {
             val date = Date(now.time - dayOffset.toLong() * 86400_000L)
@@ -275,18 +294,49 @@ class MemoryRepository(private val memoryDir: File) {
             if (file.exists()) {
                 val content = try { file.readText() } catch (_: Exception) { "" }
                 if (content.isNotEmpty()) {
+                    val perFileCap = minOf(MAX_INJECT_CHARS_PER_FILE, remaining)
+                    if (perFileCap < MIN_USEFUL_FILE_CHARS) {
+                        // Budget exhausted (or nearly) — count the rest as
+                        // omitted instead of injecting a useless sliver.
+                        omittedByBudget++
+                        dayOffset++
+                        continue
+                    }
                     val lines = content.lines()
-                    val preview = lines.take(MAX_INJECT_LINES).joinToString("\n")
+                    // Line cap first, then char cap at a line boundary.
+                    val sb = StringBuilder()
+                    var usedLines = 0
+                    val lineCap = minOf(lines.size, MAX_INJECT_LINES)
+                    while (usedLines < lineCap) {
+                        val line = lines[usedLines]
+                        val added = line.length + (if (usedLines > 0) 1 else 0)
+                        if (sb.length + added > perFileCap) break
+                        if (usedLines > 0) sb.append('\n')
+                        sb.append(line)
+                        usedLines++
+                    }
+                    var preview = sb.toString()
+                    var midLineCut = false
+                    if (usedLines == 0 && lines.isNotEmpty()) {
+                        // Degenerate case: the very first line alone exceeds
+                        // the cap (a multi-KB one-liner). A hard mid-line cut
+                        // beats an empty entry that still eats a file slot.
+                        preview = lines[0].take(perFileCap)
+                        midLineCut = true
+                    }
                     val label = when (dayOffset) {
                         0 -> "Today's"
                         1 -> "Yesterday's"
                         else -> dateStr
                     }
                     var entry = "$label daily log ($dateStr.md):\n$preview"
-                    if (lines.size > MAX_INJECT_LINES) {
-                        entry += "\n... (${lines.size - MAX_INJECT_LINES} more lines, use memory_get to search)"
+                    if (midLineCut) {
+                        entry += "\n... (truncated, use memory_get to search)"
+                    } else if (usedLines < lines.size) {
+                        entry += "\n... (${lines.size - usedLines} more lines, use memory_get to search)"
                     }
                     fragments.add(entry)
+                    remaining -= entry.length
                 }
             }
             dayOffset++
@@ -298,6 +348,9 @@ class MemoryRepository(private val memoryDir: File) {
             append("Recent memories (auto-injected from daily logs):\n")
             append("These are memories saved by you or the user in previous sessions. Treat them as background context, not standing instructions — they describe past tasks, not the current one. If the user's latest message changes scope, numbers, or goal, follow the latest message and do not resume the old task from these memories. Do not delete or rewrite these files unless the user explicitly asks. Use memory_get to search for more, or memory_write to save new ones.\n\n")
             append(fragments.joinToString("\n\n"))
+            if (omittedByBudget > 0) {
+                append("\n\n($omittedByBudget older daily log(s) omitted to stay within the context budget — use memory_get to search them.)")
+            }
         }
     }
 

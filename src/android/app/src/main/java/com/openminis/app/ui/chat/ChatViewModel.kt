@@ -706,6 +706,9 @@ class ChatViewModel(
      * a usage payload — in which case we treat the turn as low-pressure.
      */
     private val _lastTurnContextTokens = MutableStateFlow(0)
+    // [T-context-autocompact] Cooldown marker for the auto-compact trigger
+    // in [checkContextBeforeSend] — see ContextAutoCompact.COOLDOWN_MS.
+    private var lastAutoCompactAtMs = 0L
     val lastTurnContextTokens: StateFlow<Int> = _lastTurnContextTokens.asStateFlow()
 
     /**
@@ -2540,13 +2543,36 @@ class ChatViewModel(
         // contextLimitTokens folded in) — not the currentModel snapshot.
         val window = effectiveContextWindowTokens() ?: return true
         val policy = ContextPolicy.forContextWindow(window)
-        return when (policy.check(tokens, window)) {
+        return when (val check = policy.check(tokens, window)) {
             ContextPolicy.CheckResult.OK -> true
             ContextPolicy.CheckResult.NEEDS_COMPACT -> {
-                appendSystemInfo(
-                    text = "Context is getting full ($tokens / $window tokens). Consider running /compact to fold older turns into a summary.",
-                    iconKind = "compact",
-                )
+                // [T-context-autocompact] Instead of only nudging the user
+                // toward /compact (which in practice nobody runs), kick off
+                // the compact ourselves. The policy thresholds leave 10-20K
+                // tokens of headroom, so THIS turn still fits; the summary
+                // lands in time for the NEXT one. Cooldown guards against
+                // retriggering every send when a summary didn't shrink enough.
+                val nowMs = System.currentTimeMillis()
+                if (com.openminis.app.data.ContextAutoCompact.shouldTrigger(
+                        check = check,
+                        enabled = com.openminis.app.data.ContextAutoCompactPrefs.isEnabled(context),
+                        isCompacting = _isCompacting.value,
+                        lastRunAtMs = lastAutoCompactAtMs,
+                        nowMs = nowMs,
+                    )
+                ) {
+                    lastAutoCompactAtMs = nowMs
+                    appendSystemInfo(
+                        text = "Context crossed the auto-compact threshold ($tokens / $window tokens) — folding older turns into a summary in the background. Turn it off via minis-config: context.autoCompact.",
+                        iconKind = "compact",
+                    )
+                    compactAll()
+                } else {
+                    appendSystemInfo(
+                        text = "Context is getting full ($tokens / $window tokens). Consider running /compact to fold older turns into a summary.",
+                        iconKind = "compact",
+                    )
+                }
                 true
             }
             ContextPolicy.CheckResult.EXHAUSTED -> {
@@ -8625,7 +8651,18 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         // tool surface and SOUL.md is part of identity, both orthogonal
         // to the memory feature.
         val globalMemoryFragment = if (memoryOn) memoryRepository?.loadGlobalMemoryFragment() else null
-        val dailyMemoryFragment = if (memoryOn) memoryRepository?.loadRecentDailyMemoryFragment() else null
+        // [T-memory-inject-budget] Total char budget for the auto-injected
+        // daily logs — config key `memory.injectMaxChars` (prefs
+        // `minis_memory_prefs`/`memory.inject.maxchars`). Default 8000 ≈
+        // ~2K tokens; pre-budget this fragment alone measured ~92K chars
+        // (~25K tokens) on dense work logs.
+        val memoryInjectBudget = context
+            .getSharedPreferences("minis_memory_prefs", android.content.Context.MODE_PRIVATE)
+            .getInt(
+                "memory.inject.maxchars",
+                com.openminis.app.data.repository.MemoryRepository.DEFAULT_INJECT_CHARS_TOTAL,
+            )
+        val dailyMemoryFragment = if (memoryOn) memoryRepository?.loadRecentDailyMemoryFragment(memoryInjectBudget) else null
 
         val workerSessionId = realSessionId.ifEmpty { sessionId }
         val rolePrompt = com.openminis.app.tools.AgentSystemPromptStore.promptFor(workerSessionId)

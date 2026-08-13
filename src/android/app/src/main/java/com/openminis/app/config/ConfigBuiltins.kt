@@ -52,6 +52,23 @@ internal object ConfigBuiltins {
         registerDefaults(r, providerRepo)
         registerSoul(r, context)
         registerMemory(r, context)
+        registerContext(r, context)
+    }
+
+    // -- Context — auto-compact toggle (context window pressure handling) --
+
+    private fun registerContext(r: ConfigRegistry, context: Context) {
+        val prefs = context.getSharedPreferences("minis_context_prefs", Context.MODE_PRIVATE)
+        r.register(
+            PrefsBoolField(
+                path = "context.autoCompact",
+                displayName = "Auto-compact on context pressure",
+                description = "When on (default), crossing the model's compact threshold at send time automatically folds older turns into a summary in the background, instead of only showing a 'consider /compact' notice. The policy thresholds leave 10-20K tokens of headroom, so the in-flight turn still completes; the next turn starts on the compacted history. A 10-minute cooldown prevents retriggering every send.",
+                prefs = prefs,
+                key = "context.autocompact.enabled",
+                defaultValue = true,
+            )
+        )
     }
 
     // -- Memory — global default toggle for the persistent memory feature --
@@ -78,6 +95,22 @@ internal object ConfigBuiltins {
                 prefs = prefs,
                 key = "memory.global.enabled",
                 defaultValue = true,
+            )
+        )
+        // [T-memory-inject-budget] Total char budget for the auto-injected
+        // daily-log fragment, read by ChatViewModel.buildSystemPrompt().
+        // 8000 chars ≈ ~2K tokens; 0 is not meaningful (use memory.enabled
+        // = false to disable injection entirely), hence the floor.
+        r.register(
+            PrefsIntField(
+                path = "memory.injectMaxChars",
+                displayName = "Memory injection budget (chars)",
+                description = "Total char budget for the 'Recent memories' block auto-injected into every system prompt (today + up to 2 older daily logs, newest first, per-file cap 3000). Default 8000 ≈ ~2K tokens. Dense logs used to inject ~90K chars (~25K tokens) per turn. Lower = cheaper context but less continuity; memory_get searches the full logs on demand regardless.",
+                prefs = prefs,
+                key = "memory.inject.maxchars",
+                defaultValue = 8_000,
+                minValue = 1_000,
+                maxValue = 100_000,
             )
         )
     }
