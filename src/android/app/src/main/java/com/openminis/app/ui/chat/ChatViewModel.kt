@@ -706,6 +706,31 @@ class ChatViewModel(
      * a usage payload — in which case we treat the turn as low-pressure.
      */
     private val _lastTurnContextTokens = MutableStateFlow(0)
+    /**
+     * [T-stale-pressure-after-compact] Drop the provider-reported context size
+     * whenever the payload changes shape under us (compaction, rescue,
+     * refinement, revert, message surgery).
+     *
+     * The reported number describes the request that was last SENT. After a
+     * compaction the next request is a different, much smaller thing — but the
+     * counter still holds the pre-compaction value until a successful response
+     * refreshes it. Since [ContextPressure] prefers the reported number, a
+     * stale 190K would survive the compaction that fixed it and order another
+     * one on the very next send: a rescue loop writing a fresh marker per
+     * message, each one compacting the summary produced by the last.
+     *
+     * Zeroing it makes [ContextPressure] fall back to the local estimate,
+     * which now measures the actual payload — so the gates see the post-
+     * compaction size immediately instead of a turn later.
+     */
+    private fun invalidateContextPressure(reason: String) {
+        if (_lastTurnContextTokens.value == 0) return
+        AppLogger.info(
+            TAG,
+            "[Maintenance] context pressure invalidated (was ${_lastTurnContextTokens.value}): $reason",
+        )
+        _lastTurnContextTokens.value = 0
+    }
     // [T-context-autocompact] Cooldown marker for the auto-compact trigger
     // in [checkContextBeforeSend] — see ContextAutoCompact.COOLDOWN_MS.
     private var lastAutoCompactAtMs = 0L
@@ -1658,7 +1683,7 @@ class ChatViewModel(
             return
         }
 
-        val beforeTokens = estimateContextTokens()
+        val beforeTokens = estimateRawHistoryTokens()
         _isCompacting.value = true
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -1729,8 +1754,9 @@ class ChatViewModel(
                     .onFailure { AppLogger.warning(TAG, "[Rescue] persist marker failed: ${it.message}") }
                 _compactSummary.value = digest
                 _cachedLatestMarker = marker
+                invalidateContextPressure("rescue digest written")
 
-                val afterTokens = estimateContextTokens()
+                val afterTokens = estimateRawHistoryTokens()
                 // What the next request actually carries is the DIGEST (plus
                 // an empty post-anchor tail), not the stubbed history — so
                 // report that, otherwise the number understates the win and
@@ -1916,6 +1942,7 @@ class ChatViewModel(
                     }
                 _compactSummary.value = verdict.text
                 _cachedLatestMarker = updated
+                invalidateContextPressure("rescue digest refined by model")
                 val savedPct = 100 - (verdict.text.length * 100 / digest.length.coerceAtLeast(1))
                 AppLogger.info(
                     TAG,
@@ -2229,6 +2256,7 @@ class ChatViewModel(
                 // resolve the boundary on the very next outgoing turn.
                 // Mirrors iOS `cachedLatestMarker = marker`.
                 _cachedLatestMarker = marker
+                invalidateContextPressure("compaction summary written")
                 withContext(Dispatchers.Main) {
                     // Gray out everything in the compacted range; the kept
                     // tail (last N user turns + tool/assistant follow-ups)
@@ -2389,6 +2417,7 @@ class ChatViewModel(
             val next = chatRepository.dao.latestCompactMarker(sid)
             _cachedLatestMarker = next
             _compactSummary.value = next?.summary
+            invalidateContextPressure("compact reverted")
 
             // Rebuild UI from DB so the previous marker's divider re-emerges
             // (or all dividers vanish if there are no remaining markers).
@@ -2646,6 +2675,11 @@ class ChatViewModel(
 
     private fun reloadSessionFromDb() {
         if (realSessionId.isEmpty() && sessionId.isEmpty()) return
+        // [T-stale-pressure-after-compact] A reload rebuilds the payload from
+        // disk — message surgery may have removed rows, a marker may have been
+        // dropped. The reported size describes the pre-reload request, so drop
+        // it and let the estimate speak for the new shape.
+        invalidateContextPressure("session reloaded from DB")
         loadSession()
     }
 
@@ -2793,7 +2827,16 @@ class ChatViewModel(
         return mutated
     }
 
-    private fun effectiveAgentHistory(): List<LLMMessage> {
+    private fun effectiveAgentHistory(): List<LLMMessage> = effectiveAgentHistory(verbose = true)
+
+    /**
+     * @param verbose false for the estimation path. [estimateContextTokens]
+     *   calls this to measure the payload, and it runs several times per turn —
+     *   emitting the full CompactDiag block each time would bury the one line
+     *   that describes the request actually sent, and on a long session the
+     *   log volume itself becomes a cost.
+     */
+    private fun effectiveAgentHistory(verbose: Boolean): List<LLMMessage> {
         val summary = _compactSummary.value
         val marker = _cachedLatestMarker
         // No compact in play → return full history untouched.
@@ -2835,8 +2878,8 @@ class ChatViewModel(
                 // whole session, even the uncompacted part" symptom. Send the
                 // summary plus a budgeted tail instead, cut only at a clean
                 // user turn so no tool_result is orphaned.
-                Log.w(TAG, "[Compact] effectiveAgentHistory v2: anchorId=${anchorId?.take(8) ?: "nil"} not in agentHistory(size=${agentHistory.size}) — degrading to summary + budgeted tail")
-                return degradedHistoryWithSummary(summaryWrappedText, summary)
+                if (verbose) Log.w(TAG, "[Compact] effectiveAgentHistory v2: anchorId=${anchorId?.take(8) ?: "nil"} not in agentHistory(size=${agentHistory.size}) — degrading to summary + budgeted tail")
+                return degradedHistoryWithSummary(summaryWrappedText, summary, verbose)
             }
 
             // [T-session-rescue] A rescue digest must REPLACE the history,
@@ -2851,7 +2894,7 @@ class ChatViewModel(
             val isRescueMarker = summary.startsWith(com.openminis.app.data.RescueDigest.OPEN_TAG)
             val keepN = if (isRescueMarker) 0 else COMPACT_KEEP_RECENT_USER_TURNS
             if (isRescueMarker) {
-                AppLogger.info(
+                if (verbose) AppLogger.info(
                     TAG,
                     "[Rescue] effectiveAgentHistory: rescue marker ${marker.id.take(8)} — " +
                         "preAnchor suppressed (digest replaces history), digestChars=${summary.length}",
@@ -2875,7 +2918,7 @@ class ChatViewModel(
             val priorIdxResolved: Int? = walkBack.priorIdx
             val priorIdx = walkBack.priorIdx ?: (anchorIdx + 1) // empty preAnchor sentinel
             if (walkBack.stopReason != "userTextTargetMet") {
-                AppLogger.info(TAG, "[CompactDiag] eAH v2 walkBack stopped: reason=${walkBack.stopReason} priorIdx=$priorIdx userTextTurnsFound=${walkBack.userTextTurnsFound} preAnchorMsgs=${walkBack.messageCount}")
+                if (verbose) AppLogger.info(TAG, "[CompactDiag] eAH v2 walkBack stopped: reason=${walkBack.stopReason} priorIdx=$priorIdx userTextTurnsFound=${walkBack.userTextTurnsFound} preAnchorMsgs=${walkBack.messageCount}")
             }
 
             // PRE-ANCHOR PRUNE (tool-heavy session fix):
@@ -2920,7 +2963,7 @@ class ChatViewModel(
             }
 
             if (droppedToolResultCount > 0) {
-                AppLogger.info(TAG, "[CompactDiag] eAH v2 preAnchor prune: dropped $droppedToolResultCount toolResult(>1kc) + paired toolUse, ${preAnchorRaw.size - preAnchorPruned.size} messages emptied; pruned slice=${preAnchorPruned.size}")
+                if (verbose) AppLogger.info(TAG, "[CompactDiag] eAH v2 preAnchor prune: dropped $droppedToolResultCount toolResult(>1kc) + paired toolUse, ${preAnchorRaw.size - preAnchorPruned.size} messages emptied; pruned slice=${preAnchorPruned.size}")
             }
 
             // ROLE ALIGNMENT: the API requires the first message to be `user`.
@@ -2949,7 +2992,7 @@ class ChatViewModel(
             val priorIdxSource =
                 if (priorIdxResolved == null) "fallback=empty(<$keepN user-text turns before anchor or cap hit)"
                 else "userTextWalkBack(N=$keepN)"
-            AppLogger.info(TAG, "[CompactDiag] eAH v2 slice: priorIdx=$priorIdx anchorIdx=$anchorIdx agentHistory.size=${agentHistory.size} → preAnchorRaw=$preAnchorRawCount preAnchorSent=${preAnchorPruned.size} postAnchor=${postAnchor.size} summaryChars=${summary.length} priorIdxSource=$priorIdxSource markerId=${marker.id.take(8)}")
+            if (verbose) AppLogger.info(TAG, "[CompactDiag] eAH v2 slice: priorIdx=$priorIdx anchorIdx=$anchorIdx agentHistory.size=${agentHistory.size} → preAnchorRaw=$preAnchorRawCount preAnchorSent=${preAnchorPruned.size} postAnchor=${postAnchor.size} summaryChars=${summary.length} priorIdxSource=$priorIdxSource markerId=${marker.id.take(8)}")
 
             val firstUserOffset = postAnchor.indexOfFirst { it.role == LLMMessage.Role.USER }
             if (firstUserOffset >= 0) {
@@ -3010,8 +3053,8 @@ class ChatViewModel(
             }
         }
 
-        Log.w(TAG, "[Compact] effectiveAgentHistory: marker ${marker.id.take(8)} unresolvable in agentHistory (size=${agentHistory.size}); degrading to summary + budgeted tail")
-        return degradedHistoryWithSummary(summaryWrappedText, summary)
+        if (verbose) Log.w(TAG, "[Compact] effectiveAgentHistory: marker ${marker.id.take(8)} unresolvable in agentHistory (size=${agentHistory.size}); degrading to summary + budgeted tail")
+        return degradedHistoryWithSummary(summaryWrappedText, summary, verbose)
     }
 
     /**
@@ -3030,6 +3073,7 @@ class ChatViewModel(
     private fun degradedHistoryWithSummary(
         summaryWrappedText: String,
         summary: String,
+        verbose: Boolean = true,
     ): List<LLMMessage> {
         val window = effectiveContextWindowTokens()?.takeIf { it > 0 } ?: 128_000
         val summaryTokens = (summary.length + 3) / 4
@@ -3056,7 +3100,7 @@ class ChatViewModel(
         } else {
             agentHistory.toList()
         }
-        AppLogger.info(
+        if (verbose) AppLogger.info(
             TAG,
             "[Compact] degraded view: summaryTokens=$summaryTokens budget=$budget " +
                 "tailStart=$start of ${agentHistory.size} → sending ${tail.size} message(s)",
@@ -3520,6 +3564,10 @@ class ChatViewModel(
                 nowMs = nowMs,
                 fullEveryNTurns = com.openminis.app.data.ContextMaintenancePrefs
                     .fullEveryNTurns(context),
+                // [T-stale-pressure-after-compact] Rescuing a rescue digest
+                // folds nothing but the digest itself — guard against the loop.
+                alreadyRescued = _compactSummary.value
+                    ?.startsWith(com.openminis.app.data.RescueDigest.OPEN_TAG) == true,
             )
             AppLogger.info(
                 TAG,
@@ -7031,10 +7079,65 @@ class ChatViewModel(
      * offload itself uses precise [BPETokenizer.countTokens] per-part
      * for the candidate ranking.
      */
+    /**
+     * Char-based fallback estimate when the API hasn't reported a token
+     * baseline yet (first call in a turn). Mirrors iOS line 7451.
+     *
+     * Uses ~3.5 chars per token for mixed text + adds the tokenizer's
+     * image-aware count for image bytes. Underestimates JSON-heavy tool
+     * inputs slightly but is adequate as a "should we offload" gate —
+     * offload itself uses precise [BPETokenizer.countTokens] per-part
+     * for the candidate ranking.
+     *
+     * [T-estimate-measures-what-is-sent] Measures [effectiveAgentHistory],
+     * NOT the raw agentHistory. The two diverge by design after a compaction:
+     * agentHistory keeps the full audit trail forever (nothing is deleted),
+     * while the request carries the summary plus the active tail. Measuring
+     * the audit trail made the estimate report ~190K on a session that
+     * actually sends ~3K — and since [ContextPressure] now feeds this number
+     * to the maintenance gates, that would order a rescue on every single
+     * send, writing a new marker each time. Measure the payload.
+     */
     private fun estimateContextTokens(): Int {
         var totalChars = 0
         var imageTokens = 0
+        for (msg in effectiveAgentHistory(verbose = false)) {
+            totalChars += msg.content.length
+            // [T-estimate-counts-reasoning] Reasoning blobs are echoed back to
+            // thinking models on every subsequent turn (DeepSeek V4 / Kimi /
+            // GLM reject history without them once thinking is on), so they are
+            // part of the payload — and on a long reasoning session they are a
+            // large part. Leaving them out under-reported pressure on exactly
+            // the models most likely to fill a window.
+            totalChars += msg.reasoningContent?.length ?: 0
+            for (part in msg.contentParts) {
+                when (part) {
+                    is AgentContentPart.Text -> totalChars += part.text.length
+                    is AgentContentPart.ToolUse -> totalChars += part.input.toString().length
+                    is AgentContentPart.ToolResult -> {
+                        totalChars += part.content.length
+                        part.imageData?.let { imageTokens += BPETokenizer.countImageTokens(it) }
+                    }
+                    is AgentContentPart.ImageData -> {
+                        imageTokens += BPETokenizer.countImageTokens(part.data)
+                    }
+                }
+            }
+        }
+        return (totalChars / 3.5).toInt() + imageTokens
+    }
+
+    /**
+     * [T-estimate-measures-what-is-sent] Raw-history estimate, used ONLY by
+     * the offload pass. Offload rewrites parts inside agentHistory itself
+     * (including entries the current request doesn't carry), so its "how much
+     * is there to reclaim" question is about the audit trail, not the payload.
+     */
+    private fun estimateRawHistoryTokens(): Int {
+        var totalChars = 0
+        var imageTokens = 0
         for (msg in agentHistory) {
+            totalChars += msg.reasoningContent?.length ?: 0
             for (part in msg.contentParts) {
                 when (part) {
                     is AgentContentPart.Text -> totalChars += part.text.length
@@ -7119,7 +7222,7 @@ class ChatViewModel(
         }
 
         val effectiveTokens =
-            if (lastContextTokens > 0) lastContextTokens else estimateContextTokens()
+            if (lastContextTokens > 0) lastContextTokens else estimateRawHistoryTokens()
 
         if (!force && effectiveTokens < policy.offloadThreshold) {
             // Below threshold — no work needed. Caller logs at debug level

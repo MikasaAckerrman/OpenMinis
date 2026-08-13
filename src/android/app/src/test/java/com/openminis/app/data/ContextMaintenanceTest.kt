@@ -103,6 +103,31 @@ class ContextMaintenanceTest {
     }
 
     @Test
+    fun `a session already on a rescue digest is not rescued again`() {
+        // Rescuing a rescue digest folds nothing but the digest itself. Without
+        // this guard a digest that still reads as over-the-ceiling would write
+        // a fresh marker on every single send.
+        val tokens = (window * 0.95).toInt()
+        assertEquals(
+            ContextMaintenance.Action.RESCUE,
+            ContextMaintenance.decide(
+                userTurnsSinceFull = 1, contextTokens = tokens, contextWindow = window,
+                compactSupported = true, isCompacting = false, lastFullAtMs = 0L, nowMs = now,
+                alreadyRescued = false,
+            ),
+        )
+        val guarded = ContextMaintenance.decide(
+            userTurnsSinceFull = 1, contextTokens = tokens, contextWindow = window,
+            compactSupported = true, isCompacting = false, lastFullAtMs = 0L, nowMs = now,
+            alreadyRescued = true,
+        )
+        assertTrue(
+            "expected LIGHT or FULL, got $guarded",
+            guarded != ContextMaintenance.Action.RESCUE,
+        )
+    }
+
+    @Test
     fun `small-window tiers never get a full pass`() {
         assertEquals(
             ContextMaintenance.Action.LIGHT,

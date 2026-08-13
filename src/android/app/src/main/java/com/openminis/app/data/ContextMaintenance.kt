@@ -70,6 +70,12 @@ object ContextMaintenance {
      * @param contextWindow model's window (0 = unknown)
      * @param compactSupported false on small-window tiers where
      *        [ContextPolicy] disables compaction entirely
+     * @param alreadyRescued true when the payload is ALREADY a local rescue
+     *        digest. Rescuing a rescue digest cannot shrink anything (the
+     *        history it would fold is the digest itself), so without this flag
+     *        a session whose digest still reads as "over the ceiling" would
+     *        rescue on every single send, writing a marker per message. When
+     *        set, the ceiling branch is skipped and normal gating applies.
      */
     fun decide(
         userTurnsSinceFull: Int,
@@ -80,6 +86,7 @@ object ContextMaintenance {
         lastFullAtMs: Long,
         nowMs: Long,
         fullEveryNTurns: Int = DEFAULT_FULL_EVERY_N_TURNS,
+        alreadyRescued: Boolean = false,
     ): Action {
         if (isCompacting) return Action.NONE
         // Unknown pressure → the light pass is still safe (it is local and
@@ -90,7 +97,7 @@ object ContextMaintenance {
 
         // Ceiling first: past it, cadence and cooldown are irrelevant — an LLM
         // compact would likely fail, and failing is what left the user stuck.
-        if (fraction >= RESCUE_PRESSURE_CEILING) return Action.RESCUE
+        if (fraction >= RESCUE_PRESSURE_CEILING && !alreadyRescued) return Action.RESCUE
 
         if (!compactSupported) return Action.LIGHT
         if (fraction < FULL_PRESSURE_FLOOR) return Action.LIGHT
