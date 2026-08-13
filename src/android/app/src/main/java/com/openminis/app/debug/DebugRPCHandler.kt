@@ -156,6 +156,7 @@ class DebugRPCHandler(private val context: Context) {
             "chat.compact.before" -> ChatMutationMethods.compactBefore(context, params)
             "chat.compact.markers.list" -> ChatMutationMethods.compactMarkersList(context, params)
             "chat.compact.revert" -> ChatMutationMethods.compactRevert(context, params)
+            "chat.session.rescue" -> ChatMutationMethods.sessionRescue(context, params)
 
             // Debug-only: direct CLI / offload-handler invocation (T344).
             // Registered solely on DEBUG builds so release APKs cannot expose it.

@@ -69,6 +69,19 @@ internal object ConfigBuiltins {
                 defaultValue = true,
             )
         )
+        // [T-session-rescue] Budget for the local, LLM-free rescue digest.
+        r.register(
+            PrefsIntField(
+                path = "context.rescueDigestMaxChars",
+                displayName = "Rescue digest budget (chars)",
+                description = "Size of the digest produced by the /rescue slash command, which compacts a stuck session on-device without any model call. This digest REPLACES the whole history, so it is the post-rescue context floor. Default 12000 chars ≈ 3K tokens. Lower it if even the rescued session won't send (relay with a hard body cap); raise it to preserve more detail.",
+                prefs = prefs,
+                key = "context.rescue.maxchars",
+                defaultValue = com.openminis.app.data.RescueDigestPrefs.DEFAULT_MAX_CHARS,
+                minValue = com.openminis.app.data.RescueDigestPrefs.MIN_MAX_CHARS,
+                maxValue = com.openminis.app.data.RescueDigestPrefs.MAX_MAX_CHARS,
+            )
+        )
     }
 
     // -- Memory — global default toggle for the persistent memory feature --

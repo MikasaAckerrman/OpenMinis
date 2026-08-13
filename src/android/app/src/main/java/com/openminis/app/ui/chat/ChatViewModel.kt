@@ -1298,6 +1298,16 @@ class ChatViewModel(
             title = "Compact",
             subtitle = "",
         ),
+        // [T-session-rescue] Local hard compaction — the repair path for a
+        // session too large to reach the model at all (where /compact, being
+        // an LLM call itself, also fails). Wrench icon = repair; Compress is
+        // already taken by the normal LLM compact.
+        SlashCommand(
+            id = "rescue",
+            icon = Icons.Outlined.Build,
+            title = "Rescue",
+            subtitle = "",
+        ),
         SlashCommand(
             id = "memory",
             icon = Icons.Default.Psychology,
@@ -1368,6 +1378,7 @@ class ChatViewModel(
 
         when (cmd.id) {
             "compact" -> compactAll()
+            "rescue" -> rescueCompactNow()
             "memory" -> toggleMemoryEnabled()
             "thinking" -> toggleThinking()
             "clear" -> _clearChatConfirmRequested.value = true
@@ -1561,6 +1572,291 @@ class ChatViewModel(
             return
         }
         compactAll(anchorIdxOverride = idx)
+    }
+
+    /**
+     * [T-session-rescue] Hard, LOCAL compaction for a session that can no
+     * longer talk to the model — the "broken session" repair path.
+     *
+     * Why a separate path from [compactAll]: compactAll summarises via an LLM
+     * call whose input derives from the oversized history. Once a session is
+     * big enough to break, that call breaks too — and often not with a clean
+     * "context length exceeded" but with a dead connection or the TTFB
+     * watchdog ("no response from server"), because the request body never
+     * finishes being accepted. So the recovery tool must not need the network
+     * at all. [RescueDigest] builds the summary on-device from agentHistory.
+     *
+     * What it does:
+     *   1. builds a dense digest (user intent verbatim-ish, one-line tool
+     *      ledger, verbatim paths/URLs/hashes/errors, verbatim last exchange);
+     *   2. force-offloads every large tool payload to disk, so the bytes are
+     *      still reachable via file_read but out of the prompt;
+     *   3. writes a v2 compact marker anchored at the last persisted message,
+     *      so the existing [effectiveAgentHistory] machinery sends the digest
+     *      instead of the history — and [revertCompact] can undo it.
+     *
+     * Runs while streaming is stopped only (same guard as compactAll), but
+     * unlike compactAll it works with no provider configured and cannot fail
+     * on a network error.
+     */
+    fun rescueCompactNow() {
+        AppLogger.info(
+            TAG,
+            "[Rescue] rescueCompactNow() streaming=${_isStreaming.value} compacting=${_isCompacting.value} historySize=${agentHistory.size}",
+        )
+        if (_isStreaming.value) {
+            appendSystemInfo(
+                text = context.getString(R.string.rescue_busy_streaming),
+                iconKind = "compact",
+            )
+            return
+        }
+        if (_isCompacting.value) {
+            appendSystemInfo(
+                text = context.getString(R.string.rescue_busy_compacting),
+                iconKind = "compact",
+            )
+            return
+        }
+        val history = agentHistory.toList()
+        if (history.isEmpty()) {
+            appendSystemInfo(
+                text = context.getString(R.string.rescue_empty_session),
+                iconKind = "compact",
+            )
+            return
+        }
+        // Anchor at the last entry that is actually persisted — the marker's
+        // anchor must resolve in the DB or the divider can't be restored on
+        // reload (same requirement as compactAll).
+        var anchorIdx = history.lastIndex
+        while (anchorIdx >= 0 && history[anchorIdx].dbMessageId.isNullOrEmpty()) anchorIdx -= 1
+        if (anchorIdx < 0) {
+            appendSystemInfo(
+                text = context.getString(R.string.rescue_no_persisted_messages),
+                iconKind = "compact",
+            )
+            return
+        }
+
+        val digestBudget = com.openminis.app.data.RescueDigestPrefs.maxChars(context)
+        val digest = com.openminis.app.data.RescueDigest.build(
+            turns = rescueTurnsFrom(history),
+            maxChars = digestBudget,
+        )
+        if (digest.isBlank()) {
+            appendSystemInfo(
+                text = context.getString(R.string.rescue_nothing_to_digest),
+                iconKind = "compact",
+            )
+            return
+        }
+
+        val beforeTokens = estimateContextTokens()
+        _isCompacting.value = true
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val sid = realSessionId.ifEmpty { sessionId }
+                // Force-offload every eligible large payload. Lossless: the
+                // bytes go to /var/minis/offloads/tools/ and the history keeps
+                // a file_read-able stub. Passing force=true ignores the
+                // policy threshold — we are already past "too big".
+                val window = effectiveContextWindowTokens()?.takeIf { it > 0 } ?: 128_000
+                runCatching {
+                    offloadContextIfNeeded(
+                        contextWindow = window,
+                        lastContextTokens = beforeTokens,
+                        force = true,
+                    )
+                }.onFailure { AppLogger.warning(TAG, "[Rescue] force offload failed: ${it.message}") }
+
+                // Verify the anchor is really in the messages table before
+                // writing the marker (same belt-and-braces check compactAll
+                // does — an in-memory dbMessageId can outrun the DB write).
+                val rawDbIds: Set<String> = try {
+                    chatRepository.dao.loadMessages(sid).map { it.id }.toSet()
+                } catch (e: Exception) {
+                    AppLogger.warning(TAG, "[Rescue] loadMessages verify failed: ${e.message}")
+                    emptySet()
+                }
+                var verifiedIdx = anchorIdx
+                if (rawDbIds.isNotEmpty()) {
+                    while (verifiedIdx >= 0) {
+                        val id = history[verifiedIdx].dbMessageId
+                        if (!id.isNullOrEmpty() && id in rawDbIds) break
+                        verifiedIdx -= 1
+                    }
+                }
+                if (verifiedIdx < 0) {
+                    withContext(Dispatchers.Main) {
+                        appendSystemInfo(
+                            text = context.getString(R.string.rescue_no_persisted_messages),
+                            iconKind = "compact",
+                        )
+                    }
+                    return@launch
+                }
+                val anchorDbId = history[verifiedIdx].dbMessageId ?: run {
+                    withContext(Dispatchers.Main) {
+                        appendSystemInfo(
+                            text = context.getString(R.string.rescue_no_persisted_messages),
+                            iconKind = "compact",
+                        )
+                    }
+                    return@launch
+                }
+
+                val marker = com.openminis.app.data.db.CompactMarkerEntity(
+                    id = java.util.UUID.randomUUID().toString(),
+                    sessionId = sid,
+                    summary = digest,
+                    firstKeptSortOrder = Int.MAX_VALUE,
+                    compactedCount = verifiedIdx + 1,
+                    createdAt = System.currentTimeMillis(),
+                    uiBoundarySortOrder = null,
+                    boundaryMessageId = null,
+                    firstKeptMessageId = null,
+                    lastCompactedMessageId = anchorDbId,
+                    version = 2,
+                )
+                runCatching { chatRepository.dao.insertCompactMarker(marker) }
+                    .onFailure { AppLogger.warning(TAG, "[Rescue] persist marker failed: ${it.message}") }
+                _compactSummary.value = digest
+                _cachedLatestMarker = marker
+
+                val afterTokens = estimateContextTokens()
+                // What the next request actually carries is the DIGEST (plus
+                // an empty post-anchor tail), not the stubbed history — so
+                // report that, otherwise the number understates the win and
+                // confuses anyone comparing it against the context indicator.
+                val digestTokens = (digest.length + 3) / 4
+                AppLogger.info(
+                    TAG,
+                    "[Rescue] done: digestChars=${digest.length} (~$digestTokens tokens) " +
+                        "anchorIdx=$verifiedIdx/${history.lastIndex} " +
+                        "estHistoryTokens $beforeTokens → $afterTokens after force-offload (window=$window)",
+                )
+
+                withContext(Dispatchers.Main) {
+                    // Gray the compacted range and drop older dividers —
+                    // same UI contract as compactAll.
+                    val cleaned = _messages.value
+                        .filterNot { msg ->
+                            msg.role == "system" &&
+                                msg.toolBlocks.firstOrNull()?.toolName == "compact"
+                        }
+                        .let { list ->
+                            var passed = false
+                            list.map { msg ->
+                                if (msg.role == "system" || passed) msg
+                                else {
+                                    val grayed = if (msg.isCompactedHistory) msg
+                                        else msg.copy(isCompactedHistory = true)
+                                    if (msg.id == anchorDbId || anchorDbId in msg.sourceDbIds) passed = true
+                                    grayed
+                                }
+                            }
+                        }
+                    _messages.value = cleaned
+                    appendSystemInfo(
+                        text = context.getString(
+                            R.string.rescue_done,
+                            beforeTokens,
+                            digestTokens,
+                            digest.length,
+                        ),
+                        iconKind = "compact",
+                        payload = digest,
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                AppLogger.warning(TAG, "[Rescue] failed: ${e.message}")
+                withContext(Dispatchers.Main) {
+                    appendSystemInfo(
+                        text = context.getString(
+                            R.string.rescue_failed,
+                            e.message ?: e.javaClass.simpleName,
+                        ),
+                        iconKind = "compact",
+                    )
+                }
+            } finally {
+                _isCompacting.value = false
+            }
+        }
+    }
+
+    /**
+     * Flatten [history] into [RescueDigest.RescueTurn]s: pair each tool_use
+     * with the tool_result carrying the same id (results arrive in the NEXT
+     * history entry, so the pairing is done across the whole list first),
+     * and pull the identifying argument out of the tool input.
+     */
+    private fun rescueTurnsFrom(history: List<LLMMessage>): List<com.openminis.app.data.RescueDigest.RescueTurn> {
+        // id → result, collected first so a tool_use can find its outcome
+        // regardless of which later message carried it.
+        val results = HashMap<String, AgentContentPart.ToolResult>()
+        for (msg in history) {
+            for (part in msg.contentParts) {
+                if (part is AgentContentPart.ToolResult) results[part.id] = part
+            }
+        }
+        val turns = mutableListOf<com.openminis.app.data.RescueDigest.RescueTurn>()
+        for (msg in history) {
+            val textSb = StringBuilder(msg.content)
+            val calls = mutableListOf<com.openminis.app.data.RescueDigest.RescueToolCall>()
+            for (part in msg.contentParts) {
+                when (part) {
+                    is AgentContentPart.Text -> {
+                        if (textSb.isNotEmpty()) textSb.append('\n')
+                        textSb.append(part.text)
+                    }
+                    is AgentContentPart.ToolUse -> {
+                        val res = results[part.id]
+                        calls.add(
+                            com.openminis.app.data.RescueDigest.RescueToolCall(
+                                name = part.name,
+                                argsPreview = rescueArgsPreview(part.input),
+                                result = res?.content ?: "",
+                                isError = res?.isError == true,
+                            )
+                        )
+                    }
+                    // Results are attached to their tool_use above; bare
+                    // images carry no text worth digesting.
+                    is AgentContentPart.ToolResult, is AgentContentPart.ImageData -> Unit
+                }
+            }
+            if (textSb.isBlank() && calls.isEmpty()) continue
+            turns.add(
+                com.openminis.app.data.RescueDigest.RescueTurn(
+                    role = when (msg.role) {
+                        LLMMessage.Role.USER -> com.openminis.app.data.RescueDigest.RescueTurn.Role.USER
+                        LLMMessage.Role.ASSISTANT -> com.openminis.app.data.RescueDigest.RescueTurn.Role.ASSISTANT
+                    },
+                    text = textSb.toString(),
+                    tools = calls,
+                )
+            )
+        }
+        return turns
+    }
+
+    /**
+     * The one argument that identifies a tool call in the ledger. Ordered by
+     * how much it tells a reader: the shell command, then the file path, then
+     * a URL/query. Falls back to a short raw-JSON preview so an unknown tool
+     * still produces a recognisable row.
+     */
+    private fun rescueArgsPreview(input: org.json.JSONObject): String {
+        for (key in listOf("command", "path", "url", "query", "keywords", "selector", "text")) {
+            val v = input.optString(key, "")
+            if (v.isNotBlank()) return if (key == "command") v else "$key=$v"
+        }
+        val raw = input.toString()
+        return if (raw.length <= 2) "" else raw
     }
 
     private fun compactAll(anchorIdxOverride: Int? = null) {
@@ -2122,6 +2418,25 @@ class ChatViewModel(
                 return agentHistory.toList()
             }
 
+            // [T-session-rescue] A rescue digest must REPLACE the history,
+            // not decorate it. The normal path re-sends the last N user turns
+            // (up to 100 messages) verbatim as warm-up — on a session that
+            // broke from size, that warm-up is precisely what won't fit, so a
+            // rescue that kept it would fail to fix anything. Rescue markers
+            // are recognised by the digest's own opening tag (no schema
+            // change / migration needed for a flag), and they send the digest
+            // alone. Continuity is preserved inside the digest itself, whose
+            // last section is the verbatim final exchange.
+            val isRescueMarker = summary.startsWith(com.openminis.app.data.RescueDigest.OPEN_TAG)
+            val keepN = if (isRescueMarker) 0 else COMPACT_KEEP_RECENT_USER_TURNS
+            if (isRescueMarker) {
+                AppLogger.info(
+                    TAG,
+                    "[Rescue] effectiveAgentHistory: rescue marker ${marker.id.take(8)} — " +
+                        "preAnchor suppressed (digest replaces history), digestChars=${summary.length}",
+                )
+            }
+
             // Step 1: walk back from anchor collecting user-text turns. Stop
             // when EITHER we've collected N user-text turns OR including the
             // next turn would push preAnchor over 100 messages. Decisions
@@ -2130,7 +2445,6 @@ class ChatViewModel(
             // tool_use with no matching tool_result).
             //
             // [T-compact-preanchor-prune, port iOS 8b76cd74]
-            val keepN = COMPACT_KEEP_RECENT_USER_TURNS
             val preAnchorCap = 100
             val walkBack = walkBackUserTurnsBounded(
                 anchorIdx = anchorIdx,
@@ -2320,6 +2634,14 @@ class ChatViewModel(
     ): WalkBackResult {
         if (anchorIdx < 0 || anchorIdx >= agentHistory.size) {
             return WalkBackResult(null, 0, 0, "invalidAnchor")
+        }
+        // [T-session-rescue] "keep zero user turns" means an EMPTY preAnchor.
+        // Without this early return the loop accepts the first user turn it
+        // meets and only then compares (1 >= 0), so a rescue marker would
+        // still drag a full verbatim round back into the request — the exact
+        // payload the rescue exists to remove.
+        if (maxUserTextTurns <= 0) {
+            return WalkBackResult(null, 0, 0, "keepNoneRequested")
         }
         var acceptedPriorIdx: Int? = null
         var acceptedUserTextTurns = 0
@@ -5264,7 +5586,7 @@ class ChatViewModel(
                     } catch (e: Exception) {
                         AppLogger.error(TAG_STREAM, "send runAgentLoop EXCEPTION ${e.javaClass.simpleName}: ${e.message}")
                         Log.e(TAG, "Agent loop error (all fallbacks exhausted)", e)
-                        setInlineError(e.message ?: "Unknown error")
+                        setInlineError(withRescueHint(e.message ?: "Unknown error"))
                         // T298: completion notifier should show the ❌ variant.
                         SessionActivityTracker.markStreamError(activeSessionId)
                     } finally {
@@ -5494,6 +5816,23 @@ class ChatViewModel(
      *  true at runAgentLoop ~4015) leaves the "Minis is thinking" indicator
      *  on screen even though streaming is over. The flag is per-message and
      *  is not implicitly cleared by isStreaming=false. */
+    /**
+     * [T-session-rescue] Append a "/rescue" pointer when the failure looks
+     * size-related. Without this the user sees "no response from server" on a
+     * session that is actually just too big, concludes the network or provider
+     * is broken, and has no way to know a local repair exists — which is
+     * exactly the report that motivated the rescue path.
+     */
+    private fun withRescueHint(errorText: String): String {
+        val window = effectiveContextWindowTokens() ?: 0
+        val tokens = _lastTurnContextTokens.value
+        if (!com.openminis.app.data.RescueAdvisor.shouldSuggestRescue(errorText, tokens, window)) {
+            return errorText
+        }
+        val suffix = context.getString(R.string.rescue_hint_suffix)
+        return if (errorText.contains(suffix)) errorText else "$errorText\n\n$suffix"
+    }
+
     private fun setInlineError(errorText: String) {
         // [T-error-persist-android] Never let an empty/blank error string reach
         // the banner. The UI gate is `message.error?.let { … }` — a non-null ""

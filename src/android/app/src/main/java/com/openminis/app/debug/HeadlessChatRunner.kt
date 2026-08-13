@@ -490,6 +490,70 @@ internal object HeadlessChatRunner {
     }
 
     /**
+     * [T-session-rescue] Drive [ChatViewModel.rescueCompactNow] on the cached
+     * VM. Unlike [compact] this needs no provider — the digest is built
+     * locally — so the provider-readiness wait is deliberately skipped: a
+     * session whose provider can't be resolved is exactly one a user may need
+     * to rescue.
+     */
+    suspend fun rescue(
+        context: Context,
+        sessionId: String,
+        wait: Boolean,
+        timeoutMs: Long,
+    ): CompactResult = withContext(Dispatchers.Main) {
+        val vm = viewModel(context, sessionId)
+        if (vm.isStreaming.value) {
+            return@withContext CompactResult(
+                status = "Error", summary = null, timedOut = false,
+                error = "stream_in_progress",
+            )
+        }
+        if (vm.isCompacting.value) {
+            return@withContext CompactResult(
+                status = "Error", summary = null, timedOut = false,
+                error = "compact_already_in_progress",
+            )
+        }
+        val priorSummary = vm.compactSummary.value
+        vm.rescueCompactNow()
+        if (!wait) {
+            return@withContext CompactResult(
+                status = "Running", summary = null, timedOut = false, error = null,
+            )
+        }
+        val flippedOn = withContext(Dispatchers.Default) {
+            withTimeoutOrNull(2000L) {
+                if (!vm.isCompacting.value) vm.isCompacting.first { it }
+                true
+            }
+        }
+        if (flippedOn != true) {
+            // Early-returned on a guard (empty session, nothing to digest,
+            // no persisted anchor) — never flipped the flag.
+            return@withContext CompactResult(
+                status = "NoOp",
+                summary = vm.compactSummary.value,
+                timedOut = false,
+                error = "rescue_skipped_no_change",
+            )
+        }
+        val finished = withContext(Dispatchers.Default) {
+            withTimeoutOrNull(timeoutMs) {
+                vm.isCompacting.first { !it }
+                true
+            } ?: false
+        }
+        val newSummary = vm.compactSummary.value
+        CompactResult(
+            status = if (!finished) "Timeout" else "Completed",
+            summary = newSummary,
+            timedOut = !finished,
+            error = if (newSummary == priorSummary) "summary_unchanged" else null,
+        )
+    }
+
+    /**
      * Drive [ChatViewModel.revertCompact] on the cached VM. Returns when the
      * VM has finished the synchronous DB write — revert isn't gated by a
      * coroutine the way compact is.

@@ -1219,6 +1219,18 @@
     <string name="slash_thinking_subtitle">Thinking %1$s — tap to toggle</string>
     <string name="slash_thinking_unsupported">Not supported by current model</string>
     <string name="slash_clear_subtitle">Clear all messages in this session</string>
+    <!-- [T-session-rescue] Local, LLM-free hard compaction for a session that
+         can no longer reach the model. -->
+    <string name="slash_rescue_title">Rescue</string>
+    <string name="slash_rescue_subtitle">Repair a stuck session — compress locally, no model call</string>
+    <string name="rescue_busy_streaming">Cannot rescue while a response is in progress. Stop the current turn first.</string>
+    <string name="rescue_busy_compacting">A compact is already running. Wait for it to finish.</string>
+    <string name="rescue_empty_session">Nothing to rescue — this session is empty.</string>
+    <string name="rescue_no_persisted_messages">Cannot rescue: no saved messages to anchor to yet.</string>
+    <string name="rescue_nothing_to_digest">Nothing to rescue — no readable content in this session.</string>
+    <string name="rescue_done">Session rescued locally: ~%1$d → ~%2$d tokens (digest %3$d chars). Large tool outputs were moved to /var/minis/offloads/ and can be re-read with file_read. Undo via Revert compact.</string>
+    <string name="rescue_failed">Rescue failed: %1$s</string>
+    <string name="rescue_hint_suffix">This session\'s history may be too large to send. Type /rescue to compress it on-device (no model call needed) and try again — nothing is deleted, and you can undo it with Revert compact.</string>
     <string name="thinking_level_off">Off</string>
     <string name="thinking_level_low">Low</string>
     <string name="thinking_level_medium">Medium</string>

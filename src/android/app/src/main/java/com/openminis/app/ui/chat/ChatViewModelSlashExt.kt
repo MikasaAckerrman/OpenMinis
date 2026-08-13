@@ -107,6 +107,10 @@ internal fun ChatViewModel.filteredSlashCommands(): List<SlashCommand> {
             "compact" -> cmd.copy(
                 subtitle = context.getString(R.string.slash_compact_subtitle),
             )
+            "rescue" -> cmd.copy(
+                title = context.getString(R.string.slash_rescue_title),
+                subtitle = context.getString(R.string.slash_rescue_subtitle),
+            )
             "memory" -> cmd.copy(
                 subtitle = context.getString(
                     if (_memoryEnabled.value) R.string.slash_memory_writes_on

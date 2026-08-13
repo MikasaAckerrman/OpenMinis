@@ -985,6 +985,16 @@
     <string name="slash_thinking_subtitle">Рассуждение %1$s — нажмите для переключения</string>
     <string name="slash_thinking_unsupported">Не поддерживается текущей моделью</string>
     <string name="slash_clear_subtitle">Очистить все сообщения в этой сессии</string>
+    <string name="slash_rescue_title">Спасти</string>
+    <string name="slash_rescue_subtitle">Починить зависшую сессию — сжатие на устройстве, без запроса к модели</string>
+    <string name="rescue_busy_streaming">Нельзя спасать, пока идёт ответ. Сначала остановите текущий ход.</string>
+    <string name="rescue_busy_compacting">Сжатие уже выполняется. Дождитесь его завершения.</string>
+    <string name="rescue_empty_session">Спасать нечего — сессия пуста.</string>
+    <string name="rescue_no_persisted_messages">Нельзя спасти: пока нет сохранённых сообщений для привязки.</string>
+    <string name="rescue_nothing_to_digest">Спасать нечего — в сессии нет читаемого содержимого.</string>
+    <string name="rescue_done">Сессия спасена локально: ~%1$d → ~%2$d токенов (дайджест %3$d симв.). Большие выводы инструментов перенесены в /var/minis/offloads/ и доступны через file_read. Отменить — «Откатить сжатие».</string>
+    <string name="rescue_failed">Спасение не удалось: %1$s</string>
+    <string name="rescue_hint_suffix">Похоже, история этой сессии слишком велика для отправки. Введите /rescue — она будет сжата прямо на устройстве, без запроса к модели. Ничего не удаляется, отменить можно через «Откатить сжатие».</string>
     <string name="thinking_level_off">Выкл.</string>
     <string name="thinking_level_low">Низкое</string>
     <string name="thinking_level_medium">Среднее</string>
