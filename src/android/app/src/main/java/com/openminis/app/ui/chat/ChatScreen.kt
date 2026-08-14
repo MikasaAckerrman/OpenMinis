@@ -3775,6 +3775,13 @@ fun ChatScreen(
                     )
                 }
 
+                // [destructive-command-gate] Confirmation for a shell command
+                // that deletes. Renders only when one is pending; the shell
+                // coroutine is suspended meanwhile. Placed here so it sits above
+                // the message list and the tool sheet — the command is blocked
+                // until answered, so nothing else in the chat can proceed.
+                DestructiveCommandDialog()
+
                 // Scroll-to-bottom FAB (iOS: circle chevron.down, bottom-right)
                 // T138 phase 2 v3: show on user-scroll intent, not transient
                 // layout state. Otherwise the FAB flickers whenever multi-tool

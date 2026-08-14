@@ -47,6 +47,8 @@ import com.openminis.app.provider.effectiveMaxThinkingLevel
 import com.openminis.app.agent.shell.BashismDetector
 import com.openminis.app.agent.shell.BashismReminder
 import com.openminis.app.agent.shell.OnDemandBash
+import com.openminis.app.sandbox.DestructiveCommandGate
+import com.openminis.app.sandbox.DestructiveCommandPolicy
 import com.openminis.app.sandbox.ExecutionCoordinator
 import com.openminis.app.terminal.MinisOpenUrlBroker
 import com.openminis.app.terminal.MinisUrlMarker
@@ -9164,6 +9166,64 @@ class ChatViewModel(
 
             if (command.isBlank()) {
                 return ToolExecutionResult("Error: 'command' is required", false, toolTitle = toolTitle)
+            }
+
+            // [destructive-command-gate] Ask before deleting, refuse for user data.
+            //
+            // Born from a real incident: `rm -rf om*` was run meaning to remove
+            // one directory; the shell expanded the glob into three and wiped a
+            // parallel session's working tree. A hard blocklist was tried first
+            // and rejected — it also blocks `rm -rf build/`, and an agent that
+            // cannot clean its own scratch files starts inventing workarounds.
+            //
+            // So the classifier is three-valued and only the genuinely dangerous
+            // *shapes* reach the user: recursion with a glob, several paths at
+            // once, a repository working tree. Ordinary deletes run untouched.
+            val verdict = DestructiveCommandPolicy.classify(command)
+            when (verdict.verdict) {
+                DestructiveCommandPolicy.Verdict.ALLOW -> Unit
+
+                DestructiveCommandPolicy.Verdict.REFUSE -> {
+                    AppLogger.warning("DestructiveCmd",
+                        "refused: ${verdict.reason} | $command")
+                    return ToolExecutionResult(
+                        "Отказано: ${verdict.reason}\n" +
+                            "Команда не выполнена: $command\n\n" +
+                            "Это данные пользователя или системный каталог. " +
+                            "Если удаление действительно нужно — покажите " +
+                            "пользователю точную команду и дайте выполнить " +
+                            "её самому в терминале.",
+                        false, toolTitle = toolTitle)
+                }
+
+                DestructiveCommandPolicy.Verdict.CONFIRM -> {
+                    val idx = toolBlocks.indexOfFirst { it.id == toolId }
+                    if (idx >= 0) {
+                        toolBlocks[idx] = toolBlocks[idx].copy(
+                            content = "⏸ Ожидание подтверждения: ${verdict.reason}")
+                        withContext(Dispatchers.Main) {
+                            updateAssistantMessage(assistantId, currentText, true, toolBlocks)
+                        }
+                    }
+                    val approved = DestructiveCommandGate.requestApproval(
+                        sessionId = activeSessionId,
+                        command = command,
+                        reason = verdict.reason,
+                        fragment = verdict.fragment,
+                    )
+                    if (idx >= 0) {
+                        toolBlocks[idx] = toolBlocks[idx].copy(content = "")
+                    }
+                    if (!approved) {
+                        AppLogger.info("DestructiveCmd", "denied by user: $command")
+                        return ToolExecutionResult(
+                            "Пользователь не подтвердил удаление.\n" +
+                                "Причина запроса: ${verdict.reason}\n" +
+                                "Команда не выполнена: $command",
+                            false, toolTitle = toolTitle)
+                    }
+                    AppLogger.info("DestructiveCmd", "approved by user: $command")
+                }
             }
 
             // [T-android-overlay-finalize item 1] Removed the
