@@ -1,0 +1,327 @@
+#!/usr/bin/python3
+# -*- coding: utf-8 -*-
+"""
+=============================================================
+minis-guard — политика безопасности разрушающих операций.
+
+Ставится ПЕРЕД настоящими rm / mv / shred / truncate в PATH
+(/usr/local/sbin идёт первым) и решает, пропускать ли команду.
+
+ЗАЧЕМ. 2026-08-14 я запустил `rm -rf om*` в /tmp, целясь в один
+каталог. Маска раскрылась в три (om, om2, omw) и снесла рабочее
+дерево параллельной сессии — дважды, второй раз через 3 секунды
+после того, как она его пересоздала. Ничего не пропало навсегда
+(коммиты были на GitHub), но чужая работа встала на несколько
+ходов из-за диагностики проблемы, которой не существовало.
+
+ГЛАВНЫЙ ВЫВОД: оболочка раскрывает маску ДО запуска команды,
+поэтому «я же указал один путь» — неправда. Защита обязана
+смотреть на то, что реально пришло в argv, а не на замысел.
+
+ЧЕТЫРЕ ПРАВИЛА (по возрастанию строгости)
+
+1. ЗАПРЕТ НАСОВСЕМ (никакой ключ не отменяет):
+   /var/minis/shared, /var/minis/memory, /var/minis/skills,
+   /var/minis/mounts, корень, /bin /usr /etc /var/minis сами.
+   Это данные пользователя и система. Удалять их мне нельзя
+   ни при каких обстоятельствах.
+
+2. РЕКУРСИВНОЕ УДАЛЕНИЕ БОЛЕЕ ОДНОГО ПУТИ — запрет.
+   Ровно тот случай, что произошёл. Хочешь удалить три каталога —
+   три отдельные команды, каждая с явным именем.
+
+3. КАТАЛОГ С РЕПОЗИТОРИЕМ ИЛИ ЧУЖОЙ РАБОТОЙ — запрет.
+   Внутри есть .git, или путь совпадает с известным рабочим
+   клоном. Такие каталоги удаляет только человек.
+
+4. ОСТАЛЬНОЕ — разрешено и записано в журнал.
+   /tmp/файл.txt, свои временные скрипты — без препятствий.
+
+ОБХОД. Осознанно нет ключа «--force-yes-i-mean-it»: если бы он
+был, я бы его и приписал. Когда удаление действительно нужно —
+показываю пользователю точную команду, он выполняет её сам в
+терминале, где эта обёртка не мешает (ключ MINIS_GUARD_OFF=1).
+
+Журнал: /var/minis/workspace/guard.log
+=============================================================
+"""
+import os
+import sys
+import time
+
+REAL = {
+    'rm': '/bin/busybox rm',
+    'mv': '/bin/busybox mv',
+    'shred': '/usr/bin/shred',
+    'truncate': '/bin/busybox truncate',
+}
+
+LOG = '/var/minis/workspace/guard.log'
+
+# --- 1. Пути, которые нельзя удалять никогда -----------------
+FORBIDDEN = [
+    '/', '/bin', '/sbin', '/lib', '/usr', '/etc', '/var', '/root', '/home',
+    '/proc', '/sys', '/dev', '/opt', '/srv',
+    '/var/minis',
+    '/var/minis/shared',      # ВСЕ проекты пользователя
+    '/var/minis/memory',      # память между сессиями
+    '/var/minis/skills',
+    '/var/minis/mounts',      # внешние папки пользователя
+    '/var/minis/attachments',
+    '/var/minis/workspace',
+    '/var/minis/offloads',
+    '/var/minis/browser',
+    '/usr/local/sbin',        # эта самая защита
+    '/usr/local/bin',
+]
+
+# Всё внутри этих деревьев под АБСОЛЮТНЫМ запретом: никаких уступок,
+# даже одиночный файл. Это память между сессиями, навыки и внешние
+# папки пользователя — их потеря необратима и незаметна.
+# Проверено на себе: 14.08 уступка «один файл без -r» позволила мне
+# в ходе ТЕСТА защиты удалить /var/minis/memory/2026-08-14.md.
+ABSOLUTE_TREES = [
+    '/var/minis/memory',
+    '/var/minis/skills',
+    '/var/minis/mounts',
+]
+
+# Здесь допустима ровно одна уступка — удаление ОДНОГО обычного файла
+# без рекурсии, чтобы я мог убрать свой же временный скрипт.
+SOFT_TREES = [
+    '/var/minis/shared',
+]
+
+FORBIDDEN_TREES = ABSOLUTE_TREES + SOFT_TREES
+
+# --- 3. Известные рабочие клоны и каталоги параллельных сессий -
+# Пополняется по факту. Совпадение по имени, а не по содержимому:
+# каталог может быть пуст в момент проверки и всё равно быть чужим.
+WORKING_CLONES = [
+    '/tmp/om', '/tmp/om2', '/tmp/om3', '/tmp/omw', '/tmp/omx',
+    '/tmp/ds', '/tmp/ds2', '/tmp/ds3', '/tmp/ds4',
+    '/tmp/mainui', '/tmp/fc', '/tmp/cs16c',
+]
+
+# --- Реестр владельцев временных путей ------------------------
+# Заполняется командой minis-claim; формат TSV: "<owner>\t<path>".
+# owner = MINIS_CHAT_SESSION_ID сессии, создавшей путь, либо
+# "foreign" (чужая, владелец неизвестен) / "shared" (общий инструмент,
+# не удаляет никто). Лежит в /var/minis/shared, поэтому переживает
+# снос tmpfs. Правило: путь, помеченный НЕ моей сессией, я удалить не
+# могу — так «справедливость по совести» становится техническим
+# запретом (идея пользователя, 14.08).
+OWNER_LEDGER = '/var/minis/shared/minis-tmp-owners.tsv'
+MY_SESSION = os.environ.get('MINIS_CHAT_SESSION_ID', '').strip()
+
+
+def load_owners():
+    rows = []
+    try:
+        with open(OWNER_LEDGER, encoding='utf-8') as f:
+            for line in f:
+                parts = line.rstrip('\n').split('\t')
+                if len(parts) >= 2:
+                    rows.append((parts[0], parts[1].rstrip('/') or '/'))
+    except Exception:
+        pass
+    return rows
+
+
+def owner_of(path):
+    """Владелец пути по реестру: сам путь или любой его родитель. None,
+    если путь никем не заявлен. При конфликте берём самое длинное (самое
+    конкретное) совпадение."""
+    best_owner, best_len = None, -1
+    for owner, claimed in load_owners():
+        if path == claimed or path.startswith(claimed + '/'):
+            if len(claimed) > best_len:
+                best_owner, best_len = owner, len(claimed)
+    return best_owner
+
+
+def log(verdict, argv, reason=''):
+    try:
+        os.makedirs(os.path.dirname(LOG), exist_ok=True)
+        with open(LOG, 'a', encoding='utf-8') as f:
+            f.write('%s  %-7s  %s%s\n' % (
+                time.strftime('%Y-%m-%d %H:%M:%S'), verdict,
+                ' '.join(argv), ('   ← ' + reason) if reason else ''))
+    except Exception:
+        pass
+
+
+def deny(reason, hint=''):
+    tool = os.path.basename(sys.argv[0])
+    sys.stderr.write('\n╔═ ЗАБЛОКИРОВАНО minis-guard\n')
+    sys.stderr.write('║ команда: %s %s\n' % (tool, ' '.join(sys.argv[1:])))
+    sys.stderr.write('║ причина: %s\n' % reason)
+    if hint:
+        for line in hint.split('\n'):
+            sys.stderr.write('║ %s\n' % line)
+    sys.stderr.write('╚═ Журнал: %s\n\n' % LOG)
+    log('ЗАПРЕТ', sys.argv, reason)
+    sys.exit(13)
+
+
+def norm(p):
+    """Абсолютный путь без разыменования последнего звена: важно,
+    чтобы символическая ссылка на защищённый каталог не проходила
+    проверку как «обычный файл»."""
+    try:
+        a = os.path.abspath(os.path.expanduser(p))
+    except Exception:
+        a = p
+    return a.rstrip('/') or '/'
+
+
+def resolved(p):
+    """Полностью разыменованный путь — чтобы ссылка на /var/minis/shared
+    не обошла запрет."""
+    try:
+        return os.path.realpath(norm(p)).rstrip('/') or '/'
+    except Exception:
+        return norm(p)
+
+
+def in_tree(path, tree):
+    return path == tree or path.startswith(tree + '/')
+
+
+def has_git(path):
+    """Каталог сам является репозиторием или содержит их."""
+    if os.path.isdir(os.path.join(path, '.git')) or \
+       os.path.isfile(os.path.join(path, '.git')):
+        return True
+    # мелкая проверка на два уровня вглубь — не сканируем всё дерево
+    try:
+        for name in os.listdir(path)[:200]:
+            sub = os.path.join(path, name)
+            if os.path.isdir(sub) and os.path.isdir(os.path.join(sub, '.git')):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def main():
+    tool = os.path.basename(sys.argv[0])
+    args = sys.argv[1:]
+
+    if os.environ.get('MINIS_GUARD_OFF') == '1':
+        os.execv('/bin/busybox', ['busybox', tool] + args)
+
+    flags = [a for a in args if a.startswith('-') and a != '-']
+    paths = [a for a in args if not a.startswith('-') or a == '-']
+
+    joined = ''.join(f for f in flags if not f.startswith('--'))
+    recursive = any('r' in f.lower() or 'R' in f for f in flags) or \
+        '--recursive' in flags
+    forced = 'f' in joined or '--force' in flags
+
+    # --- Правило 0: чужой владелец по реестру ----------------
+    # Действует на ЛЮБУЮ разрушающую операцию (rm/mv/shred/truncate) и
+    # на любой путь, помеченный minis-claim. "shared" не удаляет никто;
+    # "foreign" и id другой сессии — только не я. Свои пути и незаявленные
+    # проходят дальше по обычным правилам.
+    for p in paths:
+        for target in (norm(p), resolved(p)):
+            owner = owner_of(target)
+            if owner is None:
+                continue
+            if owner == 'shared':
+                deny('«%s» — общий инструмент (owner=shared).' % target,
+                     'Им пользуются все сессии (напр. kotlinc). Его не\n'
+                     'удаляет никто автоматически — только пользователь вручную.')
+            if owner == 'foreign' or (MY_SESSION and owner != MY_SESSION):
+                deny('«%s» принадлежит другой сессии (owner=%s).'
+                     % (target, owner[:12]),
+                     'В общей /tmp работают параллельные сессии. Свои пути\n'
+                     'я помечаю minis-claim; чужие удаляет только их сессия\n'
+                     'или пользователь. Идея пользователя, 14.08.')
+            break  # владелец найден по norm — resolved проверять не нужно
+
+    # --- Правило 1: абсолютный запрет ------------------------
+    for p in paths:
+        n, r = norm(p), resolved(p)
+        for target in (n, r):
+            if target in FORBIDDEN:
+                deny('«%s» — системный каталог или данные пользователя.' % target,
+                     'Такие пути мне не разрешено удалять никогда,\n'
+                     'даже если задача выглядит так, будто это нужно.')
+            for tree in FORBIDDEN_TREES:
+                if not in_tree(target, tree):
+                    continue
+                if tree in ABSOLUTE_TREES:
+                    deny('«%s» — в дереве %s, где запрет абсолютный.'
+                         % (target, tree),
+                         'Память между сессиями, навыки и внешние папки\n'
+                         'пользователя. Ни одного файла, никаких условий.')
+                # Мягкое дерево (/var/minis/shared): допустима РОВНО ОДНА
+                # уступка — один обычный файл, без рекурсии. Так я могу
+                # убрать свой же временный скрипт, но не могу снести
+                # каталог или пачку файлов. Массовое и рекурсивное
+                # удаление — ровно то, что вызвало аварию 14.08.
+                single_file = (
+                    tool == 'rm'
+                    and not recursive
+                    and len(paths) == 1
+                    and os.path.isfile(n)
+                    and '/.git/' not in n + '/'
+                    and os.path.basename(n) != '.git'
+                )
+                if single_file:
+                    continue
+                if tool != 'rm':
+                    deny('«%s» лежит в защищённом дереве %s' % (target, tree),
+                         'Перемещать и обрезать файлы пользователя нельзя:\n'
+                         'для него это выглядит как исчезновение данных.')
+                if os.path.isdir(n):
+                    deny('«%s» — каталог в защищённом дереве %s' % (target, tree),
+                         'Каталоги с проектами пользователя удаляет\n'
+                         'только он сам. Никаких исключений.')
+                deny('удаление %d путей в защищённом дереве %s'
+                     % (len(paths), tree),
+                     'Разрешён только один файл за раз и без -r,\n'
+                     'чтобы случайная маска не снесла лишнего.')
+
+    # --- Правило 2: рекурсия по нескольким путям -------------
+    if tool == 'rm' and recursive and len(paths) > 1:
+        deny('рекурсивное удаление сразу %d путей.' % len(paths),
+             'Пути: ' + ', '.join(paths) + '\n'
+             'Так выглядит раскрытая оболочкой маска (rm -rf om*),\n'
+             'и именно так 14.08 была снесена чужая работа.\n'
+             'Удаляйте по одному, каждый раз с полным именем.')
+
+    # --- Правило 3: репозитории и чужие рабочие каталоги -----
+    if tool == 'rm' and recursive:
+        for p in paths:
+            n, r = norm(p), resolved(p)
+            if n in WORKING_CLONES or r in WORKING_CLONES:
+                deny('«%s» — известный рабочий клон.' % n,
+                     'В таких каталогах работают параллельные сессии.\n'
+                     'Даже если он выглядит пустым или сломанным —\n'
+                     'через секунду его могли пересоздать.')
+            if os.path.isdir(n) and has_git(n):
+                deny('в «%s» есть git-репозиторий.' % n,
+                     'Внутри может быть незакоммиченная работа,\n'
+                     'которую не вернуть. Удаляет только человек.')
+
+    # --- Правило 4: разрешено, но записано ------------------
+    log('ok', sys.argv)
+    os.execv('/bin/busybox', ['busybox', tool] + args)
+
+
+if __name__ == '__main__':
+    # Если сама защита сломается — команда не должна пропасть из системы.
+    # Любая внутренняя ошибка (кроме нашего осознанного sys.exit) отдаёт
+    # управление настоящему busybox, иначе rm перестанет работать вообще.
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception as e:
+        sys.stderr.write('minis-guard: внутренняя ошибка (%s), '
+                         'пропускаю команду\n' % e)
+        os.execv('/bin/busybox',
+                 ['busybox', os.path.basename(sys.argv[0])] + sys.argv[1:])

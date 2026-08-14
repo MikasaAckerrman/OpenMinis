@@ -1,0 +1,106 @@
+#!/usr/bin/python3
+# -*- coding: utf-8 -*-
+"""
+minis-claim — записать владельца временного пути в реестр, который
+читает minis-guard. Так удалять чужую работу в общей /tmp становится
+технически невозможно, а не только «по совести».
+
+ЗАЧЕМ. /tmp — общий tmpfs, все сессии там root, различить владельца по
+uid нельзя. Единственный сигнал — MINIS_CHAT_SESSION_ID. Реестр хранит
+соответствие путь→сессия и лежит в /var/minis/shared (переживает снос
+tmpfs). guard при каждом rm/mv сверяется с ним: путь, помеченный другой
+сессией, удалить нельзя.
+
+Использование:
+  minis-claim <path> [<path> ...]      пометить своей сессией
+  minis-claim --foreign <path> ...     чужая сессия (владелец неизвестен)
+  minis-claim --shared <path> ...      общий инструмент, не удаляет никто
+  minis-claim --list                   показать реестр
+  minis-claim --who <path>             кто владелец пути
+
+Идемпотентно: повторная пометка тем же владельцем ничего не дублирует.
+"""
+import os
+import sys
+import time
+
+LEDGER = '/var/minis/shared/minis-tmp-owners.tsv'
+SID = os.environ.get('MINIS_CHAT_SESSION_ID', '').strip() or 'unknown'
+
+
+def norm(p):
+    try:
+        return os.path.realpath(os.path.abspath(os.path.expanduser(p))).rstrip('/') or '/'
+    except Exception:
+        return p.rstrip('/') or '/'
+
+
+def load():
+    rows = []
+    try:
+        with open(LEDGER, encoding='utf-8') as f:
+            for line in f:
+                parts = line.rstrip('\n').split('\t')
+                if len(parts) >= 2:
+                    rows.append((parts[0], parts[1]))  # (owner, path)
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+    return rows
+
+
+def save(rows):
+    os.makedirs(os.path.dirname(LEDGER), exist_ok=True)
+    tmp = LEDGER + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        for owner, path in rows:
+            f.write('%s\t%s\n' % (owner, path))
+    os.replace(tmp, LEDGER)
+
+
+def claim(paths, owner):
+    rows = load()
+    have = {(o, p) for o, p in rows}
+    added = 0
+    for raw in paths:
+        p = norm(raw)
+        # один путь — один владелец: снять прежние записи об этом пути
+        rows = [(o, pp) for (o, pp) in rows if pp != p]
+        rows.append((owner, p))
+        if (owner, p) not in have:
+            added += 1
+    save(rows)
+    print('claimed %d path(s) as owner=%s' % (len(paths), owner))
+
+
+def main():
+    args = sys.argv[1:]
+    if not args or args[0] in ('-h', '--help'):
+        print(__doc__)
+        return
+    if args[0] == '--list':
+        for o, p in load():
+            print('%-40s %s' % (o, p))
+        return
+    if args[0] == '--who':
+        target = norm(args[1])
+        best = None
+        for o, p in load():
+            if target == p or target.startswith(p + '/') or p.startswith(target + '/'):
+                best = (o, p)
+        print(best if best else 'unclaimed')
+        return
+    owner = SID
+    if args and args[0] == '--foreign':
+        owner, args = 'foreign', args[1:]
+    elif args and args[0] == '--shared':
+        owner, args = 'shared', args[1:]
+    if not args:
+        sys.stderr.write('minis-claim: не указан путь\n')
+        sys.exit(2)
+    claim(args, owner)
+
+
+if __name__ == '__main__':
+    main()

@@ -140,6 +140,15 @@ class TerminalSession(private val context: Context) {
                 // but set a fresh value here too in case the kernel was booted earlier
                 // and the system timezone changed since.
                 envMap["TZ"] = PRootKernel.posixTz()
+                // [T-guard-in-apk] The interactive terminal is the USER's shell:
+                // minis-guard exists to stop the AGENT from a mistaken mask or a
+                // cross-session delete, not to police the person sitting at the
+                // keyboard. Disable it here so the user can delete their own
+                // files without fighting the wrapper — this is the escape hatch
+                // the guard's own docstring points at. The agent's shell
+                // (PersistentShell / ShellExecutor) deliberately does NOT set
+                // this, so the guard stays active for automated commands.
+                envMap["MINIS_GUARD_OFF"] = "1"
                 for ((k, v) in PRootKernel.customEnvironment) envMap[k] = v
                 ExecutionCoordinator.envVarRepository?.allAsDict()?.forEach { (k, v) -> envMap[k] = v }
 
