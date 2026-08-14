@@ -1496,6 +1496,22 @@
     <string name="shortcut_camera_chat_short">Chat with Camera</string>
     <string name="shortcut_camera_chat_long">Chat with Camera</string>
 
+    <!-- Offline translation (EN↔RU, Bergamot/WASM). Reachable from the
+         text-selection menu, the quick-settings tile and an app-icon shortcut. -->
+    <string name="translate_process_text_label">Translate</string>
+    <string name="translate_clipboard_label">Translate clipboard</string>
+    <string name="translate_tile_label">Translate</string>
+    <string name="translate_working">Translating…</string>
+    <string name="translate_result_title">%1$s → %2$s</string>
+    <string name="translate_copied">Copied</string>
+    <string name="translate_open_in_app">Open in Minis</string>
+    <string name="translate_failed">Translation failed</string>
+    <string name="translate_nothing_selected">Nothing selected</string>
+    <string name="translate_clipboard_empty">Clipboard is empty</string>
+    <string name="translate_engine_missing">Translation engine not installed. Add the toolbox to the shared folder first.</string>
+    <string name="shortcut_translate_short">Translate</string>
+    <string name="shortcut_translate_long">Translate clipboard</string>
+
     <!-- [T-android-scheduled-tasks-design] Scheduled tasks UI -->
     <string name="ok">OK</string>
     <string name="sessionlist_scheduled_tasks">Scheduled tasks</string>

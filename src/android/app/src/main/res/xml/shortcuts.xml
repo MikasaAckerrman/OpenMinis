@@ -45,4 +45,20 @@
             android:data="minis://action/camera_chat" />
         <categories android:name="android.shortcut.conversation" />
     </shortcut>
+    <!-- Long-press the app icon → Translate. Goes straight to
+         TranslateClipboardActivity, not through MainActivity: the point is one
+         tap from anywhere, and routing through the chat screen would load the
+         whole app first. Reuses the new-chat icon — a dedicated asset can
+         replace it later without touching this wiring. -->
+    <shortcut
+        android:shortcutId="translate_clipboard"
+        android:enabled="true"
+        android:icon="@mipmap/ic_shortcut_new_chat"
+        android:shortcutShortLabel="@string/shortcut_translate_short"
+        android:shortcutLongLabel="@string/shortcut_translate_long">
+        <intent
+            android:action="com.openminis.app.action.TRANSLATE_CLIPBOARD"
+            android:targetPackage="com.openminis.app"
+            android:targetClass="com.openminis.app.translate.TranslateClipboardActivity" />
+    </shortcut>
 </shortcuts>

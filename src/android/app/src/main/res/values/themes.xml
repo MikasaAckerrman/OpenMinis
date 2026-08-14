@@ -11,5 +11,20 @@
         <item name="android:windowBackground">@android:color/white</item>
         <item name="android:colorBackground">@android:color/white</item>
     </style>
+
+    <!-- Windowless host for the translation entry points (PROCESS_TEXT menu,
+         quick-settings tile). These activities have no layout of their own —
+         they only show a dialog — so the window itself must be invisible,
+         otherwise a white card flashes over the app the user was reading.
+         Theme.NoDisplay cannot be used: it forbids showing any window at all,
+         and AlertDialog is a window. -->
+    <style name="Theme.Minis.Translucent" parent="android:Theme.Material.Light.Dialog.NoActionBar">
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:windowAnimationStyle">@null</item>
+    </style>
 </resources>
 

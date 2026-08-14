@@ -363,9 +363,69 @@
             </intent-filter>
         </activity>
 
-        <!-- OAuth callback handler: captures localhost redirects for all providers -->
-        <!-- Prevents "Choose activity" dialog when OAuth provider redirects to localhost -->
+        <!-- ============================================================
+             Offline translation entry points (EN↔RU, Bergamot/WASM).
+
+             ProcessTextActivity — "Translate" in the text-selection menu,
+             next to Copy / Share. Android calls it with ACTION_PROCESS_TEXT;
+             when the selection is editable we return the translation and the
+             host app swaps it in place, otherwise we show it and copy it.
+
+             TranslateClipboardActivity — target of the quick-settings tile and
+             of the home-screen shortcut. It must be an Activity, not a Service:
+             since Android 10 only the foreground app may read the clipboard.
+
+             TranslateTileService — the shade tile. The user asked for an entry
+             in vivo's floating "quick tools" panel; that list is a FuntouchOS
+             feature with no public API, so the tile is the closest thing
+             Android actually offers.
+
+             Both activities are windowless (Theme.NoDisplay is not used because
+             they show dialogs; Theme.Minis with a transparent host works and
+             keeps Material styling).
+             ============================================================ -->
         <activity
+            android:name=".translate.ProcessTextActivity"
+            android:label="@string/translate_process_text_label"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:launchMode="singleTask"
+            android:theme="@style/Theme.Minis.Translucent">
+            <intent-filter>
+                <action android:name="android.intent.action.PROCESS_TEXT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".translate.TranslateClipboardActivity"
+            android:label="@string/translate_clipboard_label"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:launchMode="singleTask"
+            android:theme="@style/Theme.Minis.Translucent">
+            <intent-filter>
+                <action android:name="com.openminis.app.action.TRANSLATE_CLIPBOARD" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".translate.TranslateTileService"
+            android:exported="true"
+            android:icon="@mipmap/ic_shortcut_new_chat"
+            android:label="@string/translate_tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <!-- OAuth callback handler: captures localhost redirects for all providers -->
+        <!-- Prevents "Choose activity" dialog when OAuth provider redirects to localhost -->        <activity
             android:name=".auth.OAuthRedirectActivity"
             android:exported="true"
             android:launchMode="singleTask"

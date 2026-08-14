@@ -14,4 +14,18 @@
         <item name="android:windowBackground">@android:color/black</item>
         <item name="android:colorBackground">@android:color/black</item>
     </style>
+
+    <!-- Dark counterpart of the windowless translation host. Same reasoning as
+         values/themes.xml: the activity shows only a dialog, so its own window
+         must not paint anything. Declared in both configurations because a
+         missing night variant would silently fall back to the light parent and
+         give the dialog a light frame on a dark system. -->
+    <style name="Theme.Minis.Translucent" parent="android:Theme.Material.Dialog.NoActionBar">
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:windowAnimationStyle">@null</item>
+    </style>
 </resources>
