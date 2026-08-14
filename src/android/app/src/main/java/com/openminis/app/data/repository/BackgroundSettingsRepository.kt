@@ -73,6 +73,55 @@ class BackgroundSettingsRepository(context: Context) {
     }
 
     /**
+     * [T-completion-haptics] "Double-buzz when a turn finishes" toggle.
+     * Defaults to OFF: a vibration is a physical interruption, and silently
+     * adding one on upgrade would be a surprise on every reply. The user opts
+     * in from Settings → Background & notifications.
+     */
+    private val _completionVibrationEnabled =
+        MutableStateFlow(prefs.getBoolean(KEY_COMPLETION_VIBRATION, false))
+    val completionVibrationEnabled: StateFlow<Boolean> =
+        _completionVibrationEnabled.asStateFlow()
+
+    /**
+     * Live read straight from prefs, for the buzz decision itself.
+     *
+     * NOT `completionVibrationEnabled.value`: minis-config's
+     * `background.completionVibration` writes the SharedPreferences key
+     * directly (that's how every PrefsBoolField works), so the cached flow can
+     * be one write behind after a CLI change. The Settings switch is kept in
+     * sync separately by [prefsListener]; this method needs no cache at all —
+     * it runs once per turn, and reading a boolean from an already-loaded prefs
+     * map costs nothing.
+     */
+    fun isCompletionVibrationEnabled(): Boolean =
+        prefs.getBoolean(KEY_COMPLETION_VIBRATION, false)
+
+    fun setCompletionVibrationEnabled(value: Boolean) {
+        prefs.edit().putBoolean(KEY_COMPLETION_VIBRATION, value).apply()
+        _completionVibrationEnabled.value = value
+    }
+
+    /**
+     * Keeps [completionVibrationEnabled] honest when the key is written from
+     * outside this class (minis-config). Held in a field because
+     * SharedPreferences stores listeners weakly — a listener registered from a
+     * local variable is collected at the next GC and silently stops firing.
+     * The repository lives for the whole process, so there is nothing to
+     * unregister.
+     */
+    private val prefsListener =
+        SharedPreferences.OnSharedPreferenceChangeListener { sp, key ->
+            if (key == KEY_COMPLETION_VIBRATION) {
+                _completionVibrationEnabled.value = sp.getBoolean(KEY_COMPLETION_VIBRATION, false)
+            }
+        }
+
+    init {
+        prefs.registerOnSharedPreferenceChangeListener(prefsListener)
+    }
+
+    /**
      * Last persisted overlay position (window x/y in pixels) from the
      * previous drag. -1 means "no remembered position — let the overlay
      * controller pick a default near the bottom-left, 10 dp from each
@@ -92,5 +141,9 @@ class BackgroundSettingsRepository(context: Context) {
         private const val KEY_BG_OVERLAY_X = "backgroundOverlayX"
         private const val KEY_BG_OVERLAY_Y = "backgroundOverlayY"
         private const val KEY_DYNAMIC_ISLAND_ENABLED = "dynamicIslandEnabled"
+        // [T-completion-haptics] Shared with minis-config's
+        // `background.completionVibration` field — same prefs file + key, so a
+        // CLI write and a UI toggle are the same write.
+        private const val KEY_COMPLETION_VIBRATION = "completionVibrationEnabled"
     }
 }

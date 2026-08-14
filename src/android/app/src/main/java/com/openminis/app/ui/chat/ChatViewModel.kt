@@ -10786,8 +10786,15 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         // state (⊘) instead of carrying over the prior tool's outcome.
         publishOverlayReplyExcerpt(activeSessionId)
         SessionActivityTracker.clearToolRunning(com.openminis.app.service.ToolOutcome.Cancelled)
+        // [T-completion-haptics] Tag the turn as user-cancelled BEFORE
+        // setInactive consumes the flag, so the completion buzz stays silent:
+        // the user just pressed Stop, they don't need the app to confirm their
+        // own tap. Both setInactive calls below are tagged (mid-turn rename
+        // leaves two tracked ids for one turn).
+        SessionActivityTracker.markStreamCancelled(activeSessionId)
         SessionActivityTracker.setInactive(activeSessionId)
         if (isDraft && realSessionId.isNotEmpty() && activeSessionId != sessionId) {
+            SessionActivityTracker.markStreamCancelled(sessionId)
             SessionActivityTracker.setInactive(sessionId)
         }
         // Stop whichever shell the agent loop is actually dispatching against.

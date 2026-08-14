@@ -3,6 +3,11 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- [T-completion-haptics] Double-buzz when an agent turn ends. Normal
+         (install-time) permission — no runtime prompt — but Vibrator.vibrate
+         throws SecurityException without it. The buzz itself is opt-in from
+         Settings → Background & notifications and defaults to OFF. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
     <!-- T33: Check Update — needed to launch the system installer for the
          downloaded APK. The user must additionally grant "install unknown
          apps" for this package the first time they upgrade. -->

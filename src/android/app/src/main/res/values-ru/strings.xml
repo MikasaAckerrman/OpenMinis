@@ -879,6 +879,10 @@
     <string name="settings_section_notifications">Уведомления</string>
     <string name="settings_task_notifications">Уведомления о задачах</string>
     <string name="settings_task_notifications_footer">Уведомлять, когда задача агента завершается, пока приложение в фоне. Показывает прогресс в шторке уведомлений и на экране блокировки.</string>
+    <!-- [T-completion-haptics] Двойная вибрация при завершении хода. -->
+    <string name="settings_completion_vibration">Вибрация по завершении</string>
+    <string name="settings_completion_vibration_footer">Два коротких импульса, когда ответ дописан — и когда приложение открыто, и когда в фоне. Молчит, если ход остановили вы сами, и подчиняется режиму «Не беспокоить».</string>
+    <string name="settings_completion_vibration_unavailable">На этом устройстве нет вибромотора.</string>
     <string name="notif_one_task_running">1 задача выполняется</string>
     <string name="notif_n_tasks_running">Задач выполняется: %1$d</string>
     <string name="notif_in_session">В сессии</string>

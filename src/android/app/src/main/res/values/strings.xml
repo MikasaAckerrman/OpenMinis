@@ -1086,6 +1086,10 @@
     <string name="settings_section_notifications">Notifications</string>
     <string name="settings_task_notifications">Task Notifications</string>
     <string name="settings_task_notifications_footer">Notify when an agent task finishes while the app is in the background. Shows progress in the notification shade and on the lock screen.</string>
+    <!-- [T-completion-haptics] Double-buzz when a turn ends. -->
+    <string name="settings_completion_vibration">Vibrate When Done</string>
+    <string name="settings_completion_vibration_footer">Two short pulses when a reply finishes, whether the app is open or in the background. Silent when you stop a turn yourself, and follows your Do Not Disturb setting.</string>
+    <string name="settings_completion_vibration_unavailable">This device has no vibration motor.</string>
     <string name="notif_one_task_running">1 task running</string>
     <string name="notif_n_tasks_running">%1$d tasks running</string>
     <string name="notif_in_session">In session</string>

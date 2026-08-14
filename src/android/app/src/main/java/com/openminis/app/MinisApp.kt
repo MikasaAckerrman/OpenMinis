@@ -78,6 +78,11 @@ class MinisApp : Application(), ImageLoaderFactory {
         private set
     lateinit var backgroundTaskNotifier: BackgroundTaskNotifier
         private set
+    // [T-completion-haptics] Double-buzz on turn end. Held on the Application
+    // so the Settings row can fire a preview through the same instance the
+    // tracker uses (one Vibrator lookup, one place that can fail).
+    lateinit var completionHaptics: com.openminis.app.feedback.CompletionHaptics
+        private set
     lateinit var mountedFoldersStore: MountedFoldersStore
         private set
 
@@ -471,6 +476,23 @@ class MinisApp : Application(), ImageLoaderFactory {
         )
         SessionActivityTracker.setCompletionListener { sessionId, isError ->
             backgroundTaskNotifier.notifyTaskCompleted(sessionId, isError)
+        }
+
+        // [T-completion-haptics] Double-buzz when a turn ends. Wired to the
+        // tracker's turn-end hook rather than to ChatViewModel: all four
+        // stream-teardown paths (send / retry / resume / rerun) already funnel
+        // through setInactive, and the notifier proved that hook is the
+        // deterministic one. Unlike the notification, this fires whether the
+        // app is foreground or background — a buzz while you're staring at the
+        // screen is the confirmation you asked for, not an interruption; and it
+        // is the foreground case that matters most when the phone is on a desk
+        // beside you.
+        completionHaptics = com.openminis.app.feedback.CompletionHaptics(this)
+        SessionActivityTracker.setTurnEndListener { _, outcome ->
+            completionHaptics.onTurnEnded(
+                outcome = outcome,
+                enabled = backgroundSettingsRepository.isCompletionVibrationEnabled(),
+            )
         }
 
         // [T-android-config-confirm-timeout] Wire the config-confirm background

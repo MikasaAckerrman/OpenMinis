@@ -538,6 +538,22 @@ internal object ConfigBuiltins {
                 defaultValue = true,
             )
         )
+        // [T-completion-haptics] Double-buzz on turn end. Same prefs file+key
+        // the repository reads, so a CLI write and the Settings toggle are one
+        // and the same write. Not gated on device capability: an emulator or a
+        // tablet without a motor still persists the preference harmlessly (the
+        // vibrate call no-ops), and refusing the write would make the field
+        // behave differently across the user's devices for no gain.
+        r.register(
+            PrefsBoolField(
+                path = "background.completionVibration",
+                displayName = "Vibrate when done",
+                description = "Two short pulses when an agent turn finishes. Silent on user-cancelled turns.",
+                prefs = prefs,
+                key = "completionVibrationEnabled",
+                defaultValue = false,
+            )
+        )
         // [T-android-config-feature-unavailable] Live Updates / "dynamic
         // island". Settings → Background renders this toggle DISABLED with an
         // "unsupported" footer unless the device is capable, so minis-config

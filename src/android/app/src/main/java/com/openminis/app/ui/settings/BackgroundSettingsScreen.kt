@@ -26,6 +26,7 @@ import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.NotificationsActive
 import androidx.compose.material.icons.outlined.PhoneAndroid
+import androidx.compose.material.icons.outlined.Vibration
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -90,6 +91,11 @@ fun BackgroundSettingsScreen(onBack: () -> Unit) {
     val backgroundRepo = app.backgroundSettingsRepository
     val taskNotificationsEnabled by backgroundRepo.taskNotificationsEnabled.collectAsState()
     val backgroundOverlayEnabled by backgroundRepo.backgroundOverlayEnabled.collectAsState()
+    // [T-completion-haptics] Toggle state + device capability. `hasVibrator`
+    // is remembered rather than re-probed on resume: unlike an overlay grant,
+    // a device cannot grow a vibration motor while the screen is open.
+    val completionVibrationEnabled by backgroundRepo.completionVibrationEnabled.collectAsState()
+    val hasVibrator = remember { app.completionHaptics.hasVibrator() }
     // [T-android-dynamic-island] Live-Updates toggle + device capability.
     val dynamicIslandEnabled by backgroundRepo.dynamicIslandEnabled.collectAsState()
 
@@ -163,6 +169,37 @@ fun BackgroundSettingsScreen(onBack: () -> Unit) {
                 onCheckedChange = { backgroundRepo.setTaskNotificationsEnabled(it) },
             )
             BgFooter(stringResource(R.string.settings_task_notifications_footer))
+
+            // [T-completion-haptics] Double-buzz on turn end. Rendered right
+            // under Task Notifications because it answers the same question
+            // ("how do I learn the turn is done?") with a different channel:
+            // notifications only fire while backgrounded, the buzz fires either
+            // way. Disabled on a device with no vibrator rather than hidden —
+            // a missing row reads as a missing feature; a greyed row with the
+            // footer explains itself (same treatment as Live Updates).
+            Spacer(Modifier.size(8.dp))
+            BgToggleRow(
+                icon = Icons.Outlined.Vibration,
+                iconColor = Color(0xFF34C759),
+                title = stringResource(R.string.settings_completion_vibration),
+                checked = completionVibrationEnabled && hasVibrator,
+                onCheckedChange = { wanted ->
+                    backgroundRepo.setCompletionVibrationEnabled(wanted)
+                    // Fire the pattern once on turn-ON so the user feels what
+                    // they just enabled without having to run a turn to find
+                    // out. Nothing on turn-OFF — buzzing to confirm silence
+                    // would be absurd.
+                    if (wanted) app.completionHaptics.vibrateDoublePulse()
+                },
+                enabled = hasVibrator,
+            )
+            BgFooter(
+                if (hasVibrator) {
+                    stringResource(R.string.settings_completion_vibration_footer)
+                } else {
+                    stringResource(R.string.settings_completion_vibration_unavailable)
+                },
+            )
 
             // T-bg-overlay phase 2: floating tool-status overlay toggle.
             // Tapping ON without SYSTEM_ALERT_WINDOW deep-links the user to
