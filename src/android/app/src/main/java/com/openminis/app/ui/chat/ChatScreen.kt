@@ -3335,21 +3335,15 @@ fun ChatScreen(
                                     }
                                     safeMutate { viewModel.retryFromMessage(item.message.id) }
                                 }),
-                                // T187: long-press → Edit pulls the user message
-                                // text into the composer; the next send truncates
-                                // from this turn (inclusive) before persisting
-                                // the edited content. Gated on isStreaming the
-                                // same way Retry is.
-                                onEdit = if (isStreaming || item.message.isQueued) null else ({
-                                    val prefill = viewModel.editMessage(item.message.id)
-                                    if (prefill != null) {
-                                        viewModel.setInputText(prefill)
-                                        coroutineScope.launch {
-                                            tracedScrollToItem("EDIT-MSG", 0, 0)
-                                        }
-                                        inputFocusRequester.requestFocus()
-                                    }
-                                }),
+                                // [T-remove-edit-action] The "Edit" item is gone.
+                                // It re-ran the conversation from this turn
+                                // (truncating everything after it), which read as
+                                // "edit" but silently threw away later turns.
+                                // Rewrite does what the label promised — change
+                                // the stored text — and Retry covers "run this
+                                // again". Keeping both was two menu items that
+                                // looked the same and behaved differently.
+                                onEdit = null,
                                 onWithdraw = if (item.message.isQueued) {
                                     { safeMutate { viewModel.withdrawQueuedMessage(item.message.id) } }
                                 } else null,
@@ -3359,10 +3353,17 @@ fun ChatScreen(
                                 // of the session. Queued bubbles aren't in the
                                 // DB yet — Withdraw is their remove action.
                                 onRewrite = if (isStreaming || item.message.isQueued) null else ({
-                                    val prefill = viewModel.messageTextForRewrite(item.message.id)
-                                    if (prefill != null) {
-                                        pendingRewriteText = prefill
-                                        pendingRewriteMessageId = item.message.id
+                                    // [T-rewrite-assistant-full] Prefill from the
+                                    // STORED text, not the on-screen copy (which
+                                    // has reminders / the attachments inventory
+                                    // stripped) — saving the stripped version back
+                                    // would quietly rewrite history.
+                                    coroutineScope.launch {
+                                        val prefill = viewModel.messageTextForRewriteAsync(item.message.id)
+                                        if (prefill != null) {
+                                            pendingRewriteText = prefill
+                                            pendingRewriteMessageId = item.message.id
+                                        }
                                     }
                                 }),
                                 onDelete = if (isStreaming || item.message.isQueued) null else ({
@@ -3401,10 +3402,12 @@ fun ChatScreen(
                                 // real message ids.
                                 onRewrite = if (isStreaming) null else ({
                                     val realId = originalMessageId(item.messageId)
-                                    val prefill = viewModel.messageTextForRewrite(realId)
-                                    if (prefill != null) {
-                                        pendingRewriteText = prefill
-                                        pendingRewriteMessageId = realId
+                                    coroutineScope.launch {
+                                        val prefill = viewModel.messageTextForRewriteAsync(realId)
+                                        if (prefill != null) {
+                                            pendingRewriteText = prefill
+                                            pendingRewriteMessageId = realId
+                                        }
                                     }
                                 }),
                                 onDelete = if (isStreaming) null else ({

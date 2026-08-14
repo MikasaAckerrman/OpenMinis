@@ -492,6 +492,10 @@ class MinisApp : Application(), ImageLoaderFactory {
             completionHaptics.onTurnEnded(
                 outcome = outcome,
                 enabled = backgroundSettingsRepository.isCompletionVibrationEnabled(),
+                // [T-haptics-customization] Read the profile at FIRE time, not at
+                // wiring time: the user may change the pattern between turns and
+                // a captured value would keep buzzing the old shape.
+                profile = backgroundSettingsRepository.readVibrationProfile(),
             )
         }
 

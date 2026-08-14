@@ -7,8 +7,11 @@ import android.os.Build
 import android.provider.Settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -95,6 +98,9 @@ fun BackgroundSettingsScreen(onBack: () -> Unit) {
     // is remembered rather than re-probed on resume: unlike an overlay grant,
     // a device cannot grow a vibration motor while the screen is open.
     val completionVibrationEnabled by backgroundRepo.completionVibrationEnabled.collectAsState()
+    // [T-haptics-customization] Live buzz shape, so a change made from
+    // minis-config is reflected here without reopening the screen.
+    val vibrationProfile by backgroundRepo.vibrationProfile.collectAsState()
     val hasVibrator = remember { app.completionHaptics.hasVibrator() }
     // [T-android-dynamic-island] Live-Updates toggle + device capability.
     val dynamicIslandEnabled by backgroundRepo.dynamicIslandEnabled.collectAsState()
@@ -189,7 +195,7 @@ fun BackgroundSettingsScreen(onBack: () -> Unit) {
                     // they just enabled without having to run a turn to find
                     // out. Nothing on turn-OFF — buzzing to confirm silence
                     // would be absurd.
-                    if (wanted) app.completionHaptics.vibrateDoublePulse()
+                    if (wanted) app.completionHaptics.vibrate(vibrationProfile)
                 },
                 enabled = hasVibrator,
             )
@@ -200,6 +206,62 @@ fun BackgroundSettingsScreen(onBack: () -> Unit) {
                     stringResource(R.string.settings_completion_vibration_unavailable)
                 },
             )
+
+            // [T-haptics-customization] Shape of the buzz. Only rendered while
+            // the feature is ON and the device can vibrate: three pickers and a
+            // DND switch under a toggle that is off would be four dead rows.
+            // Every pick fires the new pattern immediately — a haptic setting you
+            // cannot feel while choosing it is a guess, not a choice.
+            if (completionVibrationEnabled && hasVibrator) {
+                Spacer(Modifier.size(8.dp))
+                BgSubLabel(stringResource(R.string.settings_vibration_pattern))
+                BgOptionChips(
+                    options = com.openminis.app.feedback.VibrationPattern.values().map {
+                        it to stringResource(vibrationPatternLabel(it))
+                    },
+                    selected = vibrationProfile.pattern,
+                    onSelect = {
+                        backgroundRepo.setVibrationPattern(it)
+                        app.completionHaptics.vibrate(vibrationProfile.copy(pattern = it))
+                    },
+                )
+                Spacer(Modifier.size(8.dp))
+                BgSubLabel(stringResource(R.string.settings_vibration_strength))
+                BgOptionChips(
+                    options = com.openminis.app.feedback.VibrationIntensity.values().map {
+                        it to stringResource(vibrationIntensityLabel(it))
+                    },
+                    selected = vibrationProfile.intensity,
+                    onSelect = {
+                        backgroundRepo.setVibrationIntensity(it)
+                        app.completionHaptics.vibrate(vibrationProfile.copy(intensity = it))
+                    },
+                )
+                Spacer(Modifier.size(8.dp))
+                BgSubLabel(stringResource(R.string.settings_vibration_length))
+                BgOptionChips(
+                    options = com.openminis.app.feedback.VibrationLength.values().map {
+                        it to stringResource(vibrationLengthLabel(it))
+                    },
+                    selected = vibrationProfile.length,
+                    onSelect = {
+                        backgroundRepo.setVibrationLength(it)
+                        app.completionHaptics.vibrate(vibrationProfile.copy(length = it))
+                    },
+                )
+                Spacer(Modifier.size(8.dp))
+                BgToggleRow(
+                    icon = Icons.Outlined.NotificationsActive,
+                    iconColor = Color(0xFFFF9500),
+                    title = stringResource(R.string.settings_vibration_bypass_dnd),
+                    checked = vibrationProfile.bypassDnd,
+                    onCheckedChange = {
+                        backgroundRepo.setVibrationBypassDnd(it)
+                        app.completionHaptics.vibrate(vibrationProfile.copy(bypassDnd = it))
+                    },
+                )
+                BgFooter(stringResource(R.string.settings_vibration_bypass_dnd_footer))
+            }
 
             // T-bg-overlay phase 2: floating tool-status overlay toggle.
             // Tapping ON without SYSTEM_ALERT_WINDOW deep-links the user to
@@ -332,6 +394,94 @@ private fun BgFooter(text: String) {
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(start = 4.dp, end = 4.dp, top = 6.dp),
     )
+}
+
+/**
+ * [T-haptics-customization] Label above a chip row. Smaller and less shouty than
+ * [BgSectionTitle] — these sit INSIDE the notifications section rather than
+ * starting a new one, and an uppercase header for each of three pickers would
+ * read as three separate sections.
+ */
+@Composable
+private fun BgSubLabel(text: String) {
+    Text(
+        text = text,
+        fontSize = 13.sp,
+        fontWeight = FontWeight.Medium,
+        color = MaterialTheme.colorScheme.onSurface,
+        modifier = Modifier.padding(start = 4.dp, bottom = 6.dp),
+    )
+}
+
+/**
+ * [T-haptics-customization] Single-choice chip row that wraps.
+ *
+ * FlowRow rather than a horizontal scroll: six pattern names do not fit one line
+ * on a phone, and a horizontally-scrolling row hides options behind a gesture
+ * the user has no reason to suspect. Generic over the option type so the same
+ * row serves pattern / strength / length without three copies.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun <T> BgOptionChips(
+    options: List<Pair<T, String>>,
+    selected: T,
+    onSelect: (T) -> Unit,
+) {
+    FlowRow(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        for ((value, label) in options) {
+            val isSelected = value == selected
+            Text(
+                text = label,
+                fontSize = 13.sp,
+                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                color = if (isSelected) {
+                    MaterialTheme.colorScheme.onPrimaryContainer
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                modifier = Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(
+                        if (isSelected) {
+                            MaterialTheme.colorScheme.primaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.surfaceContainerHigh
+                        },
+                    )
+                    .clickable { onSelect(value) }
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+            )
+        }
+    }
+}
+
+/** Display strings for the buzz-shape enums. Kept next to the UI that shows them
+ *  so a new pattern cannot be added without a visible label. */
+private fun vibrationPatternLabel(p: com.openminis.app.feedback.VibrationPattern): Int = when (p) {
+    com.openminis.app.feedback.VibrationPattern.DOUBLE -> R.string.vibration_pattern_double
+    com.openminis.app.feedback.VibrationPattern.SINGLE_LONG -> R.string.vibration_pattern_single_long
+    com.openminis.app.feedback.VibrationPattern.TRIPLE -> R.string.vibration_pattern_triple
+    com.openminis.app.feedback.VibrationPattern.SHORT_LONG -> R.string.vibration_pattern_short_long
+    com.openminis.app.feedback.VibrationPattern.HEARTBEAT -> R.string.vibration_pattern_heartbeat
+    com.openminis.app.feedback.VibrationPattern.LONG_RUMBLE -> R.string.vibration_pattern_long_rumble
+}
+
+private fun vibrationIntensityLabel(i: com.openminis.app.feedback.VibrationIntensity): Int = when (i) {
+    com.openminis.app.feedback.VibrationIntensity.LIGHT -> R.string.vibration_strength_light
+    com.openminis.app.feedback.VibrationIntensity.MEDIUM -> R.string.vibration_strength_medium
+    com.openminis.app.feedback.VibrationIntensity.STRONG -> R.string.vibration_strength_strong
+}
+
+private fun vibrationLengthLabel(l: com.openminis.app.feedback.VibrationLength): Int = when (l) {
+    com.openminis.app.feedback.VibrationLength.SHORT -> R.string.vibration_length_short
+    com.openminis.app.feedback.VibrationLength.NORMAL -> R.string.vibration_length_normal
+    com.openminis.app.feedback.VibrationLength.LONG -> R.string.vibration_length_long
+    com.openminis.app.feedback.VibrationLength.EXTRA_LONG -> R.string.vibration_length_extra_long
 }
 
 @Composable

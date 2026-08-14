@@ -102,6 +102,49 @@ class BackgroundSettingsRepository(context: Context) {
         _completionVibrationEnabled.value = value
     }
 
+    // ── [T-haptics-customization] Buzz shape ───────────────────────────────
+    //
+    // Three independent axes + a DND override, each persisted under its own key
+    // so adding a pattern later can't invalidate a stored intensity. Read
+    // straight from prefs for the same reason isCompletionVibrationEnabled
+    // does: minis-config writes these keys directly, so a cached copy can be one
+    // write behind.
+
+    private val _vibrationProfile = MutableStateFlow(readVibrationProfile())
+    val vibrationProfile: StateFlow<com.openminis.app.feedback.VibrationProfile> =
+        _vibrationProfile.asStateFlow()
+
+    fun readVibrationProfile(): com.openminis.app.feedback.VibrationProfile =
+        com.openminis.app.feedback.VibrationProfile(
+            pattern = com.openminis.app.feedback.VibrationPattern
+                .fromId(prefs.getString(KEY_VIBRATION_PATTERN, null)),
+            intensity = com.openminis.app.feedback.VibrationIntensity
+                .fromId(prefs.getString(KEY_VIBRATION_INTENSITY, null)),
+            length = com.openminis.app.feedback.VibrationLength
+                .fromId(prefs.getString(KEY_VIBRATION_LENGTH, null)),
+            bypassDnd = prefs.getBoolean(KEY_VIBRATION_BYPASS_DND, false),
+        )
+
+    fun setVibrationPattern(p: com.openminis.app.feedback.VibrationPattern) {
+        prefs.edit().putString(KEY_VIBRATION_PATTERN, p.id).apply()
+        _vibrationProfile.value = readVibrationProfile()
+    }
+
+    fun setVibrationIntensity(i: com.openminis.app.feedback.VibrationIntensity) {
+        prefs.edit().putString(KEY_VIBRATION_INTENSITY, i.id).apply()
+        _vibrationProfile.value = readVibrationProfile()
+    }
+
+    fun setVibrationLength(l: com.openminis.app.feedback.VibrationLength) {
+        prefs.edit().putString(KEY_VIBRATION_LENGTH, l.id).apply()
+        _vibrationProfile.value = readVibrationProfile()
+    }
+
+    fun setVibrationBypassDnd(value: Boolean) {
+        prefs.edit().putBoolean(KEY_VIBRATION_BYPASS_DND, value).apply()
+        _vibrationProfile.value = readVibrationProfile()
+    }
+
     /**
      * Keeps [completionVibrationEnabled] honest when the key is written from
      * outside this class (minis-config). Held in a field because
@@ -112,8 +155,12 @@ class BackgroundSettingsRepository(context: Context) {
      */
     private val prefsListener =
         SharedPreferences.OnSharedPreferenceChangeListener { sp, key ->
-            if (key == KEY_COMPLETION_VIBRATION) {
-                _completionVibrationEnabled.value = sp.getBoolean(KEY_COMPLETION_VIBRATION, false)
+            when (key) {
+                KEY_COMPLETION_VIBRATION ->
+                    _completionVibrationEnabled.value = sp.getBoolean(KEY_COMPLETION_VIBRATION, false)
+                KEY_VIBRATION_PATTERN, KEY_VIBRATION_INTENSITY,
+                KEY_VIBRATION_LENGTH, KEY_VIBRATION_BYPASS_DND ->
+                    _vibrationProfile.value = readVibrationProfile()
             }
         }
 
@@ -127,10 +174,27 @@ class BackgroundSettingsRepository(context: Context) {
      * controller pick a default near the bottom-left, 10 dp from each
      * edge" ([T-bg-overlay-polish]).
      */
-    fun getOverlayX(): Int = prefs.getInt(KEY_BG_OVERLAY_X, -1)
-    fun getOverlayY(): Int = prefs.getInt(KEY_BG_OVERLAY_Y, -1)
-    fun setOverlayPosition(x: Int, y: Int) {
-        prefs.edit().putInt(KEY_BG_OVERLAY_X, x).putInt(KEY_BG_OVERLAY_Y, y).apply()
+    /**
+     * [T-overlay-portrait-offscreen] Stored PER ORIENTATION. One shared slot
+     * meant a drag in landscape overwrote the portrait position with an x that
+     * portrait cannot contain; combined with FLAG_LAYOUT_NO_LIMITS (which
+     * honours an off-screen x literally) the capsule was placed past the right
+     * edge and never seen — the overlay looked broken in portrait while working
+     * in landscape. Keys are new rather than reused so a value written by an
+     * older build falls back to "no remembered position" once and is re-learned
+     * per orientation.
+     */
+    fun getOverlayX(landscape: Boolean): Int =
+        prefs.getInt(if (landscape) KEY_BG_OVERLAY_X_LAND else KEY_BG_OVERLAY_X_PORT, -1)
+
+    fun getOverlayY(landscape: Boolean): Int =
+        prefs.getInt(if (landscape) KEY_BG_OVERLAY_Y_LAND else KEY_BG_OVERLAY_Y_PORT, -1)
+
+    fun setOverlayPosition(x: Int, y: Int, landscape: Boolean) {
+        prefs.edit()
+            .putInt(if (landscape) KEY_BG_OVERLAY_X_LAND else KEY_BG_OVERLAY_X_PORT, x)
+            .putInt(if (landscape) KEY_BG_OVERLAY_Y_LAND else KEY_BG_OVERLAY_Y_PORT, y)
+            .apply()
     }
 
     companion object {
@@ -138,12 +202,23 @@ class BackgroundSettingsRepository(context: Context) {
         private const val KEY_TASK_NOTIFICATIONS = "taskNotificationsEnabled"
         private const val DEFAULT_TASK_NOTIFICATIONS = true
         private const val KEY_BG_OVERLAY_ENABLED = "backgroundOverlayEnabled"
-        private const val KEY_BG_OVERLAY_X = "backgroundOverlayX"
-        private const val KEY_BG_OVERLAY_Y = "backgroundOverlayY"
+        // [T-overlay-portrait-offscreen] Per-orientation position slots. The old
+        // shared keys are deliberately left unread: a value saved by a previous
+        // build may be a landscape x, and inheriting it into portrait recreates
+        // the very bug this splits apart.
+        private const val KEY_BG_OVERLAY_X_PORT = "backgroundOverlayXPortrait"
+        private const val KEY_BG_OVERLAY_Y_PORT = "backgroundOverlayYPortrait"
+        private const val KEY_BG_OVERLAY_X_LAND = "backgroundOverlayXLandscape"
+        private const val KEY_BG_OVERLAY_Y_LAND = "backgroundOverlayYLandscape"
         private const val KEY_DYNAMIC_ISLAND_ENABLED = "dynamicIslandEnabled"
         // [T-completion-haptics] Shared with minis-config's
         // `background.completionVibration` field — same prefs file + key, so a
         // CLI write and a UI toggle are the same write.
         private const val KEY_COMPLETION_VIBRATION = "completionVibrationEnabled"
+        // [T-haptics-customization] Buzz shape, one key per axis.
+        private const val KEY_VIBRATION_PATTERN = "completionVibrationPattern"
+        private const val KEY_VIBRATION_INTENSITY = "completionVibrationIntensity"
+        private const val KEY_VIBRATION_LENGTH = "completionVibrationLength"
+        private const val KEY_VIBRATION_BYPASS_DND = "completionVibrationBypassDnd"
     }
 }

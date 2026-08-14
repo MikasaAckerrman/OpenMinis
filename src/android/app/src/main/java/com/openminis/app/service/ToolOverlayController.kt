@@ -242,18 +242,44 @@ class ToolOverlayController(private val context: Context) {
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            val savedX = backgroundRepo.getOverlayX()
-            val savedY = backgroundRepo.getOverlayY()
+            val metrics = context.resources.displayMetrics
+            val width = fixedCapsuleWidthPx()
+            val height = dpToPx(CAPSULE_HEIGHT_DP)
+            val landscape = isLandscape()
+            val savedX = backgroundRepo.getOverlayX(landscape)
+            val savedY = backgroundRepo.getOverlayY(landscape)
             if (savedX >= 0 && savedY >= 0) {
-                x = savedX
-                y = savedY
+                // [T-overlay-portrait-offscreen] CLAMP the restored position to
+                // the CURRENT screen. This window carries FLAG_LAYOUT_NO_LIMITS,
+                // so an x/y outside the display is honoured literally — the
+                // capsule is placed off-screen and simply never seen. A position
+                // saved in LANDSCAPE has an x up to the landscape width;
+                // restoring it in PORTRAIT (roughly half as wide) puts the pill
+                // past the right edge. That is why the overlay appeared in
+                // landscape but "didn't work" in portrait: it was attached and
+                // drawing, just outside the visible area.
+                //
+                // onConfigurationChanged() already clamps, but only for an
+                // ALREADY-ATTACHED view — it cannot fix a window that is born
+                // off-screen, which is the common case (rotate, then start a
+                // turn). Positions are now also stored per orientation, so this
+                // clamp is the second line of defence rather than the only one.
+                x = savedX.coerceIn(0, (metrics.widthPixels - width).coerceAtLeast(0))
+                y = savedY.coerceIn(0, (metrics.heightPixels - height).coerceAtLeast(0))
+                if (x != savedX || y != savedY) {
+                    Log.i(
+                        TAG,
+                        "attach: clamped restored position ($savedX,$savedY) -> ($x,$y) for " +
+                            "${metrics.widthPixels}x${metrics.heightPixels} landscape=$landscape",
+                    )
+                    backgroundRepo.setOverlayPosition(x, y, landscape)
+                }
             } else {
                 // [T-bg-overlay-polish] First-paint default: bottom-left,
                 // 10 dp from the left edge and 10 dp above the nav-bar
                 // region. We don't have an accurate nav-bar height before
                 // attach, so use displayMetrics.heightPixels and trust
                 // FLAG_LAYOUT_NO_LIMITS to keep us on-screen.
-                val metrics = context.resources.displayMetrics
                 val padding = dpToPx(EDGE_PADDING_DP)
                 val approxOverlayHeight = dpToPx(LOGO_SIZE_DP + 16)
                 val approxNavBar = dpToPx(48)
@@ -626,7 +652,23 @@ class ToolOverlayController(private val context: Context) {
                 }
                 MotionEvent.ACTION_UP -> {
                     if (dragging) {
-                        backgroundRepo.setOverlayPosition(params.x, params.y)
+                        // [T-overlay-portrait-offscreen] Clamp before saving.
+                        // FLAG_LAYOUT_NO_LIMITS lets a drag park the capsule
+                        // partly (or wholly) beyond the display, and that
+                        // position would then be restored verbatim on the next
+                        // attach. Clamping at save time means the stored value is
+                        // always somewhere the user can reach it again.
+                        val dm = context.resources.displayMetrics
+                        val maxX = (dm.widthPixels - params.width).coerceAtLeast(0)
+                        val maxY = (dm.heightPixels - params.height).coerceAtLeast(0)
+                        val cx = params.x.coerceIn(0, maxX)
+                        val cy = params.y.coerceIn(0, maxY)
+                        if (cx != params.x || cy != params.y) {
+                            params.x = cx
+                            params.y = cy
+                            runCatching { windowManager.updateViewLayout(target, params) }
+                        }
+                        backgroundRepo.setOverlayPosition(cx, cy, isLandscape())
                     } else {
                         onTap()
                     }
@@ -734,7 +776,7 @@ class ToolOverlayController(private val context: Context) {
             params.y = clampedY
             try {
                 windowManager.updateViewLayout(v, params)
-                backgroundRepo.setOverlayPosition(clampedX, clampedY)
+                backgroundRepo.setOverlayPosition(clampedX, clampedY, isLandscape())
             } catch (e: Throwable) {
                 Log.w(TAG, "onConfigurationChanged relayout failed: ${e.message}")
             }
@@ -743,6 +785,17 @@ class ToolOverlayController(private val context: Context) {
 
     private fun dpToPx(dp: Int): Int =
         (dp * context.resources.displayMetrics.density + 0.5f).toInt()
+
+    /**
+     * [T-overlay-portrait-offscreen] Current orientation, used to pick the
+     * per-orientation saved position. Read from the Configuration rather than
+     * comparing display metrics: on a near-square foldable inner screen the
+     * width/height comparison flips on a few pixels and we'd thrash between two
+     * saved slots.
+     */
+    private fun isLandscape(): Boolean =
+        context.resources.configuration.orientation ==
+            android.content.res.Configuration.ORIENTATION_LANDSCAPE
 
     /**
      * Mirrors [AgentForegroundService.toolDisplayLabel] but trims the

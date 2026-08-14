@@ -554,6 +554,54 @@ internal object ConfigBuiltins {
                 defaultValue = false,
             )
         )
+        // [T-haptics-customization] The buzz shape, same prefs keys the Settings
+        // pickers write. Enum fields rather than free strings so an invalid
+        // value is rejected at write time instead of silently falling back to
+        // the default on the next turn.
+        r.register(
+            PrefsEnumField(
+                path = "background.vibrationPattern",
+                displayName = "Vibration pattern",
+                description = "Shape of the turn-finished buzz.",
+                prefs = prefs,
+                key = "completionVibrationPattern",
+                cases = com.openminis.app.feedback.VibrationPattern.values().map { it.id },
+                defaultValue = com.openminis.app.feedback.VibrationPattern.DEFAULT.id,
+            )
+        )
+        r.register(
+            PrefsEnumField(
+                path = "background.vibrationStrength",
+                displayName = "Vibration strength",
+                description = "How hard the motor is driven (only on devices with amplitude control).",
+                prefs = prefs,
+                key = "completionVibrationIntensity",
+                cases = com.openminis.app.feedback.VibrationIntensity.values().map { it.id },
+                defaultValue = com.openminis.app.feedback.VibrationIntensity.DEFAULT.id,
+            )
+        )
+        r.register(
+            PrefsEnumField(
+                path = "background.vibrationLength",
+                displayName = "Vibration length",
+                description = "Scales every pulse and gap in the chosen pattern.",
+                prefs = prefs,
+                key = "completionVibrationLength",
+                cases = com.openminis.app.feedback.VibrationLength.values().map { it.id },
+                defaultValue = com.openminis.app.feedback.VibrationLength.DEFAULT.id,
+            )
+        )
+        r.register(
+            PrefsBoolField(
+                path = "background.vibrationIgnoreSilent",
+                displayName = "Vibrate in silent mode",
+                description = "Tag the buzz as an alarm so it fires through silent mode / Do Not Disturb. Some OEM skins mute notification vibration while the ringer is off.",
+                prefs = prefs,
+                key = "completionVibrationBypassDnd",
+                defaultValue = false,
+                risk = ConfigRisk.SENSITIVE,
+            )
+        )
         // [T-android-config-feature-unavailable] Live Updates / "dynamic
         // island". Settings → Background renders this toggle DISABLED with an
         // "unsupported" footer unless the device is capable, so minis-config

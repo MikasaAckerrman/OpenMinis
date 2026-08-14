@@ -883,6 +883,25 @@
     <string name="settings_completion_vibration">Вибрация по завершении</string>
     <string name="settings_completion_vibration_footer">Два коротких импульса, когда ответ дописан — и когда приложение открыто, и когда в фоне. Молчит, если ход остановили вы сами, и подчиняется режиму «Не беспокоить».</string>
     <string name="settings_completion_vibration_unavailable">На этом устройстве нет вибромотора.</string>
+    <!-- [T-haptics-customization] Настройка формы вибрации. -->
+    <string name="settings_vibration_pattern">Рисунок</string>
+    <string name="settings_vibration_strength">Сила</string>
+    <string name="settings_vibration_length">Длительность</string>
+    <string name="settings_vibration_bypass_dnd">Игнорировать беззвучный режим</string>
+    <string name="settings_vibration_bypass_dnd_footer">Вибрировать даже в беззвучном режиме и в «Не беспокоить». Включите, если не чувствуете вибрацию при выключенном экране — некоторые оболочки (в том числе OriginOS) глушат вибрацию уведомлений, когда звук выключен.</string>
+    <string name="vibration_pattern_double">Двойная</string>
+    <string name="vibration_pattern_single_long">Одна длинная</string>
+    <string name="vibration_pattern_triple">Тройная</string>
+    <string name="vibration_pattern_short_long">Короткая + длинная</string>
+    <string name="vibration_pattern_heartbeat">Пульс</string>
+    <string name="vibration_pattern_long_rumble">Гул</string>
+    <string name="vibration_strength_light">Слабая</string>
+    <string name="vibration_strength_medium">Средняя</string>
+    <string name="vibration_strength_strong">Сильная</string>
+    <string name="vibration_length_short">Короткая</string>
+    <string name="vibration_length_normal">Обычная</string>
+    <string name="vibration_length_long">Длинная</string>
+    <string name="vibration_length_extra_long">Очень длинная</string>
     <string name="notif_one_task_running">1 задача выполняется</string>
     <string name="notif_n_tasks_running">Задач выполняется: %1$d</string>
     <string name="notif_in_session">В сессии</string>

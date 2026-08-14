@@ -2522,8 +2522,13 @@ class ChatViewModel(
                     add(messageId)
                     uiMsg?.sourceDbIds?.let { addAll(it) }
                 }
-                val targetId = candidateIds.firstOrNull { cand -> surgical.any { it.id == cand } }
-                if (targetId == null) {
+                // [T-delete-merged-turn] ALL matching rows, not the first one.
+                // An assistant bubble is the merge of every consecutive
+                // assistant row (one per tool round), so deleting only the
+                // first-resolving id left the rest of the turn in the DB — it
+                // reappeared on reload, which reads as "delete didn't work".
+                val targetIds = candidateIds.distinct().filter { cand -> surgical.any { it.id == cand } }
+                if (targetIds.isEmpty()) {
                     AppLogger.warning(TAG, "[Surgery] delete: id=${messageId.take(8)} not in DB rows")
                     withContext(Dispatchers.Main) {
                         appendSystemInfo(
@@ -2534,7 +2539,7 @@ class ChatViewModel(
                     return@launch
                 }
 
-                val plan = com.openminis.app.data.MessageSurgery.planDelete(surgical, targetId)
+                val plan = com.openminis.app.data.MessageSurgery.planDelete(surgical, targetIds)
                 if (plan.isNoOp) {
                     withContext(Dispatchers.Main) {
                         appendSystemInfo(
@@ -2546,7 +2551,8 @@ class ChatViewModel(
                 }
                 AppLogger.info(
                     TAG,
-                    "[Surgery] delete id=${targetId.take(8)}: dropping ${plan.deleteIds.size} row(s), " +
+                    "[Surgery] delete ids=${targetIds.joinToString { it.take(8) }}: " +
+                        "dropping ${plan.deleteIds.size} row(s), " +
                         "rewriting ${plan.rewrites.size}; notes=${plan.notes}",
                 )
 
@@ -2560,6 +2566,40 @@ class ChatViewModel(
                 var removed = 0
                 for (id in plan.deleteIds) {
                     removed += runCatching { chatRepository.dao.deleteMessageById(sid, id) }.getOrDefault(0)
+                }
+
+                // [T-delete-attachment-bytes] Drop the attachment FILES of every
+                // row we just removed. Nothing else can reference them —
+                // relativePath is minted per attachment in MediaStore.saveMedia —
+                // so leaving them behind means a photo the user deleted in order
+                // to get rid of survives in app storage and keeps eating space.
+                // Rows that were only REWRITTEN keep their media: the
+                // tool-pairing surgery never touches their mediaRef parts.
+                var filesRemoved = 0
+                val deletedRows = surgical.filter { it.id in plan.deleteIds }
+                for (row in deletedRows) {
+                    val media = com.openminis.app.data.MessageSurgery.mediaPaths(row.partsJson)
+                    if (media.isEmpty) continue
+                    for (rel in media.relative) {
+                        val f = java.io.File(mediaStore.mediaBaseDir, rel)
+                        if (runCatching { f.exists() && f.delete() }.getOrDefault(false)) filesRemoved++
+                    }
+                    // The uploads copy lives under the session's sandbox-mounted
+                    // dir. `linuxPath` is /var/minis/attachments/uploads/<name>;
+                    // map it back to the host path the same way the send path
+                    // built it rather than trusting an absolute path from a row.
+                    for (lp in media.linux) {
+                        val name = lp.substringAfterLast('/')
+                        if (name.isEmpty()) continue
+                        val f = java.io.File(
+                            context.filesDir,
+                            "minis-sessions/$sid/attachments/uploads/$name",
+                        )
+                        if (runCatching { f.exists() && f.delete() }.getOrDefault(false)) filesRemoved++
+                    }
+                }
+                if (filesRemoved > 0) {
+                    AppLogger.info(TAG, "[Surgery] delete: removed $filesRemoved attachment file(s) from disk")
                 }
 
                 // Memory writes made by a turn that no longer exists must be
@@ -2632,7 +2672,18 @@ class ChatViewModel(
                     add(messageId)
                     uiMsg?.sourceDbIds?.let { addAll(it) }
                 }
-                val row = candidateIds.firstNotNullOfOrNull { cand -> rows.firstOrNull { it.id == cand } }
+                // [T-rewrite-assistant-full] Target the first candidate row that
+                // actually HAS editable text. A merged assistant bubble's first
+                // row is often a pure tool_use round with no prose; writing
+                // there returned "nothing to edit" even though the visible turn
+                // was full of text. Fall back to the first candidate so the
+                // not-found / no-text messages still behave.
+                val row = candidateIds.firstNotNullOfOrNull { cand ->
+                    rows.firstOrNull {
+                        it.id == cand &&
+                            com.openminis.app.data.MessageSurgery.textOf(it.partsJson).isNotEmpty()
+                    }
+                } ?: candidateIds.firstNotNullOfOrNull { cand -> rows.firstOrNull { it.id == cand } }
                 if (row == null) {
                     withContext(Dispatchers.Main) {
                         appendSystemInfo(
@@ -2657,6 +2708,30 @@ class ChatViewModel(
                 }
                 runCatching { chatRepository.dao.updateMessageParts(row.id, rewritten) }
                     .onFailure { AppLogger.warning(TAG, "[Surgery] rewrite failed: ${it.message}") }
+                // [T-rewrite-assistant-full] A merged assistant bubble is
+                // several DB rows; the whole edited prose just went into ONE of
+                // them. The other rows of the same turn must give up their text,
+                // or the history keeps the old paragraphs sitting after the new
+                // ones — the user edited what they saw as one message and would
+                // get two versions of it. Tool parts / media stay untouched.
+                var siblingsCleared = 0
+                for (cand in candidateIds.distinct()) {
+                    if (cand == row.id) continue
+                    val sib = rows.firstOrNull { it.id == cand } ?: continue
+                    if (com.openminis.app.data.MessageSurgery.textOf(sib.partsJson).isEmpty()) continue
+                    val stripped = com.openminis.app.data.MessageSurgery.removeTextParts(sib.partsJson)
+                    runCatching { chatRepository.dao.updateMessageParts(sib.id, stripped) }
+                        .onSuccess { siblingsCleared++ }
+                        .onFailure {
+                            AppLogger.warning(TAG, "[Surgery] sibling strip ${sib.id} failed: ${it.message}")
+                        }
+                }
+                if (siblingsCleared > 0) {
+                    AppLogger.info(
+                        TAG,
+                        "[Surgery] rewrite: cleared prose from $siblingsCleared sibling row(s) of the merged turn",
+                    )
+                }
                 AppLogger.info(
                     TAG,
                     "[Surgery] rewrote text of ${row.id.take(8)} (${row.role}): " +
@@ -2684,6 +2759,40 @@ class ChatViewModel(
                 }
             }
         }
+    }
+
+    /**
+     * [T-rewrite-assistant-full] Current STORED text of a message, for
+     * pre-filling the rewrite editor.
+     *
+     * Reads the DB row rather than `ChatMessage.content` because those two
+     * differ for assistant turns: the UI strips `<system-reminder>` blocks and
+     * the `<user-attached-files>` inventory, and merges consecutive rows.
+     * Pre-filling from the UI copy and saving it back would silently commit the
+     * stripped version as the new stored text. For a merged multi-row assistant
+     * bubble the first row WITH prose is offered — the same row
+     * [rewriteMessageText] writes to.
+     */
+    suspend fun messageTextForRewriteAsync(messageId: String): String? {
+        val sid = realSessionId.ifEmpty { sessionId }
+        if (sid.isEmpty()) return messageTextForRewrite(messageId)
+        val uiMsg = _messages.value.firstOrNull { it.id == messageId }
+        val candidateIds = buildList {
+            add(messageId)
+            uiMsg?.sourceDbIds?.let { addAll(it) }
+        }
+        val rows = withContext(Dispatchers.IO) {
+            runCatching { chatRepository.loadMessages(sid) }.getOrNull()
+        } ?: return messageTextForRewrite(messageId)
+        val row = candidateIds.firstNotNullOfOrNull { cand ->
+            rows.firstOrNull {
+                it.id == cand &&
+                    com.openminis.app.data.MessageSurgery.textOf(it.partsJson).isNotEmpty()
+            }
+        }
+            ?: candidateIds.firstNotNullOfOrNull { cand -> rows.firstOrNull { it.id == cand } }
+            ?: return messageTextForRewrite(messageId)
+        return com.openminis.app.data.MessageSurgery.textOf(row.partsJson)
     }
 
     /** Current stored text of a message, for pre-filling the rewrite editor. */
@@ -4381,9 +4490,20 @@ class ChatViewModel(
 
             // Rebuild agentHistory from persisted messages.
             // Pre-built off-Main inside the withContext(Dispatchers.IO) block
-            // above to avoid re-parsing partsJson on the UI thread. Safe to
-            // bulk-addAll here because loadSession runs once at init before
-            // any sender writes into agentHistory.
+            // above to avoid re-parsing partsJson on the UI thread.
+            //
+            // [T-delete-history-leak] clear() BEFORE addAll. loadSession is no
+            // longer an init-only path: reloadSessionFromDb() calls it after
+            // message surgery (delete / rewrite) and after a compact revert. A
+            // bare addAll there APPENDED the surviving rows onto the pre-delete
+            // list, so the deleted turn stayed in agentHistory and every
+            // survivor appeared twice. That is exactly the reported symptom — a
+            // message vanishes from the screen but the model still sees it —
+            // because _messages is ASSIGNED (clean) while agentHistory was
+            // APPENDED (stale + doubled). Every other rebuild path in this file
+            // already clears first; this one was the outlier.
+            agentHistory.clear()
+            toolLoopDetector.reset()
             agentHistory.addAll(loaded.llmHistory)
             val tHangDiagAfterAgentHistory = System.currentTimeMillis()
             println(

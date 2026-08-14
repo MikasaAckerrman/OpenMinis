@@ -1090,6 +1090,25 @@
     <string name="settings_completion_vibration">Vibrate When Done</string>
     <string name="settings_completion_vibration_footer">Two short pulses when a reply finishes, whether the app is open or in the background. Silent when you stop a turn yourself, and follows your Do Not Disturb setting.</string>
     <string name="settings_completion_vibration_unavailable">This device has no vibration motor.</string>
+    <!-- [T-haptics-customization] Buzz shape pickers. -->
+    <string name="settings_vibration_pattern">Pattern</string>
+    <string name="settings_vibration_strength">Strength</string>
+    <string name="settings_vibration_length">Length</string>
+    <string name="settings_vibration_bypass_dnd">Ignore silent mode</string>
+    <string name="settings_vibration_bypass_dnd_footer">Vibrate even in silent mode or Do Not Disturb. Turn this on if you never feel the buzz with the screen off — some phone skins (OriginOS among them) mute notification vibration while the ringer is silent.</string>
+    <string name="vibration_pattern_double">Double</string>
+    <string name="vibration_pattern_single_long">One long</string>
+    <string name="vibration_pattern_triple">Triple</string>
+    <string name="vibration_pattern_short_long">Short + long</string>
+    <string name="vibration_pattern_heartbeat">Heartbeat</string>
+    <string name="vibration_pattern_long_rumble">Rumble</string>
+    <string name="vibration_strength_light">Light</string>
+    <string name="vibration_strength_medium">Medium</string>
+    <string name="vibration_strength_strong">Strong</string>
+    <string name="vibration_length_short">Short</string>
+    <string name="vibration_length_normal">Normal</string>
+    <string name="vibration_length_long">Long</string>
+    <string name="vibration_length_extra_long">Extra long</string>
     <string name="notif_one_task_running">1 task running</string>
     <string name="notif_n_tasks_running">%1$d tasks running</string>
     <string name="notif_in_session">In session</string>

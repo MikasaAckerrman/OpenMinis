@@ -83,6 +83,42 @@ object MessageSurgery {
         return out
     }
 
+    /**
+     * [T-delete-attachment-bytes] `mediaRef.relativePath` of every attachment
+     * carried by a message, plus the sandbox-visible `linuxPath` when the row
+     * has one.
+     *
+     * Deleting a message that carried a photo used to leave the JPEG on disk
+     * forever: the row goes, the bytes stay, and nothing else ever references
+     * them (relativePath is minted per attachment). For a user who deletes a
+     * photo specifically to get rid of it, "removed from the chat" while the
+     * file survives in app storage is the wrong answer — and on a phone with a
+     * few GB free it also silently eats the space.
+     */
+    fun mediaPaths(partsJson: String): MediaPaths {
+        val relative = LinkedHashSet<String>()
+        val linux = LinkedHashSet<String>()
+        val arr = parts(partsJson)
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            if (o.optString("type") != "mediaRef") continue
+            val v = o.optJSONObject("value") ?: continue
+            v.optString("relativePath", "").takeIf { it.isNotEmpty() }?.let { relative.add(it) }
+            v.optString("linuxPath", "").takeIf { it.isNotEmpty() }?.let { linux.add(it) }
+        }
+        return MediaPaths(relative.toList(), linux.toList())
+    }
+
+    /** Attachment locations belonging to a message. */
+    data class MediaPaths(
+        /** Paths under the app's media base dir. */
+        val relative: List<String>,
+        /** Paths as the sandbox sees them (/var/minis/attachments/uploads/…). */
+        val linux: List<String>,
+    ) {
+        val isEmpty: Boolean get() = relative.isEmpty() && linux.isEmpty()
+    }
+
     /** Concatenated text of a message, excluding the attachments inventory. */
     fun textOf(partsJson: String): String {
         val sb = StringBuilder()
@@ -128,6 +164,25 @@ object MessageSurgery {
             // Subsequent plain-text parts are intentionally dropped.
         }
         if (!wrote) return null
+        return out.toString()
+    }
+
+    /**
+     * Remove every plain-text part, keeping tool parts, media refs and the
+     * `<user-attached-files>` inventory. Used by the multi-row rewrite: the
+     * merged bubble's whole prose is written into ONE row, so the other rows of
+     * the same turn must give up their text or the edit would leave stale
+     * paragraphs sitting after the new ones.
+     */
+    fun removeTextParts(partsJson: String): String {
+        val arr = parts(partsJson)
+        val out = JSONArray()
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val isPlainText = o.optString("type") == "text" &&
+                !o.optString("value", "").contains("<user-attached-files>")
+            if (!isPlainText) out.put(o)
+        }
         return out.toString()
     }
 
@@ -198,22 +253,47 @@ object MessageSurgery {
      * for genuinely interrupted calls, and that is a different situation from
      * "the user removed this turn on purpose".
      */
-    fun planDelete(messages: List<Msg>, targetId: String): DeletePlan {
-        val target = messages.firstOrNull { it.id == targetId }
-            ?: return DeletePlan(emptyList(), emptyMap(), listOf("message not found"))
+    fun planDelete(messages: List<Msg>, targetId: String): DeletePlan =
+        planDelete(messages, listOf(targetId))
 
-        val deleteIds = mutableListOf(targetId)
+    /**
+     * [T-delete-merged-turn] Multi-target variant.
+     *
+     * One assistant bubble on screen can be several DB rows: the agent loop
+     * persists each tool round as its own row and the UI merges consecutive
+     * assistant rows into one bubble. Planning against a single id therefore
+     * deleted ONE row of the bubble and left the rest — the message appeared to
+     * survive the delete (or came back on reload), which is the reported
+     * "delete doesn't really delete" symptom for assistant turns.
+     *
+     * All targets are removed together and pairing is resolved against the
+     * whole set, so a tool_use in one target answered by a tool_result in
+     * another produces no rewrite at all — both sides are leaving.
+     */
+    fun planDelete(messages: List<Msg>, targetIds: List<String>): DeletePlan {
+        val targets = messages.filter { it.id in targetIds }
+        if (targets.isEmpty()) {
+            return DeletePlan(emptyList(), emptyMap(), listOf("message not found"))
+        }
+
+        val deleteIds = targets.mapTo(mutableListOf()) { it.id }
         val rewrites = LinkedHashMap<String, String>()
         val notes = mutableListOf<String>()
 
-        val targetUses = toolUseIds(target.partsJson)
-        val targetResults = toolResultIds(target.partsJson)
+        val targetUses = LinkedHashSet<String>()
+        val targetResults = LinkedHashSet<String>()
+        for (t in targets) {
+            targetUses.addAll(toolUseIds(t.partsJson))
+            targetResults.addAll(toolResultIds(t.partsJson))
+        }
+        // Rows on their way out need no downstream surgery for each other.
+        val isTarget = { id: String -> id in deleteIds }
 
         // Case 1: target made tool calls → strip their results downstream.
         if (targetUses.isNotEmpty()) {
             var strippedResults = 0
             for (m in messages) {
-                if (m.id == targetId) continue
+                if (isTarget(m.id)) continue
                 val hits = toolResultIds(m.partsJson).intersect(targetUses)
                 if (hits.isEmpty()) continue
                 val rewritten = stripToolResults(m.partsJson, hits)
@@ -237,14 +317,14 @@ object MessageSurgery {
         if (targetResults.isNotEmpty()) {
             val answeredElsewhere = LinkedHashSet<String>()
             for (m in messages) {
-                if (m.id == targetId || m.id in deleteIds) continue
+                if (isTarget(m.id)) continue
                 answeredElsewhere.addAll(toolResultIds(m.partsJson))
             }
             val orphanedCalls = targetResults - answeredElsewhere
             if (orphanedCalls.isNotEmpty()) {
                 var strippedUses = 0
                 for (m in messages) {
-                    if (m.id == targetId || m.id in deleteIds) continue
+                    if (isTarget(m.id)) continue
                     val hits = toolUseIds(m.partsJson).intersect(orphanedCalls)
                     if (hits.isEmpty()) continue
                     // A row may already be scheduled for rewrite by case 1.
@@ -266,7 +346,10 @@ object MessageSurgery {
             }
         }
 
-        val extraDeletes = deleteIds.size - 1
+        // Rows dragged in by the pairing rules, beyond the ones the user picked.
+        // Counting against targets.size (not 1) keeps the note honest when the
+        // "one message" on screen was several DB rows.
+        val extraDeletes = deleteIds.distinct().size - targets.size
         if (extraDeletes > 0) {
             notes.add("$extraDeletes further message(s) became empty and were removed too")
         }

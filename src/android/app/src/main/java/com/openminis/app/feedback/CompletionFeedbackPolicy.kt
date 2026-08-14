@@ -56,13 +56,16 @@ object CompletionFeedbackPolicy {
      * ~60 ms the two pulses smear into one longer buzz on devices with a slow
      * LRA, and over ~150 ms they read as two unrelated events.
      */
-    val DOUBLE_PULSE_TIMINGS: LongArray = longArrayOf(0L, 40L, 90L, 40L)
+    val DOUBLE_PULSE_TIMINGS: LongArray
+        get() = VibrationPatterns.waveform(VibrationProfile()).timings
 
     /** Amplitudes paired with [DOUBLE_PULSE_TIMINGS]; used only when the
      *  device reports amplitude control. 0 for the waits, ~70% for the pulses —
      *  full 255 is startling for a passive notification. */
-    val DOUBLE_PULSE_AMPLITUDES: IntArray = intArrayOf(0, 180, 0, 180)
+    val DOUBLE_PULSE_AMPLITUDES: IntArray
+        get() = VibrationPatterns.waveform(VibrationProfile()).amplitudes
 
     /** Total wall time of the pattern; used by the legacy pre-amplitude path. */
-    val DOUBLE_PULSE_DURATION_MS: Long = DOUBLE_PULSE_TIMINGS.sum()
+    val DOUBLE_PULSE_DURATION_MS: Long
+        get() = DOUBLE_PULSE_TIMINGS.sum()
 }
