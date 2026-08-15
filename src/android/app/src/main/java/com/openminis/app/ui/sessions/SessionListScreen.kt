@@ -52,6 +52,7 @@ import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.UnfoldLess
 import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material.icons.outlined.Book
 import androidx.compose.material.icons.outlined.Brush
@@ -300,6 +301,7 @@ fun SessionListScreen(
     val isSelecting by viewModel.isSelecting.collectAsState()
     val selectedIds by viewModel.selectedIds.collectAsState()
     val regeneratingIds by viewModel.regeneratingIds.collectAsState()
+    val compressingIds by viewModel.compressingIds.collectAsState()
     val providerConfig by providerRepository.config.collectAsState()
     val hasProviders = providerConfig.instances.isNotEmpty()
     val hasGroups = providerConfig.modelGroups.isNotEmpty()
@@ -370,6 +372,14 @@ fun SessionListScreen(
             if (!viewModel.isSearchActive.value && !viewModel.isSelecting.value) {
                 listState.animateScrollToItem(0)
             }
+        }
+    }
+    // [session-longpress-compress] Surface the compress result as a toast. The
+    // list has no Scaffold snackbar host, and a toast matches the existing
+    // one-off feedback pattern used elsewhere on this screen (Toast.makeText).
+    LaunchedEffect(Unit) {
+        viewModel.compressResultEvent.collect { msg ->
+            android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -614,7 +624,9 @@ fun SessionListScreen(
                                         deleteTargetId = id
                                         showDeleteDialog = true
                                     },
+                                    onCompress = { viewModel.compressSession(it) },
                                     isRegenerating = session.id in regeneratingIds,
+                                    isCompressing = session.id in compressingIds,
                                     searchQuery = activeQuery,
                                     searchSnippet = searchSnippets[session.id],
                                 )
@@ -1082,7 +1094,13 @@ private fun SessionItemContent(
     onRegenerateTitle: (String) -> Unit,
     onDuplicate: (String) -> Unit,
     onDeleteRequest: (String) -> Unit,
+    // [session-longpress-compress] Long-press action: hard-compact this
+    // session's context (LLM-free) to shrink an oversized, laggy session.
+    onCompress: (String) -> Unit = {},
     isRegenerating: Boolean = false,
+    // [session-longpress-compress] Shows the same overlay as title regen while
+    // the digest is being built.
+    isCompressing: Boolean = false,
     searchQuery: String = "",
     searchSnippet: String? = null,
 ) {
@@ -1141,6 +1159,30 @@ private fun SessionItemContent(
                         )
                         Text(
                             stringResource(R.string.sessionlist_regenerating_title),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
+            }
+            // [session-longpress-compress] Same overlay while the digest builds.
+            if (isCompressing) {
+                Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.7f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        androidx.compose.material3.CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                        )
+                        Text(
+                            stringResource(R.string.sessionlist_compressing),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurface,
                         )
@@ -1233,6 +1275,20 @@ private fun SessionItemContent(
                     },
                     leadingIcon = {
                         Icon(Icons.Default.ContentCopy, contentDescription = null)
+                    },
+                )
+                // [session-longpress-compress] Compress context — LLM-free hard
+                // compaction to shrink an oversized, laggy session so it opens
+                // without crashing. Disabled while a compress is already running.
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.sessionlist_compress)) },
+                    enabled = !isCompressing,
+                    onClick = {
+                        showContextMenu = false
+                        onCompress(session.id)
+                    },
+                    leadingIcon = {
+                        Icon(Icons.Default.UnfoldLess, contentDescription = null)
                     },
                 )
                 // Select

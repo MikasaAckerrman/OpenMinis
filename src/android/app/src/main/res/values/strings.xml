@@ -494,6 +494,12 @@
     <string name="sessionlist_regenerate_title">Regenerate Title</string>
     <string name="sessionlist_regenerating_title">Regenerating title…</string>
     <string name="sessionlist_duplicate">Duplicate</string>
+    <!-- [session-longpress-compress] Long-press menu action + overlay + results -->
+    <string name="sessionlist_compress">Compress context</string>
+    <string name="sessionlist_compressing">Compressing…</string>
+    <string name="sessionlist_compress_done">Context compressed (−%1$d%%)</string>
+    <string name="sessionlist_compress_empty">Nothing to compress in this session</string>
+    <string name="sessionlist_compress_failed">Couldn\'t compress this session</string>
     <string name="sessionlist_search_action">Search</string>
     <string name="sessionlist_dismiss">Dismiss</string>
     <string name="sessionlist_delete_one_title">Delete conversation?</string>

@@ -111,6 +111,21 @@ class SessionListViewModel(
     // Session IDs currently regenerating their titles (UI overlay)
     val regeneratingIds = MutableStateFlow<Set<String>>(emptySet())
 
+    // [session-longpress-compress] Session IDs currently being hard-compacted
+    // (LLM-free RescueDigest). Drives the same loading overlay as title regen so
+    // the user sees the long-press "Compress context" action is working.
+    val compressingIds = MutableStateFlow<Set<String>>(emptySet())
+
+    // [session-longpress-compress] One-shot user-facing result of a compress
+    // run (a short toast/snackbar string). extraBufferCapacity=1 + DROP_OLDEST
+    // so a result emitted while the UI isn't collecting still lands on next
+    // collect. Null payloads are never emitted.
+    val compressResultEvent = kotlinx.coroutines.flow.MutableSharedFlow<String>(
+        replay = 0,
+        extraBufferCapacity = 1,
+        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
+    )
+
     // [T-android-newchat-list-autoscroll] One-shot signal: a session id that
     // we have never seen before has appeared at the TOP of the list (the list
     // is ORDER BY updated_at DESC, so a brand-new chat lands at index 0). The
@@ -250,8 +265,106 @@ class SessionListViewModel(
         }
     }
 
-    fun togglePin(id: String) {
-        viewModelScope.launch {
+    /**
+     * [session-longpress-compress] Hard-compact a session's context WITHOUT a
+     * model call, from the session list's long-press menu.
+     *
+     * Why LLM-free: the user reaches for this when a session "lags and crashes
+     * on open" — i.e. its context is too large to send, so any model-based
+     * summary would need the very round-trip that is failing. [SessionCompressor]
+     * (built on [RescueDigest]) walks the persisted rows on-device, always
+     * terminates, and produces a small, sendable digest that preserves meaning
+     * (verbatim user intent + one-line tool ledger + verbatim identifiers/errors
+     * + verbatim tail). The model never sees the raw oversized history — on the
+     * next open it receives the compact digest as a `<context-summary>`, so it
+     * "doesn't choke" and picks up gradually from the summary.
+     *
+     * Persistence mirrors ChatViewModel.rescueCompactNow: write a v2
+     * CompactMarkerEntity whose `lastCompactedMessageId` anchors at the last
+     * persisted row, so everything up to it folds into the summary and the
+     * active region is empty. Prior markers for the session are cleared first so
+     * exactly one authoritative marker remains. The cached ChatViewModel (if
+     * any) is released so a reopen reloads from the DB and applies the marker
+     * cleanly rather than racing an in-memory history.
+     */
+    fun compressSession(id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            withContext(Dispatchers.Main) { compressingIds.value = compressingIds.value + id }
+            try {
+                val rows = chatRepository.loadMessages(id)
+                if (rows.isEmpty()) {
+                    compressResultEvent.tryEmit(context.getString(R.string.sessionlist_compress_empty))
+                    return@launch
+                }
+                // Anchor at the last persisted row — its id must resolve in the
+                // messages table for the marker's boundary to restore on reload.
+                val anchorId = rows.last().id
+
+                val budget = com.openminis.app.data.RescueDigestPrefs.maxChars(context)
+                val digest = com.openminis.app.data.SessionCompressor.buildDigest(
+                    rows = rows.map { com.openminis.app.data.SessionCompressor.Row(it.role, it.partsJson) },
+                    maxChars = budget,
+                )
+                if (digest.isBlank()) {
+                    compressResultEvent.tryEmit(context.getString(R.string.sessionlist_compress_empty))
+                    return@launch
+                }
+
+                val marker = com.openminis.app.data.db.CompactMarkerEntity(
+                    id = java.util.UUID.randomUUID().toString(),
+                    sessionId = id,
+                    summary = digest,
+                    firstKeptSortOrder = Int.MAX_VALUE,
+                    compactedCount = rows.size,
+                    createdAt = System.currentTimeMillis(),
+                    uiBoundarySortOrder = null,
+                    boundaryMessageId = null,
+                    firstKeptMessageId = null,
+                    lastCompactedMessageId = anchorId,
+                    version = 2,
+                )
+                // One authoritative marker: drop any prior ones, then insert.
+                runCatching { chatRepository.dao.deleteCompactMarkers(id) }
+                    .onFailure { Log.w(TAG, "compress: clear old markers failed: ${it.message}") }
+                chatRepository.dao.insertCompactMarker(marker)
+
+                // [session-longpress-compress] Permanently delete the folded
+                // rows so the session actually SHRINKS on disk and opens fast —
+                // the digest (marker.summary) now carries their meaning, so the
+                // model never needs the raw rows again. Keep the anchor row
+                // (sort_order == anchor) so the marker's boundary still resolves
+                // and the verbatim "last exchange" stays visible in the UI. This
+                // is the user's explicit "окончательно удалить" request: it is
+                // irreversible, scoped to THIS session, and everything of value
+                // is preserved inside the digest (verbatim intent + tool ledger
+                // + identifiers/errors + last exchange).
+                val anchorSortOrder = rows.last().sortOrder
+                val deleted = runCatching {
+                    chatRepository.dao.deleteMessagesBefore(id, anchorSortOrder)
+                }.onFailure { Log.w(TAG, "compress: prune rows failed: ${it.message}") }
+                    .getOrDefault(0)
+
+                // Release the cached VM so a reopen reloads from DB and applies
+                // the new marker (an in-memory history would otherwise keep the
+                // uncompacted turns until process death).
+                ChatViewModelStore.release(id)
+
+                val beforeChars = rows.sumOf { it.partsJson.length }
+                val pct = if (beforeChars > 0) (100 - digest.length * 100 / beforeChars).coerceIn(0, 100) else 0
+                Log.i(TAG, "compress: session=$id rows=${rows.size} pruned=$deleted ${beforeChars}→${digest.length} chars (-$pct%)")
+                compressResultEvent.tryEmit(
+                    context.getString(R.string.sessionlist_compress_done, pct)
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "compress failed for $id: ${e.message}", e)
+                compressResultEvent.tryEmit(context.getString(R.string.sessionlist_compress_failed))
+            } finally {
+                withContext(Dispatchers.Main) { compressingIds.value = compressingIds.value - id }
+            }
+        }
+    }
+
+    fun togglePin(id: String) {        viewModelScope.launch {
             val session = chatRepository.getSession(id) ?: return@launch
             val newPinnedAt = if (session.pinnedAt != null) null else System.currentTimeMillis()
             chatRepository.dao.updatePinnedAt(id, newPinnedAt)

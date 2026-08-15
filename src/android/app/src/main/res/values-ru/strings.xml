@@ -351,6 +351,12 @@
     <string name="sessionlist_regenerate_title">Создать название заново</string>
     <string name="sessionlist_regenerating_title">Создание названия…</string>
     <string name="sessionlist_duplicate">Дублировать</string>
+    <!-- [session-longpress-compress] -->
+    <string name="sessionlist_compress">Сжать контекст</string>
+    <string name="sessionlist_compressing">Сжимаю…</string>
+    <string name="sessionlist_compress_done">Контекст сжат (−%1$d%%)</string>
+    <string name="sessionlist_compress_empty">В этой сессии нечего сжимать</string>
+    <string name="sessionlist_compress_failed">Не удалось сжать сессию</string>
     <string name="sessionlist_search_action">Поиск</string>
     <string name="sessionlist_dismiss">Закрыть</string>
     <string name="sessionlist_delete_one_title">Удалить разговор?</string>

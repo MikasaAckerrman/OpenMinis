@@ -43,13 +43,17 @@ import java.util.concurrent.ConcurrentHashMap
 object LlmDispatchGate {
 
     /**
-     * Max simultaneous LLM streams app-wide. 4 lets a couple of foreground
-     * chats plus a background agent run without the UI-jank cliff seen at
-     * double digits, while still allowing real parallelism. Read once when the
-     * semaphore is first touched (kotlinx Semaphore size is fixed at creation).
+     * Max simultaneous LLM streams app-wide. LLM streaming is network-I/O-bound,
+     * not CPU-bound: a waiting stream costs a socket + a lightweight reader
+     * coroutine, so running many at once barely touches CPU. The real cost of
+     * "many at once" is UI recomposition — but only the ONE foreground chat
+     * recomposes; background sessions stream through the headless path with no
+     * Compose work. So the cap is generous by design: it exists only to stop a
+     * pathological burst (20+), not to serialise the user's real parallel work.
+     * 10 concurrent code-writing sessions run unthrottled. See the class doc.
      */
     @Volatile
-    var maxConcurrentStreams: Int = 4
+    var maxConcurrentStreams: Int = 12
 
     /**
      * Default sustained requests-per-minute budget per host when we have no

@@ -549,6 +549,15 @@ class ChatViewModel(
 
     fun setInputText(value: String) {
         _inputText.value = value
+        // [crash-safe-draft] Mirror the composer to durable storage keyed by
+        // session id so a process kill (common on the oversized sessions this
+        // app handles) can't wipe text the user typed but hasn't sent. Cheap
+        // apply()'d write; cleared when blank. See DraftStore.
+        runCatching {
+            com.openminis.app.data.DraftStore.saveDraft(
+                context, realSessionId.ifEmpty { sessionId }, value,
+            )
+        }
     }
 
     /**
@@ -4128,6 +4137,10 @@ class ChatViewModel(
             // draft's flag has to follow the promotion or it would persist under
             // an id that no longer exists.
             AgentModePrefs.migrate(context, fromDraft = sessionId, toReal = session.id)
+            // [crash-safe-draft] Carry the composer draft / send-backup slots
+            // from the draft id to the real id so a failed first turn can still
+            // restore the user's text under the persisted session. See DraftStore.
+            com.openminis.app.data.DraftStore.migrate(context, fromSessionId = sessionId, toSessionId = session.id)
             // Bring every disk/shell resource that was opened with the draft
             // id over to the real id *before* agent tools start running against
             // the persisted session — otherwise the first tool call (e.g.
@@ -4600,6 +4613,24 @@ class ChatViewModel(
                 // missing-session path) and on exception, so the init-time
                 // config.collect can never deadlock waiting for us.
                 sessionLoaded.value = true
+                // [crash-safe-draft] Restore a durable composer draft (survives
+                // process death). Only when the in-memory composer is still
+                // empty so we never clobber text the user is already typing, and
+                // prefer the live draft; fall back to a send-backup left behind
+                // by a turn that failed before its terminal handler could
+                // restore it (e.g. a hard crash mid-stream). See DraftStore.
+                runCatching {
+                    val sid = realSessionId.ifEmpty { sessionId }
+                    if (_inputText.value.isEmpty()) {
+                        val draft = com.openminis.app.data.DraftStore.loadDraft(context, sid)
+                        val restore = draft.ifEmpty {
+                            com.openminis.app.data.DraftStore.peekLastSent(context, sid)
+                        }
+                        if (restore.isNotEmpty()) {
+                            withContext(Dispatchers.Main) { _inputText.value = restore }
+                        }
+                    }
+                }
                 // [T-HANG-DIAG] total time spent in loadSession from ENTER to
                 // either successful completion or early return. tHangDiagStart
                 // was captured just inside `try` so this covers the whole
@@ -6271,6 +6302,17 @@ class ChatViewModel(
         // inside the send button's tap closure).
         if (_hasInjectedShareContent.value) _hasInjectedShareContent.value = false
 
+        // [crash-safe-draft] Back up the text being sent. If this turn fails
+        // (rate limit / content filter / network / crash mid-stream) the
+        // terminal error path restores it into the composer so the user's words
+        // are never silently lost; a turn that finishes cleanly clears it. Uses
+        // `trimmed` — what actually goes to the model. See DraftStore.
+        runCatching {
+            com.openminis.app.data.DraftStore.markSent(
+                context, realSessionId.ifEmpty { sessionId }, trimmed,
+            )
+        }
+
         val initialProvider = currentProvider
         if (initialProvider == null) {
             _error.value = "No provider configured"
@@ -6537,6 +6579,13 @@ class ChatViewModel(
                             fallbackStrategy = activeFallbackStrategy,
                         )
                         AppLogger.info(TAG_STREAM, "send runAgentLoop RETURN normal")
+                        // [crash-safe-draft] Turn completed — drop the send
+                        // backup so it can't resurface. See DraftStore.
+                        runCatching {
+                            com.openminis.app.data.DraftStore.clearLastSent(
+                                context, realSessionId.ifEmpty { sessionId },
+                            )
+                        }
                         // Drain any prompts the user queued while this loop was running.
                         // Skipped on cancel: cancelled job won't reach here.
                         drainQueuedPrompts(provider, systemPrompt, fallbackProviders, activeFallbackStrategy)
@@ -6548,6 +6597,19 @@ class ChatViewModel(
                         AppLogger.error(TAG_STREAM, "send runAgentLoop EXCEPTION ${e.javaClass.simpleName}: ${e.message}")
                         Log.e(TAG, "Agent loop error (all fallbacks exhausted)", e)
                         setInlineError(withRescueHint(e.message ?: "Unknown error"))
+                        // [crash-safe-draft] The turn failed AND the composer
+                        // is empty (cleared on send). Restore the text the user
+                        // sent so it isn't silently lost — they can edit/resend
+                        // instead of retyping. Only when the composer is still
+                        // empty, so we never clobber something they've started
+                        // typing while the failing turn ran. See DraftStore.
+                        runCatching {
+                            val sid = realSessionId.ifEmpty { sessionId }
+                            val backup = com.openminis.app.data.DraftStore.peekLastSent(context, sid)
+                            if (backup.isNotEmpty() && _inputText.value.isEmpty()) {
+                                withContext(Dispatchers.Main) { setInputText(backup) }
+                            }
+                        }
                         // T298: completion notifier should show the ❌ variant.
                         SessionActivityTracker.markStreamError(activeSessionId)
                     } finally {
@@ -8240,15 +8302,36 @@ class ChatViewModel(
                             continue
                         }
                     }
+                    // [content-filter-misclassified-as-5xx] A moderation
+                    // rejection is a deterministic ProviderError (mapHttpError
+                    // already routes it there via ContentFilterDetection) — it
+                    // must NEVER be retried on the same provider. Detect it
+                    // explicitly so it can't sneak into the transient path.
+                    val isContentFilter = actual is com.openminis.app.data.model.LLMError.ProviderError &&
+                        com.openminis.app.provider.ContentFilterDetection.isContentFilterRejection(actual.detail)
+                    // is5xx: match ONLY the HTTP-status shapes mapHttpError
+                    // actually emits — "[502] …" or "HTTP 502: …". The old
+                    // bare-digit regex `[5][0-9]{2}` matched ANY "5 + two
+                    // digits" run anywhere in the detail, so a content-filter
+                    // rejection whose request-id happened to contain e.g.
+                    // "…0512…" was misclassified as a transient 5xx and retried
+                    // three times on the same key (user-visible "retrying
+                    // (2/3)" for a request that can never succeed there — even
+                    // after picking a backup model, because the retry never
+                    // reached fallback). Anchoring to the bracket/prefix form
+                    // keeps genuine 5xx retryable without matching id digits.
                     val is5xx = actual is com.openminis.app.data.model.LLMError.ProviderError &&
-                        actual.detail.contains(Regex("[5][0-9]{2}"))
+                        !isContentFilter &&
+                        actual.detail.contains(Regex("""(\[5\d{2}\]|HTTP\s+5\d{2})"""))
                     // Auto-retry on transient network/5xx/transient errors on the SAME provider
                     // before considering a fallback (mirrors iOS streamWithAutoRetry).
                     // Rate limits are provider-level signals that should trigger fallback immediately,
                     // not retry on the same provider.
-                    val isTransient = actual is com.openminis.app.data.model.LLMError.NetworkError ||
+                    val isTransient = !isContentFilter && (
+                        actual is com.openminis.app.data.model.LLMError.NetworkError ||
                         actual is com.openminis.app.data.model.LLMError.TransientError ||
                         is5xx
+                    )
                     if (isTransient && retryAttempt < AUTO_RETRY_DELAYS_SEC.size) {
                         val delaySec = AUTO_RETRY_DELAYS_SEC[retryAttempt]
                         retryAttempt += 1

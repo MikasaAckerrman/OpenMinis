@@ -174,6 +174,18 @@ interface ChatDao {
     suspend fun deleteMessagesAfter(sessionId: String, keepCount: Int)
 
     /**
+     * [session-longpress-compress] Delete every message row of a session whose
+     * sort_order is STRICTLY LESS than [beforeSortOrder]. Used to permanently
+     * shrink a compacted session: after a rescue digest is written, the folded
+     * rows are no longer sent to the model (the digest replaces them), so
+     * keeping them only bloats the DB and slows session open. The anchor row
+     * itself (sort_order == beforeSortOrder) is preserved so the compact
+     * marker's boundary still resolves and the last exchange stays visible.
+     */
+    @Query("DELETE FROM messages WHERE session_id = :sessionId AND sort_order < :beforeSortOrder")
+    suspend fun deleteMessagesBefore(sessionId: String, beforeSortOrder: Int): Int
+
+    /**
      * [T-message-surgery] Delete ONE message row, leaving everything after it
      * in place. Distinct from [deleteMessagesAfter], which is the retry/edit
      * "truncate the tail" primitive — here the user is removing a single turn
