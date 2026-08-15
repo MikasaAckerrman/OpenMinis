@@ -6,13 +6,13 @@
      paints a white window background, which then flashes through every
      in-app NavHost transition until the Composition catches up.
      Override here so `night` configurations land on a true dark base
-     theme: window background is the solid black we use for ChatColors
+     theme: window background is the soft #121212 we use for ChatColors
      dark `background`, status / nav bars stay translucent so the
      edge-to-edge theming in MainActivity continues to draw behind them. -->
 <resources>
     <style name="Theme.Minis" parent="android:Theme.Material.NoActionBar">
-        <item name="android:windowBackground">@android:color/black</item>
-        <item name="android:colorBackground">@android:color/black</item>
+        <item name="android:windowBackground">@color/minis_dark_window_bg</item>
+        <item name="android:colorBackground">@color/minis_dark_window_bg</item>
     </style>
 
     <!-- Dark counterpart of the windowless translation host. Same reasoning as

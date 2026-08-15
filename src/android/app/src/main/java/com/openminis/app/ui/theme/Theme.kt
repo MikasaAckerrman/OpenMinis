@@ -61,9 +61,12 @@ private val NeutralGroupedCard = Color(0xFFFFFFFF)
 private val NeutralGroupedCardElevated = Color(0xFFF7F7FA)
 private val NeutralOutline = Color(0xFFD1D1D6)
 
-private val NeutralDarkGroupedBg = Color(0xFF000000)
-private val NeutralDarkGroupedCard = Color(0xFF1C1C1E)
-private val NeutralDarkGroupedCardElevated = Color(0xFF2C2C2E)
+// Soft-dark rebuild: page floor lifted from #000 to the measured #121212;
+// grouped cards ride above it (#1E1E1E / #2A2A2A). Matches DarkChatPalette
+// so Settings / Providers / Chats share the same layered dark as the chat.
+private val NeutralDarkGroupedBg = Color(0xFF121212)
+private val NeutralDarkGroupedCard = Color(0xFF1E1E1E)
+private val NeutralDarkGroupedCardElevated = Color(0xFF2A2A2A)
 private val NeutralDarkOutline = Color(0xFF38383A)
 
 private val LightColorScheme = lightColorScheme(

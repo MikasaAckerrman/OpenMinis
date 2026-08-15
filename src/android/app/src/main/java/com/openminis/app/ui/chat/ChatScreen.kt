@@ -2133,45 +2133,71 @@ fun ChatScreen(
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                                     ) {
-                                        // [T-codex-fast-mode] ⚡ badge ahead of the
-                                        // resolved model name — small orange circle
-                                        // + white bolt, shown only while Fast Mode
-                                        // is enabled AND the active model is
-                                        // eligible (iOS 9e3c76ef row-3 placement,
-                                        // 09944220 9pt sizing).
-                                        val fastBadgeEligible by viewModel.showFastModeToggle.collectAsState()
-                                        val fastBadgeOn by viewModel.fastModeEnabled.collectAsState()
-                                        if (fastBadgeEligible && fastBadgeOn) {
-                                            Box(
-                                                contentAlignment = Alignment.Center,
-                                                modifier = Modifier
-                                                    .size(11.dp)
-                                                    .background(Color(0xFFFF9500), CircleShape),
-                                            ) {
+                                        // [T-model-chip] The resolved provider·model
+                                        // now renders as a real CHIP (bordered,
+                                        // rounded, filled) instead of bare text, so
+                                        // the active model reads as a distinct
+                                        // tappable control (user request: show the
+                                        // model "отдельной строкой/чипом"). Tap still
+                                        // bubbles to the Column's showModelPicker
+                                        // handler. Fast/thinking badges stay OUTSIDE
+                                        // the chip as separate siblings.
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                            modifier = Modifier
+                                                .weight(1f, fill = false)
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(ChatColors.toolCapsuleBg)
+                                                .border(
+                                                    1.dp,
+                                                    ChatColors.separator.copy(alpha = 0.5f),
+                                                    RoundedCornerShape(8.dp),
+                                                )
+                                                .padding(horizontal = 8.dp, vertical = 3.dp),
+                                        ) {
+                                            // ⚡ fast-mode badge stays leading INSIDE
+                                            // the chip, ahead of the model name.
+                                            val fastBadgeEligible by viewModel.showFastModeToggle.collectAsState()
+                                            val fastBadgeOn by viewModel.fastModeEnabled.collectAsState()
+                                            if (fastBadgeEligible && fastBadgeOn) {
+                                                Box(
+                                                    contentAlignment = Alignment.Center,
+                                                    modifier = Modifier
+                                                        .size(11.dp)
+                                                        .background(Color(0xFFFF9500), CircleShape),
+                                                ) {
+                                                    Icon(
+                                                        Icons.Default.Bolt,
+                                                        contentDescription = null,
+                                                        tint = Color.White,
+                                                        modifier = Modifier.size(9.dp),
+                                                    )
+                                                }
+                                            } else {
                                                 Icon(
-                                                    Icons.Default.Bolt,
+                                                    Icons.Default.Memory,
                                                     contentDescription = null,
-                                                    tint = Color.White,
-                                                    modifier = Modifier.size(9.dp),
+                                                    tint = ChatColors.secondaryText,
+                                                    modifier = Modifier.size(12.dp),
                                                 )
                                             }
+                                            Text(
+                                                text = if (providerName.isNotEmpty() && modelName.isNotEmpty()) {
+                                                    "$providerName · $modelName"
+                                                } else {
+                                                    modelName.ifEmpty { providerName }
+                                                },
+                                                fontSize = 11.sp,
+                                                lineHeight = 13.sp,
+                                                fontWeight = FontWeight.Medium,
+                                                color = ChatColors.secondaryText,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                style = noFontPad,
+                                                modifier = Modifier.weight(1f, fill = false),
+                                            )
                                         }
-                                        Text(
-                                            text = if (providerName.isNotEmpty() && modelName.isNotEmpty()) {
-                                                "$providerName · $modelName"
-                                            } else {
-                                                modelName.ifEmpty { providerName }
-                                            },
-                                            fontSize = 11.sp,
-                                            lineHeight = 13.sp,
-                                            color = ChatColors.tertiaryText,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                            style = noFontPad,
-                                            // Yield first when space is tight; the
-                                            // badge to the right stays intrinsic.
-                                            modifier = Modifier.weight(1f, fill = false),
-                                        )
                                         // Show the badge ONLY when the model can
                                         // think AND thinking is currently on:
                                         //   - availableThinkingLevels non-empty →
@@ -2278,6 +2304,22 @@ fun ChatScreen(
                                 },
                                 leadingIcon = {
                                     Icon(Icons.Outlined.Forum, contentDescription = null)
+                                },
+                            )
+                            MinisMenuDivider()
+                            // [T-model-picker-menu-entry] Choose Model — make
+                            // the picker discoverable from the "..." menu (user
+                            // report: "не вижу где выбран"). The top-bar chip
+                            // still opens the same sheet; this is the redundant,
+                            // labelled entry point.
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.chat_menu_choose_model)) },
+                                onClick = {
+                                    showChatMenu = false
+                                    showModelPicker = true
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.Default.Memory, contentDescription = null)
                                 },
                             )
                             MinisMenuDivider()

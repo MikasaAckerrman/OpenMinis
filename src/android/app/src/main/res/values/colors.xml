@@ -11,4 +11,12 @@
       can't resolve the app's ?attr tints.
     -->
     <color name="shortcut_icon_fg">#1F2933</color>
+    <!--
+      Soft-dark rebuild: the dark window/splash background must match the
+      Compose ChatColors dark `background` (#121212). Referenced from
+      values-night/themes.xml so the OS-painted first frame (cold start,
+      Activity recreation, NavHost cross-fades) lands on the same soft
+      dark as the app content instead of pure black flashing through.
+    -->
+    <color name="minis_dark_window_bg">#121212</color>
 </resources>

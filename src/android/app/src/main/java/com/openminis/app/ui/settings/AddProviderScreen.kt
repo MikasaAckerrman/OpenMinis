@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -78,6 +79,7 @@ import com.openminis.app.R
 import kotlinx.coroutines.launch
 import java.util.UUID
 import com.openminis.app.ui.components.MinisButton
+import com.openminis.app.ui.components.MinisSmallOutlinedButton
 import com.openminis.app.ui.components.RowLabel
 import com.openminis.app.ui.components.SectionTextField
 
@@ -406,6 +408,13 @@ private fun ConfigureProviderScreen(
     }
     var apiKey by remember { mutableStateOf("") }
     var customBaseURL by remember { mutableStateOf(voiceTemplate?.baseURL ?: "") }
+    // [T-provider-folder-on-create] Folder/group chosen at creation time.
+    // Empty == no folder (stored null). Mirrors ProviderDetailScreen's folder
+    // field so a provider can be filed into a group immediately instead of
+    // creating it ungrouped and editing afterwards (user request #1).
+    var folder by remember { mutableStateOf("") }
+    val existingFolders = com.openminis.app.data.model.ProviderFolders
+        .existingNames(config.instances)
 
     SettingsScaffold(
         title = stringResource(R.string.add_provider_configure_provider, providerType.displayName),
@@ -431,10 +440,45 @@ private fun ConfigureProviderScreen(
             }
         }
 
+        // [T-provider-folder-on-create] Folder / group picker, shown for BOTH
+        // credential types so a provider can be filed into a group at creation.
+        // Same widget vocabulary + strings as ProviderDetailScreen's folder
+        // editor (SettingsSection header/footer, provider_detail_folder*): a
+        // free-text field plus one-tap chips for folders that already exist.
+        SettingsSection(
+            header = stringResource(R.string.provider_detail_folder),
+            footer = stringResource(R.string.provider_detail_folder_footer),
+        ) {
+            SettingsCardBlock {
+                SectionTextField(
+                    value = folder,
+                    onValueChange = { folder = it },
+                    placeholder = stringResource(R.string.provider_detail_folder_placeholder),
+                    singleLine = true,
+                )
+                if (existingFolders.isNotEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        existingFolders.forEach { name ->
+                            MinisSmallOutlinedButton(onClick = { folder = name }) {
+                                Text(name)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         when (credentialType) {
             ProviderCredential.apiKey -> ApiKeyConfigSection(
                 providerType = providerType,
                 label = label,
+                folder = folder,
                 apiKey = apiKey,
                 onApiKeyChange = { apiKey = it },
                 customBaseURL = customBaseURL,
@@ -446,6 +490,7 @@ private fun ConfigureProviderScreen(
             ProviderCredential.oauth -> OAuthConfigSection(
                 providerType = providerType,
                 label = label,
+                folder = folder,
                 providerRepository = providerRepository,
                 onSaved = onSaved,
             )
@@ -459,6 +504,7 @@ private fun ConfigureProviderScreen(
 private fun ColumnScope.ApiKeyConfigSection(
     providerType: ProviderType,
     label: String,
+    folder: String,
     apiKey: String,
     onApiKeyChange: (String) -> Unit,
     customBaseURL: String,
@@ -602,6 +648,7 @@ private fun ColumnScope.ApiKeyConfigSection(
                 appendV1Suffix = appendV1Suffix,
                 // Only OpenAI-family providers expose the Responses API toggle.
                 useResponsesAPI = providerType == ProviderType.openAI && useResponsesAPI,
+                folder = folder.trim().ifBlank { null },
             )
             providerRepository.addInstance(instance)
             providerRepository.saveApiKey(instance.id, apiKey.trim())
@@ -622,6 +669,7 @@ private fun ColumnScope.ApiKeyConfigSection(
 private fun ColumnScope.OAuthConfigSection(
     providerType: ProviderType,
     label: String,
+    folder: String,
     providerRepository: ProviderRepository,
     onSaved: () -> Unit,
 ) {
@@ -702,6 +750,7 @@ private fun ColumnScope.OAuthConfigSection(
                     label = label.ifBlank { providerType.displayName },
                     providerType = providerType,
                     credentialType = ProviderCredential.oauth,
+                    folder = folder.trim().ifBlank { null },
                 )
                 providerRepository.addInstance(instance)
                 // Auto-refresh models (fetches from API or falls back to models.dev)
@@ -864,6 +913,7 @@ private fun ColumnScope.OAuthConfigSection(
                     credentialType = ProviderCredential.oauth,
                     customBaseURL = trimmedBase.ifEmpty { null },
                     appendV1Suffix = appendV1Suffix,
+                    folder = folder.trim().ifBlank { null },
                 )
                 providerRepository.addInstance(instance)
                 // Store the manual token as API key — ProviderFactory uses loadApiKey() for all credential types

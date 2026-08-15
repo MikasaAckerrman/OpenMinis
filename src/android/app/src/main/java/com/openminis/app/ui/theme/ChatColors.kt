@@ -95,49 +95,40 @@ val LightChatPalette = ChatPalette(
     fabAccent = Color(0xFFB7AF96),
 )
 
-// T153: Android-specific dark palette tweaks. iOS borrows the system
-// palette (#1C1C1E / #2C2C2E etc.) which reads as "layered dark grey"
-// on a 1000+ nit display, but on a typical Android phone (Pixel 6 ≈
-// 500 nits, mid-range OEMs even less) those layers crush together
-// into a single near-black wash and the user can't tell tool capsules
-// from background or input from message list. Lift the non-background
-// layers ~6-10% so the contrast survives the brightness gap; the pure
-// `background` itself stays #000 because every other color is keyed
-// to "darker than this".
+// T153 / soft-dark rebuild: measured from the reference screenshots the
+// app background is NOT pure black — it is a soft #121212 with a lifted
+// surface ramp (#1C1C1E section, #242424 icon well, #2A2A2A tool card,
+// #2C2C2C composer). Pure #000 crushed the layers together on ~500-nit
+// Android panels; #121212 keeps the same "layered dark grey" the iOS
+// system palette gives on OLED, while every non-background layer still
+// sits ABOVE the floor so contrast survives the brightness gap.
 val DarkChatPalette = ChatPalette(
     isDark = true,
-    background = Color(0xFF000000),
-    secondaryBg = Color(0xFF26262A),
-    inputBg = Color(0xFF2C2C30),
-    inputIconBg = Color(0xFF1C1C1E),
-    inputIconBorder = Color(0xFF595959),
+    background = Color(0xFF121212),
+    secondaryBg = Color(0xFF1C1C1E),
+    inputBg = Color(0xFF2C2C2C),
+    inputIconBg = Color(0xFF242424),
+    inputIconBorder = Color(0xFF3A3A3A),
     inputBorder = Color(0x40545458),
     primaryText = Color(0xFFFFFFFF),
     secondaryText = Color(0x99EBEBF5),
     tertiaryText = Color(0x4DEBEBF5),
     disabledText = Color(0x2EEBEBF5),
-    // [T-android-user-bubble-dark-contrast] The old 0x247676D7 was a 14%-alpha
-    // translucent blue-grey that washed out to near-invisible on the #000 chat
-    // background on real (≈500-nit) displays — exactly the "crush to a near-black
-    // wash" failure the palette header warns about. Use an OPAQUE cool slate-blue
-    // so the user's own messages read as a distinct accent; white primaryText
-    // stays legible on it.
-    userBubble = Color(0xFF2F3A5C),
-    toolBg = Color(0xFF3A3A3F),
+    // Measured user bubble on the reference is an OPAQUE mid-grey (#494949),
+    // right-aligned. Opaque (not the old translucent 0x24… that washed out)
+    // so it stays legible on the #121212 floor while matching the screenshot.
+    userBubble = Color(0xFF494949),
+    toolBg = Color(0xFF2A2A2A),
     toolBorder = Color(0x40545458),
-    toolCapsuleBg = Color(0xFF28282C),
+    toolCapsuleBg = Color(0xFF242424),
     separator = Color(0x99545458),
     sendButton = Color(0xFFFFFFFF),
     sendButtonDisabled = Color(0x2EEBEBF5),
-    codeBlockBg = Color(0xFF262626),
+    codeBlockBg = Color(0xFF1E1E1E),
     codeBlockText = Color(0xFF8CF38C),
-    // [T-inline-code-dark-bg-android] Lifted into the T153 ramp — the old
-    // #1C1C1E chip was invisible on the #000 chat background (the comment
-    // block above explains why non-background layers need the ~6-10% lift;
-    // this one was missed). #34343A sits between inputBg (#2C2C30) and
-    // toolBg (#3A3A3F), clearly above codeBlockBg (#262626) so small inline
-    // chips read against both the wash and fenced blocks.
-    inlineCodeBg = Color(0xFF34343A),
+    // Inline code chip sits between inputBg (#2C2C2C) and toolBg (#2A2A2A),
+    // clearly above codeBlockBg (#1E1E1E) and the #121212 floor.
+    inlineCodeBg = Color(0xFF343434),
     inlineCodeText = Color(0xFFFF9F0A),
     link = Color(0xFF0A84FF),
     blockquoteBar = Color(0x80FF9F0A),
@@ -148,7 +139,7 @@ val DarkChatPalette = ChatPalette(
     inputShadow = Color(0x80000000),
     toastBg = Color(0x2E0A84FF),
     thumbnailBorder = Color(0x20545458),
-    sheetHeaderBg = Color(0xFF2C2C2E),
+    sheetHeaderBg = Color(0xFF1F1F1F),
     sheetHeaderBorder = Color(0x33FFFFFF),
     fabAccent = Color(0xFF504C42),
 )
