@@ -3611,6 +3611,12 @@ fun ChatScreen(
                                     coroutineScope.launch { tracedScrollToItem("INLINE-RETRY-LAST", 0, 0) }
                                     safeMutate { viewModel.retryLast() }
                                 },
+                                // [429/content-filter fallback CTA] Take the user
+                                // straight to Model Groups so they add a backup
+                                // model instead of guessing where to go. The
+                                // banner shows this button only when the error
+                                // text is route-level (see ErrorFallbackHint).
+                                onAddFallback = { onModelGroupsClick() },
                             )
                             is FlatChatItem.AssistantLegacyContent -> BoundsTrackedBlock(
                                 messageId = item.messageId,

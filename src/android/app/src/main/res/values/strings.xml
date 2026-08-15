@@ -1179,6 +1179,10 @@
     <string name="enhanced_cache_dialog_confirm">Enable</string>
     <string name="chat_longpress_copy">Copy</string>
     <string name="chat_longpress_retry">Retry</string>
+    <!-- [429/content-filter fallback CTA] Shown on the inline error banner when
+         the failure is route-level (rate limit exhausted / gateway content
+         filter) and a backup model in the group would recover it. -->
+    <string name="chat_error_add_fallback">Add backup model</string>
     <string name="tool_longpress_rerun_from_here">Re-run from here</string>
     <string name="tool_longpress_copy_details">Copy tool details</string>
     <string name="tool_longpress_copied_toast">Tool details copied</string>

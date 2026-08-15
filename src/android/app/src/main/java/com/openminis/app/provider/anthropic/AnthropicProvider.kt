@@ -46,6 +46,10 @@ class AnthropicProvider(
     private val customUserAgent: String? = null,
 ) : LLMProvider {
     override val name = "Anthropic"
+
+    // [LlmDispatchGate] throttle key: pace by endpoint host (see OpenAIProvider).
+    override val throttleKey: String =
+        com.openminis.app.provider.LlmDispatchGate.keyForUrl(basePath)
     override val defaultMaxOutputTokens: Int get() = 64_000
 
     /**
@@ -90,17 +94,24 @@ class AnthropicProvider(
         tools: List<AgentToolDefinition>,
         thinkingLevel: ThinkingLevel,
     ): LLMResponse = withContext(Dispatchers.IO) {
+        // [429-concurrent-sessions] Direct-socket non-streaming path — the only
+        // gate for Anthropic's sendMessage. Pace against the per-host bucket and
+        // hold a stream permit for the request's duration. (Streaming is gated
+        // separately in LLMProvider.streamMessage.)
+        com.openminis.app.provider.LlmDispatchGate.awaitRateSlot(throttleKey)
+        com.openminis.app.provider.LlmDispatchGate.withStreamPermit {
         val body = buildRequestBody(messages, systemPrompt, maxTokens, stream = false, temperature = temperature, imageParts = imageParts, tools = tools, thinkingLevel = thinkingLevel)
         val request = buildRequest(body.toString(), body)
         val response = client.newCall(request).execute()
         val responseBody = response.body?.string() ?: ""
 
         if (!response.isSuccessful) {
-            throw mapHttpError(response.code, responseBody)
+            throw mapHttpError(response.code, responseBody, response.header("Retry-After"))
         }
 
         val json = JSONObject(responseBody)
         parseResponse(json)
+        }
     }
 
     override fun streamMessageClamped(
@@ -164,7 +175,7 @@ class AnthropicProvider(
                 )
             }
             android.util.Log.e("AnthropicProvider", "Stream failed: ${response.code} isOAuth=$isOAuth body=${errorBody.take(300)}")
-            throw mapHttpError(response.code, errorBody)
+            throw mapHttpError(response.code, errorBody, response.header("Retry-After"))
         }
 
         // Log successful request (debug builds only — see above)
@@ -1008,7 +1019,7 @@ class AnthropicProvider(
         )
     }
 
-    private fun mapHttpError(statusCode: Int, body: String): LLMError {
+    private fun mapHttpError(statusCode: Int, body: String, retryAfterHeader: String? = null): LLMError {
         if (statusCode == 401 || statusCode == 403) {
             // See QuotaErrorDetection: 403 covers both auth failure and
             // balance-too-low pre-charge rejection on relay gateways.
@@ -1019,7 +1030,11 @@ class AnthropicProvider(
             }
             return LLMError.InvalidApiKey()
         }
-        if (statusCode == 429) return LLMError.RateLimited()
+        if (statusCode == 429) {
+            return LLMError.RateLimited(
+                com.openminis.app.provider.RateLimitPolicy.parseRetryAfterMs(retryAfterHeader)
+            )
+        }
 
         val message = try {
             val json = JSONObject(body)

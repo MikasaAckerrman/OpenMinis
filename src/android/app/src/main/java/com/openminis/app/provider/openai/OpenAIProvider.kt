@@ -90,6 +90,12 @@ class OpenAIProvider private constructor(
 ) : LLMProvider {
     override val name = "OpenAI"
 
+    // [LlmDispatchGate] throttle key: pace by endpoint host so sessions sharing
+    // a provider self-limit against its RPM window; different hosts stay
+    // independent. basePath is already normalized (/v1 appended) at this point.
+    override val throttleKey: String =
+        com.openminis.app.provider.LlmDispatchGate.keyForUrl(basePath)
+
     /** API Key constructor (Chat Completions API by default; set useResponsesAPI=true for /v1/responses). */
     constructor(
         apiKey: String,
@@ -625,7 +631,7 @@ class OpenAIProvider private constructor(
                     )
                 )
             }
-            throw mapHttpError(response.code, errorBody)
+            throw mapHttpError(response.code, errorBody, response.header("Retry-After"))
         }
         if (com.openminis.app.BuildConfig.DEBUG) {
             com.openminis.app.debug.LLMRequestLog.add(
@@ -1342,7 +1348,7 @@ class OpenAIProvider private constructor(
                     "OpenAIProvider",
                     "[ModelUseRoute] images/generations HTTP $statusCode body=${responseBody.take(300)}",
                 )
-                throw mapHttpError(statusCode, responseBody)
+                throw mapHttpError(statusCode, responseBody, response.header("Retry-After"))
             }
 
             val json = try {
@@ -2788,7 +2794,7 @@ class OpenAIProvider private constructor(
         )
     }
 
-    private fun mapHttpError(statusCode: Int, body: String): LLMError {
+    private fun mapHttpError(statusCode: Int, body: String, retryAfterHeader: String? = null): LLMError {
         if (statusCode == 401 || statusCode == 403) {
             // Relays answer 403 for BOTH "credential rejected" and "balance
             // too low to pre-charge this request"; only the body separates
@@ -2801,7 +2807,11 @@ class OpenAIProvider private constructor(
             }
             return LLMError.InvalidApiKey()
         }
-        if (statusCode == 429) return LLMError.RateLimited()
+        if (statusCode == 429) {
+            return LLMError.RateLimited(
+                com.openminis.app.provider.RateLimitPolicy.parseRetryAfterMs(retryAfterHeader)
+            )
+        }
 
         val message = try {
             val json = JSONObject(body)

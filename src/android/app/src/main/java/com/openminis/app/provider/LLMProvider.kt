@@ -8,6 +8,7 @@ import com.openminis.app.data.model.LLMResponse
 import com.openminis.app.data.model.LLMStreamChunk
 import com.openminis.app.data.model.ThinkingLevel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 
 interface LLMProvider {
@@ -63,6 +64,14 @@ interface LLMProvider {
         messages, systemPrompt, maxTokens, temperature, imageParts, tools,
         clampThinkingLevel(thinkingLevel),
     )
+    // [429-concurrent-sessions] NOTE on where the gate lives: streaming is
+    // gated once in [streamMessage] (the single choke point all streams pass
+    // through). Non-streaming is NOT gated here at the interface, on purpose —
+    // OpenAI's sendMessageClamped delegates to streamMessage, so gating here
+    // too would take a permit twice in one coroutine (a deadlock if
+    // maxConcurrentStreams == 1). Instead the direct-socket providers
+    // (Anthropic, Gemini) gate inside their own sendMessageClamped, which is
+    // the actual network call for them. See gatedByDispatch + LlmDispatchGate.
 
     /** See [sendMessage] — the clamped, provider-implemented counterpart. */
     fun streamMessage(
@@ -76,7 +85,18 @@ interface LLMProvider {
     ): Flow<LLMStreamChunk> = streamMessageClamped(
         messages, systemPrompt, maxTokens, temperature, imageParts, tools,
         clampThinkingLevel(thinkingLevel),
-    )
+    ).gatedByDispatch(throttleKey)
+
+    /**
+     * Throttle bucket key for [LlmDispatchGate]. Provider RPM limits attach to
+     * the endpoint host, so keying on host makes sessions that share a
+     * provider pace each other while sessions on different providers stay
+     * independent. Overridden by each concrete provider to its request host;
+     * the default keeps a per-provider-name bucket so an un-overridden
+     * provider is still throttled (never collapses onto a single global bucket
+     * shared with everyone else).
+     */
+    val throttleKey: String get() = name
 
     /**
      * [T-android-thinking-level-arch] Provider implementations override THIS
@@ -158,5 +178,30 @@ fun Flow<LLMStreamChunk>.failOnSilentEmptyCompletion(providerName: String): Flow
             "$providerName: stream completed with no content and no finish reason — treating as transient upstream failure",
         )
         throw LLMError.TransientError("Server returned an empty response (connection dropped or upstream error)")
+    }
+}
+
+/**
+ * Admission control for an LLM stream: pace the request against the per-host
+ * token bucket, then hold one of the scarce global stream permits for the
+ * stream's lifetime. Both are enforced by [com.openminis.app.provider.LlmDispatchGate].
+ *
+ * Why wrap the Flow rather than gate at the call site: every provider's
+ * [LLMProvider.streamMessage] returns through here, so a single wrapper
+ * throttles ALL sessions (chat, agent-graph nodes, quick tests, model-use)
+ * without each caller remembering to. The gating runs inside [flow] so it
+ * executes lazily when the stream is actually collected — a Flow that's built
+ * but never collected consumes no rate budget and no permit.
+ *
+ * The rate wait happens BEFORE taking a stream permit so a request parked on
+ * the bucket isn't also squatting one of the few concurrency slots. The permit
+ * is released automatically when collection ends — normal completion, upstream
+ * error, or coroutine cancellation (a user cancelling the turn frees the slot
+ * immediately).
+ */
+fun Flow<LLMStreamChunk>.gatedByDispatch(throttleKey: String): Flow<LLMStreamChunk> = flow {
+    LlmDispatchGate.awaitRateSlot(throttleKey)
+    LlmDispatchGate.withStreamPermit {
+        emitAll(this@gatedByDispatch)
     }
 }

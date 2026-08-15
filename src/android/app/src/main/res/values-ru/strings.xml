@@ -955,6 +955,8 @@
     <string name="enhanced_cache_dialog_confirm">Включить</string>
     <string name="chat_longpress_copy">Копировать</string>
     <string name="chat_longpress_retry">Повторить</string>
+    <!-- [429/content-filter fallback CTA] -->
+    <string name="chat_error_add_fallback">Добавить запасную модель</string>
     <string name="tool_longpress_rerun_from_here">Перезапустить отсюда</string>
     <string name="tool_longpress_copy_details">Копировать сведения об инструменте</string>
     <string name="tool_longpress_copied_toast">Сведения об инструменте скопированы</string>

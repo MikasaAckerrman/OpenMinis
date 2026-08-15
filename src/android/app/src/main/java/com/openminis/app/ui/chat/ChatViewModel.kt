@@ -289,6 +289,16 @@ class ChatViewModel(
         private val AUTO_RETRY_DELAYS_SEC = intArrayOf(1, 2, 4)
 
         /**
+         * Max times a 429 is retried on the SAME provider (Retry-After aware)
+         * once the model group has no remaining fallback to jump to. Bounded so
+         * a persistently rate-limited key can't wedge a turn forever — after
+         * this it surfaces the error normally. Fallback (when available) still
+         * takes priority; this is the last-resort pacing for single-model groups
+         * under concurrent load, which is exactly when 429 shows up.
+         */
+        private const val MAX_RATE_LIMIT_RETRIES = 3
+
+        /**
          * Factory for use with `viewModel(factory = ...)`. Binds the ChatViewModel
          * to a NavBackStackEntry's ViewModelStore so the streaming job survives
          * configuration changes (rotation) and re-entering the chat screen while
@@ -7838,6 +7848,7 @@ class ChatViewModel(
             // so we catch at collect level and unwrap.
             var collectDone = false
             var retryAttempt = 0  // per-turn auto-retry counter (resets on each new turn)
+            var rateLimitAttempt = 0  // per-turn 429 backoff counter (Retry-After aware)
             var quotaBackoffAttempt = 0
             while (!collectDone) {
                 try {
@@ -8354,6 +8365,62 @@ class ChatViewModel(
                         withContext(Dispatchers.Main) { _isStreaming.value = true }
                         clearInlineError()
                         continue
+                    }
+                    // [429-concurrent-sessions] A rate limit under concurrent
+                    // load: prefer jumping to a fallback model (instant, no
+                    // wait). But when the group has NO remaining fallback — the
+                    // common single-model-group case, which is exactly where a
+                    // burst of parallel sessions piles onto one key and trips
+                    // 429 — waiting out the provider's window on the same
+                    // provider beats stranding the turn. Honour the server's
+                    // Retry-After when present, else a bounded local backoff.
+                    if (isRateLimit && remainingFallbacks.isEmpty() &&
+                        rateLimitAttempt < MAX_RATE_LIMIT_RETRIES
+                    ) {
+                        val retryAfterMs = (actual as? com.openminis.app.data.model.LLMError.RateLimited)?.retryAfterMs
+                        val waitMs = com.openminis.app.provider.RateLimitPolicy
+                            .waitMsForAttempt(rateLimitAttempt, retryAfterMs)
+                        rateLimitAttempt += 1
+                        Log.w(TAG, "⏳ Rate limited on ${currentProvider.model.displayName}, backoff ${waitMs}ms (retry $rateLimitAttempt/$MAX_RATE_LIMIT_RETRIES, retryAfter=${retryAfterMs ?: "none"})")
+                        withContext(Dispatchers.Main) {
+                            _autoRetryAttempt.value = rateLimitAttempt
+                            setTransientInlineError("Rate limited — retrying ($rateLimitAttempt/$MAX_RATE_LIMIT_RETRIES)…")
+                        }
+                        try {
+                            var remainingMs = waitMs
+                            while (remainingMs > 0) {
+                                _autoRetryCountdown.value = ((remainingMs + 999) / 1000).toInt()
+                                val step = kotlin.math.min(1000L, remainingMs)
+                                kotlinx.coroutines.delay(step)
+                                remainingMs -= step
+                            }
+                        } finally {
+                            _autoRetryCountdown.value = 0
+                            _autoRetryAttempt.value = 0
+                        }
+                        withContext(Dispatchers.Main) { clearInlineError() }
+                        // Roll back this turn's partial blocks (same as the
+                        // transient-retry path) so the retried stream doesn't
+                        // double-append on stale content.
+                        if (allToolBlocks.size > turnStartBlockIndex) {
+                            while (allToolBlocks.size > turnStartBlockIndex) {
+                                allToolBlocks.removeAt(allToolBlocks.size - 1)
+                            }
+                            withContext(Dispatchers.Main) {
+                                updateAssistantMessage(assistantId, accumulatedText + turnTextSb.toString(), true, allToolBlocks)
+                            }
+                        }
+                        turnTextSb.setLength(0)
+                        currentTextBlockSb = null
+                        turnTextBlockIdx = -1
+                        turnThinking.clear()
+                        toolCalls.clear()
+                        pendingChunkSb.setLength(0)
+                        lastUiUpdateMs = 0L
+                        lastFlushedLen = 0
+                        lastFileToolInputMs = 0L
+                        lastOtherToolInputMs = 0L
+                        continue  // retry same provider after backoff
                     }
                     val shouldFallback = isRateLimit || is5xx ||
                         fallbackStrategy == com.openminis.app.data.model.FallbackStrategy.always

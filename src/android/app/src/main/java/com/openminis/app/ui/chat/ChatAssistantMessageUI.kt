@@ -499,9 +499,20 @@ internal fun BoundsTrackedBlock(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-internal fun InlineErrorBanner(error: String, onRetry: (() -> Unit)? = null) {
+internal fun InlineErrorBanner(
+    error: String,
+    onRetry: (() -> Unit)? = null,
+    // [429/content-filter fallback CTA] When non-null AND the error is a
+    // route-level failure a backup model would fix, the banner shows a second
+    // button that takes the user straight to Model Groups instead of leaving
+    // them to guess where to add a fallback. Null on screens with no such
+    // navigation target (the button is simply omitted).
+    onAddFallback: (() -> Unit)? = null,
+) {
     val clipboard = LocalClipboardManager.current
-    Row(
+    val showFallbackCta = onAddFallback != null &&
+        com.openminis.app.provider.ErrorFallbackHint.suggestsAddingFallback(error)
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(top = 4.dp)
@@ -514,42 +525,71 @@ internal fun InlineErrorBanner(error: String, onRetry: (() -> Unit)? = null) {
                 },
             )
             .padding(horizontal = 10.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(
-            imageVector = Icons.Default.Error,
-            contentDescription = null,
-            tint = Color(0xFFFF3B30),
-            modifier = Modifier.size(14.dp),
-        )
-        Spacer(modifier = Modifier.width(8.dp))
-        Text(
-            text = error,
-            color = Color(0xFFFF3B30),
-            fontSize = 12.sp,
-            lineHeight = 16.sp,
-            maxLines = 3,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
-        )
-        if (onRetry != null) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                imageVector = Icons.Default.Error,
+                contentDescription = null,
+                tint = Color(0xFFFF3B30),
+                modifier = Modifier.size(14.dp),
+            )
             Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = error,
+                color = Color(0xFFFF3B30),
+                fontSize = 12.sp,
+                lineHeight = 16.sp,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            if (onRetry != null) {
+                Spacer(modifier = Modifier.width(8.dp))
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(Color(0xFFFF3B30).copy(alpha = 0.15f))
+                        .clickable(onClick = onRetry)
+                        .padding(horizontal = 10.dp, vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = null,
+                        tint = Color(0xFFFF3B30),
+                        modifier = Modifier.size(10.dp),
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(stringResource(R.string.chat_longpress_retry), color = Color(0xFFFF3B30), fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+        // Second row: the "Add backup model" shortcut, only when the error is
+        // route-level and a navigation target exists. Full-width tappable pill
+        // so it reads as a primary next-step, not a tucked-away link.
+        if (showFallbackCta) {
+            Spacer(modifier = Modifier.height(6.dp))
             Row(
                 modifier = Modifier
                     .clip(RoundedCornerShape(50))
                     .background(Color(0xFFFF3B30).copy(alpha = 0.15f))
-                    .clickable(onClick = onRetry)
-                    .padding(horizontal = 10.dp, vertical = 3.dp),
+                    .clickable(onClick = onAddFallback!!)
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Icon(
-                    imageVector = Icons.Default.Refresh,
+                    imageVector = Icons.Default.Add,
                     contentDescription = null,
                     tint = Color(0xFFFF3B30),
-                    modifier = Modifier.size(10.dp),
+                    modifier = Modifier.size(11.dp),
                 )
                 Spacer(modifier = Modifier.width(4.dp))
-                Text(stringResource(R.string.chat_longpress_retry), color = Color(0xFFFF3B30), fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                Text(
+                    stringResource(R.string.chat_error_add_fallback),
+                    color = Color(0xFFFF3B30),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
             }
         }
     }
