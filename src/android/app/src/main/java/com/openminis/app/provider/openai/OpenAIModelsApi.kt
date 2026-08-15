@@ -109,12 +109,34 @@ object OpenAIModelsApi {
         }
 
         val models = try {
-            val json = JSONObject(body)
-            val data = json.optJSONArray("data") ?: return@withContext fallback
+            // Relays are inconsistent about the envelope: OpenAI uses
+            // {"data":[…]}, but some new-api/one-api forks (and gorouter.app)
+            // return {"models":[…]} or even a bare top-level array. Accept all
+            // three so a valid response isn't discarded as "no data".
+            val data: JSONArray = run {
+                val trimmed = body.trimStart()
+                if (trimmed.startsWith("[")) {
+                    JSONArray(trimmed)
+                } else {
+                    val json = JSONObject(body)
+                    json.optJSONArray("data")
+                        ?: json.optJSONArray("models")
+                        ?: return@withContext fallback
+                }
+            }
             val parsed = mutableListOf<LLMModel>()
             for (i in 0 until data.length()) {
-                val obj = data.getJSONObject(i)
-                val id = obj.getString("id")
+                val obj = data.optJSONObject(i) ?: continue
+                // [gorouter-models-no-refresh] Use optString, NOT getString.
+                // getString throws when an entry has no "id", and the throw
+                // escapes to the outer catch which returns `fallback` — for a
+                // custom base that's an EMPTY list, so a single malformed row
+                // in the relay's response silently dropped the ENTIRE model
+                // list and the UI showed "no update". Relays like gorouter.app
+                // sometimes include non-model rows (pricing/meta objects) with
+                // no id; skip those individually instead of discarding all.
+                val id = obj.optString("id", "")
+                if (id.isEmpty()) continue
 
                 // Only filter by chat prefixes for official OpenAI endpoints;
                 // custom endpoints (vLLM, Ollama) may serve any model ID.
