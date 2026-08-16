@@ -628,4 +628,52 @@ internal object HeadlessChatRunner {
         val timedOut: Boolean,
         val error: String?,
     )
+
+    /**
+     * [model-compaction] Result of [compactViaModel] — a small, UI-friendly
+     * shape so callers (SessionListViewModel) don't depend on RPC types.
+     */
+    data class ModelCompactResult(
+        val ok: Boolean,
+        val summaryLength: Int,
+        val error: String?,
+    )
+
+    /**
+     * [model-compaction] Compact a session's context USING THE MODEL, driven
+     * from outside the chat screen (the session-list long-press action).
+     *
+     * Why this exists: the list action used to build a local digest and then
+     * permanently prune rows. The user rejected that — a local algorithm cannot
+     * preserve what a model can, and the prune made it irreversible. This routes
+     * the list action through the exact same path as the in-chat `/compact`
+     * (ChatViewModel.runCompactNow → compactAll → hierarchical
+     * split-and-summarize with model fallbacks), so:
+     *   - the summary is written by a model, in parts when the history is big;
+     *   - the raw rows stay on disk (reversible via "Revert compact");
+     *   - a size-rejecting gateway is handled by the splitter, not by giving up.
+     *
+     * Waits for the compaction to finish so the caller can report a real
+     * before/after to the user. Never throws: every failure is returned.
+     */
+    suspend fun compactViaModel(
+        context: Context,
+        sessionId: String,
+        timeoutMs: Long,
+    ): ModelCompactResult = try {
+        val result = compact(
+            context = context,
+            sessionId = sessionId,
+            wait = true,
+            timeoutMs = timeoutMs,
+        )
+        val summary = result.summary
+        ModelCompactResult(
+            ok = result.status == "Completed" && !summary.isNullOrBlank(),
+            summaryLength = summary?.length ?: 0,
+            error = result.error ?: result.status.takeIf { it != "Completed" },
+        )
+    } catch (e: Exception) {
+        ModelCompactResult(ok = false, summaryLength = 0, error = e.message ?: e.javaClass.simpleName)
+    }
 }

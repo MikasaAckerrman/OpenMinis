@@ -2849,6 +2849,7 @@ class OpenAIProvider private constructor(
                 lower.contains("no upstream account") ||
                 lower.contains("no upstream") ||
                 lower.contains("no available channel") ||
+                lower.contains("nodes exhausted") ||
                 lower.contains("no_channel")
             if (statusCode == 503 && permanent503) {
                 return LLMError.ProviderError(message)

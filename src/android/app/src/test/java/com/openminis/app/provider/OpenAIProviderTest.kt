@@ -357,8 +357,24 @@ class OpenAIProviderTest {
     }
 
     @Test
-    fun `generic 503 without permanent marker stays transient`() = runBlocking {
-        // A plain server hiccup should still be retried on the same provider.
+    fun `503 all nodes exhausted routes to ProviderError`() = runBlocking {
+        // Same class as "no upstream account": the relay has no working node for
+        // this model, so retrying the SAME gateway is doomed. User report:
+        // "Transient error: [503] all nodes exhausted; retry later".
+        val body = """{"error":{"message":"all nodes exhausted; retry later"}}"""
+        server.enqueue(MockResponse().setResponseCode(503).setBody(body))
+        try {
+            provider.sendMessage(listOf(LLMMessage(LLMMessage.Role.USER, "test")), null, 100)
+        } catch (e: LLMError.ProviderError) {
+            return@runBlocking
+        } catch (e: LLMError) {
+            throw AssertionError("Expected ProviderError, got ${e.javaClass.simpleName}: ${e.message}")
+        }
+        throw AssertionError("Expected ProviderError")
+    }
+
+    @Test
+    fun `generic 503 without permanent marker stays transient`() = runBlocking {        // A plain server hiccup should still be retried on the same provider.
         server.enqueue(MockResponse().setResponseCode(503).setBody("""{"error":{"message":"temporary overload"}}"""))
         try {
             provider.sendMessage(listOf(LLMMessage(LLMMessage.Role.USER, "test")), null, 100)
