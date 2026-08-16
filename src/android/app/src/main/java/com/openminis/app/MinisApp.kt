@@ -528,6 +528,21 @@ class MinisApp : Application(), ImageLoaderFactory {
                 foregroundActivityCount++
                 if (wasBackgrounded) {
                     _isAppForegroundFlow.value = true
+                    // [T-android-stale-conn-fg-evict] Evict the shared LLM
+                    // connection pool the instant we return to the foreground,
+                    // BEFORE the user can fire the first request. A background
+                    // stint can silently kill the h2 tunnel (VPN/proxy socket to
+                    // localhost survives the flap, so no NetworkCallback fires
+                    // and the pool is never evicted). The first post-resume
+                    // request then writes into the dead tunnel and hangs the
+                    // full TTFB watchdog window ("no response from server (30s)"
+                    // — the exact symptom users hit re-entering a chat). Evicting
+                    // only closes IDLE connections and marks in-flight ones for
+                    // eviction once idle, so a still-streaming request is never
+                    // interrupted — worst case a fresh connection is opened.
+                    runCatching {
+                        com.openminis.app.network.NetworkMonitor.sharedLLMConnectionPool.evictAll()
+                    }
                     com.openminis.app.logging.AppLogger.info(
                         "BgDiag",
                         "app -> FOREGROUND, active sessions=" +
