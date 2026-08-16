@@ -7441,6 +7441,26 @@ class ChatViewModel(
     }
 
     /**
+     * [model-compaction] True when the raw history is large enough that a
+     * gateway "content-blocked" rejection is plausibly a SIZE filter rather
+     * than a genuine moderation hit. Used to decide whether a mid-loop
+     * content-filter rejection is worth a shrink-and-retry (big payload) or
+     * should surface / fall back immediately (small payload → really moderation,
+     * shrinking won't help). The threshold is a fraction of the model's context
+     * window so it scales with the model; falls back to a conservative absolute
+     * floor when the window is unknown.
+     */
+    private fun isRawHistoryLarge(): Boolean {
+        val tokens = estimateRawHistoryTokens()
+        val window = effectiveContextWindowTokens()?.takeIf { it > 0 }
+        // Half the window is "large enough that size is a credible cause".
+        // Absolute floor 24k covers unknown-window relays where a big payload
+        // still trips a size filter well before any real context limit.
+        val threshold = window?.let { it / 2 } ?: 24_000
+        return tokens >= minOf(threshold, 24_000).coerceAtLeast(8_000)
+    }
+
+    /**
      * Approximate token count for a single agent content part. Used to rank
      * offload candidates by size. Matches iOS `BPETokenizer.countPartTokens`
      * — text uses BPE, images use the grid-cell heuristic.
@@ -7786,10 +7806,11 @@ class ChatViewModel(
         // AIChatViewModel.didInjectEmptyToolReminderThisRun.
         var didInjectEmptyToolReminder = false
         // [T-recover-context-full-mid-loop] One-shot: the provider reported a
-        // full context window mid-loop, we compressed on-device and retried.
-        // A second occurrence means shrinking did not help, so the error is
-        // surfaced instead of looping.
-        var didRescueForContextFull = false
+        // full context window (or a gateway size-filter rejection) mid-loop, we
+        // compressed via the MODEL and retried. A second occurrence means
+        // shrinking did not help, so the error is surfaced / falls back instead
+        // of looping.
+        var didCompactForOversize = false
         for (turn in 0 until MAX_AGENT_TURNS) {
             // Sanitize history before each API call (mirrors iOS pre-API validation)
             sanitizeAgentHistory()
@@ -8411,38 +8432,48 @@ class ChatViewModel(
                     // flash of the stale banner.
                     withContext(Dispatchers.Main) { clearInlineError() }
                     // [T-recover-context-full-mid-loop] "Context window is
-                    // full" mid-loop is recoverable and MUST be handled here.
-                    // Falling back to another model does not help — the payload
-                    // is too big for any of them — and throwing strands the
-                    // session: the user is told to reduce history by an app that
-                    // has a compressor built in. So shrink and retry the same
-                    // turn once. Bounded by a one-shot flag: if it happens again
-                    // after a rescue, the payload is not the problem and the
-                    // error surfaces normally.
-                    val isContextFull = isContextTooLargeError(actual)
-                    if (isContextFull && !didRescueForContextFull) {
-                        didRescueForContextFull = true
+                    // full" OR a gateway size-filter rejection ("content-blocked"
+                    // when the payload is simply too big) mid-loop is recoverable
+                    // and MUST be handled here. Falling back to another model does
+                    // not help when the payload itself is too big — it is too big
+                    // for all of them — and throwing strands the session. So we
+                    // shrink and retry the same turn once.
+                    //
+                    // [model-compaction] The user explicitly rejected the local
+                    // digest: it drops detail no dumb algorithm can preserve.
+                    // Shrink via the MODEL instead (compactAll → the same
+                    // hierarchical split-and-summarize used by /compact), which
+                    // keeps meaning while cutting size. Only if the model route
+                    // is itself unavailable does compactAll internally fall back
+                    // to the local digest — that is a last resort, not the
+                    // default. Bounded by a one-shot flag: a second oversize
+                    // after a compact means shrinking did not help, so the error
+                    // surfaces / falls back normally.
+                    val isOversize = isContextTooLargeError(actual) ||
+                        (isContentFilter && isRawHistoryLarge())
+                    if (isOversize && !didCompactForOversize) {
+                        didCompactForOversize = true
                         AppLogger.warning(
                             TAG,
-                            "[Maintenance] provider says the context is full mid-loop — " +
-                                "compressing on-device and retrying this turn",
+                            "[Maintenance] oversize payload mid-loop (contextFull=${isContextTooLargeError(actual)} " +
+                                "contentFilterBig=$isContentFilter) — compacting via model and retrying this turn",
                         )
                         withContext(Dispatchers.Main) {
                             appendSystemInfo(
                                 text = context.getString(R.string.maintenance_context_full_retry),
                                 iconKind = "compact",
                             )
-                            // Runs on Main and publishes maintenanceJob; the
-                            // join below waits for it. rescueCompactNow needs
-                            // isStreaming=false to start, so drop the flag for
-                            // the duration and restore it after — the turn is
-                            // still ours, we are not ending it.
+                            // compactAll needs isStreaming=false to start, so
+                            // drop the flag for the duration and restore it
+                            // after — the turn is still ours, we are not ending
+                            // it. compactAll publishes maintenanceJob; the join
+                            // below waits for it.
                             _isStreaming.value = false
-                            rescueCompactNow()
+                            compactAll()
                         }
                         maintenanceJob?.let { job ->
                             runCatching { job.join() }
-                                .onFailure { AppLogger.warning(TAG, "rescue join failed: ${it.message}") }
+                                .onFailure { AppLogger.warning(TAG, "compact join failed: ${it.message}") }
                             maintenanceJob = null
                         }
                         withContext(Dispatchers.Main) { _isStreaming.value = true }
