@@ -2838,7 +2838,19 @@ class OpenAIProvider private constructor(
                 )
             }
             // 503 with permanent failure indicators → ProviderError (trigger group fallback)
-            if (statusCode == 503 && (body.contains("no_available_providers") || body.contains("model_not_found"))) {
+            // "no upstream account available" / "no_channel" mean the relay has
+            // no upstream provider with credit for this model — retrying the SAME
+            // gateway is three doomed round-trips (user saw "[503] No upstream
+            // account available — retrying (2/3)"), so route to fallback like the
+            // other permanent-shape 503s.
+            val lower = body.lowercase()
+            val permanent503 = lower.contains("no_available_providers") ||
+                lower.contains("model_not_found") ||
+                lower.contains("no upstream account") ||
+                lower.contains("no upstream") ||
+                lower.contains("no available channel") ||
+                lower.contains("no_channel")
+            if (statusCode == 503 && permanent503) {
                 return LLMError.ProviderError(message)
             }
             return LLMError.TransientError(message)
