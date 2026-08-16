@@ -25,6 +25,11 @@ object SessionActivityTracker {
 
     private const val TAG = "SessionTracker"
 
+    // All active/present mutations and the corresponding FGS decision run
+    // under this object's monitor (@Synchronized methods below). Stream jobs
+    // finish on different IO threads; a plain StateFlow read-modify-write can
+    // lose a session id, then stop the service while that session is still live.
+
     private val _activeSessions = MutableStateFlow<Set<String>>(emptySet())
     val activeSessions: StateFlow<Set<String>> = _activeSessions.asStateFlow()
 
@@ -290,6 +295,7 @@ object SessionActivityTracker {
      * loop's cancel callback — captured here so the notification's Stop
      * action can fan out to every running session.
      */
+    @Synchronized
     fun setActive(sessionId: String, onStop: (() -> Unit)? = null) {
         val wasIdle = !shouldRunService()
         _activeSessions.value = _activeSessions.value + sessionId
@@ -319,6 +325,7 @@ object SessionActivityTracker {
      * sessions remain active *and* the user is no longer present in any
      * chat.
      */
+    @Synchronized
     fun setInactive(sessionId: String) {
         val wasActive = sessionId in _activeSessions.value
         _activeSessions.value = _activeSessions.value - sessionId
@@ -400,6 +407,7 @@ object SessionActivityTracker {
      * at adj=200 across Home / app-switcher / lock-screen, even when no
      * stream is in flight.
      */
+    @Synchronized
     fun setPresent(sessionId: String) {
         if (sessionId in _presentSessions.value) return
         val wasIdle = !shouldRunService()
@@ -418,6 +426,7 @@ object SessionActivityTracker {
      * MainActivity when the user leaves the chat route or the Activity
      * is paused.
      */
+    @Synchronized
     fun setAbsent(sessionId: String) {
         if (sessionId !in _presentSessions.value) return
         _presentSessions.value = _presentSessions.value - sessionId
@@ -436,6 +445,7 @@ object SessionActivityTracker {
      * pinned at adj=200 across the user's brief absence. Backgrounding
      * is the entire scenario this exists to protect against.
      */
+    @Synchronized
     fun clearPresence() {
         if (_presentSessions.value.isEmpty()) return
         _presentSessions.value = emptySet()
@@ -482,6 +492,7 @@ object SessionActivityTracker {
      * below so the notification can render a tool-specific icon and
      * progress indicator.
      */
+    @Synchronized
     fun updateToolStatus(status: String) {
         _currentToolStatus.value = status
         if (_activeSessions.value.isNotEmpty()) {
@@ -506,6 +517,7 @@ object SessionActivityTracker {
      * static per-tool label ("Browser"). Pass null/blank to fall back to
      * the per-tool label (existing behavior).
      */
+    @Synchronized
     fun updateToolStatus(status: String, toolName: String?, isRunning: Boolean, toolTitle: String?) {
         _currentToolStatus.value = status
         _currentToolName.value = toolName
@@ -527,6 +539,7 @@ object SessionActivityTracker {
      * SUCCESS/FAILED/TIMEOUT/CANCELLED so the notification stops
      * showing an active progress bar.
      */
+    @Synchronized
     fun clearToolRunning(outcome: ToolOutcome = ToolOutcome.Unknown) {
         if (!_isToolRunning.value && _currentToolName.value == null) return
         // Snapshot identity + status before wiping the live values so the
@@ -613,6 +626,18 @@ object SessionActivityTracker {
                 ctx?.getString(com.openminis.app.R.string.notif_in_session) ?: "In session"
             else -> "Idle"
         }
+    }
+
+    @Synchronized
+    internal fun resetForTest() {
+        _activeSessions.value = emptySet()
+        _presentSessions.value = emptySet()
+        synchronized(streamCancellers) { streamCancellers.clear() }
+        synchronized(pendingErrorFlag) { pendingErrorFlag.clear() }
+        synchronized(pendingCancelFlag) { pendingCancelFlag.clear() }
+        completionListener = null
+        turnEndListener = null
+        appContext = null
     }
 
     private fun stopService() {

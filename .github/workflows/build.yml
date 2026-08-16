@@ -102,6 +102,7 @@ jobs:
             --tests 'com.openminis.app.ui.chat.AgentModePrefsTest' \
             --tests 'com.openminis.app.offload.AgentRunProgressTest' \
             --tests 'com.openminis.app.ui.chat.ChatHistoryWindowTest' \
+            --tests 'com.openminis.app.service.SessionActivityTrackerConcurrencyTest' \
             --tests 'com.openminis.app.ui.chat.MinisTextKitSelectionOrderTest'
         # `offload.*` already covers AgentArtifactStoreTest — the artifact store
         # lives in that package on purpose, next to the runner that uses it.
