@@ -3484,8 +3484,21 @@ class ChatViewModel(
             throw e
         } catch (e: Exception) {
             val msg = e.message ?: e.toString()
+            // [model-compaction] A gateway content-filter / "content-blocked"
+            // rejection on the compaction request itself is almost always a
+            // SIZE filter, not real moderation: the input is a transcript of an
+            // oversized history, and the relay rejects big bodies before the
+            // model. The screenshot report ("Compaction failed: the gateway's
+            // content filter rejected this request") is exactly this. So treat
+            // it like a too-large error — split smaller and retry — instead of
+            // giving up. Bounded by the same depth cap, so a genuine moderation
+            // hit (which survives every split) still terminates and surfaces.
+            val contentFilteredWhenSplittable =
+                com.openminis.app.provider.ContentFilterDetection.isContentFilterRejection(msg) &&
+                    messages.size >= 2
             val worthSplitting = isContextTooLargeError(e) ||
-                com.openminis.app.data.RescueAdvisor.isVagueTransportFailure(msg)
+                com.openminis.app.data.RescueAdvisor.isVagueTransportFailure(msg) ||
+                contentFilteredWhenSplittable
             if (!worthSplitting || messages.size < 2 || depth >= 3) {
                 throw e
             }
@@ -3493,6 +3506,7 @@ class ChatViewModel(
                 TAG,
                 "[Compact] split trigger: explicitSize=${isContextTooLargeError(e)} " +
                     "vagueTransport=${com.openminis.app.data.RescueAdvisor.isVagueTransportFailure(msg)} " +
+                    "contentFilteredWhenSplittable=$contentFilteredWhenSplittable " +
                     "depth=$depth msg=${msg.take(120)}",
             )
             val mid = messages.size / 2
