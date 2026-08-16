@@ -75,6 +75,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -203,18 +204,6 @@ class ChatViewModel(
         // [T-android-stream-flush-dualpath] Newline fast-path thresholds (iOS parity).
         private const val NEWLINE_FLUSH_MIN_CHARS = 50
         private const val NEWLINE_FLUSH_MAX_LEN = 5_000
-        // [T-android-larky-longsession-followup] see uiMessages / hasOlderMessages.
-        /** Tail window size used by [uiMessages] when a session exceeds it. */
-        const val INITIAL_VISIBLE_MESSAGE_CAP: Int = 200
-        /** Each "load older" tap grows the cap by this many messages. */
-        const val VISIBLE_MESSAGE_CAP_STEP: Int = 100
-        /**
-         * Sessions with this many or fewer messages bypass the windowing
-         * machinery entirely — the derived `uiMessages` returns the same
-         * list reference as `messages`, so Compose sees identity-equal
-         * snapshots and the existing flat/stream pipeline is untouched.
-         */
-        const val LONG_SESSION_THRESHOLD: Int = 300
         // T258: tool block statuses with no committed tool_result. retryLast()
         // drops blocks in any of these states because they would orphan the
         // assistant tool_use entry on retry (the API rejects unmatched
@@ -333,97 +322,79 @@ class ChatViewModel(
     private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
     val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
 
-    // ── Long-session window cap ────────────────────────────────────────
-    //
-    // [T-android-larky-longsession-followup] On sessions with hundreds of
-    // ChatMessage entries (Larky's 612-row monster, totalChars ~1.9MB)
-    // feeding the whole list into the LazyColumn pipeline caused cascading
-    // main-thread cost: per-frame regex/matcher churn from streaming-side
-    // detection, repeated AnnotatedString construction for re-anchored
-    // items, and LRU thrash on the markdown caches. The list-virtualization
-    // is fine on its own, but the streaming pipeline (combine + sample) and
-    // the FlatChat flattening both walk the full list every tick.
-    //
-    // Strategy: keep `_messages` as the canonical full list (every legacy
-    // caller — compact / fork / regenerate / agentHistory / send pipeline —
-    // still sees the whole thing) and expose a derived `uiMessages` that
-    // takes the TAIL N. ChatScreen consumes `uiMessages`; everything else
-    // keeps reading `messages`. When the list is short (<= cap) the derived
-    // value IS the source list (same reference), so this is zero-overhead
-    // for normal sessions.
-    //
-    // Users scroll up through the windowed slice; when they reach the top
-    // of the tail-window AND older messages exist, [loadOlderMessages]
-    // bumps the cap by [WINDOW_STEP] and the derived flow re-emits with
-    // the older slice included.
-    //
-    // Reset on session load (different sessionId) is wired in loadSession.
+    // ── Long-session DB window ────────────────────────────────────────
+    // Only the newest rows are parsed into ChatMessage on open. Older rows
+    // remain in Room and are rebuilt in bounded pages on demand; the complete
+    // LLM history is loaded separately on IO before send/compact are enabled.
 
-    private val _visibleMessageCap = MutableStateFlow(INITIAL_VISIBLE_MESSAGE_CAP)
-    /**
-     * Current tail cap. Reflective via [uiMessages]; bump with
-     * [loadOlderMessages] when the user scrolls past the windowed top.
-     * Reset to [INITIAL_VISIBLE_MESSAGE_CAP] each time [loadSession]
-     * (re)mounts a session — different sessions shouldn't inherit each
-     * other's caps.
-     */
-    val visibleMessageCap: StateFlow<Int> = _visibleMessageCap.asStateFlow()
+    private val _hasUnloadedOlderMessages = MutableStateFlow(false)
+    private var loadedHistoryFromIndex: Int = 0
+    private var olderHistoryLoadJob: Job? = null
 
-    /**
-     * Tail-windowed view of [messages] for ChatScreen's LazyColumn. For
-     * sessions with `count <= LONG_SESSION_THRESHOLD` or `count <= cap`
-     * this returns the EXACT SAME list reference as `_messages.value` —
-     * Compose / collectAsState gets identity-equal snapshots, no extra
-     * allocation, no behavior change for normal sessions.
-     */
     val uiMessages: StateFlow<List<ChatMessage>> =
-        kotlinx.coroutines.flow.combine(_messages, _visibleMessageCap) { raw, cap ->
-            // [T-bridge-message-ui-leak-android] Single UI-collection sink for
-            // EVERY path that pushes messages to the list (loadSession, live
-            // stream append, compact rebuild, snapshot reload, sync refresh…).
-            // Filter the internal role-alternation bridge here so it can never
-            // surface as a chat bubble regardless of which path produced it —
-            // the Android analog of iOS applySnapshot (T-bridge-message-ui-leak).
-            // Today the bridge lives in agentHistory only (never in _messages),
-            // so this is defensive; it guards against a future refactor routing
-            // the bridge into _messages. Only allocate a new list when a bridge
-            // is actually present, keeping the identity-equal fast path intact.
-            val full = if (raw.any { it.isInternalBridge }) raw.filterNot { it.isInternalBridge } else raw
-            if (full.size <= LONG_SESSION_THRESHOLD || full.size <= cap) full
-            else full.subList(full.size - cap, full.size)
-        }.stateIn(
-            viewModelScope,
-            kotlinx.coroutines.flow.SharingStarted.Eagerly,
-            emptyList(),
-        )
+        _messages
+            .map { raw ->
+                if (raw.any { it.isInternalBridge }) raw.filterNot { it.isInternalBridge } else raw
+            }
+            .stateIn(
+                viewModelScope,
+                kotlinx.coroutines.flow.SharingStarted.Eagerly,
+                emptyList(),
+            )
 
-    /**
-     * Whether the current session has older messages above the window.
-     * ChatScreen uses this to show / hide the "Load older messages" header
-     * pill on the LazyColumn.
-     */
-    val hasOlderMessages: StateFlow<Boolean> =
-        kotlinx.coroutines.flow.combine(_messages, _visibleMessageCap) { full, cap ->
-            full.size > LONG_SESSION_THRESHOLD && full.size > cap
-        }.stateIn(
-            viewModelScope,
-            kotlinx.coroutines.flow.SharingStarted.Eagerly,
-            false,
-        )
+    val hasOlderMessages: StateFlow<Boolean> = _hasUnloadedOlderMessages.asStateFlow()
 
-    /**
-     * Bump the visible cap by [VISIBLE_MESSAGE_CAP_STEP], saturating at
-     * the total message count. Safe to call when there are no older
-     * messages — it's a no-op (cap clamps to size). Called by the
-     * LazyColumn's "load older" header when the user reaches the top of
-     * the windowed slice.
-     */
+    /** Load the previous DB page and rebuild the materialized window. */
     fun loadOlderMessages() {
-        val totalNow = _messages.value.size
-        if (totalNow <= LONG_SESSION_THRESHOLD) return
-        val next = (_visibleMessageCap.value + VISIBLE_MESSAGE_CAP_STEP).coerceAtMost(totalNow)
-        if (next != _visibleMessageCap.value) {
-            _visibleMessageCap.value = next
+        if (!fullHistoryReady.value) {
+            requireFullSessionHistory()
+            return
+        }
+        if (!_hasUnloadedOlderMessages.value || _isStreaming.value || _isCompacting.value ||
+            _promptQueue.value.isNotEmpty()
+        ) return
+        if (olderHistoryLoadJob?.isActive == true) return
+        val sid = realSessionId.ifEmpty { sessionId }
+        if (sid.isEmpty()) return
+        val page = ChatHistoryWindow.older(loadedHistoryFromIndex)
+        if (page.count <= 0) return
+        val expectedSnapshot = _messages.value
+
+        olderHistoryLoadJob = viewModelScope.launch(Dispatchers.IO) {
+            val currentTotal = chatRepository.messageCount(sid)
+            val rows = chatRepository.loadMessagePageRaw(
+                sessionId = sid,
+                offset = page.fromIndex,
+                limit = (currentTotal - page.fromIndex).coerceAtLeast(0),
+            )
+            val jsonCache = PartsJsonCache(rows.size)
+            val rebuiltUi = rows.toChatMessages(jsonCache)
+            jsonCache.clear()
+            val marker = _cachedLatestMarker
+            val rebuiltWithMarker = if (marker == null) {
+                rebuiltUi
+            } else {
+                applyCompactMarkerGraying(
+                    messages = rebuiltUi,
+                    marker = marker,
+                    rawMessages = rows,
+                    historyDbIds = agentHistory.mapNotNullTo(mutableSetOf()) { it.dbMessageId },
+                    allowMarkerSelfHeal = false,
+                )
+            }
+            withContext(Dispatchers.Main) {
+                if (_messages.value !== expectedSnapshot || _isStreaming.value ||
+                    _isCompacting.value || _promptQueue.value.isNotEmpty()
+                ) {
+                    return@withContext
+                }
+                val notices = _messages.value.filter { msg ->
+                    msg.role == "system" && msg.toolBlocks.firstOrNull()?.toolName != "compact"
+                }
+                _messages.value = rebuiltWithMarker + notices
+                loadedHistoryFromIndex = page.fromIndex
+                _hasUnloadedOlderMessages.value = page.hasOlder
+            }
         }
     }
 
@@ -647,6 +618,15 @@ class ChatViewModel(
      *  this, opening a session that previously fell back mid-run flashes the
      *  default model name for one frame before the persisted binding settles. */
     private val sessionLoaded = MutableStateFlow(false)
+    private val fullHistoryReady = MutableStateFlow(sessionId.startsWith("__new__"))
+    private fun requireFullSessionHistory(): Boolean {
+        if (fullHistoryReady.value) return true
+        appendSystemInfo(
+            text = context.getString(R.string.chat_history_still_loading),
+            iconKind = "info",
+        )
+        return false
+    }
 
     private val _sessionTitle = MutableStateFlow("New Chat")
     val sessionTitle: StateFlow<String> = _sessionTitle.asStateFlow()
@@ -1627,6 +1607,7 @@ class ChatViewModel(
      * back to compactAll() behaviour so the user's gesture isn't lost.
      */
     fun compactBefore(dbMessageId: String, includesBoundary: Boolean = false) {
+        if (!requireFullSessionHistory()) return
         AppLogger.info(
             TAG,
             "[Compact] compactBefore() id=${dbMessageId.take(8)} includesBoundary=$includesBoundary " +
@@ -1671,6 +1652,7 @@ class ChatViewModel(
      * on a network error.
      */
     fun rescueCompactNow() {
+        if (!requireFullSessionHistory()) return
         AppLogger.info(
             TAG,
             "[Rescue] rescueCompactNow() streaming=${_isStreaming.value} compacting=${_isCompacting.value} historySize=${agentHistory.size}",
@@ -2075,6 +2057,7 @@ class ChatViewModel(
     }
 
     private fun compactAll(anchorIdxOverride: Int? = null) {
+        if (!requireFullSessionHistory()) return
         AppLogger.info(TAG, "[Compact] compactAll() invoked streaming=${_isStreaming.value} compacting=${_isCompacting.value} historySize=${agentHistory.size} anchorOverride=$anchorIdxOverride")
         if (_isStreaming.value) {
             AppLogger.info(TAG, "[Compact] aborted: stream in progress")
@@ -4272,6 +4255,9 @@ class ChatViewModel(
     }.getOrDefault(false)
 
     private fun loadSession() {
+        if (!isDraft) fullHistoryReady.value = false
+        olderHistoryLoadJob?.cancel()
+        olderHistoryLoadJob = null
         // T-android-crash-detected-halt: when CrashFrequencyDetector
         // tripped (#459, ≥3 crashes in last hour), skip the heavy
         // session-restore path entirely. Re-running the same persisted
@@ -4405,56 +4391,69 @@ class ChatViewModel(
                 val messages: List<com.openminis.app.data.db.MessageEntity>,
                 val ordered: List<ChatMessage>,
                 val llmHistory: List<LLMMessage>,
+                val uiFromIndex: Int,
                 val loadMs: Long,
                 val transformMs: Long,
             )
             com.openminis.app.diagnostics.PerfLongCtx.step(sessionId, "db.query.begin")
             val loaded = withContext(Dispatchers.IO) {
                 val tIoBeforeLoad = System.currentTimeMillis()
-                val rows = chatRepository.loadMessages(sessionId)
+                val totalRows = chatRepository.messageCount(sessionId)
+                val uiWindow = ChatHistoryWindow.initial(totalRows)
+                val uiRows = if (uiWindow.count == 0) {
+                    emptyList()
+                } else {
+                    chatRepository.loadMessagePageRaw(
+                        sessionId = sessionId,
+                        offset = uiWindow.fromIndex,
+                        limit = uiWindow.count,
+                    )
+                }
                 val tIoAfterLoad = System.currentTimeMillis()
                 com.openminis.app.diagnostics.PerfLongCtx.step(
                     sessionId,
                     "db.query.end",
-                    "count=${rows.size}",
+                    "window=${uiRows.size} total=$totalRows",
                 )
-                // [T-android-chat-open-json-reparse] One cache for this whole
-                // load: the toolResult pass, the UI pass and the LLM pass below
-                // all read the SAME parsed document per row. Dropped at the end
-                // of the block so parsed JSON for the entire session doesn't
-                // outlive the load.
-                val jsonCache = PartsJsonCache(rows.size)
-                val chatUi = rows.toChatMessages(jsonCache)
+                val uiJsonCache = PartsJsonCache(uiRows.size)
+                val chatUi = uiRows.toChatMessages(uiJsonCache)
+                uiJsonCache.clear()
+                // Publish the bounded UI tail before loading and parsing the
+                // complete LLM history. Sending remains gated by sessionLoaded.
+                withContext(Dispatchers.Main) {
+                    loadedHistoryFromIndex = uiWindow.fromIndex
+                    _hasUnloadedOlderMessages.value = uiWindow.hasOlder
+                    _messages.value = chatUi
+                }
                 val tIoAfterTransform = System.currentTimeMillis()
                 com.openminis.app.diagnostics.PerfLongCtx.step(
                     sessionId,
                     "toChatMessages.end",
                     "count=${chatUi.size}",
                 )
-                // Pre-build the LLM history list off-Main too — toLLMMessage
-                // re-parses partsJson for every row, which is the second
-                // contributor to the GC storm. Build into a local list and
-                // bulk-append to `agentHistory` on Main below; loadSession
-                // runs once at init before any other writer touches
-                // agentHistory, so a bulk addAll is race-free.
+                val rows = chatRepository.loadMessages(sessionId)
                 val llm = ArrayList<LLMMessage>(rows.size)
                 var totalPartsChars = 0L
-                for (entity in rows) {
-                    totalPartsChars += entity.partsJson.length
-                    llm.add(entity.toLLMMessage(jsonCache))
+                for (start in rows.indices step 200) {
+                    val end = (start + 200).coerceAtMost(rows.size)
+                    val pageCache = PartsJsonCache(end - start)
+                    for (index in start until end) {
+                        val entity = rows[index]
+                        totalPartsChars += entity.partsJson.length
+                        llm.add(entity.toLLMMessage(pageCache))
+                    }
+                    pageCache.clear()
                 }
                 com.openminis.app.diagnostics.PerfLongCtx.step(
                     sessionId,
                     "toLLMMessage.end",
-                    "count=${llm.size} totalPartsChars=$totalPartsChars " +
-                        "jsonParsed=${jsonCache.size}",
+                    "count=${llm.size} totalPartsChars=$totalPartsChars",
                 )
-                // Parsed documents were needed only to build the two lists.
-                jsonCache.clear()
                 LoadedSessionData(
                     messages = rows,
                     ordered = chatUi,
                     llmHistory = llm,
+                    uiFromIndex = uiWindow.fromIndex,
                     loadMs = tIoAfterLoad - tIoBeforeLoad,
                     transformMs = tIoAfterTransform - tIoAfterLoad,
                 )
@@ -4569,12 +4568,11 @@ class ChatViewModel(
                 "stateflow.emit.begin",
                 "count=${ordered.size}",
             )
-            // [T-android-larky-longsession-followup] Reset the tail
-            // window to its initial cap on every session (re)load. Without
-            // this a freshly opened session would inherit the previous
-            // session's enlarged cap (set via loadOlderMessages), defeating
-            // the windowing intent on the first paint of every new session.
-            _visibleMessageCap.value = INITIAL_VISIBLE_MESSAGE_CAP
+            // Publish the same initial DB window that was emitted above. A
+            // compact marker may add its divider/graying now that the complete
+            // history and marker row are available.
+            loadedHistoryFromIndex = loaded.uiFromIndex
+            _hasUnloadedOlderMessages.value = loaded.uiFromIndex > 0
             _messages.value = if (marker == null) {
                 ordered
             } else {
@@ -4626,6 +4624,7 @@ class ChatViewModel(
                     Log.i(TAG, "loadSession: detected interrupted agent loop, canResume=true (lastRole=${lastEntry.role})")
                 }
             }
+            fullHistoryReady.value = true
             } finally {
                 // T201: open the gate even on early `return@launch` (draft path,
                 // missing-session path) and on exception, so the init-time
@@ -4713,6 +4712,7 @@ class ChatViewModel(
         marker: com.openminis.app.data.db.CompactMarkerEntity,
         rawMessages: List<com.openminis.app.data.db.MessageEntity>,
         historyDbIds: Set<String>,
+        allowMarkerSelfHeal: Boolean = true,
     ): List<ChatMessage> {
         // Some legacy rows have empty-string boundaries instead of NULL —
         // treat both as "no boundary" so the compactAll path below kicks in.
@@ -4748,7 +4748,11 @@ class ChatViewModel(
                 insertIdx = lcmIdx + 1
             } else {
                 // lcmId missing or orphaned. Try createdAt self-heal.
-                val heal = anchorByCreatedAt(rawMessages, marker.createdAt, historyDbIds)
+                val heal = if (allowMarkerSelfHeal) {
+                    anchorByCreatedAt(rawMessages, marker.createdAt, historyDbIds)
+                } else {
+                    null
+                }
                 val healUiIdx = heal?.let { uiIdxForDbId(it.id) } ?: -1
                 if (heal != null && healUiIdx >= 0) {
                     insertIdx = healUiIdx + 1
@@ -4788,7 +4792,11 @@ class ChatViewModel(
                 // same path as compactAll, then divider AFTER the healed
                 // anchor (treating this as an upgrade to v2 compactAll
                 // semantics).
-                val heal = anchorByCreatedAt(rawMessages, marker.createdAt, historyDbIds)
+                val heal = if (allowMarkerSelfHeal) {
+                    anchorByCreatedAt(rawMessages, marker.createdAt, historyDbIds)
+                } else {
+                    null
+                }
                 val healUiIdx = heal?.let { uiIdxForDbId(it.id) } ?: -1
                 if (heal != null && healUiIdx >= 0) {
                     insertIdx = healUiIdx + 1
@@ -6296,6 +6304,12 @@ class ChatViewModel(
         // an empty text + non-empty attachments still produces a valid user
         // message. Without this an image-only "look at this" send dropped.
         if (trimmed.isBlank() && _attachments.value.isEmpty()) return
+        if (!requireFullSessionHistory()) {
+            if (trimmed.isNotEmpty() && _inputText.value.isEmpty()) {
+                _inputText.value = trimmed
+            }
+            return
+        }
         if (_isCompacting.value) {
             appendSystemInfo(
                 text = "Wait for the current compact to finish before sending.",
@@ -6437,6 +6451,7 @@ class ChatViewModel(
                 imageUris = prepared.imageUris,
                 attachmentNames = prepared.attachmentNames,
                 attachmentUris = prepared.nonImageUris,
+                sourceDbIds = listOf(persistedUser.id),
             )
             // [T-optimistic-user-bubble] Reconcile the placeholder in place so
             // the bubble's identity becomes the persisted row id (retry / edit /

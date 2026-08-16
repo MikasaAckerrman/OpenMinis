@@ -83,6 +83,15 @@ class ChatHistoryWindowTest {
     }
 
     @Test
+    fun `reported 1443-row session opens from the newest 120 rows`() {
+        val w = ChatHistoryWindow.initial(totalRows = 1443)
+        assertEquals(1323, w.fromIndex)
+        assertEquals(120, w.count)
+        assertTrue(w.hasOlder)
+        assertEquals(1443, w.fromIndex + w.count)
+    }
+
+    @Test
     fun `truncated display window still forces a full LLM history`() {
         // Sending with a truncated history would silently drop context — a
         // correctness bug, not a perf trade-off.

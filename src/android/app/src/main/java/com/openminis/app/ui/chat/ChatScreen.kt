@@ -3644,16 +3644,10 @@ fun ChatScreen(
                         }
                         } // Box (alpha wrapper)
                     }
-                    // [T-android-larky-longsession-followup] "Load older
-                    // messages" header — placed AFTER items() so under
-                    // reverseLayout it sits at the VISUAL TOP of the list.
-                    // Only emitted when the session has trimmed older messages
-                    // behind the window; tapping bumps the cap by
-                    // VISIBLE_MESSAGE_CAP_STEP and the FlatChat pipeline
-                    // rebuilds with the wider slice. The item key is stable so
-                    // LazyListState's anchor (firstVisibleItem) survives the
-                    // re-emission and the user keeps their scroll position
-                    // relative to the message they were reading.
+                    // "Load older messages" sits at the visual top under
+                    // reverseLayout. The ViewModel reads the previous Room
+                    // page and rebuilds the materialized window so tool-use /
+                    // tool-result pairs remain intact across page boundaries.
                     if (hasOlderMessages) {
                         item(key = "__load_older_messages__", contentType = "load_older") {
                             Box(
