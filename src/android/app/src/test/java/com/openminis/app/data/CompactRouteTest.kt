@@ -18,6 +18,9 @@ class CompactRouteTest {
     private val quotaCn = "Quota exceeded: 预扣费额度失败 token quota is not enough, token remain quota: \$0.219130, need quota: \$1.040466"
     private val quotaEn = "Quota exceeded: pre-consume quota failed, insufficient_user_quota"
     private val rateLimited = "Rate limited — please try again later"
+    private val contentFiltered =
+        "Provider error: the gateway's content filter rejected this request before it reached " +
+            "the model (sensitive words detected (request id: 20260816222155139449025cvbtwuxyxYLnA))"
 
     @Test
     fun `recognises quota refusals in both languages`() {
@@ -57,6 +60,28 @@ class CompactRouteTest {
         // so retrying smaller on the same model is pure waste.
         val step = CompactRoute.next(rateLimited, currentMaxTokens = 8192, shrinkStepsUsed = 0, nextProviderIndex = 1)
         assertEquals(CompactRoute.Step.NextProvider(1), step)
+    }
+
+    @Test
+    fun `content filter switches provider instead of resending the rejected transcript`() {
+        val step = CompactRoute.next(
+            contentFiltered,
+            currentMaxTokens = 8192,
+            shrinkStepsUsed = 0,
+            nextProviderIndex = 1,
+        )
+        assertEquals(CompactRoute.Step.NextProvider(1), step)
+    }
+
+    @Test
+    fun `content filter with no backup repairs locally instead of stranding session`() {
+        val step = CompactRoute.next(
+            contentFiltered,
+            currentMaxTokens = 8192,
+            shrinkStepsUsed = 0,
+            nextProviderIndex = null,
+        )
+        assertEquals(CompactRoute.Step.LocalDigest, step)
     }
 
     @Test

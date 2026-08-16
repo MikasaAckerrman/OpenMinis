@@ -101,7 +101,12 @@ object CompactRoute {
     ): Step {
         val quota = isQuota(errorMessage)
         val rateLimited = isRateLimit(errorMessage)
-        if (!quota && !rateLimited) return Step.Surface(errorMessage)
+        val contentFiltered = com.openminis.app.provider.ContentFilterDetection
+            .isContentFilterRejection(errorMessage)
+        if (!quota && !rateLimited && !contentFiltered) return Step.Surface(errorMessage)
+        if (contentFiltered) {
+            return nextProviderIndex?.let { Step.NextProvider(it) } ?: Step.LocalDigest
+        }
 
         // Quota only: a smaller request may be affordable. Rate limit: it
         // won't be — the limit is per-request-count, not per-token.
