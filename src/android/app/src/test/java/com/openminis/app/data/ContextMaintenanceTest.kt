@@ -49,15 +49,15 @@ class ContextMaintenanceTest {
 
     @Test
     fun `full pass fires on cadence once past the pressure floor`() {
-        val tokens = (window * 0.40).toInt() // above the 0.35 floor
-        assertEquals(ContextMaintenance.Action.LIGHT, decide(turns = 4, tokens = tokens))
-        assertEquals(ContextMaintenance.Action.FULL, decide(turns = 5, tokens = tokens))
+        val tokens = (window * 0.55).toInt() // above the 0.50 floor
+        assertEquals(ContextMaintenance.Action.LIGHT, decide(turns = 7, tokens = tokens))
+        assertEquals(ContextMaintenance.Action.FULL, decide(turns = 8, tokens = tokens))
     }
 
     @Test
     fun `heavy pressure does not wait for the cadence`() {
-        // Halfway between floor (0.35) and ceiling (0.85) is 0.60.
-        val tokens = (window * 0.65).toInt()
+        // Halfway between floor (0.50) and ceiling (0.85) is 0.675.
+        val tokens = (window * 0.70).toInt()
         assertEquals(ContextMaintenance.Action.FULL, decide(turns = 1, tokens = tokens))
     }
 
@@ -80,7 +80,7 @@ class ContextMaintenanceTest {
 
     @Test
     fun `cooldown blocks a second full pass`() {
-        val tokens = (window * 0.40).toInt()
+        val tokens = (window * 0.55).toInt()
         assertEquals(
             ContextMaintenance.Action.LIGHT,
             decide(turns = 99, tokens = tokens, lastFullAtMs = now - 1_000),
@@ -137,7 +137,7 @@ class ContextMaintenanceTest {
 
     @Test
     fun `cadence of zero is treated as every turn`() {
-        val tokens = (window * 0.40).toInt()
+        val tokens = (window * 0.55).toInt()
         assertEquals(
             ContextMaintenance.Action.FULL,
             decide(turns = 1, tokens = tokens, cadence = 0),

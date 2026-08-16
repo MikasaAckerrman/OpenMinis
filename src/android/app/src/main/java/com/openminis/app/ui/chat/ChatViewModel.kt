@@ -281,7 +281,7 @@ class ChatViewModel(
          * I/O so it can answer follow-ups that need verbatim detail rather than
          * the summary's distilled form. Mirrors iOS `compactKeepRecentUserTurns`.
          */
-        private const val COMPACT_KEEP_RECENT_USER_TURNS = 3
+        private const val COMPACT_KEEP_RECENT_USER_TURNS = 5
         /// Max per-tool-call retained `accumulated` JSON snapshots from
         /// `ToolInputDelta`. Drained on preflight failure for diagnosis.
         private const val TOOL_INPUT_CHUNK_RING_MAX = 10
@@ -3524,13 +3524,14 @@ class ChatViewModel(
                 append("ongoing goals or todos — the user's next message will set the current task.\n\n")
                 append("MUST PRESERVE:\n")
                 append("- What was done and what was tried, with outcomes (record as past events)\n")
+                append("- Concrete work products from BOTH parts: files created/edited (path + what changed), commits, tests run and results, artifacts built — never collapse real work into a vague phrase or drop it as \"nothing was done\"\n")
                 append("- The last thing the user requested in this conversation, and how it was handled\n")
                 append("- All file paths, identifiers, URLs — copy verbatim\n")
                 append("- Decisions made and their rationale\n")
                 append("- Constraints, rules, and user preferences mentioned\n\n")
                 append("Do NOT carry forward \"pending\" or \"todo\" lists that imply standing work — if the user ")
                 append("still wants those, they will say so in their next message.\n\n")
-                append("PRIORITIZE Part 2 (more recent) over Part 1 (older) when space is tight.\n\n")
+                append("PRIORITIZE Part 2 (more recent) over Part 1 (older) when space is tight — but completed work from Part 1 is a fact that must survive the merge, not filler to trim.\n\n")
                 append("Part 1:\n").append(summary1).append("\n\n")
                 append("Part 2:\n").append(summary2)
             }
@@ -3865,6 +3866,7 @@ class ChatViewModel(
         - All file paths, directory names, URLs, UUIDs, and identifiers — copy verbatim
         - Commands executed and their outcomes (success/failure/output)
         - What was requested and what was done (record as past events, not as ongoing goals)
+        - Concrete work products: files created or edited, commits/branches, tests run and their results, artifacts built — name them specifically (path + what changed), never as a vague "made some changes"
         - Key decisions made and their rationale
         - Errors encountered and how they were resolved
         - Important constraints, rules, or user preferences mentioned
@@ -3873,7 +3875,9 @@ class ChatViewModel(
         STRUCTURE:
         1. Start with a one-line description of what the conversation was about (use past tense — "User asked X, agent did Y", NOT "Goal: X").
         2. Then a concise narrative of what happened, preserving technical details.
-        3. End with a "What had been done so far" section listing completed work — NOT a "todo" or "pending" list. Do not invent ongoing objectives or carry-over tasks from old turns; if the user wants to continue, they will say so in their next message.
+        3. End with a "What had been done so far" section listing completed work concretely — every file/module touched with what changed, every command/test run with its outcome. This is NOT a "todo" or "pending" list. Do not invent ongoing objectives or carry-over tasks from old turns; if the user wants to continue, they will say so in their next message.
+
+        NEVER UNDER-REPORT WORK. If the conversation contains substantial completed work (edits, commits, builds, investigations), the summary MUST reflect it in the "What had been done so far" section. Never compress real work down to "nothing was accomplished", "no changes were made", or a similarly empty statement — that erases the session's actual progress and is a factual error. Only state that nothing was done if the transcript genuinely contains no completed work.
 
         PRIORITIZE recent context over older history — recent decisions and recent file/path references are most useful for continuity.
 
@@ -6343,6 +6347,12 @@ class ChatViewModel(
         // slip past the entry guard during DB/OAuth setup. See retryFromMessage.
         AppLogger.info(TAG_STREAM, "send _isStreaming=true (sync, sid=$activeSessionId)")
         _isStreaming.value = true
+        // Pin synchronously before any suspension. The StateFlow observer
+        // below also mirrors this flag, but it can run after navigation has
+        // already opened another chat and ChatViewModelStore has evicted an
+        // unpinned VM. Eviction clears viewModelScope and looks exactly like
+        // the model stopping in the background.
+        ChatViewModelStore.setPinned(realSessionId.ifEmpty { sessionId }, true)
 
         // [T-android-thinking-indicator-linger] Invariant sweep: a fresh send
         // only reaches here when no turn is streaming (the _isStreaming guard
@@ -6367,6 +6377,30 @@ class ChatViewModel(
         val editingId = _editingMessageId.value
         if (editingId != null) _editingMessageId.value = null
 
+        // [T-optimistic-user-bubble] Show the user's message the instant they
+        // send — BEFORE ensureSession + attachment prep + the Room write, which
+        // on a laggy/oversized session take long enough that the composer clears
+        // and the chat shows nothing ("отправил, а сообщения нет"). The bubble
+        // carries a pending_ id; once the real row commits we swap the id in
+        // place (reconcile). If the turn fails before persisting, the pending
+        // row is dropped and the DraftStore backup restores the text — so the
+        // message is always either visible-and-persisted or recoverable.
+        //
+        // Editing an existing message truncates the tail first, so we skip the
+        // optimistic bubble in that path to avoid it landing above a truncation.
+        val pendingUserId = if (editingId == null) PendingUserMessage.newId() else null
+        if (pendingUserId != null) {
+            val optimisticAttachments = currentAttachments
+            _messages.value = _messages.value + ChatMessage(
+                id = pendingUserId,
+                role = "user",
+                content = trimmed,
+                imageUris = optimisticAttachments.filter { it.isImage }.map { it.uri },
+                attachmentNames = optimisticAttachments.map { it.fileName },
+                attachmentUris = optimisticAttachments.filterNot { it.isImage }.map { it.uri },
+            )
+        }
+
         viewModelScope.launch {
             var streamLaunched = false
             try {
@@ -6385,6 +6419,17 @@ class ChatViewModel(
             val userPartsJson = buildUserPartsJson(trimmed, prepared.mediaRefPartsJson, prepared.attachedFilesXml)
             val persistedUser = chatRepository.appendMessage(activeSessionId, "user", userPartsJson)
 
+            // [T-android-sent-draft-after-commit] The recovery backup only
+            // protects the gap between clearing the composer and committing
+            // the user row. From this point the exact prompt is durable in
+            // chat history, so restoring lastSent on a later model/provider
+            // error would duplicate an already-sent message in the composer.
+            // A process death before appendMessage returns still leaves the
+            // backup intact and loadSession can recover it.
+            runCatching {
+                com.openminis.app.data.DraftStore.clearLastSent(context, activeSessionId)
+            }
+
             val userMsg = ChatMessage(
                 id = persistedUser.id,
                 role = "user",
@@ -6393,7 +6438,19 @@ class ChatViewModel(
                 attachmentNames = prepared.attachmentNames,
                 attachmentUris = prepared.nonImageUris,
             )
-            _messages.value = _messages.value + userMsg
+            // [T-optimistic-user-bubble] Reconcile the placeholder in place so
+            // the bubble's identity becomes the persisted row id (retry / edit /
+            // compaction-boundary lookups all key off it). If the placeholder is
+            // gone (never added on the edit path, or a concurrent reload rebuilt
+            // the list) fall back to appending — the message must never vanish.
+            _messages.value = if (pendingUserId != null &&
+                PendingUserMessage.contains(_messages.value.map { it.id }, pendingUserId)
+            ) {
+                _messages.value.map { if (it.id == pendingUserId) userMsg else it }
+            } else {
+                _messages.value + userMsg
+            }
+
             val imageParts = prepared.imageParts
 
             // T132: build the user contentParts in iOS order — caption first
@@ -6658,6 +6715,25 @@ class ChatViewModel(
                 if (!streamLaunched) {
                     AppLogger.info(TAG_STREAM, "send _isStreaming=false (setup aborted)")
                     _isStreaming.value = false
+                    // [T-optimistic-user-bubble] Setup aborted before the user
+                    // row persisted (ensureSession / attachment prep threw, or
+                    // the coroutine was cancelled). Drop the placeholder so the
+                    // chat doesn't keep a phantom bubble, and re-arm the composer
+                    // from the DraftStore backup so the user's text is never lost
+                    // — visible-and-persisted OR recoverable, never gone.
+                    if (pendingUserId != null) {
+                        val ids = _messages.value.map { it.id }
+                        if (PendingUserMessage.contains(ids, pendingUserId)) {
+                            _messages.value = _messages.value.filterNot { it.id == pendingUserId }
+                            runCatching {
+                                val sid = realSessionId.ifEmpty { sessionId }
+                                val backup = com.openminis.app.data.DraftStore.peekLastSent(context, sid)
+                                if (backup.isNotEmpty() && _inputText.value.isEmpty()) {
+                                    setInputText(backup)
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -8550,7 +8626,9 @@ class ChatViewModel(
                         lastOtherToolInputMs = 0L
                         continue  // retry same provider after backoff
                     }
-                    val shouldFallback = isRateLimit || isContentFilter || is5xx ||
+                    val isEmptyResponse = com.openminis.app.provider.EmptyStreamPolicy
+                        .isEmptyResponse(actual)
+                    val shouldFallback = isRateLimit || isContentFilter || is5xx || isEmptyResponse ||
                         fallbackStrategy == com.openminis.app.data.model.FallbackStrategy.always
                     val next = if (shouldFallback) remainingFallbacks.removeFirstOrNull() else null
                     if (next != null) {
@@ -8771,6 +8849,19 @@ class ChatViewModel(
                             context.getString(R.string.error_empty_response_generic)
                     }
                     withContext(Dispatchers.Main) { setInlineError(hint) }
+                }
+                if (com.openminis.app.provider.OutputLimitPolicy.reachedLimit(turnFinishReason)) {
+                    // The provider stopped because it exhausted the output
+                    // budget. The partial answer is valid and remains
+                    // persisted, but treating this as a normal completion
+                    // makes it look as if the model stopped by itself. Surface
+                    // the real reason and let the user resume deliberately.
+                    withContext(Dispatchers.Main) {
+                        setInlineError(
+                            context.getString(R.string.error_output_limit_reached),
+                        )
+                        _canResume.value = true
+                    }
                 }
                 // Auto-title after first exchange
                 if (turn == 0) generateSessionTitleIfNeeded()

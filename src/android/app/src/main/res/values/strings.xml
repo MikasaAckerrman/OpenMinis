@@ -1604,6 +1604,7 @@
     <string name="error_empty_response_generic">Model returned an empty response. Please try again or switch models.</string>
     <string name="error_empty_response_context_large">The model returned an empty response. The conversation context may be too large — try compacting or starting a new session.</string>
     <string name="error_empty_response_after_tool">The model returned no response after a tool result, even after a reminder. It may be overloaded — please retry or switch models.</string>
+    <string name="error_output_limit_reached">The model reached its output-token limit before finishing. Tap Resume to continue from the partial response.</string>
     <!-- [T-thinking-render-perf-android] Inline windowed-tail hint + large-content viewer entry. -->
     <string name="thinking_truncated_hint">Showing last %1$dK of %2$dK characters</string>
     <string name="thinking_view_full">View full content</string>

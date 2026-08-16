@@ -43,15 +43,21 @@ object ContextMaintenance {
         RESCUE,
     }
 
-    /** Default: a full pass every 5th user turn, matching the user's ask. */
-    const val DEFAULT_FULL_EVERY_N_TURNS = 5
+    /** Default: a full pass every 8th user turn — routine folding stays rare so
+     *  short/medium sessions keep their verbatim history; the pressure gates
+     *  below still force an earlier fold when the window actually fills. */
+    const val DEFAULT_FULL_EVERY_N_TURNS = 8
 
     /**
      * Below this fraction of the window, do nothing but the free local pass.
-     * 0.35 of a 200K window is ~70K tokens — a session that large genuinely
-     * benefits from folding; anything smaller does not repay the request.
+     * 0.50 of a 200K window is ~100K tokens — the session keeps its full
+     * verbatim history until it is genuinely half-full, so short/medium chats
+     * are never summarised (which is what made them "forget" what they did).
+     * The urgent midpoint and rescue ceiling below still fire earlier when
+     * pressure is actually high, so raising this floor only delays the
+     * *routine* fold, it does not risk an overflow.
      */
-    const val FULL_PRESSURE_FLOOR = 0.35
+    const val FULL_PRESSURE_FLOOR = 0.50
 
     /**
      * Above this fraction, an LLM compact is no longer trustworthy: its own

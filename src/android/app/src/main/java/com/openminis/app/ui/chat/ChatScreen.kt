@@ -607,19 +607,19 @@ fun ChatScreen(
     // can position the cursor (e.g. AFTER the leading "/" when the slash
     // button inserts it) — a plain String overload would reset cursor to 0
     // on every external write.
-    var inputFieldValue by remember {
-        mutableStateOf(androidx.compose.ui.text.input.TextFieldValue(""))
+    var inputFieldValue by remember(sessionId) {
+        mutableStateOf(androidx.compose.ui.text.input.TextFieldValue(inputText))
     }
     // T217-2: suppress IME commits arriving briefly after send. clearFocus
     // triggers finishComposingText, which makes voice/Pinyin IMEs commit
     // their pending candidate back through onValueChange even after we
     // cleared inputText. Drop those late commits during a short window.
-    var lastSendTimeMs by remember { mutableStateOf(0L) }
+    var lastSendTimeMs by remember(sessionId) { mutableStateOf(0L) }
     // [T-voice-mode-memory-refine-android] True when a voice recording started
     // since the composer was last cleared. The SEND is what commits the mode:
     // mic-start no longer writes "voice" (an accidental mic tap with no send
     // must not flip the default) — instead this flag is consulted on send.
-    var voiceUsedSinceClear by remember { mutableStateOf(false) }
+    var voiceUsedSinceClear by remember(sessionId) { mutableStateOf(false) }
     // Shared by both send paths (send button / Enter): commit the composer
     // mode at send time — "voice" if this composition used voice, otherwise
     // "text" — then reset the tracker for the now-cleared composer.
@@ -638,9 +638,9 @@ fun ChatScreen(
     // as the follow-grace window for the reserve-change pin. Deliberately
     // separate from lastSendTimeMs above — that one also drives the 300ms
     // IME-residue suppression in the composer and must stay UI-send-only.
-    var lastUserAppendMs by remember { mutableStateOf(0L) }
-    androidx.compose.runtime.LaunchedEffect(inputText) {
-        if (inputFieldValue.text != inputText) {
+    var lastUserAppendMs by remember(sessionId) { mutableStateOf(0L) }
+    androidx.compose.runtime.LaunchedEffect(sessionId, inputText) {
+        if (inputFieldValue.text != inputText || inputFieldValue.composition != null) {
             // [T-android-slash-menu-align-ios-prepend] Honor a one-shot caret
             // override from the slash flow (prepend "/ " → caret 1; insert
             // "/<skill> " → caret after the prefix). Read-and-clear so it
@@ -4767,7 +4767,7 @@ fun ChatScreen(
                         }
                     } else
                     // Text field (iOS: placeholder "Message Minis", no border)
-                    run {
+                    androidx.compose.runtime.key(sessionId) {
                         val interactionSource = remember { MutableInteractionSource() }
                         val mergedTextStyle = MaterialTheme.typography.bodyMedium.copy(
                             fontSize = 16.5.sp * chatInputFontScale,

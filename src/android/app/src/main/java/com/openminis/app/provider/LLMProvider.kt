@@ -8,6 +8,7 @@ import com.openminis.app.data.model.LLMResponse
 import com.openminis.app.data.model.LLMStreamChunk
 import com.openminis.app.data.model.ThinkingLevel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 
@@ -138,46 +139,51 @@ interface LLMProvider {
 }
 
 /**
- * [T-android-empty-stream-retry] Detect a silently-truncated stream.
+ * [T-android-empty-stream-retry] Reject a provider stream that ended without
+ * anything the agent can use as an assistant result.
  *
- * When a relay/upstream drops the SSE connection without an error status,
- * the provider flow completes "normally" having emitted no content and no
- * finish reason — the chat just stops mid-air with no error (user report).
- * iOS treats this as a transient error at its stream-collection layer
- * (AIChatViewModel.isEmptyResponse → LLMError.transientError) and
- * auto-retries; this operator is the Android provider-layer equivalent.
+ * A relay can return HTTP 200 and `finish_reason=stop` while emitting no text
+ * and no completed tool call. Letting that through makes ChatViewModel break
+ * normally and persist a blank assistant turn. Classify it as transient here so
+ * the existing bounded retry/fallback path rolls the turn back before it is
+ * written to history or the database.
  *
- * Empty = no text / thinking / reasoning / tool-call / media chunk AND no
- * finish reason. A stream that finished WITH a stop reason but no content
- * ("stop"/"end_turn") is deliberately let through — the agent loop's
- * empty-after-tool-result reminder path (ChatViewModel) owns that case, and
- * a "length"/"max_tokens" cut is a legitimate empty. Cancellation and
- * thrown errors propagate before the check runs (code after `collect`
- * only executes on normal completion).
+ * Reasoning-only chunks and incomplete tool-call fragments are deliberately not
+ * success signals: they cannot be shown or sent back as a valid assistant turn.
+ * `length`/`max_tokens` remains a real provider termination and is left for the
+ * agent layer to surface with its existing terminal handling.
  */
 fun Flow<LLMStreamChunk>.failOnSilentEmptyCompletion(providerName: String): Flow<LLMStreamChunk> = flow {
-    var sawContent = false
-    var sawFinishReason = false
+    var hasVisibleText = false
+    var hasCompletedToolCall = false
+    var hasMedia = false
+    var finishReason: String? = null
     collect { chunk ->
         when (chunk) {
-            is LLMStreamChunk.Text -> if (chunk.text.isNotEmpty()) sawContent = true
-            is LLMStreamChunk.ThinkingDelta -> if (chunk.text.isNotEmpty()) sawContent = true
-            is LLMStreamChunk.ReasoningContent -> if (chunk.content.isNotEmpty()) sawContent = true
-            is LLMStreamChunk.ToolUseStart,
-            is LLMStreamChunk.ToolInputDelta,
-            is LLMStreamChunk.ToolCallComplete,
-            is LLMStreamChunk.MediaAttachment -> sawContent = true
-            is LLMStreamChunk.Finished -> if (chunk.stopReason != null) sawFinishReason = true
-            else -> {}
+            is LLMStreamChunk.Text -> if (chunk.text.isNotBlank()) hasVisibleText = true
+            is LLMStreamChunk.ToolCallComplete -> hasCompletedToolCall = true
+            is LLMStreamChunk.MediaAttachment -> hasMedia = true
+            is LLMStreamChunk.Finished -> {
+                if (!chunk.stopReason.isNullOrBlank()) finishReason = chunk.stopReason
+            }
+            else -> Unit
         }
         emit(chunk)
     }
-    if (!sawContent && !sawFinishReason) {
+    if (EmptyStreamPolicy.shouldRetry(
+            hasVisibleText = hasVisibleText,
+            hasCompletedToolCall = hasCompletedToolCall,
+            hasMedia = hasMedia,
+            finishReason = finishReason,
+        )
+    ) {
         android.util.Log.w(
             "LLMProvider",
-            "$providerName: stream completed with no content and no finish reason — treating as transient upstream failure",
+            "$providerName: stream completed without usable assistant output " +
+                "(finishReason=${finishReason ?: "none"}, text=$hasVisibleText, " +
+                "tool=$hasCompletedToolCall, media=$hasMedia) — treating as transient",
         )
-        throw LLMError.TransientError("Server returned an empty response (connection dropped or upstream error)")
+        throw LLMError.TransientError(EmptyStreamPolicy.ERROR_DETAIL)
     }
 }
 
