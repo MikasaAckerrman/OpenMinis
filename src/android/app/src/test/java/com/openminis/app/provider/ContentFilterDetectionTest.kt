@@ -31,6 +31,14 @@ class ContentFilterDetectionTest {
     }
 
     @Test
+    fun `recognises live 400 content blocked response`() {
+        val body =
+            """{"error":{"code":"content-blocked","message":"content-blocked (request id: 202608160829432459525697db9zJlZhCgwN)"}}"""
+        assertTrue(ContentFilterDetection.isContentFilterRejection(body))
+        assertTrue(ContentFilterDetection.describe(body).contains("content-blocked"))
+    }
+
+    @Test
     fun `matching is case insensitive`() {
         assertTrue(ContentFilterDetection.isContentFilterRejection("SENSITIVE WORDS DETECTED"))
     }

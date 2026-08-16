@@ -46,9 +46,13 @@ object ContentFilterDetection {
         "sensitive word",
         "sensitive_words",
         "content_filter",
+        "content filter",
         "content filtering",
+        "content-blocked",
+        "content blocked",
         "prompt blocked",
         "blocked by content",
+        "blocked content",
         "risk control",
         // -- Chinese: these relays are Chinese-authored and often reply in it --
         "敏感词",

@@ -8505,7 +8505,7 @@ class ChatViewModel(
                         lastOtherToolInputMs = 0L
                         continue  // retry same provider after backoff
                     }
-                    val shouldFallback = isRateLimit || is5xx ||
+                    val shouldFallback = isRateLimit || isContentFilter || is5xx ||
                         fallbackStrategy == com.openminis.app.data.model.FallbackStrategy.always
                     val next = if (shouldFallback) remainingFallbacks.removeFirstOrNull() else null
                     if (next != null) {
