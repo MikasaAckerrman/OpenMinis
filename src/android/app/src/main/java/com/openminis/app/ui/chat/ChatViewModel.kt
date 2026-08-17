@@ -264,13 +264,15 @@ class ChatViewModel(
          */
         private const val LEGACY_CANCELLED_MARKER = "[cancelled by user]"
         /**
-         * Number of recent user-text turns kept verbatim as inference anchors when
-         * compactAll runs. The summary stands in for everything older; the LLM
-         * still sees the last N user-text turns + their assistant replies + tool
-         * I/O so it can answer follow-ups that need verbatim detail rather than
-         * the summary's distilled form. Mirrors iOS `compactKeepRecentUserTurns`.
+         * Number of recent user-text turns that are NEVER compacted — the
+         * protected tail. The compaction anchor is placed BEFORE these turns
+         * ([ProtectedTail.anchorIndex]), so the freshest turns + their replies
+         * + tool I/O always reach the model verbatim and are never greyed in
+         * the UI. Compaction folds only the OLDER history below this tail.
+         * Raised from 5 → 6 per the user's request. Mirrors iOS
+         * `compactKeepRecentUserTurns`.
          */
-        private const val COMPACT_KEEP_RECENT_USER_TURNS = 5
+        private const val COMPACT_KEEP_RECENT_USER_TURNS = 6
         /// Max per-tool-call retained `accumulated` JSON snapshots from
         /// `ToolInputDelta`. Drained on preflight failure for diagnosis.
         private const val TOOL_INPUT_CHUNK_RING_MAX = 10
@@ -1679,11 +1681,29 @@ class ChatViewModel(
             )
             return
         }
-        // Anchor at the last entry that is actually persisted — the marker's
-        // anchor must resolve in the DB or the divider can't be restored on
-        // reload (same requirement as compactAll).
-        var anchorIdx = history.lastIndex
-        while (anchorIdx >= 0 && history[anchorIdx].dbMessageId.isNullOrEmpty()) anchorIdx -= 1
+        // [T-protected-tail] Anchor BEFORE the protected recent tail, exactly
+        // like compactAll — even the emergency rescue path must not fold the
+        // last N user turns into the digest. `effectiveAgentHistory` sends the
+        // postAnchor tail verbatim; the digest stands in only for the older
+        // history. Falls back to the last persisted entry when the whole
+        // session is within the protected tail (there is nothing older to
+        // digest, but rescue still force-offloads big payloads below).
+        val ptEntries = history.map { m ->
+            com.openminis.app.data.ProtectedTail.Entry(
+                isUser = m.role == LLMMessage.Role.USER,
+                hasDbId = !m.dbMessageId.isNullOrEmpty(),
+            )
+        }
+        var anchorIdx = com.openminis.app.data.ProtectedTail.anchorIndex(
+            entries = ptEntries,
+            protectedUserTurns = COMPACT_KEEP_RECENT_USER_TURNS,
+        )
+        if (anchorIdx < 0) {
+            // Whole history is within the protected tail — digest nothing,
+            // anchor at the last persisted entry so the marker still resolves.
+            anchorIdx = history.lastIndex
+            while (anchorIdx >= 0 && history[anchorIdx].dbMessageId.isNullOrEmpty()) anchorIdx -= 1
+        }
         if (anchorIdx < 0) {
             appendSystemInfo(
                 text = context.getString(R.string.rescue_no_persisted_messages),
@@ -1693,8 +1713,13 @@ class ChatViewModel(
         }
 
         val digestBudget = com.openminis.app.data.RescueDigestPrefs.maxChars(context)
+        // [T-protected-tail] Digest ONLY the pre-anchor (older) range. The
+        // protected tail (history[anchorIdx+1 ..]) is sent verbatim by
+        // effectiveAgentHistory, so folding it into the digest too would both
+        // duplicate it and risk losing the freshest turns to summarisation.
+        val toDigest = history.subList(0, (anchorIdx + 1).coerceIn(0, history.size))
         val digest = com.openminis.app.data.RescueDigest.build(
-            turns = rescueTurnsFrom(history),
+            turns = rescueTurnsFrom(toDigest),
             maxChars = digestBudget,
         )
         if (digest.isBlank()) {
@@ -2107,24 +2132,43 @@ class ChatViewModel(
         // 644-657 "walk back through agentHistory looking for dbMessageId
         // AND allRaw.contains" — split across two phases to honor suspend
         // boundaries.
+        // [T-protected-tail] The anchor is placed BEFORE the protected recent
+        // tail (last N user turns), so the freshest turns are NEVER folded into
+        // the summary — they stay in postAnchor, sent verbatim and shown active.
+        // Compaction squeezes only the older, settled part of the history.
+        // Build the pure-logic view once and delegate the decision.
+        val protectedTurns = COMPACT_KEEP_RECENT_USER_TURNS
+        val ptEntries = history.map { m ->
+            com.openminis.app.data.ProtectedTail.Entry(
+                isUser = m.role == LLMMessage.Role.USER,
+                hasDbId = !m.dbMessageId.isNullOrEmpty(),
+            )
+        }
         val anchorIdx: Int = if (anchorIdxOverride != null) {
-            // compactBefore() supplied a specific anchor — walk back from
-            // there to the closest entry with a dbMessageId (mirrors the
-            // tail-walk-back logic but bounded to [0..override]).
-            var i = anchorIdxOverride.coerceIn(0, history.lastIndex)
-            while (i >= 0 && history[i].dbMessageId.isNullOrEmpty()) i -= 1
-            i
+            // compactBefore() supplied a specific anchor — respect it as an
+            // upper bound but still never cross into the protected tail, so a
+            // manual "compact before X" gesture can't sacrifice a fresh turn.
+            com.openminis.app.data.ProtectedTail.anchorIndex(
+                entries = ptEntries,
+                protectedUserTurns = protectedTurns,
+                anchorCeiling = anchorIdxOverride.coerceIn(0, history.lastIndex),
+            )
         } else {
-            // compactAll() — walk back from the tail to the closest
-            // persisted entry. iOS compactAll calls compactBefore with the
-            // last active UI message; we go through agentHistory directly
-            // since Android's agentHistory and UI list are tighter-coupled.
-            var i = history.lastIndex
-            while (i >= 0 && history[i].dbMessageId.isNullOrEmpty()) i -= 1
-            i
+            // compactAll() — anchor just below the protected recent tail.
+            com.openminis.app.data.ProtectedTail.anchorIndex(
+                entries = ptEntries,
+                protectedUserTurns = protectedTurns,
+            )
         }
         if (anchorIdx < 0) {
-            appendSystemInfo("Cannot compact: no persisted messages yet.", "compact")
+            // -1 → the whole history is within the protected tail (or nothing
+            // persisted below it). Nothing OLD enough to compact — that is
+            // success, not an error: a small/fresh session keeps its verbatim
+            // history intact, which is exactly the invariant we want.
+            appendSystemInfo(
+                "Nothing to compact yet — recent messages are kept in full.",
+                "compact",
+            )
             return
         }
 
@@ -3044,22 +3088,28 @@ class ChatViewModel(
                 return degradedHistoryWithSummary(summaryWrappedText, summary, verbose)
             }
 
-            // [T-session-rescue] A rescue digest must REPLACE the history,
-            // not decorate it. The normal path re-sends the last N user turns
-            // (up to 100 messages) verbatim as warm-up — on a session that
-            // broke from size, that warm-up is precisely what won't fit, so a
-            // rescue that kept it would fail to fix anything. Rescue markers
-            // are recognised by the digest's own opening tag (no schema
-            // change / migration needed for a flag), and they send the digest
-            // alone. Continuity is preserved inside the digest itself, whose
-            // last section is the verbatim final exchange.
+            // [T-session-rescue] Historically a rescue digest REPLACED the
+            // whole history (keepN=0) — the digest folded even the freshest
+            // turns, which is exactly what lost the user's recent plan. Under
+            // [T-protected-tail] the write side now anchors rescue BEFORE the
+            // protected recent tail, so the digest covers only the older
+            // history and the protected tail is preserved here verbatim, the
+            // same as a normal compact. Rescue markers are still recognised by
+            // the digest's own opening tag (no schema change needed).
+            // [T-protected-tail] A rescue digest now covers ONLY the pre-anchor
+            // (older) history — the compaction anchor was placed before the
+            // protected recent tail on the write side. So the read side must
+            // still send that protected tail verbatim, exactly like a normal
+            // compact. Previously rescue used keepN=0 (digest replaces
+            // everything), which is what folded the freshest turns away and
+            // lost them. Keep the same protected count for both paths.
             val isRescueMarker = summary.startsWith(com.openminis.app.data.RescueDigest.OPEN_TAG)
-            val keepN = if (isRescueMarker) 0 else COMPACT_KEEP_RECENT_USER_TURNS
+            val keepN = COMPACT_KEEP_RECENT_USER_TURNS
             if (isRescueMarker) {
                 if (verbose) AppLogger.info(
                     TAG,
                     "[Rescue] effectiveAgentHistory: rescue marker ${marker.id.take(8)} — " +
-                        "preAnchor suppressed (digest replaces history), digestChars=${summary.length}",
+                        "protected tail kept verbatim (keepN=$keepN), digestChars=${summary.length}",
                 )
             }
 
@@ -3869,7 +3919,9 @@ class ChatViewModel(
      * wording so cross-device summaries stay stylistically aligned.
      */
     private val compactSummarySystemPrompt: String = """
-        You are a context compaction engine. Your summary will REPLACE the original messages in the conversation context window. The agent will read your summary as past context, then proceed based on the user's NEXT message — your summary is background, not a standing work order. Write the summary in the same language the user used in the conversation.
+        You are a context compaction engine. Your summary will REPLACE the older messages in the conversation context window — the most recent turns are kept verbatim alongside it, so your job is to compress the SETTLED PAST, not the live thread. The agent will read your summary as past context, then proceed based on the user's NEXT message — your summary is background, not a standing work order. Write the summary in the same language the user used in the conversation.
+
+        Compaction is QUALITATIVE COMPRESSION, not deletion. You are not throwing context away — you are distilling it: keep every fact the agent could act on, drop only redundancy, filler, and water. Merge duplicates, collapse repetition, remove ceremony — but never lose a fact, a path, a decision, or an outcome. Weight detail toward the NEWER turns: the closer to the present, the more fully it is preserved.
 
         MUST PRESERVE (never omit or shorten):
         - All file paths, directory names, URLs, UUIDs, and identifiers — copy verbatim
@@ -3880,6 +3932,21 @@ class ChatViewModel(
         - Errors encountered and how they were resolved
         - Important constraints, rules, or user preferences mentioned
         - Any tool calls and their results that affect current state
+
+        STRUCTURE:
+        1. Start with a one-line description of what the conversation was about (use past tense — "User asked X, agent did Y", NOT "Goal: X").
+        2. Then a concise narrative of what happened, preserving technical details.
+        3. End with a "What had been done so far" section listing completed work concretely — every file/module touched with what changed, every command/test run with its outcome. This is NOT a "todo" or "pending" list. Do not invent ongoing objectives or carry-over tasks from old turns; if the user wants to continue, they will say so in their next message.
+
+        NEVER UNDER-REPORT WORK. If the conversation contains substantial completed work (edits, commits, builds, investigations), the summary MUST reflect it in the "What had been done so far" section. Never compress real work down to "nothing was accomplished", "no changes were made", or a similarly empty statement — that erases the session's actual progress and is a factual error. Only state that nothing was done if the transcript genuinely contains no completed work.
+
+        PRIORITIZE recent context over older history — recent decisions and recent file/path references are most useful for continuity.
+
+        Do NOT translate or alter code snippets, file paths, identifiers, or error messages. Be concise but never lose information the agent needs.
+
+        NO FILLER. Your output is machine context, not a reply to a person. Do not open with "Sure", "Certainly" or "Here is the summary". Do not describe what you are about to do, do not comment on these instructions, and do not close with an offer to help. Do not hedge ("it appears that", "possibly"): state what happened. Every sentence must carry a fact the agent could act on — if a sentence could be deleted without losing information, delete it yourself.
+
+        Merge repetition instead of listing it: forty successful build steps are one sentence ("ran 40 build steps, all succeeded"), not forty lines. But never merge a FAILURE into a success summary — failures are listed individually with their exact error text, because they are what stops the agent repeating a mistake.
 
         STRUCTURE:
         1. Start with a one-line description of what the conversation was about (use past tense — "User asked X, agent did Y", NOT "Goal: X").
