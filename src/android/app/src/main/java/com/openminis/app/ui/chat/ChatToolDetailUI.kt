@@ -252,6 +252,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.openminis.app.ui.DisplayBitmapLimits.decodeFileForDisplay
 import com.openminis.app.offload.OffloadPermissionManager
 import com.mikepenz.markdown.compose.components.markdownComponents
 import com.mikepenz.markdown.m3.Markdown
@@ -857,7 +858,7 @@ internal fun ToolDetailSheet(
                         ) {
                             value = withContext(Dispatchers.IO) {
                                 block.imageFilePath?.let { path ->
-                                    try { android.graphics.BitmapFactory.decodeFile(path) } catch (_: Exception) { null }
+                                    try { decodeFileForDisplay(path) } catch (_: Exception) { null }
                                 } ?: run {
                                     val blockIdx = toolBlocks.indexOfFirst { it.id == block.id }
                                     if (blockIdx <= 0) null
@@ -865,7 +866,7 @@ internal fun ToolDetailSheet(
                                         val prev = toolBlocks[i]
                                         if (prev.toolName == "browser_use" && prev.imageFilePath != null) {
                                             try {
-                                                android.graphics.BitmapFactory.decodeFile(prev.imageFilePath)
+                                                decodeFileForDisplay(prev.imageFilePath)
                                             } catch (_: Exception) { null }
                                         } else null
                                     }
@@ -1051,7 +1052,7 @@ internal fun ToolDetailSheet(
                             value = if (imgPath == null) null else withContext(Dispatchers.IO) {
                                 val f = File(imgPath)
                                 if (!f.exists()) null
-                                else try { BitmapFactory.decodeFile(f.absolutePath) } catch (_: Throwable) { null }
+                                else try { decodeFileForDisplay(f.absolutePath) } catch (_: Throwable) { null }
                             }
                         }
                         Column(

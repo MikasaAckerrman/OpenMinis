@@ -3777,41 +3777,60 @@ class ChatViewModel(
                 }
                 com.openminis.app.data.ContextMaintenance.Action.FULL,
                 com.openminis.app.data.ContextMaintenance.Action.RESCUE -> {
-                    // [T-no-compact-mid-request] Reshaping the payload is only
-                    // safe when nothing is reading it. `_isStreaming` is false
-                    // at the top of a fresh send (the stream job awaits the
-                    // pass before building its request), but this method is
-                    // also reached from the queued-prompt drain, where a turn
-                    // IS live — compacting there is what produced
-                    // 400 TOOL_USE_RESULT_MISMATCH.
-                    val maintenanceWindow = com.openminis.app.data.MaintenanceWindow.decide(
-                        wanted = true,
-                        turnInFlight = _isStreaming.value,
-                        compactionInFlight = _isCompacting.value,
-                    )
-                    if (maintenanceWindow != com.openminis.app.data.MaintenanceWindow.Decision.RUN_NOW) {
+                    // [T-manual-model-compaction] The model-assisted pass is
+                    // opt-in and OFF by default. When the user has not enabled
+                    // it, we never fire a summarisation/digest request on their
+                    // behalf — the free LIGHT offload above has already run, and
+                    // the ContextPolicy notice below will nudge them to run
+                    // /compact by hand once the window is actually tight.
+                    if (!com.openminis.app.data.ContextAutoCompactPrefs
+                            .isModelPassEnabled(context)
+                    ) {
                         AppLogger.info(
                             TAG,
-                            "[Maintenance] $action wanted but $maintenanceWindow " +
-                                "(streaming=${_isStreaming.value} compacting=${_isCompacting.value}) — " +
-                                "the next idle send will run it",
+                            "[Maintenance] $action wanted but model-assisted pass is " +
+                                "disabled (manual /compact only) — skipping",
                         )
+                        // Roll back the cadence increment so the manual-compact
+                        // nudge threshold below is driven purely by pressure.
+                        userTurnsSinceFullCompact -= 1
+                    } else {
+                        // [T-no-compact-mid-request] Reshaping the payload is only
+                        // safe when nothing is reading it. `_isStreaming` is false
+                        // at the top of a fresh send (the stream job awaits the
+                        // pass before building its request), but this method is
+                        // also reached from the queued-prompt drain, where a turn
+                        // IS live — compacting there is what produced
+                        // 400 TOOL_USE_RESULT_MISMATCH.
+                        val maintenanceWindow = com.openminis.app.data.MaintenanceWindow.decide(
+                            wanted = true,
+                            turnInFlight = _isStreaming.value,
+                            compactionInFlight = _isCompacting.value,
+                        )
+                        if (maintenanceWindow != com.openminis.app.data.MaintenanceWindow.Decision.RUN_NOW) {
+                            AppLogger.info(
+                                TAG,
+                                "[Maintenance] $action wanted but $maintenanceWindow " +
+                                    "(streaming=${_isStreaming.value} compacting=${_isCompacting.value}) — " +
+                                    "the next idle send will run it",
+                            )
+                            return true
+                        }
+                        lastAutoCompactAtMs = nowMs
+                        userTurnsSinceFullCompact = 0
+                        val isRescue = action == com.openminis.app.data.ContextMaintenance.Action.RESCUE
+                        appendSystemInfo(
+                            text = context.getString(
+                                if (isRescue) R.string.maintenance_rescue_compact
+                                else R.string.maintenance_full_compact,
+                                tokens,
+                                window,
+                            ),
+                            iconKind = "compact",
+                        )
+                        if (isRescue) rescueCompactNow() else compactAll()
                         return true
                     }
-                    lastAutoCompactAtMs = nowMs
-                    userTurnsSinceFullCompact = 0
-                    val isRescue = action == com.openminis.app.data.ContextMaintenance.Action.RESCUE
-                    appendSystemInfo(
-                        text = context.getString(
-                            if (isRescue) R.string.maintenance_rescue_compact
-                            else R.string.maintenance_full_compact,
-                            tokens,
-                            window,
-                        ),
-                        iconKind = "compact",
-                    )
-                    if (isRescue) rescueCompactNow() else compactAll()
-                    return true
                 }
             }
         }
@@ -3820,17 +3839,24 @@ class ChatViewModel(
         return when (policy.check(tokens, window)) {
             ContextPolicy.CheckResult.OK -> true
             ContextPolicy.CheckResult.NEEDS_COMPACT -> {
-                // Reached only when auto-maintenance is disabled or on
-                // cooldown — otherwise the tier above already acted.
+                // Reached only when the model-assisted pass is disabled (the
+                // default) or on cooldown — otherwise the tier above already
+                // acted. Fires at the START of a fresh user send, i.e. once the
+                // previous turn/task has finished, so it never interrupts work
+                // mid-task.
                 appendSystemInfo(
-                    text = "Context is getting full ($tokens / $window tokens). Consider running /compact to fold older turns into a summary.",
+                    text = "Контекст заполняется ($tokens / $window токенов). " +
+                        "Заверши текущую задачу, затем выполни /compact, чтобы свернуть старые ходы в сводку, " +
+                        "или начни новый чат, чтобы работать дальше без потери скорости.",
                     iconKind = "compact",
                 )
                 true
             }
             ContextPolicy.CheckResult.EXHAUSTED -> {
                 appendSystemInfo(
-                    text = "Context is near the model's limit ($tokens / $window tokens). Start a new chat, /compact, or /rescue to continue reliably.",
+                    text = "Контекст почти у предела модели ($tokens / $window токенов). " +
+                        "Лучше начать новый чат — так ответы останутся надёжными. " +
+                        "Либо /compact или /rescue, чтобы продолжить в этой сессии.",
                     iconKind = "compact",
                 )
                 true

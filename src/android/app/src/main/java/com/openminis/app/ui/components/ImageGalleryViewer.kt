@@ -57,6 +57,8 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import com.openminis.app.ui.DisplayBitmapLimits.limitDisplaySize
 import kotlinx.coroutines.launch
 
 /**
@@ -330,10 +332,17 @@ private fun GalleryPage(
     var scale by remember { mutableFloatStateOf(1f) }
     var offsetX by remember { mutableFloatStateOf(0f) }
     var offsetY by remember { mutableFloatStateOf(0f) }
+    val context = LocalContext.current
+    val displayRequest = remember(item.model) {
+        ImageRequest.Builder(context)
+            .data(item.model)
+            .limitDisplaySize()
+            .build()
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         AsyncImage(
-            model = item.model,
+            model = displayRequest,
             contentDescription = null,
             contentScale = ContentScale.Fit,
             modifier = Modifier

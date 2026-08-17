@@ -62,11 +62,27 @@ internal object ConfigBuiltins {
         r.register(
             PrefsBoolField(
                 path = "context.autoCompact",
-                displayName = "Automatic context upkeep",
-                description = "Master switch for automatic context management (default on). Every message you send runs a free local pass that offloads large tool outputs to disk. Once the context passes ~35% of the model's window, a model-assisted summarisation pass also runs — no more often than the cadence in context.fullCompactEveryNTurns, sooner if the window is filling fast, and never while a pass is already running. Past ~85% of the window the summarisation request itself becomes unreliable, so compression happens on-device instead. Turn this off to manage context by hand with /compact and /rescue.",
+                displayName = "Automatic context upkeep (local)",
+                description = "Master switch for the FREE, local context upkeep (default on). Every message you send runs a local pass that offloads large tool outputs to disk and links them back in — this costs no tokens, fires no request, and cannot fail the turn, so it keeps a tool-heavy session from spiking into the wall. This does NOT include the model-assisted summarisation pass; that is a separate switch (context.autoCompactModelPass) and is off by default. Turn this off to do no automatic upkeep at all.",
                 prefs = prefs,
                 key = "context.autocompact.enabled",
                 defaultValue = true,
+            )
+        )
+        // [T-manual-model-compaction] Opt-in switch for the model-assisted
+        // summarisation pass. Off by default: the pass fires a request whose
+        // body is derived from the already-large history (providers were
+        // content-filtering it) and rewrites session history in ways the user
+        // did not explicitly ask for, so the user drives it by hand with
+        // /compact and only opts in here.
+        r.register(
+            PrefsBoolField(
+                path = "context.autoCompactModelPass",
+                displayName = "Automatic model-assisted compaction",
+                description = "Whether the model-assisted summarisation pass may run automatically (default OFF). When off — the default — the app never sends a summarisation/digest request on your behalf; you fold older turns yourself with /compact and /rescue whenever you choose, and the app only nudges you once the window is actually tight. The free local offload pass (context.autoCompact) still runs every turn regardless. Turn this on only if you want the app to summarise on cadence + pressure automatically.",
+                prefs = prefs,
+                key = "context.autocompact.modelpass.enabled",
+                defaultValue = false,
             )
         )
         // [T-session-rescue] Budget for the local, LLM-free rescue digest.

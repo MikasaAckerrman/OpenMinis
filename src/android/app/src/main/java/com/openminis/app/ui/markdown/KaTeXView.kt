@@ -186,8 +186,17 @@ fun KaTeXRenderView(
                             }
                             // Scale for device density
                             val scale = ctx.resources.displayMetrics.density
-                            val bitmapW = (width * scale).toInt()
-                            val bitmapH = (height * scale).toInt()
+                            // [T-runtime-bitmap-canvas-crash] A pathological
+                            // formula (extremely wide/tall LaTeX) can drive
+                            // width/height past the RecordingCanvas ceiling; the
+                            // createBitmap + draw below would then crash the app
+                            // when the Image is composed. Clamp each edge to the
+                            // display ceiling before allocating. The Image is
+                            // sized in CSS dp, so a clamped-down bitmap just
+                            // renders slightly softer rather than crashing.
+                            val maxEdge = com.openminis.app.ui.DisplayBitmapLimits.MAX_DISPLAY_EDGE_PX
+                            val bitmapW = (width * scale).toInt().coerceIn(1, maxEdge)
+                            val bitmapH = (height * scale).toInt().coerceIn(1, maxEdge)
 
                             // Resize WebView to content size, then capture
                             post {

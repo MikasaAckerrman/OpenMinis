@@ -80,6 +80,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.FileProvider
 import com.openminis.app.logging.AppLogger
 import com.openminis.app.ui.components.rememberIosBounceOverscrollEffect
+import com.openminis.app.ui.DisplayBitmapLimits.decodeFileForDisplay
 import com.openminis.app.ui.markdown.MarkdownText
 import com.openminis.app.ui.chat.StreamingMarkdownText
 import com.openminis.app.ui.media.InlineAudioPlayer
@@ -277,7 +278,7 @@ private fun ImagePreview(item: FileItem) {
     LaunchedEffect(item.file) {
         withContext(Dispatchers.IO) {
             try {
-                val bmp = BitmapFactory.decodeFile(item.file.absolutePath)
+                val bmp = decodeFileForDisplay(item.file.absolutePath)
                 if (bmp != null) {
                     bitmap = bmp
                 } else {

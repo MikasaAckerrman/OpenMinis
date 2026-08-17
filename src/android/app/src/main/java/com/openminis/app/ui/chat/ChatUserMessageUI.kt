@@ -251,6 +251,8 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import com.openminis.app.ui.DisplayBitmapLimits.limitDisplaySize
 import com.openminis.app.offload.OffloadPermissionManager
 import com.mikepenz.markdown.compose.components.markdownComponents
 import com.mikepenz.markdown.m3.Markdown
@@ -565,8 +567,12 @@ internal fun UserAttachmentList(
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         imageUris.forEachIndexed { idx, uri ->
+            val context = LocalContext.current
+            val request = remember(uri) {
+                ImageRequest.Builder(context).data(uri).limitDisplaySize().build()
+            }
             AsyncImage(
-                model = uri,
+                model = request,
                 contentDescription = "Image attachment",
                 contentScale = ContentScale.Crop,
                 modifier = Modifier
@@ -705,8 +711,15 @@ private fun ImageGalleryDialog(
                 state = pagerState,
                 modifier = Modifier.fillMaxSize(),
             ) { page ->
+                val context = LocalContext.current
+                val request = remember(uris[page]) {
+                    ImageRequest.Builder(context)
+                        .data(uris[page])
+                        .limitDisplaySize()
+                        .build()
+                }
                 AsyncImage(
-                    model = uris[page],
+                    model = request,
                     contentDescription = null,
                     contentScale = ContentScale.Fit,
                     modifier = Modifier.fillMaxSize(),
