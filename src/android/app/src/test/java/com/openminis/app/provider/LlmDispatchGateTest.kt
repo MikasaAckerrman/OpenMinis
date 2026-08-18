@@ -38,13 +38,26 @@ class LlmDispatchGateTest {
     }
 
     @Test
+    fun `default settings never pace — 10 concurrent sessions run unthrottled`() = runBlocking {
+        LlmDispatchGate.resetForTest()
+        // Defaults as shipped: local rate pacing is OFF (provider 429/Retry-After
+        // governs the real rate). Draining far more than any old burst budget on
+        // ONE shared host key must never block.
+        var t = 0L
+        LlmDispatchGate.clock = { t } // clock never advances: proves no time-based wait
+        assertTrue("default rpm must disable local pacing", LlmDispatchGate.defaultRpm <= 0.0)
+        repeat(200) {
+            withTimeout(200) { LlmDispatchGate.awaitRateSlot("same.host") }
+        }
+    }
+
+    @Test
     fun `rate slot admits burst then blocks until tokens accrue`() = runBlocking {
         LlmDispatchGate.resetForTest()
         LlmDispatchGate.jitterFraction = { 0.0 }
         var t = 0L
         LlmDispatchGate.clock = { t }
-        LlmDispatchGate.burstCapacity = 3.0
-        LlmDispatchGate.defaultRpm = 60.0 // 1 token/sec
+        LlmDispatchGate.enablePacing(rpm = 60.0, burst = 3.0) // opt in: 1 token/sec, burst 3
 
         repeat(3) { withTimeout(500) { LlmDispatchGate.awaitRateSlot("k1") } }
 
@@ -62,8 +75,7 @@ class LlmDispatchGateTest {
         LlmDispatchGate.jitterFraction = { 0.0 }
         var t = 0L
         LlmDispatchGate.clock = { t }
-        LlmDispatchGate.burstCapacity = 1.0
-        LlmDispatchGate.defaultRpm = 6.0
+        LlmDispatchGate.enablePacing(rpm = 6.0, burst = 1.0)
 
         withTimeout(500) { LlmDispatchGate.awaitRateSlot("hostA") }
         // hostA drained, hostB has its own full bucket → must not block

@@ -711,6 +711,14 @@ class ChatViewModel(
      */
     private val _lastTurnContextTokens = MutableStateFlow(0)
     /**
+     * Provider usage is meaningful only for the model + effective context
+     * window that produced it. A model switch used to keep the numerator but
+     * swap the denominator, so 130K from a large-window model could instantly
+     * render as 130% on a 100K model and feed false pressure into maintenance.
+     */
+    private var lastContextUsageAttribution =
+        com.openminis.app.data.ContextUsageAttribution.EMPTY
+    /**
      * [T-no-compact-mid-request] The in-flight payload-reshaping job
      * (compaction or rescue), so a send can WAIT for it instead of racing it.
      *
@@ -747,6 +755,7 @@ class ChatViewModel(
      * compaction size immediately instead of a turn later.
      */
     private fun invalidateContextPressure(reason: String) {
+        lastContextUsageAttribution = com.openminis.app.data.ContextUsageAttribution.EMPTY
         if (_lastTurnContextTokens.value == 0) return
         AppLogger.info(
             TAG,
@@ -754,15 +763,52 @@ class ChatViewModel(
         )
         _lastTurnContextTokens.value = 0
     }
-    // [T-context-autocompact] Cooldown marker for the auto-compact trigger
-    // in [checkContextBeforeSend] — see ContextAutoCompact.COOLDOWN_MS.
-    private var lastAutoCompactAtMs = 0L
-    // [T-context-maintenance] User sends since the last full (LLM) compaction
-    // pass. Drives the cadence gate in [ContextMaintenance.decide]. Not
-    // persisted: after a process restart a fresh count is harmless (the
-    // pressure gate still governs), and persisting it would need a schema
-    // change for a heuristic counter.
-    private var userTurnsSinceFullCompact = 0
+
+    /**
+     * Publish a provider usage sample together with the capacity it measured.
+     * Callers read zero after any model/window change until the new route emits
+     * its own Usage chunk; the local payload estimate remains available for
+     * output-token sizing and user-facing warnings.
+     */
+    private fun publishContextUsage(tokens: Int, provider: LLMProvider) {
+        lastContextUsageAttribution = com.openminis.app.data.ContextUsageAttribution.capture(
+            tokens = tokens,
+            modelId = provider.model.id,
+            effectiveWindow = effectiveContextWindowFor(provider.model),
+        )
+        refreshAttributedContextUsage("usage from ${provider.model.id}")
+    }
+
+    /**
+     * Revalidate the last usage sample after any route/config change. The
+     * effective model comes from the active entry when available, matching
+     * [effectiveContextWindowTokens]. A mismatch publishes zero until the new
+     * provider reports a fresh sample.
+     */
+    private fun refreshAttributedContextUsage(reason: String) {
+        val config = providerRepository.config.value
+        val modelId = _activeEntryId.value
+            ?.let { id -> config.modelEntries.find { it.id == id }?.model?.id }
+            ?: currentModel?.id
+        val validTokens = lastContextUsageAttribution.tokensFor(
+            modelId = modelId,
+            effectiveWindow = effectiveContextWindowTokens(),
+        )
+        if (_lastTurnContextTokens.value != validTokens) {
+            AppLogger.info(
+                TAG,
+                "[Maintenance] context usage ${_lastTurnContextTokens.value} -> $validTokens: $reason",
+            )
+            _lastTurnContextTokens.value = validTokens
+        }
+    }
+
+    /** Install model + entry together, then validate route-bound usage. */
+    private fun activateModel(model: LLMModel, entryId: String, reason: String) {
+        currentModel = model
+        _activeEntryId.value = entryId
+        refreshAttributedContextUsage(reason)
+    }
     val lastTurnContextTokens: StateFlow<Int> = _lastTurnContextTokens.asStateFlow()
 
     /**
@@ -1247,16 +1293,22 @@ class ChatViewModel(
      *      on Android — persisted by the group editor but never consulted at
      *      runtime.
      */
+    private fun effectiveContextWindowFor(model: LLMModel): Int {
+        val window = model.contextWindowTokens
+        val groupLimit = _selectedGroupId.value
+            ?.let { gid -> providerRepository.config.value.modelGroups
+                .find { it.id == gid }?.contextLimitTokens }
+            ?.takeIf { it > 0 }
+        return if (groupLimit != null) minOf(window, groupLimit) else window
+    }
+
     private fun effectiveContextWindowTokens(): Int? {
         val config = providerRepository.config.value
         val liveModel = _activeEntryId.value
             ?.let { id -> config.modelEntries.find { it.id == id }?.model }
             ?: currentModel
-        val window = liveModel?.contextWindowTokens ?: return null
-        val groupLimit = _selectedGroupId.value
-            ?.let { gid -> config.modelGroups.find { it.id == gid }?.contextLimitTokens }
-            ?.takeIf { it > 0 }
-        return if (groupLimit != null) minOf(window, groupLimit) else window
+            ?: return null
+        return effectiveContextWindowFor(liveModel)
     }
 
     val currentModelMaxOutputTokens: Int?
@@ -1431,7 +1483,7 @@ class ChatViewModel(
         _slashMenuSelectedIndex.value = -1
 
         when (cmd.id) {
-            "compact" -> compactAll()
+            "compact" -> runCompactNow()
             "rescue" -> rescueCompactNow()
             "memory" -> toggleMemoryEnabled()
             "thinking" -> toggleThinking()
@@ -1591,7 +1643,7 @@ class ChatViewModel(
      * the resulting summary text.
      */
     fun runCompactNow() {
-        compactAll()
+        compactAll(com.openminis.app.data.CompactionLaunchPolicy.Origin.EXPLICIT_USER)
     }
 
     /**
@@ -1623,10 +1675,16 @@ class ChatViewModel(
                 TAG,
                 "[Compact] compactBefore: id=${dbMessageId.take(8)} not in agentHistory — falling back to compactAll()",
             )
-            compactAll(anchorIdxOverride = null)
+            compactAll(
+                origin = com.openminis.app.data.CompactionLaunchPolicy.Origin.EXPLICIT_USER,
+                anchorIdxOverride = null,
+            )
             return
         }
-        compactAll(anchorIdxOverride = idx)
+        compactAll(
+            origin = com.openminis.app.data.CompactionLaunchPolicy.Origin.EXPLICIT_USER,
+            anchorIdxOverride = idx,
+        )
     }
 
     /**
@@ -1655,6 +1713,18 @@ class ChatViewModel(
      * on a network error.
      */
     fun rescueCompactNow() {
+        rescueCompact(
+            origin = com.openminis.app.data.CompactionLaunchPolicy.Origin.EXPLICIT_USER,
+        )
+    }
+
+    private fun rescueCompact(
+        origin: com.openminis.app.data.CompactionLaunchPolicy.Origin,
+    ) {
+        if (!com.openminis.app.data.CompactionLaunchPolicy.mayRewrite(origin)) {
+            AppLogger.warning(TAG, "[Rescue] blocked non-explicit launch origin=$origin")
+            return
+        }
         if (!requireFullSessionHistory()) return
         AppLogger.info(
             TAG,
@@ -2082,9 +2152,16 @@ class ChatViewModel(
         return if (raw.length <= 2) "" else raw
     }
 
-    private fun compactAll(anchorIdxOverride: Int? = null) {
+    private fun compactAll(
+        origin: com.openminis.app.data.CompactionLaunchPolicy.Origin,
+        anchorIdxOverride: Int? = null,
+    ) {
+        if (!com.openminis.app.data.CompactionLaunchPolicy.mayRewrite(origin)) {
+            AppLogger.warning(TAG, "[Compact] blocked non-explicit launch origin=$origin")
+            return
+        }
         if (!requireFullSessionHistory()) return
-        AppLogger.info(TAG, "[Compact] compactAll() invoked streaming=${_isStreaming.value} compacting=${_isCompacting.value} historySize=${agentHistory.size} anchorOverride=$anchorIdxOverride")
+        AppLogger.info(TAG, "[Compact] compactAll() invoked origin=$origin streaming=${_isStreaming.value} compacting=${_isCompacting.value} historySize=${agentHistory.size} anchorOverride=$anchorIdxOverride")
         if (_isStreaming.value) {
             AppLogger.info(TAG, "[Compact] aborted: stream in progress")
             appendSystemInfo(
@@ -3743,162 +3820,36 @@ class ChatViewModel(
     }
 
     /**
-     * Consult [ContextPolicy] before sending, then run the maintenance tier
-     * [ContextMaintenance] selects. Always returns true — context work never
-     * blocks the user's turn.
+     * Observe context pressure before a send without mutating session history.
      *
-     * [T-context-maintenance] Three tiers, cheapest first:
-     *   - LIGHT (every send, free): offload oversized tool payloads to disk.
-     *     No tokens, no request, so there is no reason to ration it — and it
-     *     is what keeps a tool-heavy session from spiking into the wall
-     *     between two full passes.
-     *   - FULL (cadence + pressure + cooldown gated): the LLM summarisation
-     *     pass. Costs a request, so all three gates must agree.
-     *   - RESCUE (past the ceiling): the local digest. Beyond ~85% of the
-     *     window an LLM compact is itself likely to be dropped by the
-     *     provider, which is exactly the stall being designed out — so at
-     *     that point we stop asking the model and compress on-device.
-     *
-     * The ContextPolicy notice below is kept for the boundaries the tiers do
-     * not cover (small-window tiers where compaction is unavailable).
+     * Product contract: compaction, rescue digests, and tool-output offload
+     * are manual operations only. Pressure may warn the user, but it cannot
+     * launch a model call, write a compact marker, or replace payload parts.
      */
     private fun checkContextBeforeSend(): Boolean {
-        // [T-context-pressure-blind] _lastTurnContextTokens only ever gets a
-        // value from a SUCCESSFUL response's usage block. On a session that has
-        // started failing — the one that needs help — it stays 0 forever, and
-        // an in-memory counter is 0 again after every app restart. Everything
-        // gated on it then silently no-ops: maintenance read "pressure
-        // unknown" and returned LIGHT on every send, so the full history kept
-        // going out. Fall back to the local char estimate: cruder than the
-        // provider's tokeniser, but being 20% off still picks the right tier,
-        // whereas 0 picks nothing.
         val reportedTokens = _lastTurnContextTokens.value
         val tokens = com.openminis.app.data.ContextPressure.resolve(
             usageTokens = reportedTokens,
             estimatedTokens = estimateContextTokens(),
         )
-        // [T-context-window-live-read] Live window (entry re-resolved + group
-        // contextLimitTokens folded in) — not the currentModel snapshot.
         val window = effectiveContextWindowTokens() ?: return true
         val policy = ContextPolicy.forContextWindow(window)
-        val nowMs = System.currentTimeMillis()
         if (com.openminis.app.data.ContextPressure.isEstimated(reportedTokens, tokens)) {
             AppLogger.info(
                 TAG,
-                "[Maintenance] no usage reported yet — using local estimate $tokens tokens " +
-                    "(window=$window)",
+                "[Maintenance] no route-compatible usage — using local estimate " +
+                    "$tokens tokens (window=$window); automatic rewriting is disabled",
             )
-        }
-
-        if (com.openminis.app.data.ContextAutoCompactPrefs.isEnabled(context)) {
-            userTurnsSinceFullCompact += 1
-            val action = com.openminis.app.data.ContextMaintenance.decide(
-                userTurnsSinceFull = userTurnsSinceFullCompact,
-                contextTokens = tokens,
-                contextWindow = window,
-                compactSupported = policy.manualCompactAllowed && policy.compactThreshold > 0,
-                isCompacting = _isCompacting.value,
-                lastFullAtMs = lastAutoCompactAtMs,
-                nowMs = nowMs,
-                fullEveryNTurns = com.openminis.app.data.ContextMaintenancePrefs
-                    .fullEveryNTurns(context),
-                // [T-stale-pressure-after-compact] Rescuing a rescue digest
-                // folds nothing but the digest itself — guard against the loop.
-                alreadyRescued = _compactSummary.value
-                    ?.startsWith(com.openminis.app.data.RescueDigest.OPEN_TAG) == true,
-            )
-            AppLogger.info(
-                TAG,
-                "[Maintenance] turn=$userTurnsSinceFullCompact tokens=$tokens/$window " +
-                    "(${if (window > 0) tokens * 100 / window else 0}%) → $action",
-            )
-            when (action) {
-                com.openminis.app.data.ContextMaintenance.Action.NONE -> Unit
-                com.openminis.app.data.ContextMaintenance.Action.LIGHT -> {
-                    // Local, free, silent. Threshold-gated inside, so calling
-                    // it every turn is a no-op until there is something big.
-                    runCatching {
-                        offloadContextIfNeeded(
-                            contextWindow = window,
-                            lastContextTokens = tokens,
-                        )
-                    }.onFailure {
-                        AppLogger.warning(TAG, "[Maintenance] light pass failed: ${it.message}")
-                    }
-                }
-                com.openminis.app.data.ContextMaintenance.Action.FULL,
-                com.openminis.app.data.ContextMaintenance.Action.RESCUE -> {
-                    // [T-manual-model-compaction] The model-assisted pass is
-                    // opt-in and OFF by default. When the user has not enabled
-                    // it, we never fire a summarisation/digest request on their
-                    // behalf — the free LIGHT offload above has already run, and
-                    // the ContextPolicy notice below will nudge them to run
-                    // /compact by hand once the window is actually tight.
-                    if (!com.openminis.app.data.ContextAutoCompactPrefs
-                            .isModelPassEnabled(context)
-                    ) {
-                        AppLogger.info(
-                            TAG,
-                            "[Maintenance] $action wanted but model-assisted pass is " +
-                                "disabled (manual /compact only) — skipping",
-                        )
-                        // Roll back the cadence increment so the manual-compact
-                        // nudge threshold below is driven purely by pressure.
-                        userTurnsSinceFullCompact -= 1
-                    } else {
-                        // [T-no-compact-mid-request] Reshaping the payload is only
-                        // safe when nothing is reading it. `_isStreaming` is false
-                        // at the top of a fresh send (the stream job awaits the
-                        // pass before building its request), but this method is
-                        // also reached from the queued-prompt drain, where a turn
-                        // IS live — compacting there is what produced
-                        // 400 TOOL_USE_RESULT_MISMATCH.
-                        val maintenanceWindow = com.openminis.app.data.MaintenanceWindow.decide(
-                            wanted = true,
-                            turnInFlight = _isStreaming.value,
-                            compactionInFlight = _isCompacting.value,
-                        )
-                        if (maintenanceWindow != com.openminis.app.data.MaintenanceWindow.Decision.RUN_NOW) {
-                            AppLogger.info(
-                                TAG,
-                                "[Maintenance] $action wanted but $maintenanceWindow " +
-                                    "(streaming=${_isStreaming.value} compacting=${_isCompacting.value}) — " +
-                                    "the next idle send will run it",
-                            )
-                            return true
-                        }
-                        lastAutoCompactAtMs = nowMs
-                        userTurnsSinceFullCompact = 0
-                        val isRescue = action == com.openminis.app.data.ContextMaintenance.Action.RESCUE
-                        appendSystemInfo(
-                            text = context.getString(
-                                if (isRescue) R.string.maintenance_rescue_compact
-                                else R.string.maintenance_full_compact,
-                                tokens,
-                                window,
-                            ),
-                            iconKind = "compact",
-                        )
-                        if (isRescue) rescueCompactNow() else compactAll()
-                        return true
-                    }
-                }
-            }
         }
 
         if (tokens <= 0) return true
         return when (policy.check(tokens, window)) {
             ContextPolicy.CheckResult.OK -> true
             ContextPolicy.CheckResult.NEEDS_COMPACT -> {
-                // Reached only when the model-assisted pass is disabled (the
-                // default) or on cooldown — otherwise the tier above already
-                // acted. Fires at the START of a fresh user send, i.e. once the
-                // previous turn/task has finished, so it never interrupts work
-                // mid-task.
                 appendSystemInfo(
                     text = "Контекст заполняется ($tokens / $window токенов). " +
-                        "Заверши текущую задачу, затем выполни /compact, чтобы свернуть старые ходы в сводку, " +
-                        "или начни новый чат, чтобы работать дальше без потери скорости.",
+                        "Автоматическое сжатие отключено навсегда. Заверши текущую задачу, " +
+                        "затем явно выполни /compact или начни новый чат.",
                     iconKind = "compact",
                 )
                 true
@@ -3906,8 +3857,8 @@ class ChatViewModel(
             ContextPolicy.CheckResult.EXHAUSTED -> {
                 appendSystemInfo(
                     text = "Контекст почти у предела модели ($tokens / $window токенов). " +
-                        "Лучше начать новый чат — так ответы останутся надёжными. " +
-                        "Либо /compact или /rescue, чтобы продолжить в этой сессии.",
+                        "Автоматическое сжатие не запускается. Начни новый чат либо явно " +
+                        "выполни /compact или /rescue.",
                     iconKind = "compact",
                 )
                 true
@@ -4446,9 +4397,8 @@ class ChatViewModel(
             if (!resolved) {
                 val entry = findModelEntry(session.modelId)
                 if (entry != null) {
-                    currentModel = entry.model
+                    activateModel(entry.model, entry.id, "restore stored model id")
                     _modelName.value = entry.model.displayName
-                    _activeEntryId.value = entry.id
                     val instance = providerRepository.instance(entry.providerInstanceId)
                     if (instance != null) {
                         val apiKey = providerRepository.loadApiKey(instance.id)
@@ -4671,16 +4621,6 @@ class ChatViewModel(
                 .getOrNull()
             _compactSummary.value = marker?.summary
             _cachedLatestMarker = marker
-            // [T-compaction-loop] Seed the auto-compact cooldown from the last
-            // real compaction's persisted timestamp. lastAutoCompactAtMs is an
-            // in-memory var; without this seed a VM rebuilt from SQLite (after
-            // LRU eviction OR a process restart) resets it to 0L, so
-            // ContextMaintenance.decide sees "no compaction ever ran", the
-            // FULL_COOLDOWN_MS gate is bypassed, and a session that just
-            // compacted compacts again on the next send — the endless-compaction
-            // loop. The marker's createdAt is the ground truth that survives any
-            // rebuild.
-            marker?.createdAt?.let { lastAutoCompactAtMs = it }
 
             com.openminis.app.diagnostics.PerfLongCtx.step(
                 sessionId,
@@ -5061,12 +5001,11 @@ class ChatViewModel(
                     val entry = providerRepository.config.value.modelEntries.find { it.id == entryId } ?: return false
                     val instance = providerRepository.instance(entry.providerInstanceId) ?: return false
                     val apiKey = providerRepository.loadApiKey(instance.id) ?: return false
-                    currentModel = entry.model
-                    _modelName.value = entry.model.displayName
-                    _providerName.value = instance.label.ifEmpty { entry.model.provider }
                     _selectedGroupId.value = null
                     _selectedGroupName.value = ""
-                    _activeEntryId.value = entry.id
+                    activateModel(entry.model, entry.id, "restore explicit entry binding")
+                    _modelName.value = entry.model.displayName
+                    _providerName.value = instance.label.ifEmpty { entry.model.provider }
                     currentProvider = ProviderFactory.create(instance, apiKey, entry.model, context)
                     true
                 }
@@ -5100,11 +5039,10 @@ class ChatViewModel(
         val instance = providerRepository.instance(targetEntry.providerInstanceId) ?: return false
         val apiKey = providerRepository.loadApiKey(instance.id) ?: return false
 
-        currentModel = targetEntry.model
+        activateModel(targetEntry.model, targetEntry.id, "resolve model group")
         _modelName.value = targetEntry.model.displayName
         _providerName.value = instance.label.ifEmpty { targetEntry.model.provider }
         _selectedGroupName.value = group.name
-        _activeEntryId.value = targetEntry.id
         currentProvider = ProviderFactory.create(instance, apiKey, targetEntry.model, context)
         return true
     }
@@ -5180,9 +5118,8 @@ class ChatViewModel(
             ?: providerRepository.newestProviderNewestTextEntry()
             ?: return false
         val instance = providerRepository.instance(entry.providerInstanceId) ?: return false
-        currentModel = entry.model
+        activateModel(entry.model, entry.id, "choose new-chat default")
         _modelName.value = entry.model.displayName
-        _activeEntryId.value = entry.id
         _providerName.value = instance.label.ifEmpty { entry.model.provider }
         val apiKey = providerRepository.loadApiKey(instance.id)
         if (apiKey != null) {
@@ -5252,12 +5189,11 @@ class ChatViewModel(
         val instance = providerRepository.instance(entry.providerInstanceId) ?: return
         val apiKey = providerRepository.loadApiKey(instance.id) ?: return
 
-        currentModel = entry.model
-        _modelName.value = entry.model.displayName
-        _providerName.value = instance.label.ifEmpty { entry.model.provider }
         _selectedGroupId.value = null
         _selectedGroupName.value = ""
-        _activeEntryId.value = entry.id
+        activateModel(entry.model, entry.id, "user selected model entry")
+        _modelName.value = entry.model.displayName
+        _providerName.value = instance.label.ifEmpty { entry.model.provider }
         currentProvider = ProviderFactory.create(instance, apiKey, entry.model, context)
         persistBinding("""{"type":"entry","entryId":"$entryId"}""")
         // [T-newchat-default-model-fallback-android] Remember this as the
@@ -5360,9 +5296,8 @@ class ChatViewModel(
             if (!instance.isEnabled) continue
             val apiKey = providerRepository.loadApiKey(instance.id) ?: continue
 
-            currentModel = entry.model
+            activateModel(entry.model, entry.id, "resolve next fallback provider")
             _modelName.value = entry.model.displayName
-            _activeEntryId.value = entry.id
             val provider = ProviderFactory.create(instance, apiKey, entry.model, context)
             currentProvider = provider
             return provider
@@ -7518,11 +7453,7 @@ class ChatViewModel(
     private fun dynamicMaxTokens(provider: LLMProvider, lastContextTokens: Int = 0): Int {
         val sessionCap = com.openminis.app.tools.AgentRuntimePolicyStore
             .maxOutputTokensFor(realSessionId.ifEmpty { sessionId })
-        val model = currentModel ?: return minOf(
-            GLOBAL_MAX_TOKENS_CEILING,
-            provider.defaultMaxOutputTokens,
-            sessionCap ?: Int.MAX_VALUE,
-        )
+        val model = provider.model
         val configuredCeiling = minOf(
             GLOBAL_MAX_TOKENS_CEILING,
             provider.effectiveMaxOutputTokens(model),
@@ -7536,7 +7467,7 @@ class ChatViewModel(
         // LLMModel.contextWindowTokens so the corrected Claude-1M / Gemini-1M
         // values apply here too, instead of the stale local "everything 200K"
         // copy that under-reported modern Claude/Gemini windows.
-        val contextWindow = model.contextWindowTokens
+        val contextWindow = effectiveContextWindowFor(model)
         if (contextWindow <= 0) return maxOutputCeiling
         // [T-context-pressure-blind] Same blind spot as the maintenance gate,
         // with a nastier consequence here. `lastContextTokens` is 0 until a
@@ -7944,7 +7875,7 @@ class ChatViewModel(
         // args.
         val toolInputChunkRings: MutableMap<String, MutableList<String>> = mutableMapOf()
         var accumulatedText = ""
-        var lastContextTokens = 0  // updated each turn from API usage
+        var lastContextUsage = com.openminis.app.data.ContextUsageAttribution.EMPTY
 
         // T94 fix 2: throttle text-delta UI updates to ~20fps (50ms).
         // Pre-T94 the LLMStreamChunk.Text branch hopped to Dispatchers.Main
@@ -8029,34 +7960,14 @@ class ChatViewModel(
         // we surface a real error instead of a silent blank bubble. Mirrors iOS
         // AIChatViewModel.didInjectEmptyToolReminderThisRun.
         var didInjectEmptyToolReminder = false
-        // [T-recover-context-full-mid-loop] One-shot: the provider reported a
-        // full context window (or a gateway size-filter rejection) mid-loop, we
-        // compressed via the MODEL and retried. A second occurrence means
-        // shrinking did not help, so the error is surfaced / falls back instead
-        // of looping.
-        var didCompactForOversize = false
+        // Context mutations are deliberately absent from this loop. Pressure,
+        // provider errors, and model changes may surface /compact or /rescue
+        // hints, but only an explicit user/operator command may rewrite the
+        // payload or write a compact marker.
+        var didReportOversize = false
         for (turn in 0 until MAX_AGENT_TURNS) {
             // Sanitize history before each API call (mirrors iOS pre-API validation)
             sanitizeAgentHistory()
-
-            // Context window management: offload large tool outputs in older
-            // messages to disk when the policy threshold for this model's
-            // context window is crossed. Stubs in agentHistory still tell the
-            // model where to file_read the original content. Mirrors iOS
-            // AIChatViewModel.swift:4549.
-            // [T-anthropic-context-window] Use contextWindowTokens (heuristic-
-            // backed) instead of the raw nullable field, so offload triggers at
-            // the correct fraction for heuristic-only Claude/Gemini models (1M)
-            // rather than never firing when contextWindow is unset.
-            // [T-context-window-live-read] Live read per loop turn — a stale
-            // snapshot inside a long-running agent turn is exactly the iOS
-            // fcc22b66 item-3 bug.
-            effectiveContextWindowTokens()?.takeIf { it > 0 }?.let { window ->
-                offloadContextIfNeeded(
-                    contextWindow = window,
-                    lastContextTokens = lastContextTokens,
-                )
-            }
 
             // Mark where this turn's blocks start in allToolBlocks so we can persist
             // only the NEW parts from this turn (not the full accumulated history).
@@ -8106,7 +8017,11 @@ class ChatViewModel(
             // log it at turn-end alongside the empty-turn warning.
             var turnFinishReason: String? = null
             var lastUsage: LLMUsage? = null
-            val maxTokens = dynamicMaxTokens(provider, lastContextTokens)
+            val currentUsageTokens = lastContextUsage.tokensFor(
+                modelId = currentProvider.model.id,
+                effectiveWindow = effectiveContextWindowFor(currentProvider.model),
+            )
+            val maxTokens = dynamicMaxTokens(currentProvider, currentUsageTokens)
             val toolCalls = mutableListOf<Triple<String, String, JSONObject>>() // id, name, args
 
             // [T-dedupe-toolcallid 03fbcbfd] Per-turn dedupe of tool_call_id.
@@ -8172,7 +8087,14 @@ class ChatViewModel(
                     // no compact has happened, so the common path stays zero-copy.
                     currentProvider.streamMessage(
                         buildRequestPayload(),
-                        systemPrompt, dynamicMaxTokens(currentProvider, lastContextTokens),
+                        systemPrompt,
+                        dynamicMaxTokens(
+                            currentProvider,
+                            lastContextUsage.tokensFor(
+                                modelId = currentProvider.model.id,
+                                effectiveWindow = effectiveContextWindowFor(currentProvider.model),
+                            ),
+                        ),
                         tools = agentTools,
                         thinkingLevel = if (currentModelSupportsReasoning) _thinkingLevel.value else ThinkingLevel.OFF,
                     ).collect { chunk ->
@@ -8451,23 +8373,22 @@ class ChatViewModel(
                     }
                     is LLMStreamChunk.Usage -> {
                         lastUsage = chunk.usage
-                        // Update context token count for next turn's dynamicMaxTokens()
-                        // and publish to _lastTurnContextTokens so the ContextPolicy
-                        // gate in [checkContextBeforeSend] can see the latest pressure
-                        // without a DB round-trip.
-                        if (chunk.usage.latestContextTokens > 0) {
-                            lastContextTokens = chunk.usage.latestContextTokens
-                        } else if (chunk.usage.inputTokens > 0) {
-                            // Fallback when a provider omits latestContextTokens: inputTokens is
-                            // now fresh-only (cached portion subtracted in the parser), so add the
-                            // cache back to recover the true context size — otherwise a high
-                            // cache-hit turn would under-report context pressure and skip offload.
-                            lastContextTokens = chunk.usage.inputTokens +
-                                (chunk.usage.cacheReadInputTokens ?: 0) +
-                                (chunk.usage.cacheCreationInputTokens ?: 0)
+                        val contextTokens = when {
+                            chunk.usage.latestContextTokens > 0 ->
+                                chunk.usage.latestContextTokens
+                            chunk.usage.inputTokens > 0 ->
+                                chunk.usage.inputTokens +
+                                    (chunk.usage.cacheReadInputTokens ?: 0) +
+                                    (chunk.usage.cacheCreationInputTokens ?: 0)
+                            else -> 0
                         }
-                        if (lastContextTokens > 0) {
-                            _lastTurnContextTokens.value = lastContextTokens
+                        if (contextTokens > 0) {
+                            lastContextUsage = com.openminis.app.data.ContextUsageAttribution.capture(
+                                tokens = contextTokens,
+                                modelId = currentProvider.model.id,
+                                effectiveWindow = effectiveContextWindowFor(currentProvider.model),
+                            )
+                            publishContextUsage(contextTokens, currentProvider)
                         }
                     }
                     is LLMStreamChunk.ReasoningContent -> {
@@ -8600,6 +8521,23 @@ class ChatViewModel(
                         withContext(Dispatchers.Main) {
                             clearInlineError()
                         }
+                        // [T-android-stale-conn-retry-hang] If this was the TTFB
+                        // stale-connection hang, drop the dead pooled sockets
+                        // before retrying — otherwise the retry writes into the
+                        // same corpse and hangs another 30s. Especially common on
+                        // the FIRST post-compaction turn, where the summary call
+                        // + DB writes left the chat socket idle long enough for a
+                        // VPN/proxy to reap it. Other transient errors keep the
+                        // pool (live sockets are still useful to them).
+                        if (com.openminis.app.data.StaleConnectionPolicy
+                                .shouldEvictBeforeRetry(actual.message)
+                        ) {
+                            AppLogger.warning(
+                                TAG,
+                                "[T-android-stale-conn-retry-hang] evicting shared LLM pool before retry",
+                            )
+                            com.openminis.app.network.NetworkMonitor.evictLLMConnectionsNow()
+                        }
                         // Roll back partial blocks from the failed stream attempt so the retried
                         // stream's deltas don't double-append on top of stale content. Previous
                         // turns (everything before turnStartBlockIndex) are preserved.
@@ -8655,54 +8593,26 @@ class ChatViewModel(
                     // makes the intent explicit and avoids a one-frame
                     // flash of the stale banner.
                     withContext(Dispatchers.Main) { clearInlineError() }
-                    // [T-recover-context-full-mid-loop] "Context window is
-                    // full" OR a gateway size-filter rejection ("content-blocked"
-                    // when the payload is simply too big) mid-loop is recoverable
-                    // and MUST be handled here. Falling back to another model does
-                    // not help when the payload itself is too big — it is too big
-                    // for all of them — and throwing strands the session. So we
-                    // shrink and retry the same turn once.
-                    //
-                    // [model-compaction] The user explicitly rejected the local
-                    // digest: it drops detail no dumb algorithm can preserve.
-                    // Shrink via the MODEL instead (compactAll → the same
-                    // hierarchical split-and-summarize used by /compact), which
-                    // keeps meaning while cutting size. Only if the model route
-                    // is itself unavailable does compactAll internally fall back
-                    // to the local digest — that is a last resort, not the
-                    // default. Bounded by a one-shot flag: a second oversize
-                    // after a compact means shrinking did not help, so the error
-                    // surfaces / falls back normally.
+                    // Context pressure and gateway size filters must never
+                    // rewrite the session automatically. Keep fallback/error
+                    // handling below intact, but surface the explicit recovery
+                    // commands once per loop.
                     val isOversize = isContextTooLargeError(actual) ||
                         (isContentFilter && isRawHistoryLarge())
-                    if (isOversize && !didCompactForOversize) {
-                        didCompactForOversize = true
+                    if (isOversize && !didReportOversize) {
+                        didReportOversize = true
                         AppLogger.warning(
                             TAG,
-                            "[Maintenance] oversize payload mid-loop (contextFull=${isContextTooLargeError(actual)} " +
-                                "contentFilterBig=$isContentFilter) — compacting via model and retrying this turn",
+                            "[Maintenance] oversize payload observed; automatic compaction is disabled",
                         )
                         withContext(Dispatchers.Main) {
                             appendSystemInfo(
-                                text = context.getString(R.string.maintenance_context_full_retry),
+                                text = "Запрос не помещается или отклонён шлюзом как слишком большой. " +
+                                    "Сессия не будет сжата автоматически. Явно выполни /compact " +
+                                    "или /rescue, либо начни новый чат.",
                                 iconKind = "compact",
                             )
-                            // compactAll needs isStreaming=false to start, so
-                            // drop the flag for the duration and restore it
-                            // after — the turn is still ours, we are not ending
-                            // it. compactAll publishes maintenanceJob; the join
-                            // below waits for it.
-                            _isStreaming.value = false
-                            compactAll()
                         }
-                        maintenanceJob?.let { job ->
-                            runCatching { job.join() }
-                                .onFailure { AppLogger.warning(TAG, "compact join failed: ${it.message}") }
-                            maintenanceJob = null
-                        }
-                        withContext(Dispatchers.Main) { _isStreaming.value = true }
-                        clearInlineError()
-                        continue
                     }
                     // [429-concurrent-sessions] A rate limit under concurrent
                     // load: prefer jumping to a fallback model (instant, no
@@ -8798,8 +8708,7 @@ class ChatViewModel(
                             it.model.id == currentProvider.model.id
                         }
                         if (newEntry != null) {
-                            _activeEntryId.value = newEntry.id
-                            currentModel = newEntry.model
+                            activateModel(newEntry.model, newEntry.id, "runtime fallback switch")
                             val newInstance = providerRepository.instance(newEntry.providerInstanceId)
                             if (newInstance != null) {
                                 _providerName.value = newInstance.label.ifEmpty { newEntry.model.provider }

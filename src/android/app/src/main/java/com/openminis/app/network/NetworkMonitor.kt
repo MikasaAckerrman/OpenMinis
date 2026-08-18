@@ -46,6 +46,18 @@ class NetworkMonitor {
         val sharedLLMConnectionPool = okhttp3.ConnectionPool(
             5, 5, java.util.concurrent.TimeUnit.MINUTES,
         )
+
+        /**
+         * Evict all idle sockets from the shared LLM pool on demand. Called
+         * from the stream retry path when the failure is a stale-connection
+         * TTFB hang (see [com.openminis.app.data.StaleConnectionPolicy]): the
+         * next attempt must open a fresh socket instead of writing into the
+         * dead pooled one again. Safe to call from any thread — evictAll()
+         * only walks the pool's idle set.
+         */
+        fun evictLLMConnectionsNow() {
+            sharedLLMConnectionPool.evictAll()
+        }
     }
 
     private val _status = MutableStateFlow(NetworkStatus.DISCONNECTED)

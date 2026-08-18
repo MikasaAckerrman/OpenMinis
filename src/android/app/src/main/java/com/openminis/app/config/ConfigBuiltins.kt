@@ -55,36 +55,13 @@ internal object ConfigBuiltins {
         registerContext(r, context)
     }
 
-    // -- Context — auto-compact toggle (context window pressure handling) --
+    // -- Context — manual compaction controls only --
 
     private fun registerContext(r: ConfigRegistry, context: Context) {
         val prefs = context.getSharedPreferences("minis_context_prefs", Context.MODE_PRIVATE)
-        r.register(
-            PrefsBoolField(
-                path = "context.autoCompact",
-                displayName = "Automatic context upkeep (local)",
-                description = "Master switch for the FREE, local context upkeep (default on). Every message you send runs a local pass that offloads large tool outputs to disk and links them back in — this costs no tokens, fires no request, and cannot fail the turn, so it keeps a tool-heavy session from spiking into the wall. This does NOT include the model-assisted summarisation pass; that is a separate switch (context.autoCompactModelPass) and is off by default. Turn this off to do no automatic upkeep at all.",
-                prefs = prefs,
-                key = "context.autocompact.enabled",
-                defaultValue = true,
-            )
-        )
-        // [T-manual-model-compaction] Opt-in switch for the model-assisted
-        // summarisation pass. Off by default: the pass fires a request whose
-        // body is derived from the already-large history (providers were
-        // content-filtering it) and rewrites session history in ways the user
-        // did not explicitly ask for, so the user drives it by hand with
-        // /compact and only opts in here.
-        r.register(
-            PrefsBoolField(
-                path = "context.autoCompactModelPass",
-                displayName = "Automatic model-assisted compaction",
-                description = "Whether the model-assisted summarisation pass may run automatically (default OFF). When off — the default — the app never sends a summarisation/digest request on your behalf; you fold older turns yourself with /compact and /rescue whenever you choose, and the app only nudges you once the window is actually tight. The free local offload pass (context.autoCompact) still runs every turn regardless. Turn this on only if you want the app to summarise on cadence + pressure automatically.",
-                prefs = prefs,
-                key = "context.autocompact.modelpass.enabled",
-                defaultValue = false,
-            )
-        )
+        // Automatic compaction/offload is intentionally not configurable.
+        // Session history may be rewritten only by an explicit /compact,
+        // /rescue, long-press action, or operator RPC.
         // [T-session-rescue] Budget for the local, LLM-free rescue digest.
         r.register(
             PrefsIntField(
@@ -109,19 +86,9 @@ internal object ConfigBuiltins {
                 defaultValue = true,
             )
         )
-        // [T-context-maintenance] Cadence floor for the periodic full pass.
-        r.register(
-            PrefsIntField(
-                path = "context.fullCompactEveryNTurns",
-                displayName = "Full compaction cadence (user turns)",
-                description = "How many of your messages may pass before a full (model-assisted) compaction runs. Default 5. This is a FLOOR, not a schedule: a pass runs earlier when the context is filling fast, is skipped entirely while the session is small enough that summarising costs more than it saves, and is replaced by on-device compression past ~85% of the window (where a summarisation request would itself likely be dropped). Every turn also gets a free local pass that offloads large tool outputs to disk.",
-                prefs = prefs,
-                key = "context.maintenance.fulleveryn",
-                defaultValue = com.openminis.app.data.ContextMaintenance.DEFAULT_FULL_EVERY_N_TURNS,
-                minValue = com.openminis.app.data.ContextMaintenancePrefs.MIN_TURNS,
-                maxValue = com.openminis.app.data.ContextMaintenancePrefs.MAX_TURNS,
-            )
-        )
+        // [T-manual-model-compaction] `context.rescue.refine` (above) is the
+        // only remaining context toggle. Compaction cadence is not
+        // configurable: nothing runs automatically, so there is no cadence.
     }
 
     // -- Memory — global default toggle for the persistent memory feature --

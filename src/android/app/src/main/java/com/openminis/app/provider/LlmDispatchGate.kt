@@ -48,25 +48,49 @@ object LlmDispatchGate {
      * coroutine, so running many at once barely touches CPU. The real cost of
      * "many at once" is UI recomposition — but only the ONE foreground chat
      * recomposes; background sessions stream through the headless path with no
-     * Compose work. So the cap is generous by design: it exists only to stop a
-     * pathological burst (20+), not to serialise the user's real parallel work.
-     * 10 concurrent code-writing sessions run unthrottled. See the class doc.
+     * Compose work. So the cap is deliberately high: it exists ONLY to stop a
+     * pathological burst (e.g. a storm of scheduled tasks opening dozens of
+     * streams at once), NOT to serialise the user's real parallel work. The
+     * product requirement is "at least 10 concurrent sessions run unthrottled",
+     * so the valve sits well above that with headroom to spare.
      */
     @Volatile
-    var maxConcurrentStreams: Int = 12
+    var maxConcurrentStreams: Int = 32
 
     /**
-     * Default sustained requests-per-minute budget per host when we have no
-     * provider-declared limit. 120 rpm = 2 rps average — high enough to be
-     * invisible to normal use, low enough to smear a burst of concurrent
-     * session sends across a couple of seconds instead of firing them together.
+     * Sustained requests-per-minute budget per host. **Zero disables local
+     * rate pacing entirely (the shipped default).**
+     *
+     * Rationale: pre-emptive local pacing throttled the *common* case (many
+     * sessions each taking a turn) to defend against the *rare* case (a
+     * provider actually returning HTTP 429) that is already handled reactively
+     * — [ChatViewModel] honours `Retry-After` and backs off per-provider when a
+     * 429 really arrives. Pacing keyed by host also meant every session on the
+     * same provider shared one bucket, so a burst of 8 then 2 req/s was split
+     * across all of them and re-spent on every agent-loop step — exactly the
+     * "everything is divided across all my sessions" stall. Let the provider
+     * declare its own limit via [enablePacing]; until then, do not pace.
      */
     @Volatile
-    var defaultRpm: Double = 120.0
+    var defaultRpm: Double = 0.0
 
     /** Burst allowance = how many requests may fire back-to-back before pacing. */
     @Volatile
     var burstCapacity: Double = 8.0
+
+    /** True when a positive per-host rate budget is configured. */
+    val pacingEnabled: Boolean get() = defaultRpm > 0.0
+
+    /**
+     * Opt in to per-host rate pacing with a declared limit (e.g. from a
+     * provider's published RPM). Clears existing buckets so the new rate takes
+     * effect immediately. Pass rpm <= 0 to disable pacing again.
+     */
+    fun enablePacing(rpm: Double, burst: Double = burstCapacity) {
+        defaultRpm = rpm
+        burstCapacity = burst
+        buckets.clear()
+    }
 
     private val semaphoreLock = Any()
     @Volatile
@@ -116,6 +140,12 @@ object LlmDispatchGate {
      * nap. The per-nap ceiling keeps us responsive to cancellation.
      */
     suspend fun awaitRateSlot(key: String) {
+        // Pacing disabled (shipped default): admit immediately. The provider's
+        // own 429/Retry-After is the rate authority; we don't pre-emptively
+        // throttle the user's concurrent sessions. Guard here — NOT via a zero
+        // refill rate — because a zero-rate bucket would report "never refills"
+        // and block forever after the initial burst.
+        if (!pacingEnabled) return
         val bucket = bucketFor(key)
         while (true) {
             val wait = synchronized(bucket) { bucket.tryAcquire(clock()) }
@@ -147,9 +177,14 @@ object LlmDispatchGate {
         semaphore().withPermit { block() }
 
     /** Test/diagnostic hook — drop all per-host buckets and the semaphore. */
+    /** Test/diagnostic hook — drop all buckets, the semaphore, AND restore the
+     *  shipped defaults so one test's pacing config never leaks into the next. */
     fun resetForTest() {
         buckets.clear()
         synchronized(semaphoreLock) { semaphoreCache = null }
+        maxConcurrentStreams = 32
+        defaultRpm = 0.0
+        burstCapacity = 8.0
     }
 
     /**
