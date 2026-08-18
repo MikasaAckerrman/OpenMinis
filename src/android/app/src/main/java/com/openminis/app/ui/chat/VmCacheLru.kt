@@ -20,7 +20,10 @@ object VmCacheLru {
 
     /**
      * Replay [touches] through the policy. [active] is the foregrounded chat,
-     * [pinned] the streaming ones; both are exempt from eviction.
+     * [pinned] the ones with live work; both are exempt from eviction and —
+     * under [ResidentEvictionPolicy] — do NOT count against [maxResident],
+     * which now bounds only the IDLE resident set. Delegates to the single
+     * source of truth so this simulation can never drift from production.
      */
     fun simulate(
         touches: List<String>,
@@ -30,18 +33,21 @@ object VmCacheLru {
     ): State {
         val lru = mutableListOf<String>()
         val evicted = mutableListOf<String>()
+        val protectedKeys = buildSet {
+            addAll(pinned)
+            if (active != null) add(active)
+        }
         for (id in touches) {
             lru.remove(id)
             lru.add(id)
-            var i = 0
-            while (lru.size > maxResident && i < lru.size) {
-                val candidate = lru[i]
-                if (candidate == active || candidate in pinned) {
-                    i++
-                    continue
-                }
-                lru.removeAt(i)
-                evicted.add(candidate)
+            val victims = ResidentEvictionPolicy.keysToEvict(
+                lruOrder = lru,
+                protectedKeys = protectedKeys,
+                maxResidentIdle = maxResident,
+            )
+            for (v in victims) {
+                lru.remove(v)
+                evicted.add(v)
             }
         }
         return State(resident = lru.toList(), evicted = evicted.toList())

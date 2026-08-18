@@ -68,13 +68,38 @@ class ContextMaintenanceTest {
     }
 
     @Test
-    fun `ceiling wins over cooldown and cadence`() {
-        // A session this big must be dealt with even if a full pass just ran —
-        // waiting is what produces the unsendable state.
+    fun `first rescue past the ceiling fires even during cooldown`() {
+        // The very first time pressure crosses the ceiling, lastFullAtMs is
+        // stale/zero, so rescue fires immediately — waiting is what produces
+        // the unsendable state.
         val tokens = (window * 0.95).toInt()
         assertEquals(
             ContextMaintenance.Action.RESCUE,
+            decide(turns = 0, tokens = tokens, lastFullAtMs = 0L),
+        )
+    }
+
+    @Test
+    fun `a rescue that just ran does not re-rescue every turn while still over the ceiling`() {
+        // [T-compaction-loop] The endless-compaction loop: a session whose
+        // pressure stays above the ceiling AFTER a rescue (the protected recent
+        // tail + pinned content can't shrink below it) used to RESCUE on every
+        // single send, writing a marker per turn. Now a rescue within the
+        // cooldown yields to the free local pass; the UI's "start a new chat"
+        // nudge takes over instead of an infinite fold.
+        val tokens = (window * 0.95).toInt()
+        assertEquals(
+            ContextMaintenance.Action.LIGHT,
             decide(turns = 0, tokens = tokens, lastFullAtMs = now - 1_000),
+        )
+        // Once the cooldown expires, a still-oversized session may rescue again.
+        assertEquals(
+            ContextMaintenance.Action.RESCUE,
+            decide(
+                turns = 0,
+                tokens = tokens,
+                lastFullAtMs = now - ContextMaintenance.FULL_COOLDOWN_MS,
+            ),
         )
     }
 

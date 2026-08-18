@@ -93,6 +93,9 @@ jobs:
             --tests 'com.openminis.app.feedback.VibrationPatternsTest' \
             --tests 'com.openminis.app.data.MessageSurgeryMergedTurnTest' \
             --tests 'com.openminis.app.data.ProtectedTailTest' \
+            --tests 'com.openminis.app.data.ContextMaintenanceTest' \
+            --tests 'com.openminis.app.ui.chat.ResidentEvictionPolicyTest' \
+            --tests 'com.openminis.app.ui.chat.VmCacheLruTest' \
             --tests 'com.openminis.app.provider.QuotaErrorDetectionTest' \
             --tests 'com.openminis.app.provider.ContentFilterDetectionTest' \
             --tests 'com.openminis.app.tools.AgentSystemPromptStoreTest' \

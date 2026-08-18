@@ -32,58 +32,79 @@ object ChatViewModelStore {
     private val lruOrder = mutableListOf<String>()
 
     /**
-     * How many session ViewModels stay resident. Each one holds that session's
-     * full `agentHistory` — every message with its `partsJson` already parsed
-     * into objects — so the cache was effectively "every chat the user opened
-     * since launch, forever": nothing evicted it, `release()` only ran when a
-     * session was DELETED. After browsing a few dozen long chats the heap is
-     * carrying tens of thousands of parsed messages, which is what turns a
-     * later chat open into a GC-bound crawl.
+     * [T-session-independence] How many IDLE (no live work) session
+     * ViewModels stay resident. Sessions with live work — streaming, a queued
+     * prompt awaiting drain, or an in-flight compaction — are ALWAYS resident
+     * regardless of this bound (see [pinned] / [evictIfNeeded]); they do not
+     * count against it. This is the fix for "3 sessions interfere with each
+     * other": the old flat `MAX_RESIDENT = 3` put three actively-working
+     * sessions exactly on the eviction boundary, so the next store touch (a
+     * draft, the session list, a preview) evicted one of them mid-work —
+     * cancelling its scope, dropping its live status, and resetting its
+     * compaction counters (the endless-compaction loop). Now only sessions the
+     * user merely browsed and left are capped; working sessions never evict
+     * one another.
      *
-     * 3 covers the real navigation pattern (current chat + the one you came
-     * from + one more) while keeping the resident set bounded.
+     * Each resident VM holds that session's parsed `agentHistory`, so the idle
+     * bound still exists to keep the heap from carrying every chat ever opened.
+     * 4 covers the real idle-navigation pattern (current + a couple you came
+     * from) on top of however many are actively working.
      */
-    private const val MAX_RESIDENT = 3
+    private const val MAX_RESIDENT_IDLE = 4
 
     /**
      * Sessions that must never be evicted regardless of LRU position: a
-     * streaming agent loop lives in its VM's `viewModelScope`, so clearing that
-     * store mid-stream would cancel the user's in-flight response. Registered by
-     * the VM while `isStreaming` is true.
+     * session with LIVE WORK — a streaming agent loop, a queued prompt
+     * awaiting drain, or an in-flight compaction — lives in its VM's
+     * `viewModelScope`, so clearing that store would cancel unrecoverable
+     * work. Registered by the VM whenever [ResidentEvictionPolicy.hasLiveWork]
+     * flips (see ChatViewModel's pin observer). "Streaming right now" was too
+     * narrow: a session waiting to drain its queue is not streaming this
+     * instant, yet evicting it still loses the queued turn.
      */
     private val pinned = mutableSetOf<String>()
 
     /**
-     * Pin/unpin a session against eviction. Called by ChatViewModel around a
-     * streaming turn — a cancelled scope mid-stream is a lost reply, which is
-     * strictly worse than holding one extra VM in memory.
+     * Pin/unpin a session against eviction. Called by ChatViewModel whenever
+     * its live-work state changes — a cancelled scope mid-work is a lost
+     * reply/queue/compaction, strictly worse than holding one extra VM.
      */
     @Synchronized
     fun setPinned(sessionId: String, value: Boolean) {
         val key = resolveKey(sessionId)
         if (value) pinned.add(key) else pinned.remove(key)
+        // A newly-pinned session may have been the one about to be evicted;
+        // a newly-unpinned one may have freed room to trim the idle tail.
+        evictIfNeeded()
     }
 
     /**
-     * Evict least-recently-used stores beyond [MAX_RESIDENT], skipping the
-     * active chat and anything pinned (streaming). Clearing a store cancels its
-     * `viewModelScope` and triggers `onCleared`; the next `ownerFor` rebuilds
-     * the VM from SQLite, so eviction costs a reload, never data.
+     * Evict least-recently-used IDLE stores beyond [MAX_RESIDENT_IDLE].
+     * Protected keys — the active chat plus everything with live work
+     * ([pinned]) — are never evicted and never count against the idle bound,
+     * so any number of actively-working sessions coexist. Clearing a store
+     * cancels its `viewModelScope` and triggers `onCleared`; the next
+     * `ownerFor` rebuilds the VM from SQLite, so evicting an IDLE session
+     * costs a reload, never data. Decision logic lives in
+     * [ResidentEvictionPolicy] (unit-tested).
      */
     @Synchronized
     private fun evictIfNeeded() {
         val active = activeSessionIdInternal?.let { resolveKey(it) }
-        var i = 0
-        while (stores.size > MAX_RESIDENT && i < lruOrder.size) {
-            val key = lruOrder[i]
-            if (key == active || key in pinned) {
-                i++
-                continue
-            }
-            lruOrder.removeAt(i)
+        val protectedKeys = buildSet {
+            addAll(pinned)
+            if (active != null) add(active)
+        }
+        val victims = ResidentEvictionPolicy.keysToEvict(
+            lruOrder = lruOrder,
+            protectedKeys = protectedKeys,
+            maxResidentIdle = MAX_RESIDENT_IDLE,
+        )
+        for (key in victims) {
+            lruOrder.remove(key)
             stores.remove(key)?.let {
                 it.clear()
-                Log.d(TAG, "evict store for $key (resident=${stores.size})")
+                Log.d(TAG, "evict idle store for $key (resident=${stores.size})")
             }
         }
     }

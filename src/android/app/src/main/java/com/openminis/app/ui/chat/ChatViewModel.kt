@@ -74,6 +74,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -4050,13 +4051,28 @@ class ChatViewModel(
                 rebuildProviderForNewCredential(pending)
             }
         }
-        // Pin this VM against LRU eviction while a turn is in flight, unpin when
-        // it settles. Same chokepoint as the credential swap above: the flag has
-        // many setters (finally blocks, cancel, fallback), so observing it beats
-        // patching each site — and a missed unpin would leak a resident VM.
+        // [T-session-independence] Pin this VM against LRU eviction whenever it
+        // holds LIVE WORK — streaming, a queued prompt awaiting drain, OR an
+        // in-flight compaction — and unpin only once ALL of those settle.
+        // Evicting a session mid-work cancels its viewModelScope, which (a)
+        // loses the in-flight reply/queue/compaction and (b) drops the live
+        // status the sessions list observes and resets the in-memory
+        // compaction counters on rebuild — the root of "3 sessions interfere".
+        // Observing the combined signal beats patching each of the flag's many
+        // setters, and a missed unpin would only leak one resident VM.
         viewModelScope.launch {
-            _isStreaming.collect { streaming ->
-                ChatViewModelStore.setPinned(realSessionId.ifEmpty { sessionId }, streaming)
+            combine(
+                _isStreaming,
+                _promptQueue,
+                _isCompacting,
+            ) { streaming, queue, compacting ->
+                ResidentEvictionPolicy.hasLiveWork(
+                    isStreaming = streaming,
+                    hasQueuedPrompts = queue.isNotEmpty(),
+                    isCompacting = compacting,
+                )
+            }.distinctUntilChanged().collect { hasLiveWork ->
+                ChatViewModelStore.setPinned(realSessionId.ifEmpty { sessionId }, hasLiveWork)
             }
         }
         // Re-resolve provider when config changes (models may load async)
@@ -4655,6 +4671,16 @@ class ChatViewModel(
                 .getOrNull()
             _compactSummary.value = marker?.summary
             _cachedLatestMarker = marker
+            // [T-compaction-loop] Seed the auto-compact cooldown from the last
+            // real compaction's persisted timestamp. lastAutoCompactAtMs is an
+            // in-memory var; without this seed a VM rebuilt from SQLite (after
+            // LRU eviction OR a process restart) resets it to 0L, so
+            // ContextMaintenance.decide sees "no compaction ever ran", the
+            // FULL_COOLDOWN_MS gate is bypassed, and a session that just
+            // compacted compacts again on the next send — the endless-compaction
+            // loop. The marker's createdAt is the ground truth that survives any
+            // rebuild.
+            marker?.createdAt?.let { lastAutoCompactAtMs = it }
 
             com.openminis.app.diagnostics.PerfLongCtx.step(
                 sessionId,

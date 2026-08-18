@@ -101,13 +101,24 @@ object ContextMaintenance {
 
         val fraction = contextTokens.toDouble() / contextWindow.toDouble()
 
-        // Ceiling first: past it, cadence and cooldown are irrelevant — an LLM
-        // compact would likely fail, and failing is what left the user stuck.
-        if (fraction >= RESCUE_PRESSURE_CEILING && !alreadyRescued) return Action.RESCUE
+        val cooldownActive = nowMs - lastFullAtMs < FULL_COOLDOWN_MS
+
+        // Ceiling first: past it, cadence is irrelevant — an LLM compact would
+        // likely fail, and failing is what left the user stuck. BUT respect the
+        // cooldown here too: a rescue that ran moments ago already folded
+        // everything foldable (history minus the protected recent tail), so if
+        // pressure is STILL above the ceiling, re-rescuing every single send
+        // cannot help — it just writes a marker per turn (the endless-compaction
+        // loop the user hit). The first rescue still fires immediately because
+        // lastFullAtMs is stale/zero then; only repeats within the cooldown are
+        // suppressed, and the UI's "start a new chat" nudge takes over.
+        if (fraction >= RESCUE_PRESSURE_CEILING && !alreadyRescued) {
+            return if (cooldownActive) Action.LIGHT else Action.RESCUE
+        }
 
         if (!compactSupported) return Action.LIGHT
         if (fraction < FULL_PRESSURE_FLOOR) return Action.LIGHT
-        if (nowMs - lastFullAtMs < FULL_COOLDOWN_MS) return Action.LIGHT
+        if (cooldownActive) return Action.LIGHT
 
         val cadence = fullEveryNTurns.coerceAtLeast(1)
         // Cadence is a floor, not a schedule: heavy pressure shouldn't wait for
