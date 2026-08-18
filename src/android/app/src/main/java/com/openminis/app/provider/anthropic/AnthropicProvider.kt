@@ -80,6 +80,10 @@ class AnthropicProvider(
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.MINUTES)
         .writeTimeout(30, TimeUnit.SECONDS)
+        // [T-stale-conn-ping] h2 keep-alive ping so a silently-dropped idle
+        // connection is detected in ~15s instead of hanging the TTFB watchdog.
+        // See OpenAIProvider for the full rationale.
+        .pingInterval(15, TimeUnit.SECONDS)
         // [T-android-stale-conn-retry-hang] Shared pool — see NetworkMonitor.
         // Network-transition eviction must reach provider connections.
         .connectionPool(com.openminis.app.network.NetworkMonitor.sharedLLMConnectionPool)

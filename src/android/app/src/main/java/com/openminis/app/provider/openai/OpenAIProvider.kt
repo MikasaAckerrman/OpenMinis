@@ -361,6 +361,18 @@ class OpenAIProvider private constructor(
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(600, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
+        // [T-stale-conn-ping] Proactive dead-socket detection. Foreground
+        // eviction (MinisApp) + network-transition eviction (NetworkMonitor)
+        // only cover lifecycle/connectivity CHANGES; they miss the common case
+        // where the app stays foregrounded (user browsing the chat list) while
+        // an idle pooled h2 connection is silently dropped by the far end or a
+        // local proxy. The next send then writes into a corpse and hangs the
+        // full 30s TTFB watchdog ("no response from server"). An h2 PING every
+        // 15s keeps live connections warm AND surfaces a dead one as a failed
+        // ping within ~15s — OkHttp then evicts it and retryOnConnectionFailure
+        // reconnects, so a stale socket costs ~15s at worst instead of 30s, and
+        // usually nothing because the ping kept it alive.
+        .pingInterval(15, TimeUnit.SECONDS)
         // [T-android-stale-conn-retry-hang] Shared pool so NetworkMonitor's
         // network-transition eviction reaches THIS client's connections —
         // a per-client pool was never evicted, and a dead h2 tunnel through
