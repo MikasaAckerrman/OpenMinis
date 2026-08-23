@@ -7,6 +7,7 @@ import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Terminal
@@ -59,6 +60,8 @@ internal fun toolAccentColor(toolName: String): Color = when (toolName) {
     "read_image" -> Color(0xFFAF52DE)
     "memory_write", "memory_get" -> Color(0xFFFF2D55)
     "web_search" -> Color(0xFF32ADE6)    // iOS: .cyan for search
+    // [T-uicopy-capsule] пурпурный: конвейер реконструкции UI
+    UI_COPY_TOOL -> Color(0xFFAF52DE)
     else -> Color(0xFF8E8E93)
 }
 
@@ -72,6 +75,7 @@ internal fun toolIconFor(toolName: String) = when (toolName) {
     "read_image" -> Icons.Default.Image                // iOS: photo
     "memory_write", "memory_get" -> Icons.Default.Psychology // iOS: brain.head.profile
     "web_search" -> Icons.Default.Search               // iOS: magnifyingglass
+    UI_COPY_TOOL -> Icons.Default.Palette              // копирование интерфейса
     else -> Icons.Default.Build
 }
 
@@ -86,6 +90,7 @@ internal fun toolDisplayName(toolName: String): String = when (toolName) {
     "memory_write" -> "memory"
     "memory_get" -> "memory"
     "web_search" -> "search"
+    UI_COPY_TOOL -> "UI copy"
     else -> toolName
 }
 
@@ -102,7 +107,64 @@ internal fun toolTitleLabel(toolName: String): String = when (toolName) {
     "read_image" -> "Minis is reading Image"
     "memory_write", "memory_get" -> "Minis is using Memory"
     "web_search" -> "Minis is using Search"
+    UI_COPY_TOOL -> "Minis копирует интерфейс"
     else -> "Minis is using ${toolDisplayName(toolName)}"
+}
+
+/**
+ * [T-uicopy-capsule] Виртуальное имя инструмента для капсулы реконструкции UI.
+ *
+ * ПОЧЕМУ ВИРТУАЛЬНОЕ. `minis-uicopy` — это shell-CLI (вшит в APK как overlay
+ * asset), поэтому модель вызывает его через `shell_execute`, и капсула по
+ * умолчанию показывала бы обычный терминал. Для пользователя это неотличимо
+ * от любой другой команды, хотя идёт длинный измерительный конвейер
+ * (измерение → сборка → рендер → сравнение). Здесь shell-вызов `minis-uicopy`
+ * распознаётся по аргументам и получает свою иконку/цвет/подпись, БЕЗ
+ * отдельного tool-контракта в схеме модели: список инструментов не растёт,
+ * поведение агент-лупа не меняется — меняется только отображение.
+ */
+internal const val UI_COPY_TOOL = "ui_copy"
+
+/**
+ * Распознать вызов ui-copy по аргументам shell-инструмента.
+ * Возвращает [UI_COPY_TOOL] для косметики капсулы либо исходное имя.
+ *
+ * Проверка идёт по `toolArgs` (сырой JSON), потому что это единственное
+ * место, где видна фактическая команда. Совпадение по подстроке
+ * `minis-uicopy` намеренно узкое: своё имя носят и обёртка, и её lib-каталог,
+ * так что случайного срабатывания на постороннюю команду не будет.
+ */
+internal fun effectiveToolName(toolName: String, toolArgs: String): String =
+    if (toolName == "shell_execute" && toolArgs.contains("minis-uicopy")) {
+        UI_COPY_TOOL
+    } else {
+        toolName
+    }
+
+/**
+ * Фаза конвейера ui-copy для подписи в капсуле. Определяется по подкоманде в
+ * `toolArgs`; фразы намеренно на языке пользователя и описывают ДЕЙСТВИЕ, а не
+ * имя скрипта — из капсулы должно быть понятно, что именно происходит.
+ * null → фаза не распознана, капсула показывает обычный tool_title модели.
+ */
+internal fun uiCopyPhaseLabel(toolArgs: String): String? = when {
+    !toolArgs.contains("minis-uicopy") -> null
+    toolArgs.contains("uicopy init") || toolArgs.contains("-uicopy init") ->
+        "Готовлю скриншот к разбору"
+    toolArgs.contains("measure") -> "Анализирую изображение: палитра и границы"
+    toolArgs.contains("boxes") -> "Ищу элементы интерфейса"
+    toolArgs.contains("probe") -> "Измеряю рамки, цвета и текст"
+    toolArgs.contains("stripes") -> "Извлекаю профили границ"
+    toolArgs.contains("bevel") -> "Снимаю объёмные кромки элементов"
+    toolArgs.contains("edges") -> "Измеряю кромки кадра"
+    toolArgs.contains("fontfit") || toolArgs.contains("textfit") ->
+        "Подбираю шрифт по растру"
+    toolArgs.contains("spacefit") -> "Подбираю межбуквенные интервалы"
+    toolArgs.contains("render") -> "Рендерю реконструкцию"
+    toolArgs.contains("residual") -> "Разделяю остаточную ошибку"
+    toolArgs.contains("diff") -> "Сравниваю с оригиналом"
+    toolArgs.contains("doctor") -> "Проверяю окружение"
+    else -> "Реконструирую интерфейс"
 }
 
 // Helper: format duration (iOS: < 1s → "0.1s", < 60s → "45s", >= 60s → "2m 10s")

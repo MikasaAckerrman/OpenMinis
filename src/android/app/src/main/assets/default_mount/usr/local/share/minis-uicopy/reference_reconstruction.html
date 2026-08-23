@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+/* ===== COPY EXAM v12: реконструкция 1000301605.png (1097x654) =====
+
+   Правки v3→v4, все из измерений (stripes.py извлёк реальные профили):
+
+   D11 ГРАНИЦЫ — НЕ CSS-BORDER. Измерено: разделитель таба это 7 пикселей
+       (#384031 #2c3225 #3f4937 #56624e #76806e #7a8472 #5a6552), а не линия.
+       Аналогично bevel кнопок: L→R = #56624e #76806e #7a8472 #5a6552 (4px),
+       R→L = #485440 #353d2e #2e3528 #414b3a. Однопиксельный border давал
+       MAE 26 на табах. Теперь каждая граница — <i> с linear-gradient из
+       ИЗМЕРЕННОГО профиля (жёсткие 1px-стопы = точная копия пикселей).
+
+   D12 ТАБЫ: верх inactive y=47..50 (3px: #4e5a46 #798271 #6d7765),
+       верх active y=45..47 (2px: #717b69 #757f6d) — на 2px выше.
+       Под inactive идёт кромка рамки y=81..84 (#596451 #838d7b #626d5a),
+       под active её НЕТ (измерено: x=100 y=81..83 чистый фон).
+       Последний таб справа границы НЕ имеет (x=1085..1088 = фон).
+
+   D13 ТЕКСТ: сдвиги из попиксельного сравнения v3 (Δ=+2,+2 в кнопках,
+       −1,0 у Аватар/Логотип, 0,−1 у заголовка) применены к каждой строке.
+
+   D14 ШРИФТ ПЕРЕОПРЕДЕЛЁН. v4 показал: ширина сошлась, но ГЛИФ другой.
+       Построчное сравнение растра 'Аватар' + измерение толщины штриха
+       (доля пикселей с |d|>150): оригинал 65.3%, bold-рендер 86.8% —
+       оригинал НЕ bold. Проверка 5 вариантов на 9 строках через РЕНДЕР
+       (не PIL): normal@19px+letter-spacing:1.5px даёт сум|dw|=34px и
+       толщину 73.4% (bold: 45px / 83.2%). Выбран normal+spacing.
+
+   D15 ПОСТРОЧНЫЙ letter-spacing (spacefit.py). Глобальный трекинг раздувал
+       длинные строки (Δw=+14) и не дотягивал короткие (−2): ширина растёт как
+       (n-1)*spacing. Подобрано на строку через РЕНДЕР 24 строк × 11 значений:
+       суммарная |Δw| упала 34px → 25px, у 13 строк Δw=0.
+   D16 ЛОЖНАЯ ЦЕЛЬ ИСПРАВЛЕНА. Для таба 'Система' измеренная цель 112x22 была
+       загрязнена: в окно попадала вертикальная полоса bevel x=1077..1079
+       (видно построчно: она есть на ВСЕХ y=52..80, включая пустые). Истинный
+       ink текста = 92x14 (x968..1059, y59..72). После пересчёта spacing 1.5px
+       даёт Δw=0 вместо Δw=-11.
+   Палитра — пипеткой. Ассеты — кроп из оригинала в своих координатах.
+*/
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:1097px;height:654px;overflow:hidden}
+body{background:#4c5844;
+     font-family:"DejaVu Sans";font-weight:normal;font-size:19px;
+     -webkit-font-smoothing:antialiased;text-rendering:geometricPrecision}
+
+/* ---------- кромки кадра: измеренные профили ---------- */
+.frame_top{position:absolute;left:0;top:2px;width:1097px;height:2px;
+  background:linear-gradient(to bottom,#868f7e 0px,#868f7e 1px,#5b6653 1px,#5b6653 2px)}
+.frame_left{position:absolute;left:2px;top:0;width:2px;height:654px;
+  background:linear-gradient(to right,#858e7f 0px,#858e7f 1px,#6a7462 1px,#6a7462 2px)}
+.frame_bot{position:absolute;left:0;top:651px;width:1097px;height:3px;
+  background:linear-gradient(to bottom,#4c5844 0px,#4c5844 1px,#434d3b 1px,#434d3b 2px,#292f23 2px,#292f23 3px)}
+.frame_right{position:absolute;left:1094px;top:0;width:3px;height:654px;
+  background:linear-gradient(to right,#4c5844 0px,#4c5844 2px,#3c4635 2px,#3c4635 3px)}
+
+/* ---------- текст ---------- */
+.t{position:absolute;line-height:19px;white-space:nowrap}
+
+/* ---------- вкладки: полоса + измеренные разделители ---------- */
+.tabtop_i{position:absolute;height:3px;top:47px;
+  background:linear-gradient(to bottom,#4e5a46 0px,#4e5a46 1px,#798271 1px,#798271 2px,#6d7765 2px,#6d7765 3px)}
+.tabtop_a{position:absolute;height:2px;top:45px;
+  background:linear-gradient(to bottom,#717b69 0px,#717b69 1px,#757f6d 1px,#757f6d 2px)}
+.sep{position:absolute;top:47px;height:34px}
+.s0{left:7px;width:7px;background:linear-gradient(to right,#4c5844 0px,#4c5844 3px,#5a6552 3px,#5a6552 4px,#7a8472 4px,#7a8472 5px,#76806e 5px,#76806e 6px,#56624e 6px,#56624e 7px)}
+.s1{left:184px;width:8px;background:linear-gradient(to right,#4b5643 0px,#4b5643 1px,#384031 1px,#384031 2px,#2c3225 2px,#2c3225 3px,#3f4937 3px,#3f4937 4px,#56624e 4px,#56624e 5px,#76806e 5px,#76806e 6px,#7a8472 6px,#7a8472 7px,#5a6552 7px,#5a6552 8px)}
+.s2{left:344px;width:7px;background:linear-gradient(to right,#3f4937 0px,#3f4937 1px,#2c3225 1px,#2c3225 2px,#384031 2px,#384031 3px,#4b5643 3px,#4b5643 4px,#6a7462 4px,#6a7462 5px,#868f7e 5px,#868f7e 6px,#66715e 6px,#66715e 7px)}
+.s3{left:466px;width:7px;background:linear-gradient(to right,#3c4635 0px,#3c4635 1px,#292f23 1px,#292f23 2px,#3a4333 2px,#3a4333 3px,#4e5a46 3px,#4e5a46 4px,#6e7866 4px,#6e7866 5px,#828b7a 5px,#828b7a 6px,#626d5a 6px,#626d5a 7px)}
+.s4{left:588px;width:7px;background:linear-gradient(to right,#3a4333 0px,#3a4333 1px,#292f23 1px,#292f23 2px,#3c4635 2px,#3c4635 3px,#525e4a 3px,#525e4a 4px,#727c6a 4px,#727c6a 5px,#7e8776 5px,#7e8776 6px,#5e6956 6px,#5e6956 7px)}
+.s5{left:710px;width:7px;background:linear-gradient(to right,#384031 0px,#384031 1px,#2c3225 1px,#2c3225 2px,#3f4937 2px,#3f4937 3px,#56624e 3px,#56624e 4px,#76806e 4px,#76806e 5px,#7a8472 5px,#7a8472 6px,#5a6552 6px,#5a6552 7px)}
+.s6{left:832px;width:7px;background:linear-gradient(to right,#353d2e 0px,#353d2e 1px,#2e3528 1px,#2e3528 2px,#414b3a 2px,#414b3a 3px,#5a6552 3px,#5a6552 4px,#7a8472 4px,#7a8472 5px,#76806e 5px,#76806e 6px,#56624e 6px,#56624e 7px)}
+.s7{left:954px;width:7px;background:linear-gradient(to right,#333b2c 0px,#333b2c 1px,#30382a 1px,#30382a 2px,#444e3c 2px,#444e3c 3px,#5e6956 3px,#5e6956 4px,#7e8776 4px,#7e8776 5px,#727c6a 5px,#727c6a 6px,#525e4a 6px,#525e4a 7px)}
+/* правый край последнего таба: измерено — только тень на x=1080 */
+.s8{left:1077px;width:4px;height:34px;top:47px;background:linear-gradient(to right,#414b3a 0px,#414b3a 1px,#2e3528 1px,#2e3528 2px,#353d2e 2px,#353d2e 3px,#485440 3px,#485440 4px)}
+
+/* кромка рамки содержимого: под inactive есть, под active нет */
+.cframe_top{position:absolute;height:3px;top:81px;
+  background:linear-gradient(to bottom,#596451 0px,#596451 1px,#838d7b 1px,#838d7b 2px,#626d5a 2px,#626d5a 3px)}
+.cframe_l{position:absolute;left:10px;top:47px;width:4px;height:556px;
+  background:linear-gradient(to right,#5a6552 0px,#5a6552 1px,#7a8472 1px,#7a8472 2px,#76806e 2px,#76806e 3px,#56624e 3px,#56624e 4px)}
+.cframe_r{position:absolute;left:1084px;top:84px;width:4px;height:516px;
+  background:linear-gradient(to right,#485440 0px,#485440 1px,#353d2e 1px,#353d2e 2px,#2e3528 2px,#2e3528 3px,#414b3a 3px,#414b3a 4px)}
+.footsep{position:absolute;left:10px;top:599px;width:1077px;height:5px;
+  background:linear-gradient(to bottom,#4c5844 0px,#4c5844 1px,#424c3b 1px,#424c3b 2px,#282e22 2px,#282e22 3px,#414b3a 3px,#414b3a 4px,#4c5844 4px,#4c5844 5px)}
+
+/* ---------- кнопка: bevel из измеренного профиля ---------- */
+.btn{position:absolute;background:#4c5844;overflow:hidden}
+.btn>i.bl{position:absolute;left:0;top:0;bottom:0;width:4px;
+  background:linear-gradient(to right,#56624e 0px,#56624e 1px,#76806e 1px,#76806e 2px,#7a8472 2px,#7a8472 3px,#5a6552 3px,#5a6552 4px)}
+.btn>i.bt{position:absolute;left:0;right:0;top:0;height:3px;
+  background:linear-gradient(to bottom,#5b6653 0px,#5b6653 1px,#868f7e 1px,#868f7e 2px,#5f6a57 2px,#5f6a57 3px)}
+.btn>i.br{position:absolute;right:0;top:0;bottom:0;width:4px;
+  background:linear-gradient(to right,#414b3a 0px,#414b3a 1px,#2e3528 1px,#2e3528 2px,#353d2e 2px,#353d2e 3px,#485440 3px,#485440 4px)}
+.btn>i.bb{position:absolute;left:0;right:0;bottom:0;height:3px;
+  background:linear-gradient(to bottom,#384031 0px,#384031 1px,#323a2b 1px,#323a2b 2px,#4c5744 2px,#4c5744 3px)}
+.btn>span{position:absolute;line-height:19px;white-space:nowrap;color:#cdd3c8}
+.btn.off>span{color:#727d6c}
+
+/* ---------- поле: sunken bevel из измеренного профиля ---------- */
+.entry{position:absolute;background:#3e4637;overflow:hidden}
+.entry>i.bl{position:absolute;left:0;top:0;bottom:0;width:4px;
+  background:linear-gradient(to right,#414b3a 0px,#414b3a 1px,#2e3528 1px,#2e3528 2px,#30372a 2px,#30372a 3px,#3c4435 3px,#3c4435 4px)}
+.entry>i.bt{position:absolute;left:0;right:0;top:0;height:3px;
+  background:linear-gradient(to bottom,#485340 0px,#485340 1px,#2e3528 1px,#2e3528 2px,#343b2d 2px,#343b2d 3px)}
+.entry>i.br{position:absolute;right:0;top:0;bottom:0;width:4px;
+  background:linear-gradient(to right,#4f5848 0px,#4f5848 1px,#777f6f 1px,#777f6f 2px,#76806e 2px,#76806e 3px,#56624e 3px,#56624e 4px)}
+.entry>i.bb{position:absolute;left:0;right:0;bottom:0;height:3px;
+  background:linear-gradient(to bottom,#6a7262 0px,#6a7262 1px,#76806e 1px,#76806e 2px,#3e4637 2px,#3e4637 3px)}
+.entry>span{position:absolute;line-height:19px;white-space:nowrap;color:#bec4b9}
+.arrow{position:absolute;width:0;height:0;
+  border-left:9px solid transparent;border-right:9px solid transparent;
+  border-top:6px solid #b0aeae}
+/* D21: стрелка измерена построчно: 19px ширина у основания, 6px высота,
+   цвет #b0aeae (не #bec4b9). cts_team: основание y=224, левый край x=429.
+   lambda: основание y=298 (на 1px ниже относительно поля). */
+.a_cts{left:208px;top:13px}
+.a_lam{left:208px;top:13px}
+/* D20: внешние 2 строки/столбца — не UI, а окружение за диалогом
+   (651 уникальный цвет в строке y=0). Перенесены как измеренные градиенты. */
+.ecl0{position:absolute;left:0px;top:0;width:1px;height:654px;background:linear-gradient(to bottom,#363e35 0px,#363e35 6px,#3c4434 6px,#3c4434 12px,#515734 12px,#515734 18px,#414a35 18px,#414a35 24px,#424a32 24px,#424a32 30px,#43492e 30px,#43492e 36px,#424926 36px,#424926 42px,#444a24 42px,#444a24 48px,#4c5221 48px,#4c5221 54px,#575a1d 54px,#575a1d 60px,#6b6d1f 60px,#6b6d1f 66px,#858525 66px,#858525 72px,#82821e 72px,#82821e 78px,#959421 78px,#959421 84px,#aeaa17 84px,#aeaa17 90px,#b6b118 90px,#b6b118 96px,#bab515 96px,#bab515 102px,#bab515 102px,#bab515 108px,#a1a11d 108px,#a1a11d 114px,#979213 114px,#979213 120px,#8a891b 120px,#8a891b 126px,#7f801a 126px,#7f801a 132px,#78791c 132px,#78791c 138px,#7a7c1d 138px,#7a7c1d 144px,#7f8122 144px,#7f8122 150px,#70752f 150px,#70752f 156px,#686d33 156px,#686d33 162px,#5e6230 162px,#5e6230 168px,#545a2a 168px,#545a2a 174px,#586033 174px,#586033 180px,#586036 180px,#586036 186px,#4f5730 186px,#4f5730 192px,#515839 192px,#515839 198px,#454e33 198px,#454e33 204px,#454f38 204px,#454f38 210px,#535c47 210px,#535c47 216px,#4c5746 216px,#4c5746 222px,#475244 222px,#475244 228px,#465047 228px,#465047 234px,#48534d 234px,#48534d 240px,#4c5752 240px,#4c5752 246px,#4e5a59 246px,#4e5a59 252px,#4c5759 252px,#4c5759 258px,#4a565b 258px,#4a565b 264px,#48555e 264px,#48555e 270px,#44515d 270px,#44515d 276px,#455360 276px,#455360 282px,#3f4c5d 282px,#3f4c5d 288px,#3f4e61 288px,#3f4e61 294px,#3b4a5f 294px,#3b4a5f 300px,#36465f 300px,#36465f 306px,#35435d 306px,#35435d 312px,#2e3c57 312px,#2e3c57 318px,#2e3d5a 318px,#2e3d5a 324px,#334261 324px,#334261 330px,#2c3b5a 330px,#2c3b5a 336px,#2a3959 336px,#2a3959 342px,#2f3e5f 342px,#2f3e5f 348px,#273758 348px,#273758 354px,#253557 354px,#253557 360px,#243456 360px,#243456 366px,#283757 366px,#283757 372px,#344053 372px,#344053 378px,#253454 378px,#253454 384px,#273657 384px,#273657 390px,#273558 390px,#273558 396px,#273759 396px,#273759 402px,#283758 402px,#283758 408px,#263556 408px,#263556 414px,#233251 414px,#233251 420px,#2b3a58 420px,#2b3a58 426px,#2e3d5b 426px,#2e3d5b 432px,#33425f 432px,#33425f 438px,#394865 438px,#394865 444px,#344362 444px,#344362 450px,#303f5e 450px,#303f5e 456px,#31405e 456px,#31405e 462px,#33425f 462px,#33425f 468px,#33425f 468px,#33425f 474px,#344362 474px,#344362 480px,#384766 480px,#384766 486px,#384766 486px,#384766 492px,#374665 492px,#374665 498px,#354465 498px,#354465 504px,#364467 504px,#364467 510px,#314163 510px,#314163 516px,#2f3f63 516px,#2f3f63 522px,#2a395d 522px,#2a395d 528px,#253356 528px,#253356 534px,#29395b 534px,#29395b 540px,#324162 540px,#324162 546px,#324161 546px,#324161 552px,#364459 552px,#364459 558px,#414d52 558px,#414d52 564px,#4c5750 564px,#4c5750 570px,#5a6550 570px,#5a6550 576px,#394865 576px,#394865 582px,#354466 582px,#354466 588px,#344466 588px,#344466 594px,#354366 594px,#354366 600px,#374665 600px,#374665 606px,#3f4d63 606px,#3f4d63 612px,#44525e 612px,#44525e 618px,#374661 618px,#374661 624px,#334262 624px,#334262 630px,#304062 630px,#304062 636px,#324063 636px,#324063 642px,#344265 642px,#344265 648px,#354366 648px,#354366 654px)}
+.ecl1{position:absolute;left:1px;top:0;width:1px;height:654px;background:linear-gradient(to bottom,#343d34 0px,#343d34 6px,#5d6555 6px,#5d6555 12px,#687055 12px,#687055 18px,#606956 18px,#606956 24px,#616954 24px,#616954 30px,#616952 30px,#616952 36px,#60684d 36px,#60684d 42px,#61694c 42px,#61694c 48px,#666d4a 48px,#666d4a 54px,#6c7248 54px,#6c7248 60px,#777c49 60px,#777c49 66px,#868a4d 66px,#868a4d 72px,#858948 72px,#858948 78px,#8f934a 78px,#8f934a 84px,#9e9f44 84px,#9e9f44 90px,#a2a345 90px,#a2a345 96px,#a4a543 96px,#a4a543 102px,#a4a643 102px,#a4a643 108px,#969a48 108px,#969a48 114px,#909242 114px,#909242 120px,#898d47 120px,#898d47 126px,#838846 126px,#838846 132px,#7f8347 132px,#7f8347 138px,#808548 138px,#808548 144px,#83884b 144px,#83884b 150px,#7b8152 150px,#7b8152 156px,#767d54 156px,#767d54 162px,#707753 162px,#707753 168px,#6a724f 168px,#6a724f 174px,#6d7554 174px,#6d7554 180px,#6d7556 180px,#6d7556 186px,#687053 186px,#687053 192px,#697158 192px,#697158 198px,#626b55 198px,#626b55 204px,#626c57 204px,#626c57 210px,#6a7360 210px,#6a7360 216px,#66705f 216px,#66705f 222px,#636e5e 222px,#636e5e 228px,#636c60 228px,#636c60 234px,#646e63 234px,#646e63 240px,#667066 240px,#667066 246px,#67726a 246px,#67726a 252px,#66706a 252px,#66706a 258px,#65706b 258px,#65706b 264px,#646f6d 264px,#646f6d 270px,#626d6c 270px,#626d6c 276px,#626e6e 276px,#626e6e 282px,#5f6a6c 282px,#5f6a6c 288px,#5f6b6e 288px,#5f6b6e 294px,#5d696d 294px,#5d696d 300px,#5a676d 300px,#5a676d 306px,#59656c 306px,#59656c 312px,#556168 312px,#556168 318px,#55616a 318px,#55616a 324px,#58646e 324px,#58646e 330px,#54606a 330px,#54606a 336px,#535f6a 336px,#535f6a 342px,#56626d 342px,#56626d 348px,#515e69 348px,#515e69 354px,#505d69 354px,#505d69 360px,#505d68 360px,#505d68 366px,#525e69 366px,#525e69 372px,#586366 372px,#586366 378px,#505d67 378px,#505d67 384px,#515e69 384px,#515e69 390px,#515d69 390px,#515d69 396px,#515e6a 396px,#515e6a 402px,#515e69 402px,#515e69 408px,#515d68 408px,#515d68 414px,#4f5b65 414px,#4f5b65 420px,#536069 420px,#536069 426px,#55626b 426px,#55626b 432px,#58646e 432px,#58646e 438px,#5b6871 438px,#5b6871 444px,#59656f 444px,#59656f 450px,#56626c 450px,#56626c 456px,#57636d 456px,#57636d 462px,#58646d 462px,#58646d 468px,#58646d 468px,#58646d 474px,#59656f 474px,#59656f 480px,#5b6771 480px,#5b6771 486px,#5b6771 486px,#5b6771 492px,#5a6771 492px,#5a6771 498px,#596571 498px,#596571 504px,#5a6572 504px,#5a6572 510px,#57636f 510px,#57636f 516px,#566370 516px,#566370 522px,#535f6c 522px,#535f6c 528px,#505c68 528px,#505c68 534px,#53606b 534px,#53606b 540px,#57646f 540px,#57646f 546px,#57646f 546px,#57646f 552px,#596569 552px,#596569 558px,#5f6a66 558px,#5f6a66 564px,#667065 564px,#667065 570px,#6e7865 570px,#6e7865 576px,#5b6871 576px,#5b6871 582px,#596571 582px,#596571 588px,#586571 588px,#586571 594px,#596571 594px,#596571 600px,#5a6670 600px,#5a6670 606px,#5f6a70 606px,#5f6a70 612px,#626d6d 612px,#626d6d 618px,#5a666e 618px,#5a666e 624px,#58646f 624px,#58646f 630px,#56636f 630px,#56636f 636px,#576370 636px,#576370 642px,#586471 642px,#586471 648px,#596571 648px,#596571 654px)}
+.ect0{position:absolute;left:0;top:0px;width:1097px;height:1px;background:linear-gradient(to right,#363e35 0px,#363e35 6px,#2e3830 6px,#2e3830 12px,#242f29 12px,#242f29 18px,#26302b 18px,#26302b 24px,#232d2c 24px,#232d2c 30px,#232e31 30px,#232e31 36px,#2b373e 36px,#2b373e 42px,#313d49 42px,#313d49 48px,#293644 48px,#293644 54px,#233040 54px,#233040 60px,#2a3646 60px,#2a3646 66px,#313f50 66px,#313f50 72px,#384656 72px,#384656 78px,#434f5a 78px,#434f5a 84px,#455058 84px,#455058 90px,#48525a 90px,#48525a 96px,#45515c 96px,#45515c 102px,#3e4b5a 102px,#3e4b5a 108px,#3c495e 108px,#3c495e 114px,#3c4a60 114px,#3c4a60 120px,#3a4962 120px,#3a4962 126px,#394762 126px,#394762 132px,#374761 132px,#374761 138px,#384864 138px,#384864 144px,#384763 144px,#384763 150px,#374663 150px,#374663 156px,#2f3e5b 156px,#2f3e5b 162px,#2e3d5b 162px,#2e3d5b 168px,#334260 168px,#334260 174px,#364564 174px,#364564 180px,#374665 180px,#374665 186px,#384766 186px,#384766 192px,#384766 192px,#384766 198px,#374664 198px,#374664 204px,#374665 204px,#374665 210px,#374665 210px,#374665 216px,#364564 216px,#364564 222px,#334261 222px,#334261 228px,#32415f 228px,#32415f 234px,#33415f 234px,#33415f 240px,#33415e 240px,#33415e 246px,#313f5a 246px,#313f5a 252px,#303d58 252px,#303d58 258px,#2d3953 258px,#2d3953 264px,#27324a 264px,#27324a 270px,#253046 270px,#253046 276px,#1a253a 276px,#1a253a 282px,#20293d 282px,#20293d 288px,#121a2c 288px,#121a2c 294px,#071020 294px,#071020 300px,#0a1121 300px,#0a1121 306px,#0a1220 306px,#0a1220 312px,#08101d 312px,#08101d 318px,#09101b 318px,#09101b 324px,#090f1b 324px,#090f1b 330px,#09101b 330px,#09101b 336px,#0a111c 336px,#0a111c 342px,#060c17 342px,#060c17 348px,#0a101c 348px,#0a101c 354px,#0b111c 354px,#0b111c 360px,#040b15 360px,#040b15 366px,#040b15 366px,#040b15 372px,#040b16 372px,#040b16 378px,#040b15 378px,#040b15 384px,#050c16 384px,#050c16 390px,#0d141e 390px,#0d141e 396px,#181f29 396px,#181f29 402px,#0e141e 402px,#0e141e 408px,#1a1f20 408px,#1a1f20 414px,#1d2422 414px,#1d2422 420px,#101821 420px,#101821 426px,#101926 426px,#101926 432px,#131b2b 432px,#131b2b 438px,#141d30 438px,#141d30 444px,#152034 444px,#152034 450px,#182339 450px,#182339 456px,#1b273e 456px,#1b273e 462px,#1d2942 462px,#1d2942 468px,#1e2a44 468px,#1e2a44 474px,#23304a 474px,#23304a 480px,#28344f 480px,#28344f 486px,#2b3854 486px,#2b3854 492px,#273551 492px,#273551 498px,#1e2c49 498px,#1e2c49 504px,#212f4c 504px,#212f4c 510px,#202f4d 510px,#202f4d 516px,#1f2c4c 516px,#1f2c4c 522px,#172542 522px,#172542 528px,#111f3c 528px,#111f3c 534px,#0d1b38 534px,#0d1b38 540px,#0d1b38 540px,#0d1b38 546px,#0d1b38 546px,#0d1b38 552px,#0a1835 552px,#0a1835 558px,#091734 558px,#091734 564px,#0a1835 564px,#0a1835 570px,#0d1b38 570px,#0d1b38 576px,#15233f 576px,#15233f 582px,#1a2843 582px,#1a2843 588px,#1a2843 588px,#1a2843 594px,#14223d 594px,#14223d 600px,#141f3b 600px,#141f3b 606px,#14223d 606px,#14223d 612px,#192641 612px,#192641 618px,#1d2944 618px,#1d2944 624px,#1a2640 624px,#1a2640 630px,#15213b 630px,#15213b 636px,#131f39 636px,#131f39 642px,#121e38 642px,#121e38 648px,#121e38 648px,#121e38 654px,#121e38 654px,#121e38 660px,#131f39 660px,#131f39 666px,#121e38 666px,#121e38 672px,#111d37 672px,#111d37 678px,#111d36 678px,#111d36 684px,#111d35 684px,#111d35 690px,#111d35 690px,#111d35 696px,#111d35 696px,#111d35 702px,#101c34 702px,#101c34 708px,#111d35 708px,#111d35 714px,#111c35 714px,#111c35 720px,#121d35 720px,#121d35 726px,#111b34 726px,#111b34 732px,#111b34 732px,#111b34 738px,#121c34 738px,#121c34 744px,#121d33 744px,#121d33 750px,#111c32 750px,#111c32 756px,#121d33 756px,#121d33 762px,#121d33 762px,#121d33 768px,#121d33 768px,#121d33 774px,#121d33 774px,#121d33 780px,#121d33 780px,#121d33 786px,#162137 786px,#162137 792px,#111c32 792px,#111c32 798px,#101b30 798px,#101b30 804px,#121b30 804px,#121b30 810px,#121b30 810px,#121b30 816px,#111b30 816px,#111b30 822px,#151d30 822px,#151d30 828px,#161f30 828px,#161f30 834px,#182030 834px,#182030 840px,#252c2e 840px,#252c2e 846px,#1f262f 846px,#1f262f 852px,#17212f 852px,#17212f 858px,#161f2f 858px,#161f2f 864px,#151e2f 864px,#151e2f 870px,#151d2f 870px,#151d2f 876px,#172031 876px,#172031 882px,#171e2e 882px,#171e2e 888px,#19212d 888px,#19212d 894px,#1d252c 894px,#1d252c 900px,#23292d 900px,#23292d 906px,#29312d 906px,#29312d 912px,#32372b 912px,#32372b 918px,#3b3f2b 918px,#3b3f2b 924px,#454a2c 924px,#454a2c 930px,#55572b 930px,#55572b 936px,#636131 936px,#636131 942px,#12130c 942px,#12130c 948px,#1c1e16 948px,#1c1e16 954px,#1a1f14 954px,#1a1f14 960px,#5a6a35 960px,#5a6a35 966px,#4a5a2e 966px,#4a5a2e 972px,#152320 972px,#152320 978px,#0f181b 978px,#0f181b 984px,#0f1818 984px,#0f1818 990px,#0f1719 990px,#0f1719 996px,#132022 996px,#132022 1002px,#1d2a31 1002px,#1d2a31 1008px,#213036 1008px,#213036 1014px,#080a09 1014px,#080a09 1020px,#263030 1020px,#263030 1026px,#2a3334 1026px,#2a3334 1032px,#1e2123 1032px,#1e2123 1038px,#121414 1038px,#121414 1044px,#656732 1044px,#656732 1050px,#404222 1050px,#404222 1056px,#2d3023 1056px,#2d3023 1062px,#1e2223 1062px,#1e2223 1068px,#151922 1068px,#151922 1074px,#0f1521 1074px,#0f1521 1080px,#0d1522 1080px,#0d1522 1086px,#0e1422 1086px,#0e1422 1092px,#0d1321 1092px,#0d1321 1098px)}
+.ect1{position:absolute;left:0;top:1px;width:1097px;height:1px;background:linear-gradient(to right,#373f35 0px,#373f35 6px,#4b554a 6px,#4b554a 12px,#454f44 12px,#454f44 18px,#464f46 18px,#464f46 24px,#434e47 24px,#434e47 30px,#444e4a 30px,#444e4a 36px,#495453 36px,#495453 42px,#4d595b 42px,#4d595b 48px,#485458 48px,#485458 54px,#444f55 54px,#444f55 60px,#485359 60px,#485359 66px,#4e595f 66px,#4e595f 72px,#535f63 72px,#535f63 78px,#5c6765 78px,#5c6765 84px,#5e6864 84px,#5e6864 90px,#5d6666 90px,#5d6666 96px,#586368 96px,#586368 102px,#536067 102px,#536067 108px,#535f69 108px,#535f69 114px,#55606a 114px,#55606a 120px,#53606c 120px,#53606c 126px,#525f6c 126px,#525f6c 132px,#515e6b 132px,#515e6b 138px,#52606c 138px,#52606c 144px,#525f6c 144px,#525f6c 150px,#515e6c 150px,#515e6c 156px,#4b5867 156px,#4b5867 162px,#4b5868 162px,#4b5868 168px,#4e5b6b 168px,#4e5b6b 174px,#505d6d 174px,#505d6d 180px,#515e6e 180px,#515e6e 186px,#525f6e 186px,#525f6e 192px,#525f6e 192px,#525f6e 198px,#515e6d 198px,#515e6d 204px,#515e6e 204px,#515e6e 210px,#515e6e 210px,#515e6e 216px,#505d6d 216px,#505d6d 222px,#4e5b6b 222px,#4e5b6b 228px,#4e5b69 228px,#4e5b69 234px,#4e5b69 234px,#4e5b69 240px,#4e5b69 240px,#4e5b69 246px,#4d5966 246px,#4d5966 252px,#4c5865 252px,#4c5865 258px,#4a5561 258px,#4a5561 264px,#46515c 264px,#46515c 270px,#454f59 270px,#454f59 276px,#3d4750 276px,#3d4750 282px,#414a52 282px,#414a52 288px,#374047 288px,#374047 294px,#30393f 294px,#30393f 300px,#323a3f 300px,#323a3f 306px,#323b3f 306px,#323b3f 312px,#31393c 312px,#31393c 318px,#32393c 318px,#32393c 324px,#32393b 324px,#32393b 330px,#32393b 330px,#32393b 336px,#323a3c 336px,#323a3c 342px,#303739 342px,#303739 348px,#32393c 348px,#32393c 354px,#32393b 354px,#32393b 360px,#2e3637 360px,#2e3637 366px,#2e3637 366px,#2e3637 372px,#2e3638 372px,#2e3638 378px,#2e3637 378px,#2e3637 384px,#2f3738 384px,#2f3738 390px,#353d3e 390px,#353d3e 396px,#3c4344 396px,#3c4344 402px,#363c3e 402px,#363c3e 408px,#41483f 408px,#41483f 414px,#3d4440 414px,#3d4440 420px,#363f3f 420px,#363f3f 426px,#363f43 426px,#363f43 432px,#394146 432px,#394146 438px,#39424a 438px,#39424a 444px,#3a444c 444px,#3a444c 450px,#3c4750 450px,#3c4750 456px,#3e4954 456px,#3e4954 462px,#3f4a55 462px,#3f4a55 468px,#414c58 468px,#414c58 474px,#434f5c 474px,#434f5c 480px,#47525f 480px,#47525f 486px,#495562 486px,#495562 492px,#45525f 492px,#45525f 498px,#404c5b 498px,#404c5b 504px,#424e5c 504px,#424e5c 510px,#414e5d 510px,#414e5d 516px,#404c5c 516px,#404c5c 522px,#3b4755 522px,#3b4755 528px,#374352 528px,#374352 534px,#34404f 534px,#34404f 540px,#34414f 540px,#34414f 546px,#34404e 546px,#34404e 552px,#323f4d 552px,#323f4d 558px,#323e4d 558px,#323e4d 564px,#323f4d 564px,#323f4d 570px,#354150 570px,#354150 576px,#3b4754 576px,#3b4754 582px,#3d4a57 582px,#3d4a57 588px,#3d4956 588px,#3d4956 594px,#394653 594px,#394653 600px,#394351 600px,#394351 606px,#394652 606px,#394652 612px,#3d4855 612px,#3d4855 618px,#404b58 618px,#404b58 624px,#3d4854 624px,#3d4854 630px,#394451 630px,#394451 636px,#384350 636px,#384350 642px,#38434f 642px,#38434f 648px,#38434f 648px,#38434f 654px,#38434f 654px,#38434f 660px,#384350 660px,#384350 666px,#38434f 666px,#38434f 672px,#37424e 672px,#37424e 678px,#37424d 678px,#37424d 684px,#37424d 684px,#37424d 690px,#37424d 690px,#37424d 696px,#37424d 696px,#37424d 702px,#37424d 702px,#37424d 708px,#37414d 708px,#37414d 714px,#37414d 714px,#37414d 720px,#38414d 720px,#38414d 726px,#37414c 726px,#37414c 732px,#37414c 732px,#37414c 738px,#38424c 738px,#38424c 744px,#38424c 744px,#38424c 750px,#37414b 750px,#37414b 756px,#38424c 756px,#38424c 762px,#38424c 762px,#38424c 768px,#38424c 768px,#38424c 774px,#38424c 774px,#38424c 780px,#38424c 780px,#38424c 786px,#3a454e 786px,#3a454e 792px,#37414b 792px,#37414b 798px,#364149 798px,#364149 804px,#38414a 804px,#38414a 810px,#38414a 810px,#38414a 816px,#38414a 816px,#38414a 822px,#3a424a 822px,#3a424a 828px,#3b434a 828px,#3b434a 834px,#3c444a 834px,#3c444a 840px,#464e48 840px,#464e48 846px,#3e4749 846px,#3e4749 852px,#3b4549 852px,#3b4549 858px,#3a4349 858px,#3a4349 864px,#3a4349 864px,#3a4349 870px,#3a4249 870px,#3a4249 876px,#3b444a 876px,#3b444a 882px,#3b4348 882px,#3b4348 888px,#3d4648 888px,#3d4648 894px,#404847 894px,#404847 900px,#454c48 900px,#454c48 906px,#485148 906px,#485148 912px,#4f5546 912px,#4f5546 918px,#565b47 918px,#565b47 924px,#5c6246 924px,#5c6246 930px,#686c47 930px,#686c47 936px,#6a6b48 936px,#6a6b48 942px,#363930 942px,#363930 948px,#3f4439 948px,#3f4439 954px,#3d4337 954px,#3d4337 960px,#69774d 960px,#69774d 966px,#5d6a48 966px,#5d6a48 972px,#3a4540 972px,#3a4540 978px,#363f3b 978px,#363f3b 984px,#363f3a 984px,#363f3a 990px,#363e3a 990px,#363e3a 996px,#394440 996px,#394440 1002px,#404c4a 1002px,#404c4a 1008px,#424f4e 1008px,#424f4e 1014px,#30352e 1014px,#30352e 1020px,#47504b 1020px,#47504b 1026px,#48504c 1026px,#48504c 1032px,#404440 1032px,#404440 1038px,#383c36 1038px,#383c36 1044px,#71744b 1044px,#71744b 1050px,#575c40 1050px,#575c40 1056px,#4a4f41 1056px,#4a4f41 1062px,#404641 1062px,#404641 1068px,#3a3f40 1068px,#3a3f40 1074px,#363d3f 1074px,#363d3f 1080px,#343d40 1080px,#343d40 1086px,#353c40 1086px,#353c40 1092px,#343b3f 1092px,#343b3f 1098px)}
+
+
+/* D19: поэлементные bevel — общий профиль от кнопки OK не подходил
+   остальным (у 'Дополнительно' левый край зеркален, у полей иные оттенки) */
+.b_load>i.bl{background:linear-gradient(to right,#5a6552 0px,#5a6552 1px,#7a8472 1px,#7a8472 2px,#76806e 2px,#76806e 3px,#56624e 3px,#56624e 4px)}
+.b_load>i.br{background:linear-gradient(to right,#4c5844 0px,#4c5844 1px,#3c4635 1px,#3c4635 2px,#292f23 2px,#292f23 3px,#3a4333 3px,#3a4333 4px)}
+.b_load>i.bt{background:linear-gradient(to bottom,#535f4b 0px,#535f4b 1px,#7e8776 1px,#7e8776 2px,#67725f 2px,#67725f 3px)}
+.b_load>i.bb{background:linear-gradient(to bottom,#4c5844 0px,#4c5844 1px,#373f30 1px,#373f30 2px,#333b2c 2px,#333b2c 3px)}
+.b_color>i.bl{background:linear-gradient(to right,#5a6552 0px,#5a6552 1px,#7a8472 1px,#7a8472 2px,#76806e 2px,#76806e 3px,#56624e 3px,#56624e 4px)}
+.b_color>i.br{background:linear-gradient(to right,#4c5844 0px,#4c5844 1px,#3c4635 1px,#3c4635 2px,#292f23 2px,#292f23 3px,#3a4333 3px,#3a4333 4px)}
+.b_color>i.bt{background:linear-gradient(to bottom,#525e4a 0px,#525e4a 1px,#7d8675 1px,#7d8675 2px,#697361 2px,#697361 3px)}
+.b_color>i.bb{background:linear-gradient(to bottom,#4c5844 0px,#4c5844 1px,#384031 1px,#384031 2px,#323a2b 2px,#323a2b 3px)}
+.b_more>i.bl{background:linear-gradient(to right,#5a6552 0px,#5a6552 1px,#7a8472 1px,#7a8472 2px,#76806e 2px,#76806e 3px,#56624e 3px,#56624e 4px)}
+.b_more>i.br{background:linear-gradient(to right,#46513e 0px,#46513e 1px,#333b2c 1px,#333b2c 2px,#30382a 2px,#30382a 3px,#444e3c 3px,#444e3c 4px)}
+.b_more>i.bt{background:linear-gradient(to bottom,#697361 0px,#697361 1px,#7d8675 1px,#7d8675 2px,#525e4a 2px,#525e4a 3px)}
+.b_more>i.bb{background:linear-gradient(to bottom,#444e3c 0px,#444e3c 1px,#2a3024 1px,#2a3024 2px,#404a38 2px,#404a38 3px)}
+.b_ok>i.bl{background:linear-gradient(to right,#56624e 0px,#56624e 1px,#76806e 1px,#76806e 2px,#7a8472 2px,#7a8472 3px,#5a6552 3px,#5a6552 4px)}
+.b_ok>i.br{background:linear-gradient(to right,#485440 0px,#485440 1px,#353d2e 1px,#353d2e 2px,#2e3528 2px,#2e3528 3px,#414b3a 3px,#414b3a 4px)}
+.b_ok>i.bt{background:linear-gradient(to bottom,#5b6653 0px,#5b6653 1px,#868f7e 1px,#868f7e 2px,#5f6a57 2px,#5f6a57 3px)}
+.b_ok>i.bb{background:linear-gradient(to bottom,#4c5744 0px,#4c5744 1px,#323a2b 1px,#323a2b 2px,#384031 2px,#384031 3px)}
+.b_cancel>i.bl{background:linear-gradient(to right,#56624e 0px,#56624e 1px,#76806e 1px,#76806e 2px,#7a8472 2px,#7a8472 3px,#5a6552 3px,#5a6552 4px)}
+.b_cancel>i.br{background:linear-gradient(to right,#485440 0px,#485440 1px,#353d2e 1px,#353d2e 2px,#2e3528 2px,#2e3528 3px,#414b3a 3px,#414b3a 4px)}
+.b_cancel>i.bt{background:linear-gradient(to bottom,#5b6653 0px,#5b6653 1px,#868f7e 1px,#868f7e 2px,#5f6a57 2px,#5f6a57 3px)}
+.b_cancel>i.bb{background:linear-gradient(to bottom,#4c5744 0px,#4c5744 1px,#323a2b 1px,#323a2b 2px,#384031 2px,#384031 3px)}
+.b_apply>i.bl{background:linear-gradient(to right,#56624e 0px,#56624e 1px,#76806e 1px,#76806e 2px,#7a8472 2px,#7a8472 3px,#5a6552 3px,#5a6552 4px)}
+.b_apply>i.br{background:linear-gradient(to right,#485440 0px,#485440 1px,#353d2e 1px,#353d2e 2px,#2e3528 2px,#2e3528 3px,#414b3a 3px,#414b3a 4px)}
+.b_apply>i.bt{background:linear-gradient(to bottom,#5b6653 0px,#5b6653 1px,#868f7e 1px,#868f7e 2px,#5f6a57 2px,#5f6a57 3px)}
+.b_apply>i.bb{background:linear-gradient(to bottom,#4c5744 0px,#4c5744 1px,#323a2b 1px,#323a2b 2px,#384031 2px,#384031 3px)}
+.e_cts>i.bl{background:linear-gradient(to right,#444e3c 0px,#444e3c 1px,#30382a 1px,#30382a 2px,#2f3528 2px,#2f3528 3px,#3a4233 3px,#3a4233 4px)}
+.e_cts>i.br{background:linear-gradient(to right,#3e4637 0px,#3e4637 1px,#5e6657 1px,#5e6657 2px,#858e7d 2px,#858e7d 3px,#6a7462 3px,#6a7462 4px)}
+.e_cts>i.bt{background:linear-gradient(to bottom,#343c2e 0px,#343c2e 1px,#30372a 1px,#30372a 2px,#3e4637 2px,#3e4637 3px)}
+.e_cts>i.bb{background:linear-gradient(to bottom,#5c6555 0px,#5c6555 1px,#818a79 1px,#818a79 2px,#56624e 2px,#56624e 3px)}
+.e_lam>i.bl{background:linear-gradient(to right,#444e3c 0px,#444e3c 1px,#30382a 1px,#30382a 2px,#2f3528 2px,#2f3528 3px,#3a4233 3px,#3a4233 4px)}
+.e_lam>i.br{background:linear-gradient(to right,#3e4637 0px,#3e4637 1px,#5e6657 1px,#5e6657 2px,#858e7d 2px,#858e7d 3px,#6a7462 3px,#6a7462 4px)}
+.e_lam>i.bt{background:linear-gradient(to bottom,#424c3b 0px,#424c3b 1px,#282e22 1px,#282e22 2px,#373f31 2px,#373f31 3px)}
+.e_lam>i.bb{background:linear-gradient(to bottom,#41493a 0px,#41493a 1px,#757e6d 1px,#757e6d 2px,#6d7765 2px,#6d7765 3px)}
+.e_name>i.bl{background:linear-gradient(to right,#414b3a 0px,#414b3a 1px,#2e3528 1px,#2e3528 2px,#30372a 2px,#30372a 3px,#3c4435 3px,#3c4435 4px)}
+.e_name>i.br{background:linear-gradient(to right,#4f5848 0px,#4f5848 1px,#777f6f 1px,#777f6f 2px,#76806e 2px,#76806e 3px,#56624e 3px,#56624e 4px)}
+.e_name>i.bt{background:linear-gradient(to bottom,#2e3528 0px,#2e3528 1px,#343b2d 1px,#343b2d 2px,#3e4637 2px,#3e4637 3px)}
+.e_name>i.bb{background:linear-gradient(to bottom,#3e4637 0px,#3e4637 1px,#6a7262 1px,#6a7262 2px,#76806e 2px,#76806e 3px)}
+.e_pass>i.bl{background:linear-gradient(to right,#414b3a 0px,#414b3a 1px,#2e3528 1px,#2e3528 2px,#30372a 2px,#30372a 3px,#3c4435 3px,#3c4435 4px)}
+.e_pass>i.br{background:linear-gradient(to right,#4f5848 0px,#4f5848 1px,#777f6f 1px,#777f6f 2px,#76806e 2px,#76806e 3px,#56624e 3px,#56624e 4px)}
+.e_pass>i.bt{background:linear-gradient(to bottom,#424c3b 0px,#424c3b 1px,#282e22 1px,#282e22 2px,#373f31 2px,#373f31 3px)}
+.e_pass>i.bb{background:linear-gradient(to bottom,#41493a 0px,#41493a 1px,#757e6d 1px,#757e6d 2px,#6d7765 2px,#6d7765 3px)}
+
+
+/* D24: стык разделителя активного таба с кромкой рамки. Измерено:
+   диагональный переход 8x3px — цвет меняется И по x, И по y, поэтому
+   ни border, ни один линейный градиент его не выражают. Три строки
+   по 1px, каждая со своим измеренным профилем. */
+.j0{position:absolute;left:184px;top:81px;width:8px;height:1px;background:linear-gradient(to right,#4b5743 0px,#4b5743 1px,#3c4535 1px,#3c4535 2px,#343b2d 2px,#343b2d 3px,#4a5342 3px,#4a5342 4px,#616c59 4px,#616c59 5px,#7a8372 5px,#7a8372 6px,#7d8775 6px,#7d8775 7px,#646e5c 7px,#646e5c 8px)}
+.j1{position:absolute;left:184px;top:82px;width:8px;height:1px;background:linear-gradient(to right,#4c5844 0px,#4c5844 1px,#4a5642 1px,#4a5642 2px,#4f5a47 2px,#4f5a47 3px,#6e7866 3px,#6e7866 4px,#848d7c 4px,#848d7c 5px,#87907f 5px,#87907f 6px,#87907f 6px,#87907f 7px,#848e7c 7px,#848e7c 8px)}
+.j2{position:absolute;left:184px;top:83px;width:8px;height:1px;background:linear-gradient(to right,#4c5844 0px,#4c5844 1px,#4c5844 1px,#4c5844 2px,#4e5a46 2px,#4e5a46 3px,#5a6552 3px,#5a6552 4px,#626d5a 4px,#626d5a 5px,#626d5a 5px,#626d5a 6px,#626d5a 6px,#626d5a 7px,#626d5a 7px,#626d5a 8px)}
+</style></head><body>
+<!-- кромки кадра -->
+<div class="ect0"></div><div class="ect1"></div><div class="frame_top"></div><div class="ecl0"></div><div class="ecl1"></div><div class="frame_left"></div>
+<div class="frame_bot"></div><div class="frame_right"></div>
+
+<!-- титул -->
+<img src="assets/titleicon.png" style="position:absolute;left:12px;top:12px;width:36px;height:26px">
+<div class="t" style="left:52px;top:18px;color:#f9f9f8;letter-spacing:1.0px">Настройки</div>
+<img src="assets/close.png" style="position:absolute;left:1049px;top:10px;width:39px;height:31px">
+
+<!-- полоса вкладок: верхние кромки -->
+<div class="tabtop_a" style="left:11px;width:179px"></div>
+<div class="tabtop_i" style="left:190px;width:159px"></div>
+<div class="tabtop_i" style="left:349px;width:122px"></div>
+<div class="tabtop_i" style="left:471px;width:122px"></div>
+<div class="tabtop_i" style="left:593px;width:122px"></div>
+<div class="tabtop_i" style="left:715px;width:122px"></div>
+<div class="tabtop_i" style="left:837px;width:122px"></div>
+<div class="tabtop_i" style="left:959px;width:122px"></div>
+<!-- кромка рамки под НЕактивными (под активным — разрыв 11..190) -->
+<div class="cframe_top" style="left:190px;width:897px"></div>
+<!-- разделители -->
+<i class="j0"></i><i class="j1"></i><i class="j2"></i>
+<i class="sep s0"></i><i class="sep s1"></i><i class="sep s2"></i>
+<i class="sep s3"></i><i class="sep s4"></i><i class="sep s5"></i>
+<i class="sep s6"></i><i class="sep s7"></i><i class="sep s8"></i>
+<!-- текст вкладок: ink 22/200/359/481/603/725/846/968, top ink=56..59 -->
+<div class="t" style="left:21px;top:56px;color:#c3b450;letter-spacing:1.25px">Мультиплеер</div>
+<div class="t" style="left:199px;top:58px;color:#edeeec;letter-spacing:1.25px">Клавиатура</div>
+<div class="t" style="left:358px;top:58px;color:#edeeec;letter-spacing:3.0px">Мышь</div>
+<div class="t" style="left:480px;top:58px;color:#edeeec;letter-spacing:1.75px">Звук</div>
+<div class="t" style="left:602px;top:58px;color:#edeeec;letter-spacing:1.25px">Видео</div>
+<div class="t" style="left:724px;top:58px;color:#edeeec;letter-spacing:1.25px">HUD</div>
+<div class="t" style="left:846px;top:58px;color:#edeeec;letter-spacing:0.5px">Аккаунт</div>
+<div class="t" style="left:967px;top:58px;color:#edeeec;letter-spacing:1.5px">Система</div>
+
+<!-- рамка содержимого: боковины и низ через footsep -->
+<i class="cframe_l"></i><i class="cframe_r"></i>
+<div class="footsep"></div>
+
+<!-- левая колонка -->
+<div class="t" style="left:85px;top:131px;color:#b7bfb1;letter-spacing:1.75px">Аватар</div>
+<img src="assets/avatar.png" style="position:absolute;left:85px;top:155px;width:122px;height:91px">
+<div class="btn b_load" style="left:220px;top:154px;width:234px;height:35px"><i class="bt"></i><i class="bl"></i><i class="br"></i><i class="bb"></i><span style="left:10px;top:9px;letter-spacing:1.25px">Загрузить...</span></div>
+<div class="entry e_cts" style="left:220px;top:211px;width:234px;height:35px"><i class="bt"></i><i class="bl"></i><i class="br"></i><i class="bb"></i><span style="left:5px;top:10px;letter-spacing:1.75px">cts_team</span><i class="arrow a_cts"></i></div>
+
+<div class="t" style="left:85px;top:259px;color:#b7bfb1;letter-spacing:1.25px">Логотип</div>
+<img src="assets/logo.png" style="position:absolute;left:85px;top:285px;width:122px;height:91px">
+<div class="entry e_lam" style="left:220px;top:285px;width:234px;height:35px"><i class="bt"></i><i class="bl"></i><i class="br"></i><i class="bb"></i><span style="left:7px;top:10px;letter-spacing:1.5px">lambda</span><i class="arrow a_lam"></i></div>
+<div class="btn b_color" style="left:220px;top:341px;width:234px;height:35px"><i class="bt"></i><i class="bl"></i><i class="br"></i><i class="bb"></i><span style="left:10px;top:9px;letter-spacing:1.25px">Изменить цвет</span></div>
+
+<div class="t" style="left:85px;top:395px;color:#97a28d;letter-spacing:1.0px">Логотип изменится после соединения</div>
+<div class="t" style="left:84px;top:418px;color:#97a28d;letter-spacing:1.5px">с сервером.</div>
+<div class="btn b_more" style="left:85px;top:447px;width:227px;height:35px"><i class="bt"></i><i class="bl"></i><i class="br"></i><i class="bb"></i><span style="left:10px;top:9px;letter-spacing:1.25px">Дополнительно...</span></div>
+
+<!-- правая колонка -->
+<div class="t" style="left:536px;top:131px;color:#b7bfb1;letter-spacing:1.25px">Имя игрока</div>
+<div class="entry e_name" style="left:537px;top:155px;width:377px;height:35px"><i class="bt"></i><i class="bl"></i><i class="br"></i><i class="bb"></i><span style="left:7px;top:9px;letter-spacing:1.5px">[B] К о Н Т р Е</span></div>
+
+<div class="t" style="left:536px;top:259px;color:#b7bfb1;letter-spacing:1.25px">Пароль для VIP/Admin доступа</div>
+<div class="entry e_pass" style="left:537px;top:285px;width:377px;height:35px"><i class="bt"></i><i class="bl"></i><i class="br"></i><i class="bb"></i></div>
+<img src="assets/eye.png" style="position:absolute;left:872px;top:295px;width:28px;height:18px">
+
+<!-- футер -->
+<div class="btn b_ok" style="left:638px;top:607px;width:137px;height:35px"><i class="bt"></i><i class="bl"></i><i class="br"></i><i class="bb"></i><span style="left:11px;top:9px;letter-spacing:1.75px">OK</span></div>
+<div class="btn b_cancel" style="left:788px;top:607px;width:137px;height:35px"><i class="bt"></i><i class="bl"></i><i class="br"></i><i class="bb"></i><span style="left:11px;top:9px;letter-spacing:1.5px">Отмена</span></div>
+<div class="btn off b_apply" style="left:938px;top:607px;width:137px;height:35px"><i class="bt"></i><i class="bl"></i><i class="br"></i><i class="bb"></i><span style="left:10px;top:9px;letter-spacing:1.5px">Применить</span></div>
+</body></html>

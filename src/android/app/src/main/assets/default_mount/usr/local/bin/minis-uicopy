@@ -1,0 +1,140 @@
+#!/bin/sh
+# minis-uicopy — пиксельная реконструкция UI по скриншоту.
+#
+# Тонкая обёртка: гарантирует наличие python3 + Pillow + chromium, затем
+# запускает нужный инструмент из /usr/local/lib/minis-uicopy/.
+# Реализация платформенно-нейтральна (POSIX + Pillow), одинакова на
+# iOS (iSH) и Android (PRoot/Alpine).
+#
+# Рабочая папка передаётся через --dir или UICOPY_DIR, иначе текущая.
+# В рабочей папке обязателен ORIGINAL.png — исходный скриншот.
+
+LIB="/usr/local/lib/minis-uicopy"
+LOG="/var/minis/workspace/.uicopy.log"
+_log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG" 2>/dev/null; }
+
+usage() {
+  cat <<'EOF'
+minis-uicopy — копирование интерфейса по скриншоту (измерение → сборка →
+рендер → сравнение → исправление).
+
+ИСПОЛЬЗОВАНИЕ
+  minis-uicopy <команда> [аргументы]        (в рабочей папке с ORIGINAL.png)
+  minis-uicopy --dir <папка> <команда> ...
+
+ИЗМЕРЕНИЕ (0 токенов, только пиксели)
+  init <screenshot>     подготовить рабочую папку: копия как ORIGINAL.png
+  measure [hist|frame|size|rows]
+                        палитра / границы кадра / размер / профиль строк
+  boxes                 связные компоненты = список элементов с боксами
+  probe                 профили bevel, цвета текста, ink-высоты строк
+
+ГЕНЕРАЦИЯ CSS ИЗ ИЗМЕРЕНИЙ
+  stripes               разделители, кромки кадра, footer-separator
+  bevel                 поэлементные профили (L/R/T/B) кнопок и полей
+  edges [шаг]           внешние кромки кадра как измеренные градиенты
+
+ШРИФТ (по растру, не на глаз)
+  fontfit               перебор family × size по ink-ширине (быстро, PIL)
+  textfit               прямое растровое MAE к кропу через chromium
+  spacefit              ПОСТРОЧНЫЙ letter-spacing
+
+ЦИКЛ
+  render <html> <out>   рендер с обходом дефекта обрезки + санити-чек
+  diff <orig> <render> [diffmap]
+                        MAE глоб/контент, % точных, ПОЭЛЕМЕНТНО, худшие зоны
+  residual <render>     раздельный учёт: GLYPH-FORM vs RECONSTRUCTION
+
+  doctor                проверить окружение (python3, Pillow, chromium)
+
+ПОРЯДОК РАБОТЫ
+  1. init → measure → boxes → probe        (что вообще на экране)
+  2. кропнуть растровые ассеты из оригинала (аватары/иконки → MAE 0.00)
+  3. stripes + bevel + edges               (границы — НЕ CSS-border!)
+  4. fontfit → textfit → spacefit          (шрифт измерением)
+  5. собрать index.html
+  6. render → diff → правка виновника → render → diff → …
+  7. residual                              (что осталось и почему)
+EOF
+}
+
+# --- окружение ---
+ensure_env() {
+  if ! command -v python3 > /dev/null 2>&1; then
+    _log "installing python3"
+    apk add --quiet python3 >> "$LOG" 2>&1
+  fi
+  if ! python3 -c "import PIL" 2>/dev/null; then
+    _log "installing Pillow"
+    apk add --quiet py3-pillow >> "$LOG" 2>&1 || \
+      pip install --quiet --break-system-packages pillow >> "$LOG" 2>&1
+  fi
+}
+
+ensure_chromium() {
+  if ! command -v chromium > /dev/null 2>&1; then
+    _log "installing chromium (это долго, ~200MB)"
+    echo "minis-uicopy: устанавливаю chromium (нужен для рендера)…" >&2
+    apk add --quiet chromium >> "$LOG" 2>&1
+  fi
+}
+
+# --- рабочая папка ---
+if [ "$1" = "--dir" ]; then
+  UICOPY_DIR="$2"; export UICOPY_DIR; shift 2
+fi
+[ -z "$UICOPY_DIR" ] && UICOPY_DIR="$(pwd)" && export UICOPY_DIR
+
+CMD="$1"; [ -n "$CMD" ] && shift
+
+case "$CMD" in
+  ""|-h|--help|help) usage; exit 0 ;;
+
+  doctor)
+    echo "рабочая папка: $UICOPY_DIR"
+    [ -f "$UICOPY_DIR/ORIGINAL.png" ] && echo "ORIGINAL.png: есть" \
+      || echo "ORIGINAL.png: НЕТ (сделай 'minis-uicopy init <screenshot>')"
+    for c in python3 chromium; do
+      printf "%-10s " "$c"; command -v $c 2>/dev/null || echo "НЕТ"
+    done
+    python3 -c "import PIL;print('Pillow     '+PIL.__version__)" 2>/dev/null \
+      || echo "Pillow     НЕТ"
+    echo "инструменты: $LIB"
+    ls "$LIB"/*.py 2>/dev/null | wc -l | tr -d '\n'; echo " скриптов"
+    ;;
+
+  init)
+    SRC="$1"
+    [ -z "$SRC" ] && { echo "usage: minis-uicopy init <screenshot>"; exit 2; }
+    [ -f "$SRC" ] || { echo "нет файла $SRC"; exit 2; }
+    ensure_env
+    mkdir -p "$UICOPY_DIR/assets"
+    python3 - "$SRC" "$UICOPY_DIR/ORIGINAL.png" <<'PY'
+import sys
+from PIL import Image
+im = Image.open(sys.argv[1]).convert("RGB")
+im.save(sys.argv[2])
+print(f"ORIGINAL.png готов: {im.size[0]}x{im.size[1]}")
+PY
+    echo "рабочая папка: $UICOPY_DIR"
+    echo "дальше: minis-uicopy measure hist && minis-uicopy boxes"
+    ;;
+
+  measure)  ensure_env; exec python3 "$LIB/measure.py" "$@" ;;
+  boxes)    ensure_env; exec python3 "$LIB/boxes.py" "$@" ;;
+  probe)    ensure_env; exec python3 "$LIB/probe.py" "$@" ;;
+  stripes)  ensure_env; exec python3 "$LIB/stripes.py" "$@" ;;
+  bevel)    ensure_env; exec python3 "$LIB/bevelfit.py" "$@" ;;
+  edges)    ensure_env; exec python3 "$LIB/edgefit.py" "$@" ;;
+  fontfit)  ensure_env; exec python3 "$LIB/fontfit.py" "$@" ;;
+  textfit)  ensure_env; ensure_chromium; exec python3 "$LIB/textfit.py" "$@" ;;
+  spacefit) ensure_env; ensure_chromium; exec python3 "$LIB/spacefit.py" "$@" ;;
+  diff)     ensure_env; exec python3 "$LIB/diff.py" "$@" ;;
+  residual) ensure_env; exec python3 "$LIB/residual.py" "$@" ;;
+  render)   ensure_env; ensure_chromium; exec sh "$LIB/render.sh" "$@" ;;
+
+  *)
+    echo "minis-uicopy: неизвестная команда '$CMD'" >&2
+    echo "смотри: minis-uicopy --help" >&2
+    exit 2 ;;
+esac

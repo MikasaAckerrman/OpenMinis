@@ -430,8 +430,25 @@ class AnthropicProvider(
             body.put("tool_choice", JSONObject().put("type", "auto"))
         }
 
+        // [T-request-byte-budget] Final size gate at the provider boundary —
+        // elide OLD, large tool_results (id preserved, content → re-fetchable
+        // placeholder) until the serialized body fits, keeping the freshest
+        // working turns verbatim. ImageBudget caps image bytes; this caps text.
+        // Full output stays in agentHistory / on disk, so nothing is lost.
+        val budgeted = com.openminis.app.data.RequestBudget.plan(
+            messages = messages,
+            protectRecentUserTextTurns = REQUEST_BUDGET_PROTECT_TURNS,
+        )
+        if (budgeted.elidedToolResultCount > 0) {
+            com.openminis.app.logging.AppLogger.info(
+                "AnthropicProvider",
+                "[RequestBudget] elided ${budgeted.elidedToolResultCount} oversize tool_result(s): " +
+                    "${budgeted.bytesBefore}B → ${budgeted.bytesAfter}B (ceiling ${com.openminis.app.data.RequestBudget.DEFAULT_MAX_BODY_BYTES}B)",
+            )
+        }
+
         // Build and merge messages
-        val rawMessages = buildMessages(messages, imageParts)
+        val rawMessages = buildMessages(budgeted.messages, imageParts)
         val merged = mergeConsecutiveSameRole(rawMessages)
 
         // Inject cache_control on last 2 user messages
@@ -775,6 +792,14 @@ class AnthropicProvider(
     }
 
     companion object {
+        /**
+         * [T-request-byte-budget] Trailing user-text turns kept verbatim by the
+         * provider-boundary byte gate — matches ChatViewModel's
+         * COMPACT_KEEP_RECENT_USER_TURNS so the protected window is the same one
+         * compact/offload treats as the live working context.
+         */
+        private const val REQUEST_BUDGET_PROTECT_TURNS = 6
+
         /**
          * Parse the `-<major>-<minor>` (or `/<major>.<minor>`) version out of a Claude id.
          * [T-anthropic-temp-claude5-android] The minor segment is OPTIONAL and

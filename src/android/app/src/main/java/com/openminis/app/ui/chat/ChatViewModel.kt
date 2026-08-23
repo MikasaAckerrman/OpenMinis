@@ -3269,10 +3269,30 @@ class ChatViewModel(
             val result = mutableListOf<LLMMessage>()
             result.addAll(preAnchorPruned)
 
-            val postAnchor = if (anchorIdx + 1 < agentHistory.size) {
-                agentHistory.subList(anchorIdx + 1, agentHistory.size)
+            val postAnchorRaw = if (anchorIdx + 1 < agentHistory.size) {
+                agentHistory.subList(anchorIdx + 1, agentHistory.size).toList()
             } else {
                 emptyList()
+            }
+
+            // [T-postanchor-payload-bloat] preAnchor already drops oversize
+            // tool_results, but postAnchor (everything after the compact
+            // anchor) used to be sent RAW. In a tool-heavy session that ran
+            // many turns since the last compact, postAnchor accumulates dozens
+            // of large file_read / grep / shell tool_results and inflates the
+            // request body past 1 MB. Lenient relays (Cloudflare-fronted, 1M
+            // window) swallow it; stricter ones (200K window) reject the whole
+            // request with a misleading `sensitive_words_detected` code — the
+            // bytes are the cause, not the content. Prune the same way here,
+            // but keep the freshest `keepN` user-text turns verbatim: that is
+            // the live working context the model still needs.
+            val (postAnchor, postDroppedToolResultCount) =
+                com.openminis.app.data.PostAnchorPrune.prune(
+                    messages = postAnchorRaw,
+                    protectRecentUserTextTurns = keepN,
+                ).let { it.messages to it.droppedToolResultCount }
+            if (postDroppedToolResultCount > 0 && verbose) {
+                AppLogger.info(TAG, "[CompactDiag] eAH v2 postAnchor prune: dropped $postDroppedToolResultCount toolResult(>1kc) + paired toolUse; postAnchorRaw=${postAnchorRaw.size} postAnchorSent=${postAnchor.size} (last $keepN user-text turns kept verbatim)")
             }
 
             // DIAG: explain how the slice was sized using post-prune /
@@ -3282,7 +3302,7 @@ class ChatViewModel(
             val priorIdxSource =
                 if (priorIdxResolved == null) "fallback=empty(<$keepN user-text turns before anchor or cap hit)"
                 else "userTextWalkBack(N=$keepN)"
-            if (verbose) AppLogger.info(TAG, "[CompactDiag] eAH v2 slice: priorIdx=$priorIdx anchorIdx=$anchorIdx agentHistory.size=${agentHistory.size} → preAnchorRaw=$preAnchorRawCount preAnchorSent=${preAnchorPruned.size} postAnchor=${postAnchor.size} summaryChars=${summary.length} priorIdxSource=$priorIdxSource markerId=${marker.id.take(8)}")
+            if (verbose) AppLogger.info(TAG, "[CompactDiag] eAH v2 slice: priorIdx=$priorIdx anchorIdx=$anchorIdx agentHistory.size=${agentHistory.size} → preAnchorRaw=$preAnchorRawCount preAnchorSent=${preAnchorPruned.size} postAnchorRaw=${postAnchorRaw.size} postAnchorSent=${postAnchor.size} summaryChars=${summary.length} priorIdxSource=$priorIdxSource markerId=${marker.id.take(8)}")
 
             val firstUserOffset = postAnchor.indexOfFirst { it.role == LLMMessage.Role.USER }
             if (firstUserOffset >= 0) {
@@ -10411,6 +10431,7 @@ CLI tools at /usr/local/bin with the `android-` prefix give you access to Androi
 - minis-model-use: Invoke other LLM models pre-configured by the user. Use `minis-model-use list` to see them (includes each model's modality capabilities like image_output, audio_output, etc.), `minis-model-use search <query>` to filter by name/provider. `minis-model-use run --model <id_or_name>` sends an OpenAI-compatible messages request; pass input via --input <json_file> or stdin, output goes to stdout or --output <path>. The OpenAI shape is the PRIMARY input for every model and modality; standard params are auto-converted to the underlying provider, so do not hand-write provider-native bodies as the primary input. For provider-specific extras the standard schema doesn't model (web-search plugins, image-to-image fields, TTS/video or other custom endpoints), escape hatches exist for OpenAI-compatible providers (they error or are ignored on Anthropic/Gemini models): `extra_body` (object merged verbatim into the request body), a custom `endpoint` path, and a top-level `passthrough` envelope for fully verbatim requests with RAW (unparsed) responses. Results may carry `warnings` (fields that were ignored/downgraded and why) and `applied_extras` (which extras actually took effect) — read them to self-correct. Run --help for the full contract before using these. Models may support multimodal output (image generation, TTS/audio, video) — check the modalities field in list output. For image_output models, pass generation params in the input JSON: top-level `n`/`size`/`quality`/`prompt` (OpenAI /images/generations style) or `generation_config.{aspect_ratio,image_size,number_of_images,person_generation}` (Gemini). Run with --help for full usage.
 - minis-config: Read or change Minis settings programmatically. Run `minis-config --help` for subcommands and `minis-config topic-help <topic>` for details on a specific area. For array-valued fields (e.g. `models`, `groups`, `envvars`, `defaults.agentLoopEntries`) the `get` subcommand accepts `--filter <keywords>` (whitespace-AND, case-insensitive substring match against each element's JSON) and `--page <N> --page-size <N>` (default 20, max 100) — use these instead of dumping the full list when you only need a subset, and check the response's `pagination` / `agent_hint` fields for the next-page command. Every write triggers an in-app confirmation sheet and is logged to a revertable audit (1000-entry rolling log). After a successful change the response includes a `user_message` field — relay it (or paraphrase) so the user knows how to review or revert via Settings → Logs → Config Changes. If the call returns `permission_denied`, the user has disabled minis-config in [Settings → Permissions](minis://settings/permissions); relay that message and don't retry. You CAN add new providers and write their `apiKey` (literal string OR a `${'$'}${'$'}ENV_VAR` reference to copy from an env var at write time), but `get` never echoes API keys / OAuth tokens / env var values back — those reads return `permission_denied` by design. OAuth tokens and env var values are not settable via this tool; for an env var, point the user at [Set ENV_NAME](minis://settings/environments?create_key=ENV_NAME&create_value=) so they enter the value themselves.
 - minis-scheduled: Create and manage scheduled tasks — prompts that run automatically at a chosen time. `minis-scheduled create --time HH:MM --prompt "..." [--label L] [--repeat once|daily|weekdays|custom --days mon,tue,...] [--target new|follow-up|rerun --session <id> --message <id>] [--model <modelId>] [--start YYYY-MM-DD] [--end YYYY-MM-DD]` schedules it; `list` shows existing tasks (with nextTriggerMs and run history), `delete --id <taskId>`, `enable`/`disable --id <taskId>`, and `run --id <taskId>` fires one immediately. Target modes: `new` runs the prompt in a fresh chat; `follow-up` appends the prompt to an existing chat (--session); `rerun` re-runs an existing chat (--session) from a chosen user message (--message). Use this when the user asks to "remind me / do X every morning / run this later / schedule a task". Run --help for full usage.
+- minis-uicopy: Pixel-accurate UI reconstruction from a screenshot — measure → build → render → compare → fix, until it matches. Use this WHENEVER the user asks to copy/replicate/reconstruct an interface from an image ("скопируй интерфейс с фото", "повтори этот UI", "сделай точную копию экрана", "copy this UI from screenshot", "pixel-perfect копия"). It is built into the app (shipped in the rootfs overlay), so it is always available — no skill install needed. FIRST STEP ALWAYS: `file_read /usr/local/share/minis-uicopy/GUIDE.md` — the guide holds the full method, the measured-defect catalogue and the traps that cost real iterations; do not improvise the pipeline from memory. Commands: `init <screenshot>` (prepare a work dir), `doctor`, `measure hist|frame|size|rows`, `boxes`, `probe`, `stripes`, `bevel`, `edges [step]`, `fontfit`, `textfit`, `spacefit`, `render <html> <out>`, `diff <orig> <render> [map]`, `residual <render>`. Work dir via `--dir <path>` or UICOPY_DIR; it must contain ORIGINAL.png (`init` does that). Core rules: never eyeball a value — every colour/size/border profile comes from measurement; borders in real UIs are 4-8px gradients, not CSS `border`; crop raster assets out of the original (gives MAE 0.00); pick the font by raster MAE through the real renderer, not by width; the verdict is `diff` numbers, never "looks close"; before claiming done run `residual` and report GLYPH-FORM (unavailable font) separately from RECONSTRUCTION error. Chromium and Pillow are installed on demand by the wrapper.
 Interactive terminal: minis://open_terminal opens a terminal for tasks that require interactive stdin (passwords, ssh, TUI apps like htop/vi). Write it as a Markdown link in your response — the app opens it when tapped. The optional init_command parameter pre-fills (NOT executes) a command; it MUST be fully percent-encoded (spaces → %20, & → %26, | → %7C, etc.). Only use this for genuinely interactive sessions — for everything else, use shell_execute. Examples: [Open Terminal](minis://open_terminal), [Login to SSH](minis://open_terminal?init_command=ssh%20user%40host).
 
 Environment variables:

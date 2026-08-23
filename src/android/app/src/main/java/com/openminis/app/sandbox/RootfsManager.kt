@@ -361,6 +361,13 @@ class RootfsManager private constructor(private val context: Context) {
         // so the next app-upgrade overlay still overwrites cleanly.
         val lockedCount = lockMcpCliLibReadOnly()
 
+        // [T-uicopy-in-apk] То же для вшитого конвейера ui-copy: скрипты и
+        // GUIDE.md становятся read-only внутри гостя. Вместе с overlay-копией
+        // на каждом boot это даёт свойство «инструмент нельзя потерять»:
+        // его нет в скилах, он не зависит от памяти/сети, а `rm` внутри
+        // sandbox по нему не пройдёт. Удалить можно только правкой кода.
+        val uiCopyLocked = lockUiCopyReadOnly()
+
         // [T-guard-in-apk] Install the destructive-op guard: point rm / mv /
         // shred / truncate at /usr/local/sbin/minis-guard so a mistaken mask
         // (`rm -rf om*`) or a delete of another session's work is refused
@@ -373,7 +380,7 @@ class RootfsManager private constructor(private val context: Context) {
         val guardLinks = installGuardSymlinks()
 
         val elapsedMs = (System.nanoTime() - startNs) / 1_000_000.0
-        Log.i(TAG, "[DefaultMount] Done. $fileCount file(s) overlaid, $markerRemoved EXTERNALLY-MANAGED marker(s) removed, $lockedCount minis-mcp-cli lib path(s) locked read-only, $guardLinks guard symlink(s) in %.1fms".format(elapsedMs))
+        Log.i(TAG, "[DefaultMount] Done. $fileCount file(s) overlaid, $markerRemoved EXTERNALLY-MANAGED marker(s) removed, $lockedCount minis-mcp-cli lib path(s) locked read-only, $uiCopyLocked minis-uicopy path(s) locked read-only, $guardLinks guard symlink(s) in %.1fms".format(elapsedMs))
     }
 
     /**
@@ -466,6 +473,39 @@ class RootfsManager private constructor(private val context: Context) {
             f.setReadable(true, false)
             if (f.isDirectory) f.setExecutable(true, false)
             count++
+        }
+        return count
+    }
+
+    /**
+     * [T-uicopy-in-apk] Same read-only treatment for the shipped ui-copy
+     * toolchain: `/usr/local/lib/minis-uicopy/` (measurement scripts) and
+     * `/usr/local/share/minis-uicopy/` (GUIDE.md + reference reconstruction).
+     *
+     * WHY. The UI-copy pipeline must be available on a fresh install and must
+     * not be removable by accident — not by the user editing files in the
+     * terminal, not by the agent, not by a rootfs reset (the overlay is
+     * re-applied on every boot from APK assets). Only a code change can remove
+     * it. Locking the subtree read-only is the last piece: without it a stray
+     * `rm`/`vi` inside the guest could break the toolchain until the next boot.
+     *
+     * The wrapper at `/usr/local/bin/minis-uicopy` intentionally stays
+     * writable+executable (app-managed, same convention as minis-mcp-cli), and
+     * `copyAssetDir` re-opens read-only files for writing before overwriting,
+     * so an app upgrade still replaces the shipped files cleanly.
+     */
+    private fun lockUiCopyReadOnly(): Int {
+        var count = 0
+        for (rel in listOf("usr/local/lib/minis-uicopy",
+                           "usr/local/share/minis-uicopy")) {
+            val dir = File(rootfsDir, rel)
+            if (!dir.isDirectory) continue
+            for (f in dir.walkBottomUp()) {
+                f.setWritable(false, false)
+                f.setReadable(true, false)
+                if (f.isDirectory) f.setExecutable(true, false)
+                count++
+            }
         }
         return count
     }

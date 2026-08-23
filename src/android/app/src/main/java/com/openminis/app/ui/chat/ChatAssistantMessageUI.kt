@@ -724,8 +724,14 @@ internal fun ToolCallPill(
         block.toolStatus == ToolBlockStatus.TIMEOUT
     val isCancelled = block.toolStatus == ToolBlockStatus.CANCELLED
 
-    val toolAccent = toolAccentColor(block.toolName)
-    val toolIcon = toolIconFor(block.toolName)
+    // [T-uicopy-capsule] Вызов `minis-uicopy` идёт через shell_execute (это
+    // CLI, вшитый в APK), но в капсуле должен читаться как конвейер
+    // реконструкции UI, а не как безымянная команда терминала. Подменяем ТОЛЬКО
+    // косметику (иконка/цвет/подпись) — сам инструмент, схема модели и агент-луп
+    // не меняются.
+    val effectiveTool = effectiveToolName(block.toolName, block.toolArgs)
+    val toolAccent = toolAccentColor(effectiveTool)
+    val toolIcon = toolIconFor(effectiveTool)
 
     // Icon color: tool color when running/done, error/cancel colors on failure
     val iconTint = when {
@@ -840,7 +846,12 @@ internal fun ToolCallPill(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = block.toolTitle.ifEmpty { block.toolName },
+                    // [T-uicopy-capsule] Для конвейера ui-copy подпись берём из
+                    // фазы (что именно сейчас делается: «Анализирую
+                    // изображение», «Рендерю реконструкцию»), иначе — обычный
+                    // tool_title модели. Fallback на имя инструмента сохранён.
+                    text = uiCopyPhaseLabel(block.toolArgs)
+                        ?: block.toolTitle.ifEmpty { block.toolName },
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Medium,
                     color = MaterialTheme.colorScheme.onSurface,

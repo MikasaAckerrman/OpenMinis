@@ -127,6 +127,14 @@ class OpenAIProvider private constructor(
 
     companion object {
         /**
+         * [T-request-byte-budget] Trailing user-text turns kept verbatim by the
+         * provider-boundary byte gate. Matches ChatViewModel's
+         * COMPACT_KEEP_RECENT_USER_TURNS so the protected window is the same one
+         * the compact/offload logic treats as the live working context.
+         */
+        private const val REQUEST_BUDGET_PROTECT_TURNS = 6
+
+        /**
          * [T-android-thinking-level-arch] Codex OAuth client version advertised
          * in the Version / User-Agent headers. Bumped 0.142.3 → 0.144.1 to
          * match the CLIProxyAPI/sub2api upstream (fixes a gpt-5.6-luna 404 seen
@@ -1451,6 +1459,28 @@ class OpenAIProvider private constructor(
         tools: List<AgentToolDefinition> = emptyList(),
         thinkingLevel: ThinkingLevel = ThinkingLevel.OFF,
     ): JSONObject {
+        // [T-request-byte-budget] Final size gate at the provider boundary.
+        // A tool-heavy session accumulates large file_read / grep / shell
+        // tool_results in history; ImageBudget already caps image bytes here,
+        // but nothing capped TEXT — measured live, that pushed bodies to 1.28 MB
+        // and strict relays rejected them with a misleading
+        // `sensitive_words_detected` code. Elide OLD, large tool_results (id
+        // preserved, content → a short re-fetchable placeholder) until the body
+        // fits, while the freshest working turns are always sent verbatim. The
+        // full output stays in agentHistory (and on disk when offloaded), so
+        // nothing is lost — the model can file_read it back.
+        val budgeted = com.openminis.app.data.RequestBudget.plan(
+            messages = messages,
+            protectRecentUserTextTurns = REQUEST_BUDGET_PROTECT_TURNS,
+        )
+        if (budgeted.elidedToolResultCount > 0) {
+            com.openminis.app.logging.AppLogger.info(
+                "OpenAIProvider",
+                "[RequestBudget] elided ${budgeted.elidedToolResultCount} oversize tool_result(s): " +
+                    "${budgeted.bytesBefore}B → ${budgeted.bytesAfter}B (ceiling ${com.openminis.app.data.RequestBudget.DEFAULT_MAX_BODY_BYTES}B)",
+            )
+        }
+        val budgetedMessages = budgeted.messages
         // T264: cross-provider image sanitization, mirrors iOS
         // OpenAIAgentProvider.swift:744-768 / 900-918. When the target model
         // doesn't declare "image" in inputModalities (e.g. DeepSeek V4 after
@@ -1521,8 +1551,8 @@ class OpenAIProvider private constructor(
         // there; non-reasoning models gate this off via includeReasoning=false.
         val placeholderAllowed = includeReasoning
 
-        val lastUserIndex = messages.indexOfLast { it.role == LLMMessage.Role.USER }
-        for ((index, msg) in messages.withIndex()) {
+        val lastUserIndex = budgetedMessages.indexOfLast { it.role == LLMMessage.Role.USER }
+        for ((index, msg) in budgetedMessages.withIndex()) {
             if (msg.contentParts.isNotEmpty()) {
                 // Structured content parts
                 when {
@@ -2392,6 +2422,21 @@ class OpenAIProvider private constructor(
         // a non-vision model gets routed through Responses (e.g. via
         // forceResponsesAPI on a custom provider).
         val supportsImages = "image" in (model.inputModalities ?: emptyList())
+        // [T-request-byte-budget] Same provider-boundary byte gate as
+        // buildRequestBody — the Responses API path serializes the same history
+        // and is just as exposed to oversize tool_result bloat.
+        val budgeted = com.openminis.app.data.RequestBudget.plan(
+            messages = messages,
+            protectRecentUserTextTurns = REQUEST_BUDGET_PROTECT_TURNS,
+        )
+        if (budgeted.elidedToolResultCount > 0) {
+            com.openminis.app.logging.AppLogger.info(
+                "OpenAIProvider",
+                "[RequestBudget/responses] elided ${budgeted.elidedToolResultCount} oversize tool_result(s): " +
+                    "${budgeted.bytesBefore}B → ${budgeted.bytesAfter}B",
+            )
+        }
+        val messages = budgeted.messages
         val body = JSONObject()
         body.put("model", model.id)
         body.put("stream", stream)
