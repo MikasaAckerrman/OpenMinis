@@ -675,7 +675,7 @@ object DebugMethodRegistry {
         ),
         MethodSpec(
             name = "chat.retry",
-            description = "Retry from a specific user message in a session.",
+            description = "REFUSED (T-no-agent-session-deletion): retry drops every message after the retried turn, and deleting stored messages is reserved for the user in the app UI. The user's own re-run paths are unaffected — the in-app Retry goes through ChatViewModel and `minis-scheduled --target rerun` calls HeadlessChatRunner directly, neither passing through this RPC. To shrink a session non-destructively use chat.compact.before or chat.session.rescue.",
             params = listOf(
                 ParamSpec("sessionId", "string", required = true, description = "Target session id."),
                 ParamSpec("messageId", "string", required = false, description = "User message id; omit to retry from the most recent user message."),
@@ -689,7 +689,7 @@ object DebugMethodRegistry {
         ),
         MethodSpec(
             name = "chat.rerunFromToolBlock",
-            description = "Block-boundary re-run: cut at a specific tool_use block (keep earlier blocks in its turn, drop it + everything after) and regenerate. In-app this is the tool-bubble long-press 'Re-run From Here'.",
+            description = "REFUSED (T-no-agent-session-deletion): cuts at a tool_use block and drops it plus everything after, i.e. it deletes stored messages — reserved for the user in the app UI (tool-bubble long-press 'Re-run From Here'). Use chat.compact.before or chat.session.rescue to shrink a session without losing anything.",
             params = listOf(
                 ParamSpec("sessionId", "string", required = true, description = "Target session id."),
                 ParamSpec("assistantMessageId", "string", required = true, description = "UI assistant bubble id owning the tool block."),
@@ -771,7 +771,7 @@ object DebugMethodRegistry {
         ),
         MethodSpec(
             name = "chat.session.delete",
-            description = "Permanently delete a session and its messages. Cancels any in-flight run first.",
+            description = "REFUSED (T-no-agent-session-deletion): permanently destroying a session and its messages is reserved for the user in the app UI. There is no undo, and no agent workflow needs it — compaction (chat.compact.before / chat.session.rescue) keeps every message row on disk and only shrinks what is sent to the model. The `confirm` param was never a safeguard on this surface: the caller writes its own params.",
             params = listOf(
                 ParamSpec("sessionId", "string", required = true, description = "Target session id."),
                 ParamSpec("confirm", "bool", required = true, default = false, description = "Must be true."),

@@ -850,8 +850,17 @@ internal fun ToolCallPill(
                     // фазы (что именно сейчас делается: «Анализирую
                     // изображение», «Рендерю реконструкцию»), иначе — обычный
                     // tool_title модели. Fallback на имя инструмента сохранён.
-                    text = uiCopyPhaseLabel(block.toolArgs)
-                        ?: block.toolTitle.ifEmpty { block.toolName },
+                    //
+                    // [T-uicopy-diff-verdict] Для завершённого `diff` фаза
+                    // дополняется ИЗМЕРЕННЫМ результатом («Сравниваю с
+                    // оригиналом · MAE 1.96 · совпало 95.0%»): из капсулы должно
+                    // быть видно не только что сравнение шло, но и чем
+                    // закончилось. Пока команда бежит, вердикта ещё нет в
+                    // выводе — тогда показывается только фаза.
+                    text = uiCopyPhaseLabel(block.toolArgs)?.let { phase ->
+                        val verdict = if (isDone) uiCopyDiffVerdict(block.content) else null
+                        if (verdict != null) "$phase · $verdict" else phase
+                    } ?: block.toolTitle.ifEmpty { block.toolName },
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Medium,
                     color = MaterialTheme.colorScheme.onSurface,
