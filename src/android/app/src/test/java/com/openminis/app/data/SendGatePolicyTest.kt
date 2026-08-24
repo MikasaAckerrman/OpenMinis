@@ -39,7 +39,7 @@ class SendGatePolicyTest {
     }
 
     @Test
-    fun `degraded — перезапись истории ЗАПРЕЩЕНА (иначе новый баг: потеря сообщений)`() {
+    fun `degraded — перезапись истории ЗАПРЕЩЕНА, иначе новый баг с потерей сообщений`() {
         // compactAll считает якорь по agentHistory в памяти и удаляет строки из
         // БД. При неполной истории это удалило бы то, чего в памяти нет.
         val s = SendGatePolicy.HistoryState.DEGRADED
