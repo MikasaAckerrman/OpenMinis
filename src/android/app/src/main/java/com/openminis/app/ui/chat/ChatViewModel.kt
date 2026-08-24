@@ -356,6 +356,11 @@ class ChatViewModel(
 
     /** Load the previous DB page and rebuild the materialized window. */
     fun loadOlderMessages() {
+        // [T-send-gate-deadlock] Читает страницу из БД напрямую и НЕ зависит от
+        // полноты agentHistory, но в DEGRADED смысла нет: полной истории не
+        // будет, а сообщение пользователю уже показано гейтом. Оставляем как
+        // было (сообщить и выйти) — единственное изменение в том, что теперь
+        // текст различает «грузится» и «не загрузилось».
         if (!fullHistoryReady.value) {
             requireFullSessionHistory()
             return
@@ -629,13 +634,93 @@ class ChatViewModel(
      *  default model name for one frame before the persisted binding settles. */
     private val sessionLoaded = MutableStateFlow(false)
     private val fullHistoryReady = MutableStateFlow(sessionId.startsWith("__new__"))
-    private fun requireFullSessionHistory(): Boolean {
-        if (fullHistoryReady.value) return true
-        appendSystemInfo(
-            text = context.getString(R.string.chat_history_still_loading),
-            iconKind = "info",
+
+    /**
+     * [T-send-gate-deadlock] Загрузка истории провалилась или была пропущена
+     * (сессия не найдена в БД, исключение, safe-mode). Отдельный флаг от
+     * [fullHistoryReady], потому что булев «готово/не готово» не различает
+     * «жди, сейчас догрузится» и «полной истории не будет никогда». Первое
+     * обязано блокировать отправку, второе — обязано её разрешить, иначе
+     * сессия становится мёртвой навсегда: ViewModel живёт в
+     * [ChatViewModelStore], и переоткрытие чата отдаёт ЭТОТ же экземпляр с
+     * закрытым гейтом, поэтому перезапуск приложения не лечил.
+     */
+    private val historyDegraded = MutableStateFlow(false)
+
+    /** Предупреждение о неполном контексте показываем один раз на сессию. */
+    private var degradedWarningShown = false
+
+    /**
+     * [T-send-gate-deadlock] Решение принимает чистая [SendGatePolicy] —
+     * см. её doc-комментарий про четыре пути в мёртвое состояние и про то,
+     * почему состояний три, а не два.
+     */
+    private fun requireFullSessionHistory(
+        operation: com.openminis.app.data.SendGatePolicy.Operation =
+            com.openminis.app.data.SendGatePolicy.Operation.SEND,
+    ): Boolean {
+        val state = com.openminis.app.data.SendGatePolicy.stateOf(
+            fullHistoryReady = fullHistoryReady.value,
+            degraded = historyDegraded.value,
         )
-        return false
+        return when (com.openminis.app.data.SendGatePolicy.decide(
+            state, degradedWarningShown, operation,
+        )) {
+            com.openminis.app.data.SendGatePolicy.Decision.ALLOW -> true
+            com.openminis.app.data.SendGatePolicy.Decision.ALLOW_WITH_WARNING -> {
+                degradedWarningShown = true
+                AppLogger.warning(
+                    TAG,
+                    "[SendGate] история сессии не загрузилась полностью — " +
+                        "отправка разрешена с неполным контекстом (сессия не блокируется)",
+                )
+                appendSystemInfo(
+                    text = context.getString(R.string.chat_history_partial_warning),
+                    iconKind = "info",
+                )
+                true
+            }
+            com.openminis.app.data.SendGatePolicy.Decision.BLOCK_UNSAFE_REWRITE -> {
+                // История неполная, а операция удаляет строки из БД по якорю,
+                // посчитанному в памяти → безвозвратная потеря. Ожидание не
+                // поможет: сообщаем это отдельным текстом, а не «загружается».
+                AppLogger.warning(
+                    TAG,
+                    "[SendGate] перезапись истории отклонена: история неполная " +
+                        "(degraded) — compact/rescue удалили бы сообщения, " +
+                        "которых нет в памяти",
+                )
+                appendSystemInfo(
+                    text = context.getString(R.string.chat_history_rewrite_unsafe),
+                    iconKind = "compact",
+                )
+                false
+            }
+            com.openminis.app.data.SendGatePolicy.Decision.BLOCK_LOADING -> {
+                // [T-send-gate-deadlock] ДИАГНОСТИКА: если баг «сообщение не
+                // отправляется» повторится, в логе будет видно ИМЕННО эту
+                // строку с флагами. Их три исхода:
+                //   1) есть эта строка и НЕТ "гейт открыт (READY)" → загрузка
+                //      не дошла до конца: причина в loadSession (наш диагноз);
+                //   2) есть "гейт открыт (READY)", а потом эта строка → гейт
+                //      закрылся ПОСЛЕ загрузки: причина в другом месте (напр.
+                //      повторный loadSession), наш диагноз неполон;
+                //   3) этой строки НЕТ вовсе, а сообщение не ушло → блокировка
+                //      не здесь: искать в send() выше гейта или в UI.
+                AppLogger.warning(
+                    TAG,
+                    "[SendGate] ОТПРАВКА ОТБИТА (история грузится) " +
+                        "session=$sessionId fullHistoryReady=${fullHistoryReady.value} " +
+                        "degraded=${historyDegraded.value} sessionLoaded=${sessionLoaded.value} " +
+                        "isDraft=$isDraft историяРазмер=${agentHistory.size}",
+                )
+                appendSystemInfo(
+                    text = context.getString(R.string.chat_history_still_loading),
+                    iconKind = "info",
+                )
+                false
+            }
+        }
     }
 
     private val _sessionTitle = MutableStateFlow("New Chat")
@@ -1669,7 +1754,7 @@ class ChatViewModel(
      * back to compactAll() behaviour so the user's gesture isn't lost.
      */
     fun compactBefore(dbMessageId: String, includesBoundary: Boolean = false) {
-        if (!requireFullSessionHistory()) return
+        if (!requireFullSessionHistory(com.openminis.app.data.SendGatePolicy.Operation.REWRITE_HISTORY)) return
         AppLogger.info(
             TAG,
             "[Compact] compactBefore() id=${dbMessageId.take(8)} includesBoundary=$includesBoundary " +
@@ -1732,7 +1817,7 @@ class ChatViewModel(
             AppLogger.warning(TAG, "[Rescue] blocked non-explicit launch origin=$origin")
             return
         }
-        if (!requireFullSessionHistory()) return
+        if (!requireFullSessionHistory(com.openminis.app.data.SendGatePolicy.Operation.REWRITE_HISTORY)) return
         AppLogger.info(
             TAG,
             "[Rescue] rescueCompactNow() streaming=${_isStreaming.value} compacting=${_isCompacting.value} historySize=${agentHistory.size}",
@@ -2167,7 +2252,7 @@ class ChatViewModel(
             AppLogger.warning(TAG, "[Compact] blocked non-explicit launch origin=$origin")
             return
         }
-        if (!requireFullSessionHistory()) return
+        if (!requireFullSessionHistory(com.openminis.app.data.SendGatePolicy.Operation.REWRITE_HISTORY)) return
         AppLogger.info(TAG, "[Compact] compactAll() invoked origin=$origin streaming=${_isStreaming.value} compacting=${_isCompacting.value} historySize=${agentHistory.size} anchorOverride=$anchorIdxOverride")
         if (_isStreaming.value) {
             AppLogger.info(TAG, "[Compact] aborted: stream in progress")
@@ -4342,7 +4427,11 @@ class ChatViewModel(
     }.getOrDefault(false)
 
     private fun loadSession() {
-        if (!isDraft) fullHistoryReady.value = false
+        if (!isDraft) {
+            fullHistoryReady.value = false
+            // [T-send-gate-deadlock] новая попытка загрузки снимает «сломано»
+            historyDegraded.value = false
+        }
         olderHistoryLoadJob?.cancel()
         olderHistoryLoadJob = null
         // T-android-crash-detected-halt: when CrashFrequencyDetector
@@ -4354,10 +4443,15 @@ class ChatViewModel(
         // cancel) — see CrashFrequencyDetector.maybeShowOnActivity.
         if (com.openminis.app.crash.CrashFrequencyDetector.isSafeMode()) {
             android.util.Log.w(TAG, "loadSession: safe-mode active, skipping session restore")
-            // [T-android-perf-logging] Surface the skip on the Perf timeline
-            // too — when a crash_or_stall recovery loop is suspected, this
-            // distinguishes "loadSession ran and was slow" from "loadSession
-            // was skipped (safe-mode), so the stall is elsewhere".
+            // [T-send-gate-deadlock] ПУТЬ 3 в мёртвое состояние: этот `return`
+            // стоит ДО `viewModelScope.launch`, поэтому ни `finally`, ни любая
+            // строка внутри корутины не выполняется — раньше здесь не
+            // открывался НИ ОДИН гейт, и сессия молча отказывалась отправлять
+            // до конца жизни процесса. Открываем оба флага до выхода: истории
+            // не будет (её загрузку мы намеренно пропустили), значит состояние
+            // DEGRADED — отправка разрешена с предупреждением, а не запрещена.
+            historyDegraded.value = true
+            sessionLoaded.value = true
             com.openminis.app.diagnostics.PerfLongCtx.step(
                 sessionId,
                 "loadSession.skipped",
@@ -4404,7 +4498,19 @@ class ChatViewModel(
             }
 
             // Existing session: load from DB
-            val session = chatRepository.getSession(sessionId) ?: return@launch
+            val session = chatRepository.getSession(sessionId) ?: run {
+                // [T-send-gate-deadlock] ПУТЬ 1: строки сессии в БД нет →
+                // ранний выход. `finally` откроет только sessionLoaded, поэтому
+                // помечаем историю как degraded здесь — иначе гейт отправки
+                // остался бы закрыт навсегда.
+                AppLogger.warning(
+                    TAG,
+                    "loadSession: сессия $sessionId не найдена в БД — " +
+                        "история degraded, отправка остаётся возможной",
+                )
+                historyDegraded.value = true
+                return@launch
+            }
             _sessionTitle.value = session.title ?: "New Chat"
             _sessionCategory.value = session.category
             _memoryEnabled.value = session.memoryEnabled != 0
@@ -4711,6 +4817,30 @@ class ChatViewModel(
                 }
             }
             fullHistoryReady.value = true
+            AppLogger.info(
+                TAG,
+                "[SendGate] история загружена ПОЛНОСТЬЮ session=$sessionId " +
+                    "историяРазмер=${agentHistory.size} → гейт открыт (READY)",
+            )
+            } catch (ce: kotlinx.coroutines.CancellationException) {
+                // Отмена — не сбой: ViewModel уходит, гейты трогать не нужно.
+                throw ce
+            } catch (t: Throwable) {
+                // [T-send-gate-deadlock] ПУТЬ 2: раньше `catch` тут не было
+                // вовсе — любое исключение вне двух известных шаблонов
+                // (SQLiteBlobTooBigException / CursorWindow-IllegalState)
+                // пролетало наружу, `fullHistoryReady` навсегда оставался
+                // false, и сессия молча перестала отправлять. Теперь
+                // неизвестный сбой переводит историю в DEGRADED: контекст
+                // неполный, но пользователь может писать и получит
+                // предупреждение один раз.
+                AppLogger.error(
+                    TAG,
+                    "loadSession: загрузка истории провалилась " +
+                        "(${t.javaClass.simpleName}: ${t.message}) — " +
+                        "история degraded, отправка остаётся возможной",
+                )
+                historyDegraded.value = true
             } finally {
                 // T201: open the gate even on early `return@launch` (draft path,
                 // missing-session path) and on exception, so the init-time

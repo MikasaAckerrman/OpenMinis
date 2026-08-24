@@ -1601,6 +1601,8 @@
     <!-- [T-android-larky-longsession-followup] Tappable header at the top of the chat list, shown only when more older messages exist behind the windowed slice. -->
     <string name="chat_load_older_messages">↑ Load older messages</string>
     <string name="chat_history_still_loading">Conversation history is still loading. Your draft and attachments were kept — try sending again in a moment.</string>
+    <string name="chat_history_partial_warning">Full conversation history could not be loaded, so the model may not see older messages. Sending still works — start a new chat if replies lose context.</string>
+    <string name="chat_history_rewrite_unsafe">Compaction is unavailable: the full history of this chat could not be loaded, so compacting could delete messages that are not in memory. Reopen the chat or start a new one.</string>
     <!-- [T-error-persist-android] Shown when the model returns an empty reply (no text, no tools). -->
     <string name="error_empty_response_generic">Model returned an empty response. Please try again or switch models.</string>
     <string name="error_empty_response_context_large">The model returned an empty response. The conversation context may be too large — try compacting or starting a new session.</string>
