@@ -77,13 +77,51 @@ class PostAnchorPruneTest {
     }
 
     @Test
-    fun `leaves small tool_results untouched`() {
+    fun `leaves small tool_results untouched while dropping the big ones suffices`() {
+        // [T-postanchor-preserve-live-context] Порог символов — ПРЕДПОЧТЕНИЕ:
+        // сначала уходят результаты крупнее порога, и как только срез влез,
+        // обрезка останавливается — мелочь остаётся нетронутой.
+        //
+        // Раньше этот тест звался «leaves small tool_results untouched» и
+        // задавал emergencyThresholdBytes = 0. С size-driven логикой цель «ноль
+        // байт» недостижима, поэтому цикл вырезал и мелочь — тест справедливо
+        // упал в CI. Осмысленная проверка — именно приоритет ярусов.
+        val msgs = ArrayList<LLMMessage>()
+        for (n in 1..10) {
+            msgs.add(user("small q$n")); msgs.add(asstToolUse("s$n"))
+            msgs.add(userToolResult("s$n", 200))          // мелочь: < порога
+        }
+        for (n in 1..2) {
+            msgs.add(user("big q$n")); msgs.add(asstToolUse("b$n"))
+            msgs.add(userToolResult("b$n", 20_000))        // крупные: > порога
+        }
+        for (n in 1..6) msgs.add(user("fresh $n"))
+
+        // Цель достижима удалением только двух крупных результатов.
+        val target = RequestBudget.estimateBytes(msgs) - 35_000
+        val result = PostAnchorPrune.prune(
+            msgs, 6, maxToolResultChars = 1000, emergencyThresholdBytes = target,
+        )
+
+        assertEquals("удалены ровно два крупных", 2, result.droppedToolResultCount)
+        val ids = toolResultIds(result.messages)
+        assertTrue("вся мелочь на месте", (1..10).all { ids.contains("s$it") })
+        assertTrue("крупные удалены", (1..2).none { ids.contains("b$it") })
+        assertTrue("срез влез в цель",
+            RequestBudget.estimateBytes(result.messages) <= target)
+    }
+
+    @Test
+    fun `nothing is dropped when the slice already fits`() {
         val msgs = ArrayList<LLMMessage>()
         for (n in 1..10) {
             msgs.add(user("q$n")); msgs.add(asstToolUse("s$n")); msgs.add(userToolResult("s$n", 200))
         }
         for (n in 1..6) msgs.add(user("fresh $n"))
-        val result = PostAnchorPrune.prune(msgs, 6, maxToolResultChars = 1000, emergencyThresholdBytes = 0)
+        val result = PostAnchorPrune.prune(
+            msgs, 6, maxToolResultChars = 1000,
+            emergencyThresholdBytes = RequestBudget.estimateBytes(msgs),
+        )
         assertEquals(0, result.droppedToolResultCount)
         assertSame("identity-returned when nothing dropped", msgs, result.messages)
     }
