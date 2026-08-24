@@ -48,13 +48,28 @@ object RequestBudget {
 
     /**
      * Conservative body ceiling. The live log measured 250 KB accepted on
-     * every relay and 1.28 MB rejected; 300 KB keeps a margin below the
-     * strictest observed limit while rarely eliding on a healthy session.
+     * every relay and 1.28 MB rejected.
+     *
+     * [T-postanchor-preserve-live-context] Raised 300 KB → 1 MB. The original
+     * 300 KB was a 4x safety margin below the single observed failure, and it
+     * cost real context: on a long tool-heavy session it elided results
+     * measured as small as 3.8 KB, so the model lost most of the live thread
+     * and fell back on the compact summary — which describes the START of the
+     * conversation. That produced the "it answers as if from the beginning of
+     * the session" symptom. 1 MB still sits below the only rejection ever
+     * measured (1.28 MB) while leaving 3.3x more working room.
      */
-    const val DEFAULT_MAX_BODY_BYTES = 300_000
+    const val DEFAULT_MAX_BODY_BYTES = 1_000_000
 
-    /** Tool results at or below this many chars are never worth eliding. */
-    const val MIN_ELIDABLE_TOOL_RESULT_CHARS = 1000
+    /**
+     * Tool results at or below this many chars are never worth eliding.
+     *
+     * [T-postanchor-preserve-live-context] Raised 1000 → 8000. At 1000 the gate
+     * treated ordinary command output as elidable, so hitting the ceiling
+     * gutted dozens of small-but-relevant results instead of the few genuinely
+     * huge ones it was written for.
+     */
+    const val MIN_ELIDABLE_TOOL_RESULT_CHARS = 8000
 
     /** Marker on an elided tool_result so the model (and diagnostics) can see why. */
     const val ELIDED_PREFIX = "[tool result elided to fit request budget"
@@ -85,29 +100,40 @@ object RequestBudget {
         val protectedFromIdx = protectedBoundary(messages, protectRecentUserTextTurns)
 
         // Collect elision candidates: (messageIdx, partIdx, contentLength),
-        // only in the prunable head, only oversize tool_results that are not
-        // already offload stubs or already elided.
+        // only in the prunable head, skipping anything already reduced (offload
+        // stub or an earlier elision).
+        //
+        // [T-postanchor-preserve-live-context] THE CHAR THRESHOLD IS A
+        // PREFERENCE, NOT A FILTER. It used to be a hard `>` filter, which left
+        // the same hole the postAnchor valve had: a body made of MANY MID-SIZED
+        // results (e.g. 200 x 5 KB ≈ 1 MB) produced an EMPTY candidate list, so
+        // nothing was elided and the oversize request went out anyway — exactly
+        // the failure this gate exists to prevent. Now everything is a
+        // candidate, ordered so that results above the threshold go first;
+        // smaller ones are touched only while the body still does not fit.
         data class Candidate(val msgIdx: Int, val partIdx: Int, val len: Int)
-        val candidates = ArrayList<Candidate>()
+        val big = ArrayList<Candidate>()
+        val small = ArrayList<Candidate>()
         for (mi in 0 until protectedFromIdx) {
             val parts = messages[mi].contentParts
             for (pi in parts.indices) {
                 val p = parts[pi]
-                if (p is AgentContentPart.ToolResult &&
-                    p.content.length > MIN_ELIDABLE_TOOL_RESULT_CHARS &&
-                    !isAlreadyReduced(p.content)
-                ) {
-                    candidates.add(Candidate(mi, pi, p.content.length))
+                if (p is AgentContentPart.ToolResult && !isAlreadyReduced(p.content)) {
+                    val c = Candidate(mi, pi, p.content.length)
+                    if (p.content.length > MIN_ELIDABLE_TOOL_RESULT_CHARS) big.add(c)
+                    else small.add(c)
                 }
             }
         }
-        if (candidates.isEmpty()) {
+        if (big.isEmpty() && small.isEmpty()) {
             return Report(messages, 0, bytesBefore, bytesBefore)
         }
 
-        // Largest first — reclaim the most bytes per elision so we touch as
-        // few results as possible to get under the ceiling.
-        candidates.sortByDescending { it.len }
+        // Largest first within each tier — reclaim the most bytes per elision so
+        // we touch as few results as possible to get under the ceiling.
+        big.sortByDescending { it.len }
+        small.sortByDescending { it.len }
+        val candidates = big + small
 
         // Work on a mutable copy of only the parts lists we change.
         val editedParts = HashMap<Int, MutableList<AgentContentPart>>()

@@ -273,7 +273,14 @@ class ChatViewModel(
          * Raised from 5 → 6 per the user's request. Mirrors iOS
          * `compactKeepRecentUserTurns`.
          */
-        private const val COMPACT_KEEP_RECENT_USER_TURNS = 6
+        // [T-postanchor-preserve-live-context] Raised 6 → 24. This count is the
+        // protected tail for BOTH slices: preAnchor walk-back and the postAnchor
+        // valve. At 6 the live thread the model saw was a summary of the
+        // session's START plus six turns, with the middle hollowed out — the
+        // model then answered from the summary, i.e. "as if from the beginning
+        // of the conversation". 24 keeps the working thread intact; the byte
+        // gate at the provider boundary still bounds the payload.
+        private const val COMPACT_KEEP_RECENT_USER_TURNS = 24
         /// Max per-tool-call retained `accumulated` JSON snapshots from
         /// `ToolInputDelta`. Drained on preflight failure for diagnosis.
         private const val TOOL_INPUT_CHUNK_RING_MAX = 10

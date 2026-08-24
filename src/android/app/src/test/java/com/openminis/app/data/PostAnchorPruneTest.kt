@@ -64,7 +64,8 @@ class PostAnchorPruneTest {
             msgs.add(userToolResult("fresh$n", 5000))
         }
         val before = bodyLen(msgs)
-        val result = PostAnchorPrune.prune(msgs, protectRecentUserTextTurns = 6)
+        val result = PostAnchorPrune.prune(msgs, protectRecentUserTextTurns = 6,
+            maxToolResultChars = 1000, emergencyThresholdBytes = 0)
         val after = bodyLen(result.messages)
 
         assertEquals("all 10 old oversize tool_results dropped", 10, result.droppedToolResultCount)
@@ -82,7 +83,7 @@ class PostAnchorPruneTest {
             msgs.add(user("q$n")); msgs.add(asstToolUse("s$n")); msgs.add(userToolResult("s$n", 200))
         }
         for (n in 1..6) msgs.add(user("fresh $n"))
-        val result = PostAnchorPrune.prune(msgs, 6)
+        val result = PostAnchorPrune.prune(msgs, 6, maxToolResultChars = 1000, emergencyThresholdBytes = 0)
         assertEquals(0, result.droppedToolResultCount)
         assertSame("identity-returned when nothing dropped", msgs, result.messages)
     }
@@ -93,14 +94,14 @@ class PostAnchorPruneTest {
         msgs.add(user("q1")); msgs.add(asstToolUse("a1")); msgs.add(userToolResult("a1", 5000))
         msgs.add(user("q2")); msgs.add(asstToolUse("a2")); msgs.add(userToolResult("a2", 5000))
         msgs.add(user("q3"))
-        val result = PostAnchorPrune.prune(msgs, 6)
+        val result = PostAnchorPrune.prune(msgs, 6, maxToolResultChars = 1000, emergencyThresholdBytes = 0)
         assertEquals(0, result.droppedToolResultCount)
         assertSame(msgs, result.messages)
     }
 
     @Test
     fun `empty input is safe`() {
-        val result = PostAnchorPrune.prune(emptyList(), 6)
+        val result = PostAnchorPrune.prune(emptyList(), 6, maxToolResultChars = 1000, emergencyThresholdBytes = 0)
         assertTrue(result.messages.isEmpty())
         assertEquals(0, result.droppedToolResultCount)
     }
@@ -111,7 +112,7 @@ class PostAnchorPruneTest {
         for (n in 1..5) {
             msgs.add(user("q$n")); msgs.add(asstToolUse("a$n")); msgs.add(userToolResult("a$n", 5000))
         }
-        val result = PostAnchorPrune.prune(msgs, 0)
+        val result = PostAnchorPrune.prune(msgs, 0, maxToolResultChars = 1000, emergencyThresholdBytes = 0)
         assertEquals(5, result.droppedToolResultCount)
     }
 
@@ -122,7 +123,7 @@ class PostAnchorPruneTest {
         msgs.add(asstToolUse("x1"))          // only a tool_use -> emptied -> removed
         msgs.add(userToolResult("x1", 5000)) // only a tool_result -> emptied -> removed
         for (n in 1..6) msgs.add(user("fresh $n"))
-        val result = PostAnchorPrune.prune(msgs, 6)
+        val result = PostAnchorPrune.prune(msgs, 6, maxToolResultChars = 1000, emergencyThresholdBytes = 0)
         assertEquals(1, result.droppedToolResultCount)
         assertFalse(
             "no empty-shell assistant message remains",
@@ -150,11 +151,107 @@ class PostAnchorPruneTest {
         msgs.add(mixed)
         msgs.add(userToolResult("big", 5000))
         for (n in 1..6) msgs.add(user("fresh $n"))
-        val result = PostAnchorPrune.prune(msgs, 6)
+        val result = PostAnchorPrune.prune(msgs, 6, maxToolResultChars = 1000, emergencyThresholdBytes = 0)
         assertEquals(1, result.droppedToolResultCount)
         val texts = result.messages.flatMap { it.contentParts }
             .filterIsInstance<AgentContentPart.Text>().map { it.text }
         assertTrue("reasoning text preserved", texts.contains("here is my reasoning"))
         assertFalse("tool_use stripped", toolUseIds(result.messages).contains("big"))
+    }
+
+    // ─── [T-postanchor-preserve-live-context] ───────────────────────────────
+    // postAnchor — ЖИВАЯ часть беседы, её не покрывает никакой summary.
+    // Поэтому обрезка здесь допустима ТОЛЬКО при реальном раздутии.
+
+    @Test
+    fun `normal-sized live slice passes through untouched with defaults`() {
+        // 30 витков с крупными (5000 симв.) результатами — типичная длинная
+        // сессия с инструментами. Суммарно ~450 KB: НИЖЕ аварийного порога,
+        // значит уходит модели дословно.
+        val msgs = ArrayList<LLMMessage>()
+        for (n in 1..30) {
+            msgs.add(user("question $n"))
+            msgs.add(asstToolUse("t$n"))
+            msgs.add(userToolResult("t$n", 5000))
+        }
+        val result = PostAnchorPrune.prune(msgs, protectRecentUserTextTurns = 24)
+        assertEquals("ни один результат не удалён", 0, result.droppedToolResultCount)
+        assertSame("возвращён тот же список без копирования", msgs, result.messages)
+    }
+
+    @Test
+    fun `valve opens only past the emergency threshold`() {
+        // 200 витков по 5000 симв. ≈ 1 MB — выше порога, клапан открывается.
+        val msgs = ArrayList<LLMMessage>()
+        for (n in 1..200) {
+            msgs.add(user("question $n"))
+            msgs.add(asstToolUse("t$n"))
+            msgs.add(userToolResult("t$n", 5000))
+        }
+        assertTrue("фикстура действительно больше порога",
+            RequestBudget.estimateBytes(msgs) > PostAnchorPrune.EMERGENCY_THRESHOLD_BYTES)
+        val result = PostAnchorPrune.prune(msgs, protectRecentUserTextTurns = 24)
+        assertTrue("при раздутии обрезка сработала", result.droppedToolResultCount > 0)
+        assertTrue("тело приведено под порог",
+            RequestBudget.estimateBytes(result.messages) <= PostAnchorPrune.EMERGENCY_THRESHOLD_BYTES)
+        assertTrue("удалено не больше необходимого", result.droppedToolResultCount < 176)
+        // Свежий хвост цел: последние 24 витка неприкосновенны.
+        val ids = toolResultIds(result.messages)
+        assertTrue("последние 24 результата сохранены",
+            (177..200).all { ids.contains("t$it") })
+    }
+
+    @Test
+    fun `ordinary output is touched only as far as needed to fit`() {
+        // Результаты по 3000 симв. — под предпочтительным порогом 8000. Они
+        // трогаются ТОЛЬКО потому, что иначе срез не влезает, и ровно столько,
+        // сколько нужно: иначе вернулся бы отказ провайдера по размеру.
+        val msgs = ArrayList<LLMMessage>()
+        for (n in 1..300) {
+            msgs.add(user("question $n"))
+            msgs.add(asstToolUse("t$n"))
+            msgs.add(userToolResult("t$n", 3000))
+        }
+        assertTrue("клапан открыт",
+            RequestBudget.estimateBytes(msgs) > PostAnchorPrune.EMERGENCY_THRESHOLD_BYTES)
+        val result = PostAnchorPrune.prune(msgs, protectRecentUserTextTurns = 24)
+        assertTrue("удалено ненулевое, но минимальное количество",
+            result.droppedToolResultCount > 0)
+        assertTrue("срез влез под порог",
+            RequestBudget.estimateBytes(result.messages) <= PostAnchorPrune.EMERGENCY_THRESHOLD_BYTES)
+        val ids = toolResultIds(result.messages)
+        assertTrue("свежие 24 витка целы", (277..300).all { ids.contains("t$it") })
+    }
+
+    @Test
+    fun `many mid-sized results still get the body under the ceiling`() {
+        // ДЫРА, найденная харнессом до отправки: 200 x 5 KB = 1 MB, но ни один
+        // результат не превышает предпочтительный порог 8000. Плоский отрез по
+        // порогу пропустил бы это, и оверсайз-тело вернулось бы.
+        val msgs = ArrayList<LLMMessage>()
+        for (n in 1..200) {
+            msgs.add(user("question $n"))
+            msgs.add(asstToolUse("t$n"))
+            msgs.add(userToolResult("t$n", 5000))
+        }
+        val result = PostAnchorPrune.prune(msgs, protectRecentUserTextTurns = 24)
+        assertTrue("тело приведено под порог",
+            RequestBudget.estimateBytes(result.messages) <= PostAnchorPrune.EMERGENCY_THRESHOLD_BYTES)
+        assertTrue("удалено не всё", result.droppedToolResultCount < 176)
+        val ids = toolResultIds(result.messages)
+        assertTrue("свежий хвост цел", (177..200).all { ids.contains("t$it") })
+    }
+
+    @Test
+    fun `constants stay consistent with the provider byte gate`() {
+        // Клапан обязан открываться РАНЬШЕ, чем начинает резать байтовый шлюз,
+        // и оба — ниже единственного измеренного отказа (1.28 MB).
+        assertTrue("порог клапана ниже потолка тела",
+            PostAnchorPrune.EMERGENCY_THRESHOLD_BYTES < RequestBudget.DEFAULT_MAX_BODY_BYTES)
+        assertTrue("потолок тела ниже измеренного отказа 1.28 MB",
+            RequestBudget.DEFAULT_MAX_BODY_BYTES < 1_280_000)
+        assertEquals("пороги символов согласованы",
+            PostAnchorPrune.DEFAULT_MAX_TOOL_RESULT_CHARS,
+            RequestBudget.MIN_ELIDABLE_TOOL_RESULT_CHARS)
     }
 }

@@ -153,4 +153,26 @@ class RequestBudgetTest {
         // Should not have elided all 3 when fewer suffice.
         assertTrue("elided the minimum needed (<3)", r.elidedToolResultCount < 3)
     }
+
+    @Test
+    fun `many mid-sized results still get the body under the ceiling`() {
+        // [T-postanchor-preserve-live-context] РЕГРЕСС-ГАРАНТ. Раньше порог
+        // символов был жёстким фильтром: тело из множества СРЕДНИХ результатов
+        // (ни один не больше порога) давало ПУСТОЙ список кандидатов, шлюз
+        // ничего не заглушал и оверсайз-запрос уходил провайдеру — ровно тот
+        // отказ, ради которого шлюз и написан. Теперь порог — предпочтение.
+        val msgs = ArrayList<LLMMessage>()
+        for (n in 1..80) {
+            msgs.add(user("q$n")); msgs.add(asstToolUse("t$n"))
+            // 5000 симв. — НИЖЕ MIN_ELIDABLE_TOOL_RESULT_CHARS (8000)
+            msgs.add(userToolResult("t$n", 5000))
+        }
+        for (n in 1..6) msgs.add(user("fresh $n"))
+        val before = RequestBudget.estimateBytes(msgs)
+        assertTrue("фикстура выше потолка", before > 300_000)
+        val r = RequestBudget.plan(msgs, protectRecentUserTextTurns = 6, maxBodyBytes = 300_000)
+        assertTrue("шлюз сработал на средних результатах", r.elidedToolResultCount > 0)
+        assertTrue("тело влезло под потолок", r.bytesAfter <= 300_000)
+        assertTrue("заглушено не всё", r.elidedToolResultCount < 80)
+    }
 }

@@ -798,7 +798,9 @@ class AnthropicProvider(
          * COMPACT_KEEP_RECENT_USER_TURNS so the protected window is the same one
          * compact/offload treats as the live working context.
          */
-        private const val REQUEST_BUDGET_PROTECT_TURNS = 6
+        // [T-postanchor-preserve-live-context] 6 → 24, matching
+        // ChatViewModel.COMPACT_KEEP_RECENT_USER_TURNS.
+        private const val REQUEST_BUDGET_PROTECT_TURNS = 24
 
         /**
          * Parse the `-<major>-<minor>` (or `/<major>.<minor>`) version out of a Claude id.

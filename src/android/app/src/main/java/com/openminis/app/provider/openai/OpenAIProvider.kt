@@ -132,7 +132,9 @@ class OpenAIProvider private constructor(
          * COMPACT_KEEP_RECENT_USER_TURNS so the protected window is the same one
          * the compact/offload logic treats as the live working context.
          */
-        private const val REQUEST_BUDGET_PROTECT_TURNS = 6
+        // [T-postanchor-preserve-live-context] 6 → 24, matching
+        // ChatViewModel.COMPACT_KEEP_RECENT_USER_TURNS.
+        private const val REQUEST_BUDGET_PROTECT_TURNS = 24
 
         /**
          * [T-android-thinking-level-arch] Codex OAuth client version advertised
