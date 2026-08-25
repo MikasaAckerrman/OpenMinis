@@ -6,6 +6,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.RawQuery
+import androidx.room.Transaction
 import androidx.sqlite.db.SupportSQLiteQuery
 import kotlinx.coroutines.flow.Flow
 
@@ -172,6 +173,58 @@ interface ChatDao {
 
     @Query("DELETE FROM messages WHERE session_id = :sessionId AND sort_order >= :keepCount")
     suspend fun deleteMessagesAfter(sessionId: String, keepCount: Int)
+
+    // ─── [T-no-destructive-retry] archive-then-delete ─────────────────────
+    //
+    // Retry / edit / rerun used to call deleteMessagesAfter directly and the
+    // truncated tail was gone forever — that is what wiped the HUD session's
+    // 17–22 Aug work when a retry anchored on a 16 Aug message. These three
+    // members turn that destructive primitive into a recoverable one WITHOUT
+    // changing what the live session sees: the rows still leave `messages`
+    // (so all 30 loadMessages readers behave exactly as before), but a
+    // verbatim copy lands in `deleted_messages` first, in the SAME
+    // transaction, so a crash between copy and delete can't lose or
+    // half-delete anything.
+
+    /** Rows that [deleteMessagesAfter] would remove — read them before the delete. */
+    @Query("SELECT * FROM messages WHERE session_id = :sessionId AND sort_order >= :keepCount ORDER BY sort_order ASC")
+    suspend fun selectMessagesAtOrAfter(sessionId: String, keepCount: Int): List<MessageEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertDeletedMessages(rows: List<DeletedMessageEntity>)
+
+    /**
+     * Archive-then-truncate: copy every row at/after [keepCount] into
+     * `deleted_messages`, then delete them from `messages`. One transaction —
+     * either both happen or neither. [reason] records which caller triggered
+     * it ("retry" | "edit" | "rerun" | "retryLast") for later restore UI.
+     *
+     * Default method (not @Query) so the two statements share a transaction;
+     * Room supports @Transaction on interface default methods.
+     */
+    @Transaction
+    suspend fun archiveAndDeleteMessagesAfter(
+        sessionId: String,
+        keepCount: Int,
+        deletedAt: Long,
+        reason: String,
+    ) {
+        val doomed = selectMessagesAtOrAfter(sessionId, keepCount)
+        if (doomed.isNotEmpty()) {
+            insertDeletedMessages(
+                doomed.map { m -> DeletedMessageEntity.fromMessage(m, deletedAt, reason) }
+            )
+        }
+        deleteMessagesAfter(sessionId, keepCount)
+    }
+
+    /** Archived rows for a session, newest deletion first — backs restore UI. */
+    @Query("SELECT * FROM deleted_messages WHERE session_id = :sessionId ORDER BY deleted_at DESC, sort_order ASC")
+    suspend fun loadDeletedMessages(sessionId: String): List<DeletedMessageEntity>
+
+    /** How many archived rows a session has (cheap badge/count for restore UI). */
+    @Query("SELECT COUNT(*) FROM deleted_messages WHERE session_id = :sessionId")
+    suspend fun deletedMessageCount(sessionId: String): Int
 
     /**
      * [session-longpress-compress] Delete every message row of a session whose

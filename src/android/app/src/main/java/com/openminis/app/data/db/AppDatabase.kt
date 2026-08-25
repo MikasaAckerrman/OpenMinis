@@ -13,8 +13,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         MessageEntity::class,
         CompactMarkerEntity::class,
         WebAppShortcutEntity::class,
+        DeletedMessageEntity::class,
     ],
-    version = 11,
+    version = 12,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -183,8 +184,43 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        val MIGRATION_3_4 = object : Migration(3, 4) {
+        /**
+         * [T-no-destructive-retry] `deleted_messages` archive table. Retry/
+         * edit/rerun now copy the tail they truncate into this table before
+         * deleting from `messages`, so the earlier turns stay recoverable —
+         * the fix for the HUD-session data loss where a retry anchored on an
+         * old message wiped a week of work. Pure additive: no existing table
+         * is touched, no row is rewritten.
+         */
+        val MIGRATION_11_12 = object : Migration(11, 12) {
             override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS deleted_messages (
+                        archive_id TEXT NOT NULL PRIMARY KEY,
+                        message_id TEXT NOT NULL,
+                        session_id TEXT NOT NULL,
+                        role TEXT NOT NULL,
+                        parts_json TEXT NOT NULL,
+                        created_at INTEGER NOT NULL,
+                        token_usage TEXT,
+                        sort_order INTEGER NOT NULL,
+                        reasoning_content TEXT,
+                        stream_interrupt_count INTEGER NOT NULL DEFAULT 0,
+                        updated_at INTEGER,
+                        error_info TEXT,
+                        deleted_at INTEGER NOT NULL,
+                        archive_reason TEXT NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_deleted_messages_session_id_sort_order ON deleted_messages(session_id, sort_order)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_deleted_messages_message_id ON deleted_messages(message_id)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_deleted_messages_deleted_at ON deleted_messages(deleted_at)")
+            }
+        }
+
+        val MIGRATION_3_4 = object : Migration(3, 4) {            override fun migrate(db: SupportSQLiteDatabase) {
                 // sessions: add iOS-parity columns
                 db.execSQL("ALTER TABLE sessions ADD COLUMN source TEXT")
                 db.execSQL("ALTER TABLE sessions ADD COLUMN memory_enabled INTEGER NOT NULL DEFAULT 1")
@@ -220,7 +256,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "minis.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12)
                     .build()
                     .also { INSTANCE = it }
             }

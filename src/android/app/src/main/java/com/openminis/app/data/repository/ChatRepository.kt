@@ -211,6 +211,32 @@ class ChatRepository(internal val dao: ChatDao) {
         dao.deleteMessagesAfter(sessionId, keepCount)
 
     /**
+     * [T-no-destructive-retry] Non-destructive tail truncation for retry/edit.
+     * Archives every row it removes into `deleted_messages` first (one
+     * transaction), so the earlier turns are recoverable. Retry/edit call
+     * THIS, not the raw [deleteMessagesAfter] above — that raw variant stays
+     * only for paths that intentionally discard (none today; kept for parity).
+     */
+    suspend fun archiveAndDeleteMessagesAfter(
+        sessionId: String,
+        keepCount: Int,
+        reason: String,
+    ) = dao.archiveAndDeleteMessagesAfter(
+        sessionId = sessionId,
+        keepCount = keepCount,
+        deletedAt = System.currentTimeMillis(),
+        reason = reason,
+    )
+
+    /** Archived (retry/edit-removed) rows for a session, newest deletion first. */
+    suspend fun loadDeletedMessages(sessionId: String) =
+        dao.loadDeletedMessages(sessionId)
+
+    /** Count of archived rows for a session. */
+    suspend fun deletedMessageCount(sessionId: String) =
+        dao.deletedMessageCount(sessionId)
+
+    /**
      * Rewrite a single message row's parts_json in place. Used by
      * [com.openminis.app.ui.chat.ChatViewModel.rerunFromToolBlock]'s block-
      * boundary cut to trim the kept assistant row to the parts before the
