@@ -5739,7 +5739,7 @@ class ChatViewModel(
                     // above normally catches this, but a merged-bubble layout
                     // could route a first-in-row tool_use here; handle it so we
                     // never persist a phantom empty assistant message.
-                    chatRepository.deleteMessagesAfter(sid, row.sortOrder)
+                    chatRepository.archiveAndDeleteMessagesAfter(sid, row.sortOrder, "rerun")
                     Log.i(TAG, "rerunFromToolBlock cut at row start (empty trim) tuId=${targetToolUseId.take(12)} keepCount=${row.sortOrder} row=${row.id.take(8)}")
                 } else {
                     // Delete every row after the trimmed assistant row, then
@@ -5747,7 +5747,7 @@ class ChatViewModel(
                     // keeps rows with sort_order < keepCount, so keepCount =
                     // thisRow.sortOrder + 1 drops the following tool_result row
                     // + all later turns while keeping (then overwriting) this one.
-                    chatRepository.deleteMessagesAfter(sid, row.sortOrder + 1)
+                    chatRepository.archiveAndDeleteMessagesAfter(sid, row.sortOrder + 1, "rerun")
                     chatRepository.updateMessageParts(row.id, keptArr.toString())
                     Log.i(TAG, "rerunFromToolBlock sub-message cut tuId=${targetToolUseId.take(12)} keepCount=${row.sortOrder + 1} partIdx=$cutPartIdx trimmedRow=${row.id.take(8)}")
                 }
@@ -5923,7 +5923,7 @@ class ChatViewModel(
                 }
             }
             if (cutoffSortOrder >= 0) {
-                chatRepository.deleteMessagesAfter(sid, cutoffSortOrder)
+                chatRepository.archiveAndDeleteMessagesAfter(sid, cutoffSortOrder, "retry")
             }
 
             // Rebuild agentHistory from remaining DB messages
@@ -6188,7 +6188,7 @@ class ChatViewModel(
             }
         }
         if (cutoffSortOrder >= 0) {
-            chatRepository.deleteMessagesAfter(sid, cutoffSortOrder)
+            chatRepository.archiveAndDeleteMessagesAfter(sid, cutoffSortOrder, "edit")
         }
         agentHistory.clear()
         toolLoopDetector.reset()
@@ -7392,7 +7392,7 @@ class ChatViewModel(
                 val trailingAssistantSortOrder = dbMessages
                     .lastOrNull { it.role == "assistant" }?.sortOrder
                 if (trailingAssistantSortOrder != null) {
-                    chatRepository.deleteMessagesAfter(sid, trailingAssistantSortOrder)
+                    chatRepository.archiveAndDeleteMessagesAfter(sid, trailingAssistantSortOrder, "retryLast")
                     AppLogger.info(
                         TAG_STREAM,
                         "retryLast: deleted trailing assistant row sortOrder=$trailingAssistantSortOrder, kept ${trailingAssistantSortOrder} prior rows",
