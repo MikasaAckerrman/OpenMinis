@@ -347,54 +347,18 @@ internal object ChatMutationMethods {
     }
 
     /**
-     * [T-session-rescue] `chat.session.rescue` — trigger the LOCAL, LLM-free
-     * hard compaction on a session. This is the automation seam for verifying
-     * the repair path on a session whose provider is unreachable or whose
-     * history is too large to send, so unlike `chat.compact.before` it does
-     * NOT require a resolvable provider.
+     * `chat.session.rescue` was removed together with the local, LLM-free
+     * digest. AI compaction is the only supported compaction path — use
+     * `chat.session.compact` / `chat.compact.before` instead. The method is
+     * kept only as an explicit not-found so any stale caller gets a clear
+     * error instead of a silent no-op.
      */
     suspend fun sessionRescue(context: Context, params: JSONObject): JSONObject {
-        val sessionId = params.optString("sessionId", "").ifEmpty {
-            throw RPCException(-32602, "Missing 'sessionId' param")
-        }
-        val app = app(context)
-        app.chatRepository.dao.getSession(sessionId)
-            ?: throw RPCException(-32602, "Session not found")
-        val waitTimeoutSec = params.optInt("waitTimeout", 60).coerceIn(1, 600)
-        val beforeMarkerCount = app.chatRepository.dao.listCompactMarkers(sessionId).size
-        val result = HeadlessChatRunner.rescue(
-            context = context,
-            sessionId = sessionId,
-            wait = true,
-            timeoutMs = waitTimeoutSec * 1000L,
+        throw RPCException(
+            -32601,
+            "chat.session.rescue was removed — the local rescue digest no longer exists. " +
+                "Use chat.session.compact (AI compaction) instead.",
         )
-        val afterMarkers = app.chatRepository.dao.listCompactMarkers(sessionId)
-        val latest = afterMarkers.maxByOrNull { it.createdAt }
-        return JSONObject().apply {
-            put("sessionId", sessionId)
-            put("beforeMarkerCount", beforeMarkerCount)
-            put("afterMarkerCount", afterMarkers.size)
-            put("wrote", afterMarkers.size > beforeMarkerCount)
-            put("status", result.status)
-            if (result.timedOut) put("timedOut", true)
-            if (result.error != null) put("error", result.error)
-            put("digestLength", result.summary?.length ?: 0)
-            put(
-                "isRescueDigest",
-                result.summary?.startsWith(com.openminis.app.data.RescueDigest.OPEN_TAG) == true,
-            )
-            put("digestPreview", result.summary?.take(240) ?: JSONObject.NULL)
-            put("latestMarker", latest?.let { m ->
-                JSONObject().apply {
-                    put("id", m.id)
-                    put("version", m.version)
-                    put("anchorMessageId", m.lastCompactedMessageId ?: JSONObject.NULL)
-                    put("summaryLength", m.summary.length)
-                    put("compactedCount", m.compactedCount)
-                    put("createdAt", m.createdAt)
-                }
-            } ?: JSONObject.NULL)
-        }
     }
 
     /**

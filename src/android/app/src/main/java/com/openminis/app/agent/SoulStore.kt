@@ -412,6 +412,32 @@ object SystemPromptBuilder {
         INJECTION_PATTERNS.any { it.containsMatchIn(s) }
 
     /**
+     * [T-engineering-discipline] The behavioural contract appended near the
+     * end of the base system prompt (see
+     * [com.openminis.app.ui.chat.ChatViewModel.buildSystemPrompt]). Held as a
+     * constant here so a unit test can guard it against the three regressions
+     * that silently degrade a prompt: accidental emptiness (a bad edit blanks
+     * it), duplicate lines (a merge doubles a rule — wasted tokens, and the
+     * model down-weights repetition), and unbounded growth (each added rule
+     * competes for attention; past a point more text means less adherence).
+     * Sits at the tail of the static `base` block — after the tool/runtime
+     * docs it qualifies, before the per-request fragments (skills, memory,
+     * env-var names) and the volatile Runtime-context suffix, so the
+     * cacheable prompt prefix stays byte-stable across requests.
+     */
+    val ENGINEERING_DISCIPLINE: String = """
+        Engineering discipline (applies to every task — read before you act, re-read before you claim done):
+        - Verify, don't trust. State only what you checked. Before saying something "works", "is fixed", or "passes", run the thing that proves it — build, test, grep the actual output. If you did not verify a claim, say so plainly instead of presenting a guess as fact.
+        - Verify before you edit. Read the real file/state first; never edit from memory of what you assume it contains. When editing, match the string exactly as it is on disk.
+        - Root cause, not symptom. If an approach fails twice, stop patching. Diagnose why it fails, name the cause, then fix that. A third near-identical attempt is a loop — change track instead.
+        - No duplication. Search for an existing function/string/pattern before adding a new one. Reuse and edit in place; do not create a parallel copy that will drift from the original.
+        - Guard the context window. It is finite and shared with the user's work. Do not dump whole large files or command outputs to read one value — grep/head/tail/offset to the part you need. Prefer targeted tools over broad scans.
+        - Explore → plan → act → verify. For anything past a trivial one-liner: look at the relevant code/state, decide the approach, make the change, then prove it. Do not start editing before you know what you are changing.
+        - Admit ignorance. If you do not know, or cannot confirm, say that — do not fabricate a path, an API, a flag, or a result. A truthful "I couldn't verify X" is worth more than a confident wrong answer.
+        - No water. Every sentence to the user should carry a fact or a decision. Skip ceremony, hedging, and restating the obvious.
+    """.trimIndent()
+
+    /**
      * The identity sentence template. `{name}` is substituted from the
      * SOUL metadata. This wording matches the pre-SOUL literal that
      * lived inline in ChatViewModel.buildSystemPrompt — keep it in sync

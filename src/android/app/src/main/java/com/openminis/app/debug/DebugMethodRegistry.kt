@@ -765,16 +765,6 @@ object DebugMethodRegistry {
             example = ex("sessionId" to "6D0F…"),
         ),
         MethodSpec(
-            name = "chat.session.rescue",
-            description = "Repair a session that can no longer reach the model: build a dense digest of its history LOCALLY (no LLM call, no provider needed), force-offload large tool payloads to /var/minis/offloads/, and write a v2 compact marker so subsequent turns send the digest instead of the history. Unlike chat.compact.before this cannot fail on a network error and works when the provider is unresolvable. Undo with chat.compact.revert.",
-            params = listOf(
-                ParamSpec("sessionId", "string", required = true, description = "Target session id."),
-                ParamSpec("waitTimeout", "int", required = false, default = 60, description = "Seconds to wait for the local digest + offload pass. Clamped [1,600]."),
-            ),
-            returns = "{sessionId, beforeMarkerCount, afterMarkerCount, wrote, status, timedOut?, error?, digestLength, isRescueDigest, digestPreview, latestMarker:{id, version, anchorMessageId, summaryLength, compactedCount, createdAt}}",
-            example = ex("sessionId" to "6D0F…"),
-        ),
-        MethodSpec(
             name = "chat.session.delete",
             description = "Permanently delete a session and its messages. Cancels any in-flight run first.",
             params = listOf(
