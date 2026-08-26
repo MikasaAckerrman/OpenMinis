@@ -675,7 +675,12 @@ object DebugMethodRegistry {
         ),
         MethodSpec(
             name = "chat.retry",
-            description = "Retry from a specific user message in a session.",
+            description = "Retry from a specific user message in a session. status is one of: " +
+                "Rejected (id was not a visible user bubble / session busy / no provider — nothing changed), " +
+                "Retrying (accepted, async, wait=false), Completed (regenerated a new assistant answer), " +
+                "TruncatedNoRegen (tail archived+truncated but no newer answer landed), Timeout, Error. " +
+                "deletedMessageCount is the REAL messages-table delta, not a prediction; responseText is " +
+                "populated only when a genuinely newer assistant row was produced.",
             params = listOf(
                 ParamSpec("sessionId", "string", required = true, description = "Target session id."),
                 ParamSpec("messageId", "string", required = false, description = "User message id; omit to retry from the most recent user message."),

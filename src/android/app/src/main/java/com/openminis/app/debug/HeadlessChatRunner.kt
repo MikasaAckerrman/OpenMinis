@@ -279,11 +279,30 @@ internal object HeadlessChatRunner {
                 status = "Error",
                 responseText = "no_provider_resolved_in_5s",
                 timedOut = false,
-                deletedMessageCount = deletedCount,
+                deletedMessageCount = 0,
                 retriedMessageId = targetMsgId,
             )
         }
-        vm.retryFromMessage(targetMsgId)
+        // [T-headless-retry-honest-signal] Snapshot the live row count BEFORE
+        // the retry so the response reports what ACTUALLY changed, not a
+        // prediction. retryFromMessage now returns false when it rejects the
+        // call up front (id not a visible user bubble in _messages, already
+        // streaming, no provider) — previously that silent no-op was still
+        // reported as a successful "Completed" retry with a predicted
+        // deletedMessageCount and a stale responseText, so automation could
+        // not tell a real run from a rejection.
+        val beforeCount = all.size
+        val accepted = vm.retryFromMessage(targetMsgId)
+        if (!accepted) {
+            return@withContext PromptResult(
+                status = "Rejected",
+                responseText = "retry_not_accepted: id is not a visible user bubble, " +
+                    "session is streaming, or no provider resolved",
+                timedOut = false,
+                deletedMessageCount = 0,
+                retriedMessageId = targetMsgId,
+            )
+        }
         if (!wait) {
             return@withContext PromptResult(
                 status = "Retrying",
@@ -299,14 +318,22 @@ internal object HeadlessChatRunner {
             }
             true
         } ?: false
+        // Report the REAL deletion count from the DB delta, and only surface a
+        // responseText that is genuinely newer than the retried anchor — a
+        // stale last-assistant row left after truncation is NOT a regenerated
+        // answer.
         val msgs = app.chatRepository.dao.loadMessages(sessionId)
+        val afterCount = msgs.size
+        val realDeleted = (beforeCount - afterCount).coerceAtLeast(0)
         val lastAssistant = msgs.lastOrNull { it.role == "assistant" }
-        val responseText = lastAssistant?.let { extractText(it.partsJson) }
+        val anchorSort = msgs.firstOrNull { it.id == targetMsgId }?.sortOrder ?: -1
+        val regenerated = lastAssistant != null && lastAssistant.sortOrder > anchorSort
+        val responseText = if (regenerated) lastAssistant?.let { extractText(it.partsJson) } else null
         PromptResult(
-            status = if (finished) "Completed" else "Timeout",
+            status = decideRetryStatus(finished = finished, regenerated = regenerated),
             responseText = responseText,
             timedOut = !finished,
-            deletedMessageCount = deletedCount,
+            deletedMessageCount = realDeleted,
             retriedMessageId = targetMsgId,
         )
     }
@@ -621,6 +648,23 @@ internal object HeadlessChatRunner {
         val deletedMessageCount: Int = 0,
         val retriedMessageId: String? = null,
     )
+
+    /**
+     * [T-headless-retry-honest-signal] Pure decision for the terminal status of
+     * a waited retry, factored out so CI can guard it without an Android
+     * runtime. Inputs are the observable facts after streaming settled:
+     *   - [finished]: did streaming settle before the wait timeout?
+     *   - [regenerated]: is there an assistant row STRICTLY newer than the
+     *     retried anchor (i.e. a genuinely new answer, not the stale
+     *     last-assistant row left over after truncation)?
+     * Precondition: the retry was already accepted (retryFromMessage returned
+     * true) and wait=true; rejection/async are handled before this is called.
+     */
+    fun decideRetryStatus(finished: Boolean, regenerated: Boolean): String = when {
+        !finished -> "Timeout"
+        regenerated -> "Completed"
+        else -> "TruncatedNoRegen"
+    }
 
     data class CompactResult(
         val status: String,

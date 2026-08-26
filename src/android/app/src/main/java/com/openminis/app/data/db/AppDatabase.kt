@@ -220,7 +220,8 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        val MIGRATION_3_4 = object : Migration(3, 4) {            override fun migrate(db: SupportSQLiteDatabase) {
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
                 // sessions: add iOS-parity columns
                 db.execSQL("ALTER TABLE sessions ADD COLUMN source TEXT")
                 db.execSQL("ALTER TABLE sessions ADD COLUMN memory_enabled INTEGER NOT NULL DEFAULT 1")

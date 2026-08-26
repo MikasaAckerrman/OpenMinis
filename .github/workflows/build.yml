@@ -117,6 +117,7 @@ jobs:
             --tests 'com.openminis.app.data.PostAnchorPruneTest' \
             --tests 'com.openminis.app.data.RequestBudgetTest' \
             --tests 'com.openminis.app.data.SendGatePolicyTest' \
+            --tests 'com.openminis.app.debug.HeadlessRetryStatusTest' \
             --tests 'com.openminis.app.ui.chat.UiCopyCapsuleTest' \
             --tests 'com.openminis.app.ui.chat.MinisTextKitSelectionOrderTest'
         # `offload.*` already covers AgentArtifactStoreTest — the artifact store

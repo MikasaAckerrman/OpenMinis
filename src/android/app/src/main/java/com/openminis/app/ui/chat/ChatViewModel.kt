@@ -5819,22 +5819,31 @@ class ChatViewModel(
      * Retry from a specific user message: truncate all messages after it
      * (including the assistant response), rebuild agent history, and resend.
      * Mirrors iOS's edit/retry behavior — no duplicate user messages.
+     *
+     * Returns `true` when the retry was ACCEPTED and its streaming coroutine
+     * launched, `false` when it was rejected up front (already streaming, the
+     * id isn't a visible user bubble in `_messages`, or no provider). The UI
+     * ignores the result (it only ever passes ids of real bubbles), but the
+     * headless harness needs it: a silent `return` used to be reported as a
+     * successful "Completed" retry, so automation could not tell a real run
+     * from a no-op. `true` means "launched", NOT "regeneration finished" —
+     * callers that need the outcome must observe the DB / streaming state.
      */
-    fun retryFromMessage(messageId: String) {
-        if (_isStreaming.value) return
+    fun retryFromMessage(messageId: String): Boolean {
+        if (_isStreaming.value) return false
         _canResume.value = false
         val messages = _messages.value
         val index = messages.indexOfFirst { it.id == messageId }
-        if (index < 0) return
+        if (index < 0) return false
         val message = messages[index]
         // [T-android-tool-autoscroll] Start-of-turn snap — see resume().
         _forceScrollToBottom.tryEmit(Unit)
-        if (message.role != "user" || message.content.isBlank()) return
+        if (message.role != "user" || message.content.isBlank()) return false
 
         val initialProvider = currentProvider
         if (initialProvider == null) {
             _error.value = "No provider configured"
-            return
+            return false
         }
         val provider: LLMProvider = initialProvider
         _error.value = null
@@ -5942,6 +5951,11 @@ class ChatViewModel(
                 }
             }
         }
+        // The retry was accepted and its coroutine launched. This is NOT a
+        // guarantee that regeneration finished — the coroutine may still abort
+        // on provider resolve inside runRerunStreamTail — but it distinguishes
+        // an accepted retry from the early-return rejections above.
+        return true
     }
 
     /**
