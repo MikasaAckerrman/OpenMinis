@@ -2378,9 +2378,6 @@ class ChatViewModel(
             // the queued-prompt drain below; failure/cancel/empty-summary paths
             // keep today's behavior (queued bubbles stay pending + cancellable).
             var compactSucceeded = false
-            // [T-compact-route] Set when every LLM route refused; consumed
-            // after the finally block to hand off to the local digest.
-            var localFallbackReason: String? = null
             try {
                 val existing = _compactSummary.value
                 // Mirrors iOS `generateCompactSummaryWithSplitting` — when the
@@ -2555,16 +2552,14 @@ class ChatViewModel(
                 compactSucceeded = true
             } catch (e: CancellationException) {
                 throw e
-            } catch (e: CompactRoutesExhausted) {
-                // [T-compact-route] Every LLM route refused (rate limit /
-                // quota on the bound model and on all group fallbacks). The
-                // session still has to shrink, or the user is left with a chat
-                // that can neither send nor compact — the exact dead end this
-                // whole line of work is about. Fall back to the local digest,
-                // which needs no provider and cannot be rate limited.
-                AppLogger.warning(TAG, "[Compact] all routes refused → local digest: ${e.lastMessage.take(160)}")
-                localFallbackReason = e.lastMessage
             } catch (e: Exception) {
+                // [T-remove-local-compaction] Every failure path (including
+                // "all model routes refused", which CompactRoute now maps to
+                // Step.Surface) lands here. There is NO on-device digest
+                // fallback anymore: compaction runs only through a model, so
+                // when it can't, the session is left fully intact and the user
+                // is told why. They can add a working model / retry later —
+                // the app never silently degrades the history behind a refusal.
                 Log.w(TAG, "Compact failed", e)
                 withContext(Dispatchers.Main) {
                     appendSystemInfo(
@@ -2574,22 +2569,6 @@ class ChatViewModel(
                 }
             } finally {
                 _isCompacting.value = false
-            }
-            // [T-compact-route] Runs AFTER the finally that clears
-            // _isCompacting — rescueCompactNow refuses to start while a
-            // compaction is in flight, so kicking it from inside the catch
-            // would silently no-op.
-            localFallbackReason?.let { reason ->
-                withContext(Dispatchers.Main) {
-                    appendSystemInfo(
-                        text = context.getString(
-                            R.string.compact_all_routes_refused,
-                            reason.take(160),
-                        ),
-                        iconKind = "compact",
-                    )
-                    rescueCompactNow()
-                }
             }
             // [T-android-compact-queued-drain] A successful compact must let
             // any queued prompts proceed — previously nothing re-triggered the
@@ -3699,12 +3678,6 @@ class ChatViewModel(
             generateCompactSummary(conversationText)
         } catch (e: CancellationException) {
             throw e
-        } catch (e: CompactRoutesExhausted) {
-            // [T-compact-route] Every model refused. Splitting the input can't
-            // change that (the refusal is about quota/rate, not size), and the
-            // caller needs this type intact to route to the local digest — so
-            // it must not be swallowed by the split heuristic below.
-            throw e
         } catch (e: Exception) {
             val msg = e.message ?: e.toString()
             // [model-compaction] A gateway content-filter / "content-blocked"
@@ -3880,28 +3853,11 @@ class ChatViewModel(
                             )
                         }
                     }
-                    // Signal to the caller that no LLM route worked. A dedicated
-                    // exception type (not the provider's own error) so the
-                    // compactAll catch can tell "every model refused" apart from
-                    // "this one call failed" and go local instead of giving up.
-                    is com.openminis.app.data.CompactRoute.Step.LocalDigest ->
-                        throw CompactRoutesExhausted(msg, e)
                     is com.openminis.app.data.CompactRoute.Step.Surface -> throw e
                 }
             }
         }
     }
-
-    /**
-     * [T-compact-route] Raised when every LLM route for compaction refused
-     * (rate limit / quota on the bound model and on every group fallback).
-     * The caller answers by building the local digest, so the session shrinks
-     * regardless.
-     */
-    private class CompactRoutesExhausted(
-        val lastMessage: String,
-        cause: Throwable?,
-    ) : Exception("All compaction routes refused: $lastMessage", cause)
 
     /**
      * Match provider error text against the substring set iOS
