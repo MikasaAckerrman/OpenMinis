@@ -227,7 +227,6 @@ interface ChatDao {
     suspend fun deletedMessageCount(sessionId: String): Int
 
     /**
-    /**
      * [T-message-surgery] Delete ONE message row, leaving everything after it
      * in place. Distinct from [deleteMessagesAfter], which is the retry/edit
      * "truncate the tail" primitive — here the user is removing a single turn
