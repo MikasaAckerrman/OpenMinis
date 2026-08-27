@@ -306,7 +306,15 @@ internal sealed class FlatChatItem {
         override fun hashCode(): Int = message.hashCode() * 31 + precededByUser.hashCode()
     }
 
-    data class AssistantHeader(val messageId: String) : FlatChatItem() {
+    data class AssistantHeader(
+        val messageId: String,
+        // [T-msg-timestamps] Turn start (placeholder creation) and completion
+        // (stream drain / error). finishedAtMs is null while the turn is still
+        // in flight — the header then shows only the start time, IDE-agent
+        // style, and fills in "→ HH:mm · <dur>" once the turn ends.
+        val createdAtMs: Long = 0L,
+        val finishedAtMs: Long? = null,
+    ) : FlatChatItem() {
         override val key = "header:$messageId"
         override val contentType = "header"
     }
@@ -630,7 +638,15 @@ internal fun buildFlatChatItems(
             .firstOrNull { it.role != "system" }
         val isResumeContinuation = prevNonSystem?.role == "assistant"
         if (!isSystem && !isResumeContinuation) {
-            out.add(dedupe(FlatChatItem.AssistantHeader(message.id)))
+            out.add(
+                dedupe(
+                    FlatChatItem.AssistantHeader(
+                        messageId = message.id,
+                        createdAtMs = message.createdAtMs,
+                        finishedAtMs = message.finishedAtMs,
+                    )
+                )
+            )
         }
 
         val blocks = message.toolBlocks

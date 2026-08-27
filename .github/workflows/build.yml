@@ -96,6 +96,7 @@ jobs:
             --tests 'com.openminis.app.data.CompactQualityTest' \
             --tests 'com.openminis.app.data.TransportErrorClassifierTest' \
             --tests 'com.openminis.app.data.ContextPressureTest' \
+            --tests 'com.openminis.app.data.MessageTimestampTest' \
             --tests 'com.openminis.app.agent.EngineeringDisciplineTest' \
             --tests 'com.openminis.app.ui.chat.ResidentEvictionPolicyTest' \
             --tests 'com.openminis.app.ui.chat.VmCacheLruTest' \

@@ -453,9 +453,20 @@ internal fun UserMessageBubble(
                         }
                     }
                 }
-            }
 
-            // Long-press context menu — anchored to the bubble itself.
+                // [T-msg-timestamps] Send time under the user bubble, IDE-agent
+                // style. Right-aligned by the parent Column (End). Hidden for
+                // queued bubbles — they haven't actually been sent yet, so a
+                // send time would be a lie.
+                if (!isQueued) {
+                    Text(
+                        text = formatWallClock(message.createdAtMs),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = ChatColors.secondaryText,
+                        modifier = Modifier.padding(top = 1.dp, end = 2.dp),
+                    )
+                }
+            }
             // Small positive y-offset so the menu doesn't sit flush against
             // the bubble; the alignEnd path mirrors the offset when it
             // auto-flips above (no room below), so the gap is symmetric in

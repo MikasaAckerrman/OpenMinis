@@ -3462,6 +3462,10 @@ fun ChatScreen(
                                 onDelete = if (isStreaming) null else ({
                                     pendingDeleteMessageId = originalMessageId(item.messageId)
                                 }),
+                                // [T-msg-timestamps] Turn timing forwarded from
+                                // the flat item.
+                                createdAtMs = item.createdAtMs,
+                                finishedAtMs = item.finishedAtMs,
                             )
                             is FlatChatItem.AssistantText -> BoundsTrackedBlock(
                                 messageId = item.messageId,

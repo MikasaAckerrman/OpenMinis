@@ -6685,6 +6685,8 @@ class ChatViewModel(
                     isStreaming = false,
                     isAwaitingModelResponse = false,
                     sourceDbIds = listOf(persisted.id),
+                    // [T-msg-timestamps] Terminal drain of the persisted turn.
+                    finishedAtMs = msg.finishedAtMs ?: System.currentTimeMillis(),
                 )
             } else {
                 msg
@@ -6749,6 +6751,8 @@ class ChatViewModel(
                 error = safeError,
                 isStreaming = false,
                 isAwaitingModelResponse = false,
+                // [T-msg-timestamps] Error is a terminal state too — stamp it.
+                finishedAtMs = msg.finishedAtMs ?: System.currentTimeMillis(),
             )
             _messages.value = msgs
             // [T-error-persist-android] Persist the terminal error onto the
@@ -9756,6 +9760,10 @@ class ChatViewModel(
             isStreaming = false,
             toolBlocks = toolBlocks.toList(),
             isAwaitingModelResponse = isAwaitingModelResponse,
+            // [T-msg-timestamps] Stamp completion once, on the first drain to
+            // a non-streaming state. Preserve an existing value so a late
+            // no-op re-drain can't bump the shown time forward.
+            finishedAtMs = current[idx].finishedAtMs ?: System.currentTimeMillis(),
         )
         _messages.value = updated
         if (_streamingById.value.containsKey(id)) {
@@ -9793,6 +9801,8 @@ class ChatViewModel(
                 isStreaming = false,
                 toolBlocks = delta.toolBlocks,
                 isAwaitingModelResponse = delta.isAwaitingModelResponse,
+                // [T-msg-timestamps] Single-message flush is a terminal drain.
+                finishedAtMs = current[idx].finishedAtMs ?: System.currentTimeMillis(),
             )
             _messages.value = updated
         }
@@ -9820,6 +9830,8 @@ class ChatViewModel(
                 isStreaming = false,
                 toolBlocks = delta.toolBlocks,
                 isAwaitingModelResponse = delta.isAwaitingModelResponse,
+                // [T-msg-timestamps] Batched flush is a terminal drain too.
+                finishedAtMs = current[idx].finishedAtMs ?: System.currentTimeMillis(),
             )
             changed = true
         }
@@ -11813,6 +11825,13 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                 // a non-null "" would render an empty banner. Defends against any
                 // legacy/other-writer "" row.
                 error = entity.errorInfo?.takeIf { it.isNotBlank() },
+                // [T-msg-timestamps] Restore wall-clock times from the row.
+                // created_at is the send/turn-start instant; updated_at is the
+                // last write to the row — for a finished assistant turn that is
+                // effectively its completion time. User rows leave finishedAtMs
+                // null (no "finished" concept for a user message).
+                createdAtMs = entity.createdAt,
+                finishedAtMs = if (entity.role == "assistant") entity.updatedAt else null,
             )
         }.let { messages ->
             // Merge consecutive assistant messages into one:
@@ -11851,6 +11870,11 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                         // to the LAST assistant row of the turn, so the later row
                         // (`msg`) wins; fall back to `prev` if only it carried one.
                         error = msg.error ?: prev.error,
+                        // [T-msg-timestamps] Merged turn spans prev(turn start)
+                        // → msg(last row). Keep the earliest creation and the
+                        // latest completion so the header shows the full turn.
+                        createdAtMs = minOf(prev.createdAtMs, msg.createdAtMs),
+                        finishedAtMs = msg.finishedAtMs ?: prev.finishedAtMs,
                     )
                 } else {
                     merged.add(msg)
