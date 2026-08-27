@@ -9,7 +9,7 @@ class StaleConnectionPolicyTest {
     @Test
     fun `the TTFB watchdog message triggers pre-retry eviction`() {
         // Exact text produced by the providers' stale-connection watchdog.
-        val detail = "no response from server (15s) — check network/proxy"
+        val detail = "no response from server (120s) — check network/proxy"
         assertTrue(StaleConnectionPolicy.isStaleConnection(detail))
         assertTrue(StaleConnectionPolicy.shouldEvictBeforeRetry(detail))
     }

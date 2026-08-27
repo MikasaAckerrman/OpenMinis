@@ -38,7 +38,12 @@ import com.openminis.app.provider.failOnSilentEmptyCompletion
  * header phase (mirrors OpenAIProvider / AnthropicProvider). See those for the
  * stale-pooled-socket rationale.
  */
-private const val GEMINI_STREAM_TTFB_TIMEOUT_MS = 15_000L
+// [T-android-ttfb-relax] Last-resort cap ONLY — see OpenAIProvider for the
+// full rationale. Dead sockets are caught by pingInterval +
+// retryOnConnectionFailure (which don't false-fire on a slow-but-alive
+// server); a wall-clock TTFB at 15s killed legitimate reasoning first-token
+// latency and large agent-history uploads, breaking turns.
+private const val GEMINI_STREAM_TTFB_TIMEOUT_MS = 120_000L
 
 class GeminiProvider(
     private val apiKey: String,
@@ -59,6 +64,9 @@ class GeminiProvider(
         // connection is detected in ~15s instead of hanging the TTFB watchdog.
         // See OpenAIProvider for the full rationale.
         .pingInterval(15, TimeUnit.SECONDS)
+        // [T-android-ttfb-relax] Pin default-true: OkHttp reconnects a stalled
+        // call on a fresh socket when the h2 PING proves the pooled one dead.
+        .retryOnConnectionFailure(true)
         // [T-android-stale-conn-retry-hang] Shared pool — see NetworkMonitor.
         // Network-transition eviction must reach provider connections.
         .connectionPool(com.openminis.app.network.NetworkMonitor.sharedLLMConnectionPool)

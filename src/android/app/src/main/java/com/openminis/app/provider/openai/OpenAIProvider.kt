@@ -149,7 +149,17 @@ class OpenAIProvider private constructor(
          * budget: response HEADERS must arrive within this window. Does NOT
          * bound the SSE body — a flowing stream stays unlimited.
          */
-        private const val STREAM_TTFB_TIMEOUT_MS = 15_000L
+        // [T-android-ttfb-relax] Last-resort cap ONLY. Dead sockets are
+        // detected by pingInterval (h2 PING/PONG) + retryOnConnectionFailure,
+        // which — unlike a wall-clock timer — do NOT false-fire on a slow but
+        // alive server (reasoning models answer PINGs while thinking). A fixed
+        // TTFB budget conflated "dead socket" with "server still thinking /
+        // request still uploading": at 15-30s it killed legitimate reasoning
+        // first-token latency and multi-MB agent-history uploads on mobile,
+        // breaking every turn. 120s only guards the rare transparent-proxy
+        // stall (proxy PONGs but never forwards), capping it at 2min instead
+        // of the 10min readTimeout, without touching real slow-start traffic.
+        private const val STREAM_TTFB_TIMEOUT_MS = 120_000L
 
         /**
          * Factory for OAuth-bearer OpenAI-compatible providers that aren't
@@ -383,6 +393,12 @@ class OpenAIProvider private constructor(
         // reconnects, so a stale socket costs ~15s at worst instead of 30s, and
         // usually nothing because the ping kept it alive.
         .pingInterval(15, TimeUnit.SECONDS)
+        // [T-android-ttfb-relax] Explicit (default is true, pin it): when the
+        // h2 PING above marks a pooled socket dead, OkHttp transparently
+        // reconnects a stalled call on a FRESH socket instead of surfacing an
+        // error. This is the robust dead-socket recovery — it fires only on a
+        // proven-dead connection, never on a slow-but-alive one.
+        .retryOnConnectionFailure(true)
         // [T-android-stale-conn-retry-hang] Shared pool so NetworkMonitor's
         // network-transition eviction reaches THIS client's connections —
         // a per-client pool was never evicted, and a dead h2 tunnel through
