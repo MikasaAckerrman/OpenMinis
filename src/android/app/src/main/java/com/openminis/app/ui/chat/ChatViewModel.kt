@@ -7690,7 +7690,7 @@ class ChatViewModel(
                 runCatching {
                     offloadContextIfNeeded(
                         contextWindow = window,
-                        lastContextTokens = lastContextTokens,
+                        lastContextTokens = _lastTurnContextTokens.value,
                     )
                 }.onFailure {
                     AppLogger.warning(TAG, "[Offload] per-turn pass failed: ${it.message}")
