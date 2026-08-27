@@ -279,12 +279,6 @@ import com.openminis.app.ui.components.MinisTextButton
 internal fun AssistantHeader(
     onRewrite: (() -> Unit)? = null,
     onDelete: (() -> Unit)? = null,
-    // [T-msg-timestamps] Turn timing shown to the right of the name, IDE-agent
-    // style. createdAtMs<=0 means "unknown" (legacy rows) → the time chip is
-    // hidden. While in flight (finishedAtMs==null) only the start "HH:mm"
-    // shows; once the turn ends it becomes "HH:mm · <dur>".
-    createdAtMs: Long = 0L,
-    finishedAtMs: Long? = null,
 ) {
     // [T-soul-md] Identity header = locked ✨ sparkle gradient icon +
     // SOUL.md-driven `name`. The emoji-customization field was removed,
@@ -339,22 +333,6 @@ internal fun AssistantHeader(
             fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.onSurface,
         )
-        // [T-msg-timestamps] Turn timing chip. "HH:mm" at turn start; once the
-        // turn ends it reads "HH:mm · 4s" (start · duration), matching how IDE
-        // agents surface latency. Hidden for legacy rows without a real
-        // timestamp (createdAtMs <= 0).
-        // [T-msg-timestamps] Turn timing chip. "HH:mm" at turn start; once the
-        // turn ends it reads "HH:mm · 4s" (start · duration), matching how IDE
-        // agents surface latency. Hidden for legacy rows without a real
-        // timestamp. Decision extracted to assistantTurnTimingLabel (tested).
-        assistantTurnTimingLabel(createdAtMs, finishedAtMs)?.let { timing ->
-            Spacer(modifier = Modifier.width(6.dp))
-            Text(
-                text = timing,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-            )
-        }
         if (hasActions) {
             DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
                 if (onRewrite != null) {
