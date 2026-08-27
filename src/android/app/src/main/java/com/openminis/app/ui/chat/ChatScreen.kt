@@ -2992,6 +2992,7 @@ fun ChatScreen(
                 fun FlatChatItem.isCompacted(): Boolean = when (this) {
                     is FlatChatItem.UserBubble -> grayedMap[originalMessageId(message.id)] == true
                     is FlatChatItem.AssistantHeader -> grayedMap[originalMessageId(messageId)] == true
+                    is FlatChatItem.AssistantFooter -> grayedMap[originalMessageId(messageId)] == true
                     is FlatChatItem.AssistantText -> grayedMap[originalMessageId(messageId)] == true
                     is FlatChatItem.AssistantMarkdownBlock -> grayedMap[originalMessageId(messageId)] == true
                     is FlatChatItem.AssistantThinking -> grayedMap[originalMessageId(messageId)] == true
@@ -3462,11 +3463,23 @@ fun ChatScreen(
                                 onDelete = if (isStreaming) null else ({
                                     pendingDeleteMessageId = originalMessageId(item.messageId)
                                 }),
-                                // [T-msg-timestamps] Turn timing forwarded from
-                                // the flat item.
-                                createdAtMs = item.createdAtMs,
-                                finishedAtMs = item.finishedAtMs,
                             )
+                            is FlatChatItem.AssistantFooter -> {
+                                // [T-msg-timestamps] Finish stamp under the
+                                // assistant turn: "HH:mm:ss" (turn end) plus
+                                // "· <dur>" when a real live-turn duration is
+                                // known. Left-aligned under the message body,
+                                // muted. Hidden entirely if the label resolves
+                                // to null (unknown finish time).
+                                assistantTurnFinishedLabel(item.createdAtMs, item.finishedAtMs)?.let { label ->
+                                    Text(
+                                        text = label,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                                        modifier = Modifier.padding(start = 24.dp, top = 1.dp, bottom = 2.dp),
+                                    )
+                                }
+                            }
                             is FlatChatItem.AssistantText -> BoundsTrackedBlock(
                                 messageId = item.messageId,
                                 slotKey = "text:${item.block.id}",

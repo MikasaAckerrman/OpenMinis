@@ -306,17 +306,25 @@ internal sealed class FlatChatItem {
         override fun hashCode(): Int = message.hashCode() * 31 + precededByUser.hashCode()
     }
 
-    data class AssistantHeader(
-        val messageId: String,
-        // [T-msg-timestamps] Turn start (placeholder creation) and completion
-        // (stream drain / error). finishedAtMs is null while the turn is still
-        // in flight — the header then shows only the start time, IDE-agent
-        // style, and fills in "→ HH:mm · <dur>" once the turn ends.
-        val createdAtMs: Long = 0L,
-        val finishedAtMs: Long? = null,
-    ) : FlatChatItem() {
+    data class AssistantHeader(val messageId: String) : FlatChatItem() {
         override val key = "header:$messageId"
         override val contentType = "header"
+    }
+
+    /**
+     * [T-msg-timestamps] Finish stamp shown UNDER the assistant turn, IDE-agent
+     * style: when the turn completed, plus its duration when we have a real
+     * live-turn measurement. Emitted only once the turn is finished
+     * (finishedAtMs != null) and only for genuine assistant turns (never system
+     * dividers). createdAtMs is carried for the duration calc.
+     */
+    data class AssistantFooter(
+        val messageId: String,
+        val createdAtMs: Long,
+        val finishedAtMs: Long,
+    ) : FlatChatItem() {
+        override val key = "footer:$messageId"
+        override val contentType = "footer"
     }
 
     /**
@@ -563,6 +571,7 @@ internal fun buildFlatChatItems(
         return when (item) {
             is FlatChatItem.UserBubble -> FlatChatItem.UserBubble(item.message.copy(id = "${item.message.id}#$n"), item.precededByUser)
             is FlatChatItem.AssistantHeader -> item.copy(messageId = "${item.messageId}#$n")
+            is FlatChatItem.AssistantFooter -> item.copy(messageId = "${item.messageId}#$n")
             is FlatChatItem.AssistantText -> FlatChatItem.AssistantText(
                 messageId = "${item.messageId}#$n",
                 block = item.block,
@@ -638,15 +647,7 @@ internal fun buildFlatChatItems(
             .firstOrNull { it.role != "system" }
         val isResumeContinuation = prevNonSystem?.role == "assistant"
         if (!isSystem && !isResumeContinuation) {
-            out.add(
-                dedupe(
-                    FlatChatItem.AssistantHeader(
-                        messageId = message.id,
-                        createdAtMs = message.createdAtMs,
-                        finishedAtMs = message.finishedAtMs,
-                    )
-                )
-            )
+            out.add(dedupe(FlatChatItem.AssistantHeader(message.id)))
         }
 
         val blocks = message.toolBlocks
@@ -801,6 +802,27 @@ internal fun buildFlatChatItems(
         // Inline error banner
         message.error?.let {
             out.add(dedupe(FlatChatItem.AssistantError(message.id, it)))
+        }
+
+        // [T-msg-timestamps] Finish stamp UNDER the assistant turn, IDE-agent
+        // style. Only for a genuine, finished assistant turn: system dividers
+        // (isSystem) never get one, and a still-streaming turn (finishedAtMs
+        // null) shows nothing until it completes. createdAtMs is passed through
+        // so the renderer can append the duration when it's a real live-turn
+        // measurement (see assistantTurnFinishedLabel).
+        if (!isSystem) {
+            val finished = message.finishedAtMs
+            if (finished != null && !message.isStreaming) {
+                out.add(
+                    dedupe(
+                        FlatChatItem.AssistantFooter(
+                            messageId = message.id,
+                            createdAtMs = message.createdAtMs,
+                            finishedAtMs = finished,
+                        )
+                    )
+                )
+            }
         }
     }
     return out

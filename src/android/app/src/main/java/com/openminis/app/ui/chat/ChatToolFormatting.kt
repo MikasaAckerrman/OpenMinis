@@ -50,30 +50,33 @@ internal fun formatStepDuration(seconds: Long, stillRunning: Boolean): String {
     return if (stillRunning) "$base…" else base
 }
 
-// [T-msg-timestamps] Wall-clock "HH:mm" for the message send/finish stamps
-// shown under user bubbles and in the assistant header (IDE-agent style).
-// Device locale drives 12h/24h formatting via the system default. The
-// formatter is cheap to build per call (short-lived) and avoids the shared
-// mutable SimpleDateFormat threading trap.
+// [T-msg-timestamps] Wall-clock "HH:mm:ss" for the message send/finish stamps
+// shown under user bubbles and under the assistant message (IDE-agent style).
+// Seconds included on purpose — turn latency is often sub-minute, so "11:32"
+// hid the very thing the stamp is for. Device locale drives 12h/24h layout via
+// the default; the formatter is cheap to build per call (short-lived) and
+// avoids the shared mutable SimpleDateFormat threading trap.
 internal fun formatWallClock(epochMs: Long): String =
-    java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+    java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
         .format(java.util.Date(epochMs))
 
-// [T-msg-timestamps] Pure decision for the assistant-header timing chip, split
-// out of the composable so the branching is unit-testable. Contract:
-//   createdAtMs <= 0            → null  (legacy/unknown row: hide the chip)
-//   finishedAtMs null/≤created  → "HH:mm"            (in flight, or same-tick)
-//   real positive duration      → "HH:mm · <dur>"    (completed turn)
-// Restored-from-DB rows persist created_at at turn END, so their computed
-// duration is ~0 → they correctly fall back to the bare start time.
-internal fun assistantTurnTimingLabel(createdAtMs: Long, finishedAtMs: Long?): String? {
-    if (createdAtMs <= 0L) return null
-    val start = formatWallClock(createdAtMs)
-    val durSec = if (finishedAtMs != null) (finishedAtMs - createdAtMs) / 1000L else -1L
+// [T-msg-timestamps] Pure decision for the assistant-turn FINISH stamp shown
+// under the message, split out of the composable so the branching is unit-
+// testable. Contract:
+//   finishedAtMs <= 0                 → null  (unknown; hide the stamp)
+//   duration <= 0 (restored / skew)   → "HH:mm:ss"            (finish time only)
+//   real positive live-turn duration  → "HH:mm:ss · <dur>"    (finish · elapsed)
+// The clock half is the FINISH time (when the turn ended), not the start.
+// Restored-from-DB rows have created_at written at turn END, so their computed
+// duration is ~0 → they correctly fall back to the bare finish time.
+internal fun assistantTurnFinishedLabel(createdAtMs: Long, finishedAtMs: Long): String? {
+    if (finishedAtMs <= 0L) return null
+    val finishClock = formatWallClock(finishedAtMs)
+    val durSec = if (createdAtMs > 0L) (finishedAtMs - createdAtMs) / 1000L else -1L
     return if (durSec > 0L) {
-        "$start · ${formatStepDuration(durSec, stillRunning = false)}"
+        "$finishClock · ${formatStepDuration(durSec, stillRunning = false)}"
     } else {
-        start
+        finishClock
     }
 }
 
