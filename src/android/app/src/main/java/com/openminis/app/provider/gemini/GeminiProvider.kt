@@ -17,8 +17,10 @@ import com.openminis.app.provider.safeOptString
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -30,6 +32,13 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.util.concurrent.TimeUnit
 import com.openminis.app.provider.failOnSilentEmptyCompletion
+
+/**
+ * [T-android-stale-conn-proactive] TTFB watchdog bound for the Gemini stream
+ * header phase (mirrors OpenAIProvider / AnthropicProvider). See those for the
+ * stale-pooled-socket rationale.
+ */
+private const val GEMINI_STREAM_TTFB_TIMEOUT_MS = 15_000L
 
 class GeminiProvider(
     private val apiKey: String,
@@ -128,7 +137,37 @@ class GeminiProvider(
             .applyUserAgentOverride(null)
             .build()
 
-        val response = client.newCall(request).execute()
+        val response = run {
+            val call = client.newCall(request)
+            // [T-android-stale-conn-proactive] TTFB watchdog — bounds ONLY the
+            // header phase; see GEMINI_STREAM_TTFB_TIMEOUT_MS.
+            val ttfbTimedOut = java.util.concurrent.atomic.AtomicBoolean(false)
+            val headersArrived = java.util.concurrent.atomic.AtomicBoolean(false)
+            val ttfbWatchdog = launch {
+                delay(GEMINI_STREAM_TTFB_TIMEOUT_MS)
+                if (!headersArrived.get()) {
+                    ttfbTimedOut.set(true)
+                    android.util.Log.w(
+                        "GeminiProvider",
+                        "[T-android-stale-conn-proactive] no response headers after ${GEMINI_STREAM_TTFB_TIMEOUT_MS / 1000}s — cancelling call (stale pooled connection?)",
+                    )
+                    call.cancel()
+                }
+            }
+            try {
+                call.execute()
+            } catch (e: java.io.IOException) {
+                if (ttfbTimedOut.get()) {
+                    throw LLMError.TransientError(
+                        "no response from server (${GEMINI_STREAM_TTFB_TIMEOUT_MS / 1000}s) — check network/proxy",
+                    )
+                }
+                throw e
+            } finally {
+                headersArrived.set(true)
+                ttfbWatchdog.cancel()
+            }
+        }
         if (!response.isSuccessful) {
             val errorBody = response.body?.string() ?: ""
             response.close()

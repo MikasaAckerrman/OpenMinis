@@ -7813,6 +7813,20 @@ class ChatViewModel(
                     // Non-Anthropic providers ignore it (cast fails silently).
                     (currentProvider as? com.openminis.app.provider.anthropic.AnthropicProvider)
                         ?.enhancedCache = _enhancedCacheEnabled.value
+                    // [T-android-stale-conn-proactive] Pre-flight defence
+                    // against writing into a NAT/proxy-reaped pooled socket.
+                    // If the shared LLM pool has sat idle past the stale
+                    // threshold (first turn after a pause / after compaction),
+                    // evict it so this attempt dials a FRESH socket rather than
+                    // hanging until the TTFB watchdog fires. Back-to-back
+                    // agent-loop turns stay under the threshold and reuse the
+                    // warm socket, so the hot path is untouched.
+                    if (com.openminis.app.network.NetworkMonitor.evictLLMConnectionsIfIdle()) {
+                        AppLogger.info(
+                            TAG,
+                            "[T-android-stale-conn-proactive] evicted idle LLM pool before request (stale-idle guard)",
+                        )
+                    }
                     // Route through effectiveAgentHistory() so a populated
                     // [_compactSummary] is prepended as a `<context-summary>`
                     // user message. Falls through to the raw agentHistory when
@@ -7830,6 +7844,11 @@ class ChatViewModel(
                         tools = agentTools,
                         thinkingLevel = if (currentModelSupportsReasoning) _thinkingLevel.value else ThinkingLevel.OFF,
                     ).collect { chunk ->
+                // [T-android-stale-conn-proactive] Any byte from the provider
+                // proves the socket is live — stamp it so the next turn's
+                // pre-flight idle check (evictLLMConnectionsIfIdle) reuses this
+                // warm socket instead of needlessly dialing fresh.
+                com.openminis.app.network.NetworkMonitor.markLLMActivity()
                 when (chunk) {
                     is LLMStreamChunk.ThinkingDelta -> {
                         turnThinking.append(chunk.text)

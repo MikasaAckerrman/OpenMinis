@@ -36,4 +36,26 @@ object StaleConnectionPolicy {
      */
     fun shouldEvictBeforeRetry(errorDetail: String?): Boolean =
         isStaleConnection(errorDetail)
+
+    /**
+     * Idle window (ms) past which a pooled LLM socket is treated as
+     * potentially reaped by a NAT/proxy. Mirrors
+     * NetworkMonitor.STALE_IDLE_THRESHOLD_MS — kept here as the single source
+     * of truth so the pre-flight decision is unit-testable without Android
+     * types. Below the shortest realistic NAT idle-timeout (cellular NAT often
+     * reaps at 30-60s), above the back-to-back agent-loop turn gap so warm
+     * sockets are still reused.
+     */
+    const val STALE_IDLE_THRESHOLD_MS: Long = 20_000L
+
+    /**
+     * Pure pre-flight decision: given the idle duration since the last
+     * observed LLM byte, should the pool be evicted BEFORE the next request?
+     * [idleMs] < 0 or an unknown-activity sentinel (caller passes < 0) means
+     * "never observed activity" → don't evict (nothing pooled to be stale).
+     */
+    fun shouldEvictBeforeRequest(
+        idleMs: Long,
+        thresholdMs: Long = STALE_IDLE_THRESHOLD_MS,
+    ): Boolean = idleMs >= 0 && idleMs >= thresholdMs
 }

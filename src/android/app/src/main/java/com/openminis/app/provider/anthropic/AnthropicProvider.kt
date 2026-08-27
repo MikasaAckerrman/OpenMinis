@@ -18,8 +18,10 @@ import com.openminis.app.provider.safeOptString
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -155,7 +157,37 @@ class AnthropicProvider(
             headerMap[name] = request.headers[name] ?: ""
         }
 
-        val response = client.newCall(request).execute()
+        val response = run {
+            val call = client.newCall(request)
+            // [T-android-stale-conn-proactive] TTFB watchdog — see companion
+            // STREAM_TTFB_TIMEOUT_MS. Bounds ONLY the header phase.
+            val ttfbTimedOut = java.util.concurrent.atomic.AtomicBoolean(false)
+            val headersArrived = java.util.concurrent.atomic.AtomicBoolean(false)
+            val ttfbWatchdog = launch {
+                delay(STREAM_TTFB_TIMEOUT_MS)
+                if (!headersArrived.get()) {
+                    ttfbTimedOut.set(true)
+                    android.util.Log.w(
+                        "AnthropicProvider",
+                        "[T-android-stale-conn-proactive] no response headers after ${STREAM_TTFB_TIMEOUT_MS / 1000}s — cancelling call (stale pooled connection?)",
+                    )
+                    call.cancel()
+                }
+            }
+            try {
+                call.execute()
+            } catch (e: java.io.IOException) {
+                if (ttfbTimedOut.get()) {
+                    throw LLMError.TransientError(
+                        "no response from server (${STREAM_TTFB_TIMEOUT_MS / 1000}s) — check network/proxy",
+                    )
+                }
+                throw e
+            } finally {
+                headersArrived.set(true)
+                ttfbWatchdog.cancel()
+            }
+        }
         val durationMs = System.currentTimeMillis() - startTime
 
         if (!response.isSuccessful) {
@@ -792,6 +824,19 @@ class AnthropicProvider(
     }
 
     companion object {
+        /**
+         * [T-android-stale-conn-proactive] Time-to-first-byte watchdog bound
+         * for the streaming header phase (mirrors OpenAIProvider). A request
+         * written into a NAT/proxy-reaped pooled socket yields no headers and
+         * no error until the 10-minute read timeout, so the UI hangs on
+         * "thinking" forever. If headers don't arrive within this window, the
+         * call is cancelled and surfaced as a retryable TransientError with
+         * the shared stale-connection marker, so the retry path evicts the
+         * pool and dials fresh. Once headers arrive the watchdog is cancelled
+         * and a flowing SSE stream has no total-duration limit.
+         */
+        private const val STREAM_TTFB_TIMEOUT_MS = 15_000L
+
         /**
          * [T-request-byte-budget] Trailing user-text turns kept verbatim by the
          * provider-boundary byte gate — matches ChatViewModel's
