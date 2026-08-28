@@ -112,6 +112,39 @@ fun returnKeySendsMessage(context: Context): Boolean =
 fun keepScreenAwakeEnabled(context: Context): Boolean =
     getAppearancePrefs(context).getBoolean(KEY_KEEP_SCREEN_AWAKE, false)
 
+/**
+ * [T-android-screen-dim] Idle delay, in seconds, before the black dim overlay
+ * covers the screen while a task runs. 0 = disabled (never dim).
+ *
+ * Why this exists: keeping the screen ON is the only reliable way to stop the
+ * radio parking (Doze) mid-task on aggressive OEM ROMs, but a fully lit AMOLED
+ * panel costs real battery and risks burn-in over a long task. Painting pure
+ * black on AMOLED switches those pixels off, so the window stays technically
+ * "on" (link stays up) while drawing almost no power. Requires
+ * [KEY_KEEP_SCREEN_AWAKE]; on its own it would just be a black screen that the
+ * system dims and sleeps anyway.
+ */
+const val KEY_SCREEN_DIM_DELAY_SEC = "screenDimAfterSeconds" // Int seconds, 0 = off
+
+/** Selectable idle delays; 0 = off. Kept short-to-long for a single-row picker. */
+val SCREEN_DIM_DELAY_OPTIONS_SEC = intArrayOf(0, 30, 60, 120, 300, 600)
+
+/** Idle seconds before dimming, or 0 when disabled. */
+fun screenDimDelaySeconds(context: Context): Int =
+    getAppearancePrefs(context).getInt(KEY_SCREEN_DIM_DELAY_SEC, 0)
+
+/**
+ * Localized label for a dim delay option. Seconds below a minute read as
+ * seconds; the rest read as whole minutes, since every option above 30s is an
+ * exact multiple of 60.
+ */
+@Composable
+private fun screenDimDelayLabel(seconds: Int): String = when {
+    seconds <= 0 -> stringResource(R.string.appearance_screen_dim_off)
+    seconds < 60 -> stringResource(R.string.appearance_screen_dim_after_seconds, seconds)
+    else -> stringResource(R.string.appearance_screen_dim_after_minutes, seconds / 60)
+}
+
 /** Default ON — pill shows up on scroll for everyone unless explicitly disabled. */
 fun showChatTitleEnabled(context: Context): Boolean =
     getAppearancePrefs(context).getBoolean(KEY_SHOW_CHAT_TITLE, true)
@@ -169,6 +202,7 @@ fun AppearanceScreen(
     var launchSession by remember { mutableIntStateOf(prefs.getInt(KEY_LAUNCH_SESSION, 0)) }
     var returnKeyBehavior by remember { mutableIntStateOf(prefs.getInt(KEY_RETURN_KEY_BEHAVIOR, 0)) }
     var keepScreenAwake by remember { mutableStateOf(prefs.getBoolean(KEY_KEEP_SCREEN_AWAKE, false)) }
+    var screenDimDelay by remember { mutableStateOf(prefs.getInt(KEY_SCREEN_DIM_DELAY_SEC, 0)) }
     var toolPreview by remember { mutableStateOf(prefs.getBoolean(KEY_TOOL_PREVIEW, true)) }
     var autoFocusAfterReply by remember { mutableStateOf(prefs.getBoolean(KEY_AUTO_FOCUS_AFTER_REPLY, true)) }
     var autoExpandThinking by remember { mutableStateOf(prefs.getBoolean(KEY_AUTO_EXPAND_THINKING, true)) }
@@ -319,8 +353,43 @@ fun AppearanceScreen(
                     keepScreenAwake = it
                     prefs.edit().putBoolean(KEY_KEEP_SCREEN_AWAKE, it).apply()
                 },
-                showDivider = false,
+                showDivider = keepScreenAwake,
             )
+
+            // [T-android-screen-dim] Idle black-out, nested under Keep Screen
+            // Awake because it is meaningless without it: the point is to keep
+            // the window ON (so the radio can't park mid-task) while drawing
+            // almost nothing, which only works on AMOLED because pure black
+            // pixels are physically off. Rows are hidden when the parent
+            // toggle is off so the section can't imply it works standalone.
+            if (keepScreenAwake) {
+                SCREEN_DIM_DELAY_OPTIONS_SEC.forEachIndexed { idx, seconds ->
+                    SettingsChoiceRow(
+                        title = screenDimDelayLabel(seconds),
+                        selected = screenDimDelay == seconds,
+                        onSelect = {
+                            screenDimDelay = seconds
+                            prefs.edit().putInt(KEY_SCREEN_DIM_DELAY_SEC, seconds).apply()
+                        },
+                        leading = {
+                            if (idx == 0) {
+                                androidx.compose.material3.Icon(
+                                    Icons.Outlined.Visibility,
+                                    contentDescription = null,
+                                    tint = tileTeal,
+                                )
+                            } else {
+                                androidx.compose.material3.Icon(
+                                    Icons.Outlined.ScreenLockPortrait,
+                                    contentDescription = null,
+                                    tint = tilePurple,
+                                )
+                            }
+                        },
+                        showDivider = idx < SCREEN_DIM_DELAY_OPTIONS_SEC.size - 1,
+                    )
+                }
+            }
         }
 
         // -- Tool Status Bar --

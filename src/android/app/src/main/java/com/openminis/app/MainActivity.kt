@@ -56,6 +56,19 @@ class MainActivity : ComponentActivity() {
     private var navController: NavHostController? = null
 
     /**
+     * [T-android-screen-dim] Feeds the idle timer behind the black dim overlay.
+     *
+     * Using the Activity callback (rather than a Compose-level pointer filter)
+     * means every interaction counts — taps, scrolls, keyboard, system-level
+     * input — and nothing has to be intercepted on the way to the UI, so no
+     * gesture is ever swallowed while the app is visible.
+     */
+    override fun onUserInteraction() {
+        super.onUserInteraction()
+        com.openminis.app.ui.ScreenInteractionTracker.touch()
+    }
+
+    /**
      * T166: id of the chat the user is currently inside, mirrored from
      * the nav back-stack so [onSaveInstanceState] can persist it across
      * process death. Restored value is fed into [AppNavigation] as the
@@ -430,6 +443,12 @@ class MainActivity : ComponentActivity() {
                     navController = navController,
                     initialDeepLink = launchDeepLink,
                 )
+
+                // [T-android-screen-dim] Root-level black idle overlay. Sits
+                // above every screen so it can cover the whole UI; inert unless
+                // Appearance → Keep Screen Awake is on, a dim delay is set, and
+                // a task is running.
+                com.openminis.app.ui.ScreenDimOverlay()
 
                 // T-config: root-level minis-config confirm dialog.
                 // Bound to ConfigConfirmationGate.pending — the gate

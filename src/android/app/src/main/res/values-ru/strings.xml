@@ -437,6 +437,9 @@
     <string name="appearance_section_keep_awake">Не гасить экран</string>
     <string name="appearance_keep_awake_footer">Предотвращать переход экрана в спящий режим, пока любая сессия выполняет задачу. Может увеличить расход батареи.</string>
     <string name="appearance_keep_awake_title">Не гасить экран</string>
+    <string name="appearance_screen_dim_off">Не затемнять</string>
+    <string name="appearance_screen_dim_after_seconds">Затемнить через %1$d сек</string>
+    <string name="appearance_screen_dim_after_minutes">Затемнить через %1$d мин</string>
     <string name="appearance_section_chat_title">Название чата</string>
     <string name="appearance_show_chat_title">Показывать название чата</string>
     <string name="appearance_show_chat_title_subtitle">Показывать закреплённую плашку с названием при прокрутке</string>

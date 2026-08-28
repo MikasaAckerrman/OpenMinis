@@ -587,6 +587,10 @@
     <string name="appearance_section_keep_awake">Keep Screen Awake</string>
     <string name="appearance_keep_awake_footer">Prevent the screen from sleeping while any session is running a task. May increase battery drain.</string>
     <string name="appearance_keep_awake_title">Keep Screen Awake</string>
+    <!-- [T-android-screen-dim] Idle black-out under Keep Screen Awake -->
+    <string name="appearance_screen_dim_off">Don\'t black out</string>
+    <string name="appearance_screen_dim_after_seconds">Black out after %1$d sec</string>
+    <string name="appearance_screen_dim_after_minutes">Black out after %1$d min</string>
     <string name="appearance_section_chat_title">Chat Title</string>
     <string name="appearance_show_chat_title">Show chat title</string>
     <string name="appearance_show_chat_title_subtitle">Show a sticky title pill while scrolling</string>
