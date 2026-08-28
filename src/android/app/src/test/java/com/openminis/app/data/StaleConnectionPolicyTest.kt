@@ -15,9 +15,21 @@ class StaleConnectionPolicyTest {
     }
 
     @Test
+    fun `connection-level faults trigger pre-retry eviction`() {
+        // The socket itself is suspect — force a fresh dial before retrying.
+        assertTrue(StaleConnectionPolicy.isConnectionFault("Network error: stream was reset: INTERNAL_ERROR"))
+        assertTrue(StaleConnectionPolicy.shouldEvictBeforeRetry("Network error: stream was reset: INTERNAL_ERROR"))
+        assertTrue(StaleConnectionPolicy.shouldEvictBeforeRetry("Network error: unexpected end of stream"))
+        assertTrue(StaleConnectionPolicy.shouldEvictBeforeRetry("Network error: connection reset by peer"))
+        assertTrue(StaleConnectionPolicy.shouldEvictBeforeRetry("Network error: stream was reset: NO_ERROR (GOAWAY)"))
+    }
+
+    @Test
     fun `ordinary transient errors do not evict live sockets`() {
+        // A real HTTP error delivered by a healthy socket — keep the pool.
         assertFalse(StaleConnectionPolicy.shouldEvictBeforeRetry("[503] upstream unavailable"))
-        assertFalse(StaleConnectionPolicy.shouldEvictBeforeRetry("connection reset by peer"))
+        assertFalse(StaleConnectionPolicy.shouldEvictBeforeRetry("[429] rate limited"))
+        assertFalse(StaleConnectionPolicy.shouldEvictBeforeRetry("timeout waiting for tokens"))
         assertFalse(StaleConnectionPolicy.shouldEvictBeforeRetry(null))
     }
 
