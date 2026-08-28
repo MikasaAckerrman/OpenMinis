@@ -13,6 +13,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 
@@ -148,10 +149,62 @@ class NetworkMonitor {
         fun evictLLMConnectionsNow() {
             sharedLLMConnectionPool.evictAll()
         }
+
+        /**
+         * [T-android-dns-await] Process-wide connectivity mirror.
+         *
+         * Why a companion-level flow when the instance already exposes
+         * [status]: the retry path in ChatViewModel has no handle on the
+         * MinisApp-owned NetworkMonitor instance, and threading one through
+         * would mean touching every construction site. The instance publishes
+         * every transition here, so any caller can await connectivity without
+         * new plumbing. There is exactly one monitor per process, so a single
+         * static mirror cannot disagree with itself.
+         *
+         * Defaults to `true` deliberately: if the monitor was never started
+         * (unit tests, early startup), awaiting must not block a request that
+         * would otherwise have worked.
+         */
+        private val _connectivity = MutableStateFlow(true)
+
+        /** Publishes connectivity transitions; called only by the instance. */
+        internal fun publishConnectivity(connected: Boolean) {
+            _connectivity.value = connected
+        }
+
+        /**
+         * Suspends until the device reports usable connectivity, or
+         * [timeoutMs] elapses.
+         *
+         * Used before retrying a name-resolution failure: a DNS lookup that
+         * failed because Doze had parked the radio will fail again instantly
+         * on a fixed 1s/2s/4s ladder, burning every attempt while the link is
+         * still down. Waiting for the link to actually return converts that
+         * into a successful retry.
+         *
+         * @return true if connectivity is available (immediately or after
+         *   waiting), false if [timeoutMs] elapsed while still offline.
+         */
+        suspend fun awaitConnectivity(timeoutMs: Long): Boolean =
+            kotlinx.coroutines.withTimeoutOrNull(timeoutMs) {
+                _connectivity.first { it }
+                true
+            } ?: false
     }
 
     private val _status = MutableStateFlow(NetworkStatus.DISCONNECTED)
     val status: StateFlow<NetworkStatus> = _status.asStateFlow()
+
+    /**
+     * Single write path for [_status] so the process-wide connectivity mirror
+     * ([publishConnectivity], awaited by [awaitConnectivity]) can never drift
+     * out of sync with the instance flow. Every transition — initial state and
+     * all three NetworkCallback edges — goes through here.
+     */
+    private fun setStatus(newStatus: NetworkStatus) {
+        _status.value = newStatus
+        publishConnectivity(newStatus == NetworkStatus.CONNECTED)
+    }
 
     private var connectivityManager: ConnectivityManager? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
@@ -191,6 +244,7 @@ class NetworkMonitor {
         } else {
             NetworkStatus.DISCONNECTED
         }
+        publishConnectivity(_status.value == NetworkStatus.CONNECTED)
         Log.d(TAG, "Initial network status: ${_status.value}")
 
         // Mirror iOS NetworkMonitor.swift:23-26 — do an immediate DNS write so
@@ -206,7 +260,7 @@ class NetworkMonitor {
 
             override fun onAvailable(network: Network) {
                 val previousStatus = _status.value
-                _status.value = NetworkStatus.CONNECTED
+                setStatus(NetworkStatus.CONNECTED)
                 if (previousStatus == NetworkStatus.DISCONNECTED) {
                     Log.d(TAG, "Network transition: DISCONNECTED -> CONNECTED")
                     evictConnectionPool()
@@ -218,7 +272,7 @@ class NetworkMonitor {
             }
 
             override fun onLost(network: Network) {
-                _status.value = NetworkStatus.DISCONNECTED
+                setStatus(NetworkStatus.DISCONNECTED)
                 Log.d(TAG, "Network transition: CONNECTED -> DISCONNECTED")
                 evictConnectionPool()
                 // Rewrite resolv.conf even when disconnected so it falls back
@@ -237,7 +291,7 @@ class NetworkMonitor {
                 val newStatus = if (hasInternet) NetworkStatus.CONNECTED else NetworkStatus.DISCONNECTED
                 if (newStatus != _status.value) {
                     Log.d(TAG, "Network capabilities changed: ${_status.value} -> $newStatus")
-                    _status.value = newStatus
+                    setStatus(newStatus)
                     evictConnectionPool()
                     refreshSandboxDns("onCapabilitiesChanged")
                 }

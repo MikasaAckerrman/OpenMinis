@@ -289,6 +289,18 @@ class ChatViewModel(
         private val AUTO_RETRY_DELAYS_SEC = intArrayOf(1, 2, 4)
 
         /**
+         * [T-android-dns-await] How long to wait for connectivity to return
+         * before retrying a name-resolution failure.
+         *
+         * 20s covers the realistic case this exists for — the radio waking from
+         * Doze, or a cellular/Wi-Fi handover — while still bounding a genuinely
+         * offline device so the user gets an answer instead of a hang. It is
+         * spent only on resolve failures, so ordinary transient errors keep
+         * their fast 1/2/4s ladder.
+         */
+        private const val DNS_RETRY_NETWORK_WAIT_MS = 20_000L
+
+        /**
          * Max times a 429 is retried on the SAME provider (Retry-After aware)
          * once the model group has no remaining fallback to jump to. Bounded so
          * a persistently rate-limited key can't wedge a turn forever — after
@@ -8275,6 +8287,43 @@ class ChatViewModel(
                         // Clear inline error so the retry attempt can start cleanly.
                         withContext(Dispatchers.Main) {
                             clearInlineError()
+                        }
+                        // [T-android-dns-await] A name-resolution failure
+                        // ("Unable to resolve host ...") means the request never
+                        // left the device: on Android this is overwhelmingly a
+                        // radio that Doze had parked or a link mid-handover, not
+                        // a dead endpoint. Retrying on the fixed 1s/2s/4s ladder
+                        // burns every attempt while the link is still down and
+                        // then reports failure — even though the request would
+                        // have succeeded a few seconds later. So for THIS error
+                        // class only, wait for connectivity to actually return
+                        // before retrying. Bounded so a genuinely offline device
+                        // still fails in reasonable time instead of hanging.
+                        if (com.openminis.app.data.DnsFailurePolicy
+                                .isNameResolutionFailure(actual.message)
+                        ) {
+                            withContext(Dispatchers.Main) {
+                                setTransientInlineError(
+                                    "$errDesc — waiting for network…",
+                                )
+                            }
+                            val online = com.openminis.app.network.NetworkMonitor
+                                .awaitConnectivity(DNS_RETRY_NETWORK_WAIT_MS)
+                            AppLogger.warning(
+                                TAG,
+                                "[T-android-dns-await] resolve failure; " +
+                                    (
+                                        if (online) {
+                                            "network available, retrying"
+                                        } else {
+                                            "still offline after " +
+                                                "${DNS_RETRY_NETWORK_WAIT_MS}ms, retrying anyway"
+                                        }
+                                        ),
+                            )
+                            withContext(Dispatchers.Main) {
+                                clearInlineError()
+                            }
                         }
                         // [T-android-stale-conn-retry-hang] If this was the TTFB
                         // stale-connection hang, drop the dead pooled sockets
