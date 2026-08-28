@@ -118,6 +118,7 @@ jobs:
             --tests 'com.openminis.app.data.CompactionLaunchPolicyTest' \
             --tests 'com.openminis.app.data.ContextUsageAttributionTest' \
             --tests 'com.openminis.app.data.StaleConnectionPolicyTest' \
+            --tests 'com.openminis.app.data.HostActivityTrackerTest' \
             --tests 'com.openminis.app.data.PostAnchorPruneTest' \
             --tests 'com.openminis.app.data.RequestBudgetTest' \
             --tests 'com.openminis.app.data.SendGatePolicyTest' \

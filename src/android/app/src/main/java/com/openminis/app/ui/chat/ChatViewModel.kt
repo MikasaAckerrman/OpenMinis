@@ -7821,10 +7821,13 @@ class ChatViewModel(
                     // hanging until the TTFB watchdog fires. Back-to-back
                     // agent-loop turns stay under the threshold and reuse the
                     // warm socket, so the hot path is untouched.
-                    if (com.openminis.app.network.NetworkMonitor.evictLLMConnectionsIfIdle()) {
+                    if (com.openminis.app.network.NetworkMonitor
+                            .evictLLMConnectionsIfIdle(currentProvider.throttleKey)
+                    ) {
                         AppLogger.info(
                             TAG,
-                            "[T-android-stale-conn-proactive] evicted idle LLM pool before request (stale-idle guard)",
+                            "[T-android-stale-conn-proactive] evicted idle LLM pool before request " +
+                                "(stale-idle guard, host=${currentProvider.throttleKey})",
                         )
                     }
                     // Route through effectiveAgentHistory() so a populated
@@ -7848,7 +7851,8 @@ class ChatViewModel(
                 // proves the socket is live — stamp it so the next turn's
                 // pre-flight idle check (evictLLMConnectionsIfIdle) reuses this
                 // warm socket instead of needlessly dialing fresh.
-                com.openminis.app.network.NetworkMonitor.markLLMActivity()
+                com.openminis.app.network.NetworkMonitor
+                    .markLLMActivity(currentProvider.throttleKey)
                 when (chunk) {
                     is LLMStreamChunk.ThinkingDelta -> {
                         turnThinking.append(chunk.text)

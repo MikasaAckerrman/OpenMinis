@@ -43,59 +43,86 @@ class NetworkMonitor {
          * handing the dead h2 tunnel to every retry — requests wrote into it
          * and hung forever waiting for response headers.
          */
-        // [T-android-stale-conn-proactive] keepAlive lowered 5min → 60s.
+        // [T-android-stale-conn-per-host] keepAlive lowered 5min → 60s → 30s.
         // A local VPN/proxy AND a bare cellular/WiFi NAT both silently reap
         // idle TCP mappings (cellular NAT idle-timeout is often 30-60s), and
         // the drop is half-open: no RST arrives, so the pooled socket looks
         // alive and the next request writes into the void. A shorter keepAlive
         // means WE close the idle socket (clean FIN → next request dials a
-        // fresh one) before the NAT can strand it. This alone is not a
-        // guarantee — any fixed keepAlive is a bet against an unknown NAT
-        // timeout — so it is a backstop for [evictLLMConnectionsIfIdle].
+        // fresh one) before the NAT can strand it.
+        //
+        // 30s is deliberately AT/BELOW the shortest realistic NAT idle window
+        // and above [StaleConnectionPolicy.STALE_IDLE_THRESHOLD_MS] (20s), so
+        // the two defences layer instead of fighting: the per-host pre-flight
+        // check ([evictLLMConnectionsIfIdle]) handles the 20-30s band using
+        // observed activity, and this keepAlive is the bookkeeping-independent
+        // backstop that bounds staleness even when no stamp exists (cold
+        // start, host-map eviction). Back-to-back agent-loop turns are seconds
+        // apart, so the warm socket is still reused on the hot path.
         val sharedLLMConnectionPool = okhttp3.ConnectionPool(
-            5, 60, java.util.concurrent.TimeUnit.SECONDS,
+            5, 30, java.util.concurrent.TimeUnit.SECONDS,
         )
 
         /**
-         * Monotonic timestamp (elapsedRealtime) of the last observed LLM
-         * network activity — set whenever a stream chunk / response byte
-         * arrives (see ChatViewModel). Used by [evictLLMConnectionsIfIdle] to
-         * decide, BEFORE a request, whether the pooled socket has sat idle
-         * long enough that a NAT/proxy may have silently reaped it.
+         * [T-android-stale-conn-per-host] Per-host last-activity bookkeeping
+         * for the pre-flight stale-socket check.
+         *
+         * Why per-host and not one global stamp: pooled TCP sockets are keyed
+         * by host, so staleness is a per-host property. With several sessions
+         * running concurrently against DIFFERENT providers, a single global
+         * stamp let a busy session's traffic mask an idle one — the idle
+         * session's own socket had been reaped by the NAT, but the global stamp
+         * looked fresh, the pre-flight check skipped eviction, and the request
+         * was written into the corpse and hung until the TTFB watchdog fired.
+         *
+         * Keyed by the provider's `throttleKey`, which is already the endpoint
+         * host (LlmDispatchGate.keyForUrl(basePath)) — reused deliberately so
+         * there is ONE host-identity notion in the codebase, not two.
+         *
+         * Logic lives in [com.openminis.app.data.HostActivityTracker] (pure,
+         * unit-tested); this holds only the production clock binding.
          */
-        @Volatile
-        private var lastLLMActivityAtMs: Long = 0L
+        private val hostActivity = com.openminis.app.data.HostActivityTracker(
+            nowMs = { android.os.SystemClock.elapsedRealtime() },
+        )
 
-        /** Record that LLM network activity just happened (any-thread safe). */
-        fun markLLMActivity() {
-            lastLLMActivityAtMs = android.os.SystemClock.elapsedRealtime()
+        /**
+         * Record that LLM network activity just happened on [hostKey]
+         * (any-thread safe). Called on every stream chunk.
+         */
+        fun markLLMActivity(hostKey: String) {
+            hostActivity.mark(hostKey)
         }
 
         /**
-         * Proactive stale-socket defence. If more than [idleThresholdMs] has
-         * elapsed since the last observed LLM byte, evict the pool so the next
-         * request dials a FRESH socket instead of writing into a possibly
-         * half-open corpse and hanging until the TTFB watchdog fires.
+         * Proactive stale-socket defence, PER HOST. If more than
+         * [idleThresholdMs] has elapsed since the last observed byte from
+         * [hostKey], evict the pool so the next request to that host dials a
+         * FRESH socket instead of writing into a possibly half-open corpse and
+         * hanging until the TTFB watchdog fires.
          *
          * This is the load-bearing fix: it makes the stale pooled socket
          * structurally impossible regardless of the NAT's idle timeout, while
          * still reusing warm sockets on the hot path (agent-loop turns fire
          * back-to-back within the threshold and skip eviction). Especially
-         * covers the FIRST post-compaction / post-pause turn.
+         * covers the FIRST post-compaction / post-pause turn, and — since the
+         * idle window is now per-host — the case where a BUSY session on
+         * another provider used to mask an idle session's dead socket.
          *
+         * Eviction granularity note: OkHttp's ConnectionPool exposes no
+         * per-host eviction, so we evict the whole idle set. That is safe and
+         * cheap — `evictAll()` closes only connections with no active calls,
+         * so a concurrently streaming session is never interrupted; other
+         * hosts merely re-dial on their next turn.
+         *
+         * @param hostKey provider endpoint host (see [markLLMActivity]).
          * @return true if the pool was evicted.
          */
         fun evictLLMConnectionsIfIdle(
+            hostKey: String,
             idleThresholdMs: Long = com.openminis.app.data.StaleConnectionPolicy.STALE_IDLE_THRESHOLD_MS,
         ): Boolean {
-            val last = lastLLMActivityAtMs
-            if (last == 0L) return false
-            val idleMs = android.os.SystemClock.elapsedRealtime() - last
-            if (!com.openminis.app.data.StaleConnectionPolicy
-                    .shouldEvictBeforeRequest(idleMs, idleThresholdMs)
-            ) {
-                return false
-            }
+            if (!hostActivity.shouldEvictAndClear(hostKey, idleThresholdMs)) return false
             sharedLLMConnectionPool.evictAll()
             return true
         }
