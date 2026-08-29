@@ -113,24 +113,15 @@ class ChatRepository(internal val dao: ChatDao) {
         val runId = session?.agentRunId
         if (session?.isAgentShowcase == 1 && runId != null) {
             for (worker in dao.listAgentRunSessions(runId)) {
-                // [T-mutation-journal] Journal each wipe: an explicit session
-                // delete is legitimate, but it must be distinguishable after the
-                // fact from rows vanishing on their own.
-                com.openminis.app.data.MutationJournal.recordWipe(
-                    sessionId = worker.id,
-                    op = "deleteSession-worker",
-                    totalRows = dao.messageCountForSession(worker.id),
-                )
-                dao.deleteMessages(worker.id)
+                // [T-archive-every-delete] Archive before wiping. The archive is
+                // NOT a FK child of `sessions`, so these copies survive the
+                // session row going away — which is exactly what makes an
+                // accidental delete recoverable.
+                archiveAndDeleteAllMessages(worker.id, "deleteSession-worker")
                 dao.deleteSession(worker.id)
             }
         }
-        com.openminis.app.data.MutationJournal.recordWipe(
-            sessionId = id,
-            op = "deleteSession",
-            totalRows = dao.messageCountForSession(id),
-        )
-        dao.deleteMessages(id)
+        archiveAndDeleteAllMessages(id, "deleteSession")
         dao.deleteSession(id)
     }
 
@@ -207,30 +198,65 @@ class ChatRepository(internal val dao: ChatDao) {
         limit: Int,
     ): List<MessageEntity> {
         val result = ArrayList<MessageEntity>(limit)
+        var unreadable = 0
         for (i in 0 until limit) {
             val row = try {
                 dao.loadMessagesPage(sessionId, baseOffset + i, 1).firstOrNull()
             } catch (e: SQLiteBlobTooBigException) {
+                unreadable++
                 null
             } catch (e: IllegalStateException) {
-                if (e.message?.contains("CursorWindow", ignoreCase = true) == true) null else throw e
+                if (e.message?.contains("CursorWindow", ignoreCase = true) == true) {
+                    unreadable++
+                    null
+                } else throw e
             } ?: continue
             result.add(row)
+        }
+        // [T-unreadable-row-visibility] A row that exists on disk but cannot be
+        // materialised was previously skipped in COMPLETE silence: the user saw
+        // a message missing from the transcript, and nothing anywhere said why.
+        // That is the same class of failure as the history loss — data present,
+        // no evidence. It is not a deletion, so it does not belong in the
+        // DELETE/WIPE vocabulary; REWRITE with an explicit marker records it as
+        // "this row was dropped from a read, not from the DB".
+        if (unreadable > 0) {
+            android.util.Log.e(
+                "ChatRepository",
+                "[T-unreadable-row-visibility] $unreadable row(s) at offset $baseOffset " +
+                    "in session ${sessionId.take(8)} could not be read (oversize blob) — " +
+                    "they are STILL on disk but absent from this load",
+            )
+            com.openminis.app.data.MutationJournal.recordRewrite(
+                sessionId = sessionId,
+                op = "unreadable-rows",
+                messageId = "offset$baseOffset",
+                oldLength = limit,
+                newLength = limit - unreadable,
+            )
         }
         return result
     }
 
     /**
-     * Raw tail truncation with NO archive. Kept for parity only — every
-     * in-app truncation must use [archiveAndDeleteMessagesAfter] so the rows
-     * stay recoverable and pass the chokepoint guard.
+     * [T-archive-every-delete] REMOVED: the raw, unarchived, unguarded tail
+     * truncation. It had no callers, but it sat on the repository as a
+     * ready-made entry point for the next incident — and "deprecated" only
+     * warns, it does not prevent. The single supported truncation is
+     * [archiveAndDeleteMessagesAfter], which archives and passes the chokepoint.
+     *
+     * Deliberately left as a compile error rather than deleted silently, so a
+     * future caller reaching for the old name is told why.
      */
     @Deprecated(
-        "Destructive: no archive, no chokepoint check. Use archiveAndDeleteMessagesAfter.",
+        "Removed: destructive, no archive, no chokepoint. Use archiveAndDeleteMessagesAfter.",
         ReplaceWith("archiveAndDeleteMessagesAfter(sessionId, keepCount, reason)"),
+        level = DeprecationLevel.ERROR,
     )
-    suspend fun deleteMessagesAfter(sessionId: String, keepCount: Int) =
-        dao.deleteMessagesAfter(sessionId, keepCount)
+    suspend fun deleteMessagesAfter(sessionId: String, keepCount: Int): Nothing =
+        throw UnsupportedOperationException(
+            "deleteMessagesAfter is destructive and unguarded — use archiveAndDeleteMessagesAfter",
+        )
 
     /**
      * [T-no-destructive-retry] Non-destructive tail truncation for retry/edit.
@@ -299,6 +325,43 @@ class ChatRepository(internal val dao: ChatDao) {
     suspend fun loadDeletedMessages(sessionId: String) =
         dao.loadDeletedMessages(sessionId)
 
+    /**
+     * [T-archive-every-delete] Archive every row of a session, then wipe it.
+     * Used by clearChat and deleteSession — see [ChatDao.archiveAndDeleteAllMessages]
+     * for why user-confirmed deletes are archived too.
+     *
+     * @return rows archived+deleted.
+     */
+    suspend fun archiveAndDeleteAllMessages(sessionId: String, reason: String): Int {
+        val total = dao.messageCountForSession(sessionId)
+        dao.archiveAndDeleteAllMessages(
+            sessionId = sessionId,
+            deletedAt = System.currentTimeMillis(),
+            reason = reason,
+        )
+        com.openminis.app.data.MutationJournal.recordWipe(
+            sessionId = sessionId,
+            op = reason,
+            totalRows = total,
+        )
+        return total
+    }
+
+    /**
+     * [T-archive-every-delete] Archive one row, then delete it (message surgery).
+     * @return rows removed (0 = id not in this session).
+     */
+    suspend fun archiveAndDeleteMessageById(
+        sessionId: String,
+        messageId: String,
+        reason: String,
+    ): Int = dao.archiveAndDeleteMessageById(
+        sessionId = sessionId,
+        messageId = messageId,
+        deletedAt = System.currentTimeMillis(),
+        reason = reason,
+    )
+
     /** Count of archived rows for a session. */
     suspend fun deletedMessageCount(sessionId: String) =
         dao.deletedMessageCount(sessionId)
@@ -340,6 +403,23 @@ class ChatRepository(internal val dao: ChatDao) {
         // parsers — UI rendering and JSON-array consumers in DAO/search
         // — never break on the truncated payload.
         val capped = if (partsJson.length > MAX_MESSAGE_PARTS_JSON_LENGTH) {
+            // [T-truncated-write-visibility] A capped write is silent data loss
+            // at INSERT time: the user's message (or a tool result they will
+            // later need) is stored shortened, and until now nothing recorded
+            // that it happened. Journal it — same principle as the delete paths,
+            // "the bytes are not what the user produced" must leave a trace.
+            com.openminis.app.data.MutationJournal.recordRewrite(
+                sessionId = sessionId,
+                op = "append-capped($role)",
+                messageId = "pending",
+                oldLength = partsJson.length,
+                newLength = MAX_MESSAGE_PARTS_JSON_LENGTH,
+            )
+            android.util.Log.w(
+                "ChatRepository",
+                "[T-truncated-write-visibility] capping $role row for " +
+                    "${sessionId.take(8)}: ${partsJson.length} → $MAX_MESSAGE_PARTS_JSON_LENGTH chars",
+            )
             buildTruncatedPartsJson(partsJson)
         } else {
             partsJson

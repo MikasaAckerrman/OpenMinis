@@ -227,6 +227,60 @@ interface ChatDao {
         deleteMessagesAfter(sessionId, keepCount)
     }
 
+    /**
+     * [T-archive-every-delete] Archive-then-wipe for the WHOLE session.
+     *
+     * The audit that followed the 2c7ae861 loss found three delete paths with
+     * no archive at all: clearChat, deleteSession, and single-row surgery. All
+     * three are user-confirmed, so they are legitimate — but "the user
+     * confirmed a dialog" is not the same as "the user understood that eleven
+     * days of work would become unrecoverable", and a mis-tap or a confirm on
+     * the wrong session is exactly as final as the bug was.
+     *
+     * So every row removal now leaves a recoverable copy. The archive is not a
+     * foreign-key child of `sessions`, so it deliberately OUTLIVES a session
+     * delete — that is the whole point.
+     */
+    @Transaction
+    suspend fun archiveAndDeleteAllMessages(
+        sessionId: String,
+        deletedAt: Long,
+        reason: String,
+    ) {
+        val doomed = loadMessages(sessionId)
+        if (doomed.isNotEmpty()) {
+            insertDeletedMessages(
+                doomed.map { m -> DeletedMessageEntity.fromMessage(m, deletedAt, reason) }
+            )
+        }
+        deleteMessages(sessionId)
+    }
+
+    /**
+     * [T-archive-every-delete] Archive-then-delete ONE row (message surgery).
+     *
+     * Returns rows removed, mirroring [deleteMessageById]. The copy is written
+     * first inside the same transaction, so a crash between the two statements
+     * cannot lose the row.
+     */
+    @Transaction
+    suspend fun archiveAndDeleteMessageById(
+        sessionId: String,
+        messageId: String,
+        deletedAt: Long,
+        reason: String,
+    ): Int {
+        val row = messageByIdInSession(sessionId, messageId)
+        if (row != null) {
+            insertDeletedMessages(listOf(DeletedMessageEntity.fromMessage(row, deletedAt, reason)))
+        }
+        return deleteMessageById(sessionId, messageId)
+    }
+
+    /** Single row lookup used by [archiveAndDeleteMessageById]. */
+    @Query("SELECT * FROM messages WHERE session_id = :sessionId AND id = :messageId LIMIT 1")
+    suspend fun messageByIdInSession(sessionId: String, messageId: String): MessageEntity?
+
     /** Archived rows for a session, newest deletion first — backs restore UI. */
     @Query("SELECT * FROM deleted_messages WHERE session_id = :sessionId ORDER BY deleted_at DESC, sort_order ASC")
     suspend fun loadDeletedMessages(sessionId: String): List<DeletedMessageEntity>

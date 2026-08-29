@@ -2327,12 +2327,16 @@ class ChatViewModel(
                 }
                 var removed = 0
                 for (id in plan.deleteIds) {
-                    removed += runCatching { chatRepository.dao.deleteMessageById(sid, id) }.getOrDefault(0)
+                    // [T-archive-every-delete] Surgery was the last delete path
+                    // with no archive. It is a deliberate single-turn removal,
+                    // but "deliberate" and "unrecoverable" are different things —
+                    // the row is copied into deleted_messages first.
+                    removed += runCatching {
+                        chatRepository.archiveAndDeleteMessageById(sid, id, "surgery")
+                    }.getOrDefault(0)
                 }
-                // [T-mutation-journal] Single-row surgery is the one delete path
-                // that intentionally has NO archive (the user is removing a turn
-                // from a session they keep using). Journal it so it can never be
-                // confused with rows vanishing on their own.
+                // [T-mutation-journal] Journal it so it can never be confused
+                // with rows vanishing on their own.
                 com.openminis.app.data.MutationJournal.recordWipe(
                     sessionId = sid,
                     op = "surgery-delete(${plan.deleteIds.size}→$removed)",
@@ -5114,18 +5118,19 @@ class ChatViewModel(
         // Persist: drop messages + compact markers. Files (workspace,
         // attachments, offloads) intentionally retained.
         viewModelScope.launch {
-            // [T-mutation-journal] clearChat is the one intentional whole-session
-            // wipe reachable from the chat UI. Journal it so "all my messages are
-            // gone" can be answered with "you confirmed Clear Chat at HH:MM"
-            // instead of a shrug.
-            com.openminis.app.data.MutationJournal.recordWipe(
-                sessionId = sid,
-                op = "clearChat",
-                totalRows = runCatching { chatRepository.messageCount(sid) }.getOrDefault(-1),
-            )
-            chatRepository.dao.deleteMessages(sid)
+            // [T-archive-every-delete] clearChat is user-confirmed, but a
+            // mis-tap is exactly as final as the retry bug was — so the rows
+            // are archived into deleted_messages before the wipe and can be
+            // brought back with chat.deleted.restore. The journal line is
+            // written by the repository.
+            val wiped = runCatching {
+                chatRepository.archiveAndDeleteAllMessages(sid, "clearChat")
+            }.getOrElse { e ->
+                Log.w(TAG, "clearChat: archive+wipe failed: ${e.message}")
+                -1
+            }
             chatRepository.dao.deleteCompactMarkers(sid)
-            Log.i(TAG, "clearChat: session=$sid wiped (files preserved)")
+            Log.i(TAG, "clearChat: session=$sid wiped rows=$wiped (archived, files preserved)")
         }
     }
 
