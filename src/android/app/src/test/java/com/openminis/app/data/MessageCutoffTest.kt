@@ -90,4 +90,53 @@ class MessageCutoffTest {
         // 300 rows of agent-loop traffic in one turn is normal, not an anchor bug.
         assertTrue(MessageCutoff.isPlausible(keepCount = 400, totalRows = 700))
     }
+
+    // ─── [T-truncation-chokepoint] repository-level guard ─────────────────
+
+    private fun refused(keep: Int, total: Int): Boolean =
+        MessageCutoff.checkTruncation(keep, total) is MessageCutoff.Verdict.Refuse
+
+    @Test
+    fun `chokepoint refuses the incident shape`() {
+        // The ordinal bug: keepCount=1 on a ~700-row session.
+        assertTrue(refused(keep = 1, total = 700))
+    }
+
+    @Test
+    fun `chokepoint refuses a negative keepCount outright`() {
+        // sort_order >= -1 matches every row, so an unresolved anchor that
+        // leaked through as -1 is a whole-session delete.
+        assertTrue(refused(keep = -1, total = 700))
+        assertTrue(refused(keep = -1, total = 3))
+    }
+
+    @Test
+    fun `chokepoint exempts short sessions`() {
+        // Retrying turn 2 of a 4-turn chat legitimately drops most of it.
+        assertFalse(refused(keep = 1, total = 4))
+        assertFalse(refused(keep = 2, total = 49))
+    }
+
+    @Test
+    fun `chokepoint allows normal truncation on a long session`() {
+        assertFalse(refused(keep = 690, total = 700))   // one turn's tail
+        assertFalse(refused(keep = 400, total = 700))   // tool-heavy turn
+        assertFalse(refused(keep = 71, total = 700))    // 90% exactly — at the line
+    }
+
+    @Test
+    fun `chokepoint allows a no-op and an out-of-range keepCount`() {
+        // keepCount >= totalRows deletes nothing; never refuse a no-op.
+        assertFalse(refused(keep = 700, total = 700))
+        assertFalse(refused(keep = 900, total = 700))
+    }
+
+    @Test
+    fun `chokepoint reason names the numbers`() {
+        val v = MessageCutoff.checkTruncation(1, 700)
+        assertTrue(v is MessageCutoff.Verdict.Refuse)
+        val reason = (v as MessageCutoff.Verdict.Refuse).reason
+        assertTrue(reason.contains("699"))
+        assertTrue(reason.contains("700"))
+    }
 }

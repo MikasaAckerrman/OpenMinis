@@ -114,4 +114,79 @@ object MessageCutoff {
      * "the anchor is off by days", not police normal use.
      */
     const val MAX_DELETABLE: Int = 400
+
+    // ─── repository-level chokepoint ──────────────────────────────────────
+    //
+    // [T-truncation-chokepoint] The caller-side checks above are per-caller and
+    // therefore per-caller-forgettable: retry and edit are guarded, but rerun
+    // and retryLast compute their own keepCount, and the NEXT truncating
+    // feature will start from a copy of one of them. The incident cost 11 days
+    // of history because a single unguarded arithmetic path could wipe a
+    // session with nothing downstream questioning it.
+    //
+    // So the last line of defence lives at the ONE place every truncation must
+    // pass through (ChatRepository.archiveAndDeleteMessagesAfter). It refuses
+    // only catastrophic shapes, never plausible ones, because a false refusal
+    // is a visible annoyance while a false accept is unrecoverable.
+
+    /** Verdict from [checkTruncation]. */
+    sealed interface Verdict {
+        object Allow : Verdict
+        data class Refuse(val reason: String) : Verdict
+    }
+
+    /**
+     * Sessions smaller than this are exempt: on a short session "delete almost
+     * everything" is a legitimate gesture (retry the 2nd turn of a 4-turn
+     * chat), and there is little to lose either way.
+     */
+    const val CHOKEPOINT_MIN_ROWS: Int = 50
+
+    /**
+     * Fraction of a session a single truncation may discard before it is
+     * treated as a bug rather than an intent. 0.9 = keeping less than a tenth
+     * of a long session is refused.
+     *
+     * Chosen from the incident: the ordinal bug produced keepCount=1 on ~700
+     * rows (99.9% deleted). A tool-heavy legitimate rerun deletes the tail of
+     * one turn — hundreds of rows at worst on a session that by then holds
+     * thousands, i.e. far below this line.
+     */
+    const val CHOKEPOINT_MAX_FRACTION: Double = 0.9
+
+    /**
+     * Should a truncation that keeps [keepCount] of [totalRows] be allowed?
+     *
+     * Refuses two shapes:
+     *  - negative [keepCount] (an unresolved anchor that leaked through as -1
+     *    would delete the ENTIRE session, since `sort_order >= -1` matches all);
+     *  - discarding more than [CHOKEPOINT_MAX_FRACTION] of a session of at
+     *    least [CHOKEPOINT_MIN_ROWS] rows.
+     *
+     * Everything else is allowed: this guard does not try to be smart about
+     * whether the anchor is right, only about whether being wrong would be
+     * catastrophic.
+     */
+    fun checkTruncation(
+        keepCount: Int,
+        totalRows: Int,
+        minRows: Int = CHOKEPOINT_MIN_ROWS,
+        maxFraction: Double = CHOKEPOINT_MAX_FRACTION,
+    ): Verdict {
+        if (keepCount < 0) {
+            return Verdict.Refuse("keepCount=$keepCount is negative — would delete the whole session")
+        }
+        if (totalRows < minRows) return Verdict.Allow
+        if (keepCount >= totalRows) return Verdict.Allow
+        val deleted = totalRows - keepCount
+        val fraction = deleted.toDouble() / totalRows.toDouble()
+        return if (fraction > maxFraction) {
+            Verdict.Refuse(
+                "would delete $deleted of $totalRows rows " +
+                    "(${(fraction * 100).toInt()}% > ${(maxFraction * 100).toInt()}%)",
+            )
+        } else {
+            Verdict.Allow
+        }
+    }
 }

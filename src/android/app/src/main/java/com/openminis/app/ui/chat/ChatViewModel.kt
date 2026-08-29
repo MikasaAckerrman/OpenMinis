@@ -5324,7 +5324,20 @@ class ChatViewModel(
                     // above normally catches this, but a merged-bubble layout
                     // could route a first-in-row tool_use here; handle it so we
                     // never persist a phantom empty assistant message.
-                    chatRepository.archiveAndDeleteMessagesAfter(sid, row.sortOrder, "rerun")
+                    // [T-truncation-chokepoint] A refusal here means the anchor
+                    // row's sort_order is implausibly early — abort instead of
+                    // rewriting parts against a history that was NOT truncated.
+                    if (chatRepository.archiveAndDeleteMessagesAfter(sid, row.sortOrder, "rerun") < 0) {
+                        Log.w(TAG, "rerunFromToolBlock: chokepoint refused keepCount=${row.sortOrder} — aborting")
+                        withContext(Dispatchers.Main) {
+                            appendSystemInfo(
+                                text = context.getString(R.string.chat_cutoff_implausible),
+                                iconKind = "info",
+                            )
+                            reloadSessionFromDb()
+                        }
+                        return@launch
+                    }
                     Log.i(TAG, "rerunFromToolBlock cut at row start (empty trim) tuId=${targetToolUseId.take(12)} keepCount=${row.sortOrder} row=${row.id.take(8)}")
                 } else {
                     // Delete every row after the trimmed assistant row, then
@@ -5332,7 +5345,17 @@ class ChatViewModel(
                     // keeps rows with sort_order < keepCount, so keepCount =
                     // thisRow.sortOrder + 1 drops the following tool_result row
                     // + all later turns while keeping (then overwriting) this one.
-                    chatRepository.archiveAndDeleteMessagesAfter(sid, row.sortOrder + 1, "rerun")
+                    if (chatRepository.archiveAndDeleteMessagesAfter(sid, row.sortOrder + 1, "rerun") < 0) {
+                        Log.w(TAG, "rerunFromToolBlock: chokepoint refused keepCount=${row.sortOrder + 1} — aborting")
+                        withContext(Dispatchers.Main) {
+                            appendSystemInfo(
+                                text = context.getString(R.string.chat_cutoff_implausible),
+                                iconKind = "info",
+                            )
+                            reloadSessionFromDb()
+                        }
+                        return@launch
+                    }
                     chatRepository.updateMessageParts(row.id, keptArr.toString())
                     Log.i(TAG, "rerunFromToolBlock sub-message cut tuId=${targetToolUseId.take(12)} keepCount=${row.sortOrder + 1} partIdx=$cutPartIdx trimmedRow=${row.id.take(8)}")
                 }
@@ -5436,6 +5459,14 @@ class ChatViewModel(
         // T149: snapshot messages about to be truncated so we can revoke any
         // memory_write tool blocks they contain. Without this, a retry leaves
         // the on-disk daily log with entries the user has just rewound past.
+        //
+        // [T-window-safe-cutoff] The snapshot is taken here, but the REVOCATION
+        // now happens only after the DB cutoff is resolved and applied. Revoking
+        // first was wrong: the cutoff can refuse (unresolved / implausible
+        // anchor), and a refused retry that had already rewritten the memory log
+        // leaves an irreversible side effect behind an operation that officially
+        // "changed nothing". The UI trim above is recoverable via
+        // reloadSessionFromDb(); a memory edit on disk is not.
         val deletedMessages = messages.subList(index + 1, messages.size).toList()
 
         // Truncate UI messages: keep up to and including this user message.
@@ -5461,7 +5492,8 @@ class ChatViewModel(
             _streamingById.value = _streamingById.value.filterKeys { it in keptIds }
         }
 
-        revokeMemoryWritesInDeletedMessages(deletedMessages)
+        // [T-window-safe-cutoff] revokeMemoryWritesInDeletedMessages moved
+        // below the DB cutoff — see the snapshot comment above.
 
         // T145: claim the streaming flag SYNCHRONOUSLY so a rapid second tap
         // (or any concurrent send/retry attempt) is rejected by the entry
@@ -5538,7 +5570,27 @@ class ChatViewModel(
                 }
                 return@launch
             }
-            chatRepository.archiveAndDeleteMessagesAfter(sid, cutoffSortOrder, "retry")
+            val archived = chatRepository.archiveAndDeleteMessagesAfter(sid, cutoffSortOrder, "retry")
+            if (archived < 0) {
+                // [T-truncation-chokepoint] The repository refused the shape.
+                // Nothing was deleted, so leave the memory log alone too and put
+                // the UI back in sync with disk.
+                AppLogger.warning(
+                    TAG,
+                    "[Retry] chokepoint отказал в обрезке cutoff=$cutoffSortOrder — история НЕ изменена",
+                )
+                withContext(Dispatchers.Main) {
+                    appendSystemInfo(
+                        text = context.getString(R.string.chat_cutoff_implausible),
+                        iconKind = "info",
+                    )
+                    reloadSessionFromDb()
+                }
+                return@launch
+            }
+            // Only now that the truncation actually happened may the memory log
+            // be rewound — see the snapshot comment at the top of this function.
+            revokeMemoryWritesInDeletedMessages(deletedMessages)
 
             // Rebuild agentHistory from remaining DB messages
             agentHistory.clear()
@@ -5765,7 +5817,8 @@ class ChatViewModel(
             retainStreamFlushStates(keptIds)
             _streamingById.value = _streamingById.value.filterKeys { it in keptIds }
         }
-        revokeMemoryWritesInDeletedMessages(deletedMessages)
+        // [T-window-safe-cutoff] Memory revocation waits for the DB cutoff to
+        // succeed — a refused edit must not leave a rewritten memory log behind.
 
         val sid = realSessionId.takeIf { it.isNotEmpty() } ?: sessionId
         // [T-window-safe-cutoff] Same id-based anchor as retryFromMessage — see
@@ -5800,7 +5853,20 @@ class ChatViewModel(
             reloadSessionFromDb()
             return false
         }
-        chatRepository.archiveAndDeleteMessagesAfter(sid, cutoffSortOrder, "edit")
+        val archived = chatRepository.archiveAndDeleteMessagesAfter(sid, cutoffSortOrder, "edit")
+        if (archived < 0) {
+            AppLogger.warning(
+                TAG,
+                "[Edit] chokepoint отказал в обрезке cutoff=$cutoffSortOrder — история НЕ изменена",
+            )
+            appendSystemInfo(
+                text = context.getString(R.string.chat_cutoff_implausible),
+                iconKind = "info",
+            )
+            reloadSessionFromDb()
+            return false
+        }
+        revokeMemoryWritesInDeletedMessages(deletedMessages)
         agentHistory.clear()
         toolLoopDetector.reset()
         val remaining = chatRepository.loadMessages(sid)
@@ -7020,11 +7086,25 @@ class ChatViewModel(
                 val trailingAssistantSortOrder = dbMessages
                     .lastOrNull { it.role == "assistant" }?.sortOrder
                 if (trailingAssistantSortOrder != null) {
-                    chatRepository.archiveAndDeleteMessagesAfter(sid, trailingAssistantSortOrder, "retryLast")
-                    AppLogger.info(
-                        TAG_STREAM,
-                        "retryLast: deleted trailing assistant row sortOrder=$trailingAssistantSortOrder, kept ${trailingAssistantSortOrder} prior rows",
+                    // [T-truncation-chokepoint] A negative/implausible keepCount
+                    // here would wipe the session; the chokepoint returns -1 and
+                    // we simply skip the cleanup (the stale partial row is a far
+                    // smaller problem than a deleted history).
+                    val archived = chatRepository.archiveAndDeleteMessagesAfter(
+                        sid, trailingAssistantSortOrder, "retryLast",
                     )
+                    if (archived < 0) {
+                        AppLogger.warning(
+                            TAG_STREAM,
+                            "retryLast: chokepoint отказал keepCount=$trailingAssistantSortOrder — " +
+                                "строки НЕ удалены",
+                        )
+                    } else {
+                        AppLogger.info(
+                            TAG_STREAM,
+                            "retryLast: deleted trailing assistant row sortOrder=$trailingAssistantSortOrder, kept ${trailingAssistantSortOrder} prior rows",
+                        )
+                    }
                 }
             } else {
                 AppLogger.info(

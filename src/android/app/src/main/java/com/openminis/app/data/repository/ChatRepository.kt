@@ -207,6 +207,15 @@ class ChatRepository(internal val dao: ChatDao) {
         return result
     }
 
+    /**
+     * Raw tail truncation with NO archive. Kept for parity only — every
+     * in-app truncation must use [archiveAndDeleteMessagesAfter] so the rows
+     * stay recoverable and pass the chokepoint guard.
+     */
+    @Deprecated(
+        "Destructive: no archive, no chokepoint check. Use archiveAndDeleteMessagesAfter.",
+        ReplaceWith("archiveAndDeleteMessagesAfter(sessionId, keepCount, reason)"),
+    )
     suspend fun deleteMessagesAfter(sessionId: String, keepCount: Int) =
         dao.deleteMessagesAfter(sessionId, keepCount)
 
@@ -216,17 +225,46 @@ class ChatRepository(internal val dao: ChatDao) {
      * transaction), so the earlier turns are recoverable. Retry/edit call
      * THIS, not the raw [deleteMessagesAfter] above — that raw variant stays
      * only for paths that intentionally discard (none today; kept for parity).
+     *
+     * [T-truncation-chokepoint] Every truncating feature funnels through here,
+     * so this is where the catastrophic-shape guard lives — see
+     * [com.openminis.app.data.MessageCutoff.checkTruncation]. Callers compute
+     * keepCount from their own anchor logic and each of them can be wrong (the
+     * ordinal bug that cost session 2c7ae861 eleven days was exactly that);
+     * this refuses the shapes that are unrecoverable regardless of which caller
+     * produced them.
+     *
+     * @return rows archived+deleted, or -1 when the truncation was REFUSED. A
+     *   caller seeing -1 must treat the history as unchanged.
      */
     suspend fun archiveAndDeleteMessagesAfter(
         sessionId: String,
         keepCount: Int,
         reason: String,
-    ) = dao.archiveAndDeleteMessagesAfter(
-        sessionId = sessionId,
-        keepCount = keepCount,
-        deletedAt = System.currentTimeMillis(),
-        reason = reason,
-    )
+    ): Int {
+        val totalRows = dao.messageCountForSession(sessionId)
+        val verdict = com.openminis.app.data.MessageCutoff.checkTruncation(
+            keepCount = keepCount,
+            totalRows = totalRows,
+        )
+        if (verdict is com.openminis.app.data.MessageCutoff.Verdict.Refuse) {
+            android.util.Log.e(
+                "ChatRepository",
+                "[T-truncation-chokepoint] ОТКАЗ truncation reason=$reason " +
+                    "session=${sessionId.take(8)} keepCount=$keepCount total=$totalRows: " +
+                    verdict.reason,
+            )
+            return -1
+        }
+        val doomed = (totalRows - keepCount).coerceAtLeast(0)
+        dao.archiveAndDeleteMessagesAfter(
+            sessionId = sessionId,
+            keepCount = keepCount,
+            deletedAt = System.currentTimeMillis(),
+            reason = reason,
+        )
+        return doomed
+    }
 
     /** Archived (retry/edit-removed) rows for a session, newest deletion first. */
     suspend fun loadDeletedMessages(sessionId: String) =
