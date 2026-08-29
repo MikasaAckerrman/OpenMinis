@@ -81,7 +81,7 @@ internal object DeletedMessagesMethods {
             throw RPCException(-32602, "Filter matched no archived rows")
         }
 
-        val liveIds = dao.loadMessages(sessionId).mapTo(mutableSetOf()) { it.id }
+        val liveIds = dao.messageIdsForSession(sessionId).toMutableSet()
         val (skipped, toInsert) = selected.partition { it.messageId in liveIds }
         val dryRun = params.optBoolean("dryRun", false)
 

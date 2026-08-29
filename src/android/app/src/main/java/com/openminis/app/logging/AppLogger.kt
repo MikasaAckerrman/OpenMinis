@@ -364,10 +364,17 @@ object AppLogger {
 
     /**
      * Delete all log files.
+     *
+     * [T-mutation-journal] The append-only journals are exempt, for the same
+     * reason they are exempt from [pruneOldLogs]: "Clear Logs" is a housekeeping
+     * gesture aimed at the noisy daily captures, and a user tapping it must not
+     * silently destroy the record of every deletion in the app's history. The
+     * journal caps itself by size, so it never becomes the reason someone needs
+     * to clear logs.
      */
     @Synchronized
     fun clearLogs() {
-        logDir?.listFiles()?.forEach { it.delete() }
+        logDir?.listFiles()?.forEach { if (it.name !in PRUNE_EXEMPT) it.delete() }
         // [T-logging-zombie-fd-android] The open writer still references the
         // just-deleted file; a FileWriter on an unlinked inode keeps writing to
         // the zombie file (invisible on disk) until currentDate changes or the
@@ -386,9 +393,28 @@ object AppLogger {
         return logDir?.listFiles()?.sumOf { it.length() } ?: 0L
     }
 
+    /**
+     * [T-mutation-journal] Files in `logs/` that pruning must NEVER touch.
+     *
+     * The prune below deletes anything older than [MAX_AGE_DAYS], which is right
+     * for daily log files and catastrophic for the append-only journals: after 15
+     * quiet days with no destructive operation, `mutation-journal.log` would be
+     * deleted — taking the record of every earlier deletion with it. That is
+     * exactly the failure the journal exists to prevent, and it is the same shape
+     * as the incident (the evidence aged out before anyone looked).
+     *
+     * These files manage their own size instead: MutationJournal trims by bytes,
+     * LaunchCycleBeacon's entries are one tiny line per launch.
+     */
+    private val PRUNE_EXEMPT = setOf(
+        "mutation-journal.log",
+        "launch-beacon.log",
+    )
+
     private fun pruneOldLogs() {
         val cutoff = System.currentTimeMillis() - MAX_AGE_DAYS * 24L * 60 * 60 * 1000
         logDir?.listFiles()?.forEach { file ->
+            if (file.name in PRUNE_EXEMPT) return@forEach
             if (file.lastModified() < cutoff) {
                 file.delete()
             }

@@ -161,6 +161,16 @@ interface ChatDao {
     suspend fun insertMessages(messages: List<MessageEntity>)
 
     /**
+     * Ids only — no parts_json. Used by the archive-restore path to decide which
+     * archived rows are already live. `loadMessages` would pull every blob into
+     * the CursorWindow just to read the id column, which is precisely the query
+     * shape that throws SQLiteBlobTooBigException on the sessions most likely to
+     * need a restore.
+     */
+    @Query("SELECT id FROM messages WHERE session_id = :sessionId")
+    suspend fun messageIdsForSession(sessionId: String): List<String>
+
+    /**
      * [T-android-voice-correction] User messages newer than [since] (epoch ms),
      * across every session, for typed-vocabulary mining.
      *
@@ -199,6 +209,22 @@ interface ChatDao {
     @Query("SELECT * FROM messages WHERE session_id = :sessionId AND sort_order >= :keepCount ORDER BY sort_order ASC")
     suspend fun selectMessagesAtOrAfter(sessionId: String, keepCount: Int): List<MessageEntity>
 
+    /**
+     * Paged variant of [selectMessagesAtOrAfter]. Used by the archive path so a
+     * session holding an oversized tool_result cannot blow the CursorWindow
+     * mid-archive — see [archiveAndDeleteAllMessages] for the same reasoning.
+     */
+    @Query(
+        "SELECT * FROM messages WHERE session_id = :sessionId AND sort_order >= :keepCount " +
+            "ORDER BY sort_order ASC LIMIT :limit OFFSET :offset",
+    )
+    suspend fun selectMessagesAtOrAfterPage(
+        sessionId: String,
+        keepCount: Int,
+        offset: Int,
+        limit: Int,
+    ): List<MessageEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertDeletedMessages(rows: List<DeletedMessageEntity>)
 
@@ -218,11 +244,19 @@ interface ChatDao {
         deletedAt: Long,
         reason: String,
     ) {
-        val doomed = selectMessagesAtOrAfter(sessionId, keepCount)
-        if (doomed.isNotEmpty()) {
+        // Paged for the same reason as archiveAndDeleteAllMessages: a single
+        // SELECT * over a tool-heavy tail can exceed the 2 MB CursorWindow and
+        // throw, and a throw here means the truncation silently does nothing.
+        var offset = 0
+        val page = 200
+        while (true) {
+            val batch = selectMessagesAtOrAfterPage(sessionId, keepCount, offset, page)
+            if (batch.isEmpty()) break
             insertDeletedMessages(
-                doomed.map { m -> DeletedMessageEntity.fromMessage(m, deletedAt, reason) }
+                batch.map { m -> DeletedMessageEntity.fromMessage(m, deletedAt, reason) }
             )
+            offset += batch.size
+            if (batch.size < page) break
         }
         deleteMessagesAfter(sessionId, keepCount)
     }
@@ -247,11 +281,23 @@ interface ChatDao {
         deletedAt: Long,
         reason: String,
     ) {
-        val doomed = loadMessages(sessionId)
-        if (doomed.isNotEmpty()) {
+        // Paged, NOT `loadMessages(sessionId)`. That raw SELECT * is exactly the
+        // query that trips SQLiteBlobTooBigException / CursorWindow on a session
+        // holding a large tool_result — the reason ChatRepository has a paginated
+        // loader at all. Inside a transaction that throw would roll the whole
+        // thing back (rows survive, which is the safe direction) but the wipe
+        // would then fail silently. Paging keeps each read small enough to
+        // succeed, so the archive is actually written.
+        var offset = 0
+        val page = 200
+        while (true) {
+            val batch = loadMessagesPage(sessionId, offset, page)
+            if (batch.isEmpty()) break
             insertDeletedMessages(
-                doomed.map { m -> DeletedMessageEntity.fromMessage(m, deletedAt, reason) }
+                batch.map { m -> DeletedMessageEntity.fromMessage(m, deletedAt, reason) }
             )
+            offset += batch.size
+            if (batch.size < page) break
         }
         deleteMessages(sessionId)
     }
