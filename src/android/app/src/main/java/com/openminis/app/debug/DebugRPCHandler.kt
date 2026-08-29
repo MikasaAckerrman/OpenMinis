@@ -158,6 +158,10 @@ class DebugRPCHandler(private val context: Context) {
             "chat.compact.revert" -> ChatMutationMethods.compactRevert(context, params)
             "chat.session.rescue" -> ChatMutationMethods.sessionRescue(context, params)
 
+            // [T-deleted-archive-rpc] Archive of rows removed by retry/edit.
+            "chat.deleted.list" -> DeletedMessagesMethods.list(context, params)
+            "chat.deleted.restore" -> DeletedMessagesMethods.restore(context, params)
+
             // Debug-only: direct CLI / offload-handler invocation (T344).
             // Registered solely on DEBUG builds so release APKs cannot expose it.
             "debug.shizuku.exec" -> {

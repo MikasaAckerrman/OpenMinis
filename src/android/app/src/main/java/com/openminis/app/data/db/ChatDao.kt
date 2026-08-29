@@ -152,6 +152,15 @@ interface ChatDao {
     suspend fun insertMessage(message: MessageEntity)
 
     /**
+     * [T-deleted-archive-rpc] Bulk insert used by archive restore. IGNORE (not
+     * REPLACE) on conflict: a live row with the same id is newer than any
+     * archive copy of it and must win, so restoring an old batch can never
+     * clobber current history.
+     */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertMessages(messages: List<MessageEntity>)
+
+    /**
      * [T-android-voice-correction] User messages newer than [since] (epoch ms),
      * across every session, for typed-vocabulary mining.
      *

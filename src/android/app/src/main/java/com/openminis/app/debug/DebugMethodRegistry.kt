@@ -765,6 +765,28 @@ object DebugMethodRegistry {
             example = ex("sessionId" to "6D0F…"),
         ),
         MethodSpec(
+            name = "chat.deleted.list",
+            description = "List messages archived by retry/edit/rerun truncation (deleted_messages table), newest deletion first. These rows are NOT in the session anymore but are still on disk.",
+            params = listOf(
+                ParamSpec("sessionId", "string", required = true, description = "Target session id."),
+                ParamSpec("includeParts", "bool", required = false, default = false, description = "Include the full parts_json of each archived row."),
+            ),
+            returns = "{sessionId, count, messages:[{archiveId, messageId, role, sortOrder, createdAt, deletedAt, reason, partsLength}]}",
+            example = ex("sessionId" to "6D0F…"),
+        ),
+        MethodSpec(
+            name = "chat.deleted.restore",
+            description = "Copy archived rows back into the session. Filter by deletedAt (one truncation batch) and/or archiveIds. Rows whose message id is already live are skipped, never overwritten. Use dryRun to see the counts first.",
+            params = listOf(
+                ParamSpec("sessionId", "string", required = true, description = "Target session id."),
+                ParamSpec("deletedAt", "int", required = false, description = "Restore only the batch archived at this epoch-ms timestamp."),
+                ParamSpec("archiveIds", "[string]", required = false, description = "Restore only these archive ids."),
+                ParamSpec("dryRun", "bool", required = false, default = false, description = "Report what would be restored without writing."),
+            ),
+            returns = "{sessionId, dryRun, restored, skippedAlreadyLive, archivedTotal}",
+            example = ex("sessionId" to "6D0F…", "dryRun" to true),
+        ),
+        MethodSpec(
             name = "chat.session.delete",
             description = "Permanently delete a session and its messages. Cancels any in-flight run first.",
             params = listOf(

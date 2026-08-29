@@ -370,11 +370,25 @@ class ChatViewModel(
     /** Load the previous DB page and rebuild the materialized window. */
     fun loadOlderMessages() {
         // [T-send-gate-deadlock] Читает страницу из БД напрямую и НЕ зависит от
-        // полноты agentHistory, но в DEGRADED смысла нет: полной истории не
-        // будет, а сообщение пользователю уже показано гейтом. Оставляем как
-        // было (сообщить и выйти) — единственное изменение в том, что теперь
-        // текст различает «грузится» и «не загрузилось».
-        if (!fullHistoryReady.value) {
+        // полноты agentHistory.
+        // [T-load-older-degraded] Раньше здесь стояло `if (!fullHistoryReady)
+        // { requireFullSessionHistory(); return }`, и это ломало кнопку
+        // НАСОВСЕМ в состоянии DEGRADED: `fullHistoryReady` в нём остаётся
+        // false навсегда (см. loadSession — при сбое загрузки выставляется
+        // historyDegraded, а не ready), ViewModel переживает переоткрытие чата,
+        // поэтому «загрузить старые сообщения» просто ничего не делала — ни
+        // страницы, ни ошибки после первого раза. Именно то поведение, на
+        // которое жаловался пользователь.
+        //
+        // Пагинация — операция ЧТЕНИЯ: она ничего не удаляет и не считает
+        // якорей по памяти, ей нужен только `messages` в БД. Поэтому блокируем
+        // её только пока история честно ЗАГРУЖАЕТСЯ; в DEGRADED она наоборот
+        // единственный способ показать пользователю старую часть переписки.
+        val historyState = com.openminis.app.data.SendGatePolicy.stateOf(
+            fullHistoryReady = fullHistoryReady.value,
+            degraded = historyDegraded.value,
+        )
+        if (historyState == com.openminis.app.data.SendGatePolicy.HistoryState.LOADING) {
             requireFullSessionHistory()
             return
         }
@@ -408,6 +422,9 @@ class ChatViewModel(
                     rawMessages = rows,
                     historyDbIds = agentHistory.mapNotNullTo(mutableSetOf()) { it.dbMessageId },
                     allowMarkerSelfHeal = false,
+                    // [T-compact-divider-count] The divider must describe the
+                    // window we are installing, not the one still in the field.
+                    windowFromIndex = page.fromIndex,
                 )
             }
             withContext(Dispatchers.Main) {
@@ -4319,7 +4336,16 @@ class ChatViewModel(
                         m.dbMessageId?.takeIf { it.isNotEmpty() }?.let { add(it) }
                     }
                 }
-                applyCompactMarkerGraying(ordered, marker, loaded.messages, historyDbIds)
+                applyCompactMarkerGraying(
+                    ordered,
+                    marker,
+                    loaded.messages,
+                    historyDbIds,
+                    // [T-compact-divider-count] `loadedHistoryFromIndex` was
+                    // already set to loaded.uiFromIndex a few lines above, but
+                    // pass it explicitly so the dependency is visible.
+                    windowFromIndex = loaded.uiFromIndex,
+                )
             }
 
             // Cold-start interrupt detection: an agent loop that was killed by
@@ -4471,6 +4497,10 @@ class ChatViewModel(
         rawMessages: List<com.openminis.app.data.db.MessageEntity>,
         historyDbIds: Set<String>,
         allowMarkerSelfHeal: Boolean = true,
+        // [T-compact-divider-count] Index of the first loaded row inside the
+        // session. Callers pass the window they are ABOUT to install, because
+        // `loadedHistoryFromIndex` is only assigned after this returns.
+        windowFromIndex: Int = loadedHistoryFromIndex,
     ): List<ChatMessage> {
         // Some legacy rows have empty-string boundaries instead of NULL —
         // treat both as "no boundary" so the compactAll path below kicks in.
@@ -4611,9 +4641,22 @@ class ChatViewModel(
         // above the divider, not marker.compactedCount (which counts raw
         // agentHistory entries — tool_use/tool_result pairs that never
         // appear as their own UI bubble).
+        // [T-compact-divider-count] …but ONLY when the whole session is
+        // materialised. With a history window the bubbles above the divider are
+        // just the loaded ones, which is how "2 messages compacted" appeared for
+        // a summary of several hundred. See CompactDividerCount.
         val compactedUICount = (0 until insertIdx.coerceIn(0, grayed.size))
             .count { grayed[it].role != "system" }
-        val dividerLabel = "$compactedUICount messages compacted"
+        val dividerCount = com.openminis.app.data.CompactDividerCount.resolve(
+            visibleBubblesAbove = compactedUICount,
+            windowFromIndex = windowFromIndex,
+            markerCompactedCount = marker.compactedCount,
+        )
+        val dividerLabel = if (dividerCount.approximate) {
+            "≈${dividerCount.count} messages compacted"
+        } else {
+            "${dividerCount.count} messages compacted"
+        }
         val markerForDivider = healedMarker ?: marker
         val dividerBlock = AssistantBlock(
             id = "compact-divider-${markerForDivider.id}",
@@ -5438,44 +5481,64 @@ class ChatViewModel(
             try {
             val sid = realSessionId.takeIf { it.isNotEmpty() } ?: sessionId
 
-            // Find the DB sort_order cutoff for this user message.
-            // UI visible user messages are the N-th user msg with actual text content.
-            // Count which visible user message this is (0-based).
-            val visibleUserIndex = messages.subList(0, index + 1).count { it.role == "user" } - 1
+            // [T-window-safe-cutoff] Resolve the DB cutoff from the bubble's OWN
+            // row ids, never from its ordinal among visible user bubbles.
+            //
+            // The ordinal path this replaces was correct only while `_messages`
+            // held the whole session. Since ChatHistoryWindow a long session
+            // opens with a 120-row window, so "2nd visible user bubble on screen"
+            // resolved to "2nd visible user row of the entire session" — a
+            // message from days earlier — and the retry deleted everything after
+            // it. That is how session 2c7ae861 lost 11 days of history to one
+            // tap, leaving 66 compact markers anchored at rows that no longer
+            // existed. See com.openminis.app.data.MessageCutoff.
             val dbMessages = chatRepository.loadMessages(sid)
-            // Walk DB rows, counting visible user messages (those with non-toolResult text)
-            var visibleUserCount = 0
-            var cutoffSortOrder = -1
-            for (entity in dbMessages) {
-                if (entity.role == "user") {
-                    // Check if this user message has visible text (not toolResult-only).
-                    // [T-ios-retry-anchor-synthetic-user] Synthetic user rows the
-                    // agent loop persists WITHOUT a UI bubble — resume()'s
-                    // stop-continue "<system-reminder>" message — must not count,
-                    // or the cutoff anchors one user message too early and the
-                    // retried bubble (plus the whole last turn) is silently
-                    // dropped from the rebuilt history (mirrors the iOS fix).
-                    val hasText = try {
-                        val arr = org.json.JSONArray(entity.partsJson)
-                        (0 until arr.length()).any { i ->
-                            val o = arr.getJSONObject(i)
-                            val v = o.optString("value", "")
-                            o.optString("type") == "text" && v.isNotBlank() &&
-                                !v.trimStart().startsWith("<system-reminder>")
-                        }
-                    } catch (_: Exception) { true }
-                    if (hasText) {
-                        if (visibleUserCount == visibleUserIndex) {
-                            cutoffSortOrder = entity.sortOrder + 1
-                            break
-                        }
-                        visibleUserCount++
-                    }
+            val cutoffRows = dbMessages.map {
+                com.openminis.app.data.MessageCutoff.Row(it.id, it.sortOrder)
+            }
+            val anchorIds = com.openminis.app.data.MessageCutoff.candidateIds(
+                sourceDbIds = message.sourceDbIds,
+                bubbleId = message.id,
+            )
+            val cutoffSortOrder = com.openminis.app.data.MessageCutoff
+                .retryKeepCount(anchorIds, cutoffRows) ?: -1
+            // Refuse rather than guess. A wrong anchor destroys history; a
+            // refused retry costs the user one tap. The UI was already trimmed
+            // above (synchronously, so a double-tap is rejected), so restore it
+            // from disk — the DB is still untouched at this point.
+            if (cutoffSortOrder < 0) {
+                AppLogger.warning(
+                    TAG,
+                    "[Retry] отказ: пузырь ${messageId.take(8)} не сопоставлен ни с одной " +
+                        "строкой БД (sourceDbIds=${message.sourceDbIds.size}, rows=${cutoffRows.size}) — " +
+                        "история НЕ изменена",
+                )
+                withContext(Dispatchers.Main) {
+                    appendSystemInfo(
+                        text = context.getString(R.string.chat_cutoff_unresolved),
+                        iconKind = "info",
+                    )
+                    reloadSessionFromDb()
                 }
+                return@launch
             }
-            if (cutoffSortOrder >= 0) {
-                chatRepository.archiveAndDeleteMessagesAfter(sid, cutoffSortOrder, "retry")
+            if (!com.openminis.app.data.MessageCutoff.isPlausible(cutoffSortOrder, cutoffRows.size)) {
+                AppLogger.warning(
+                    TAG,
+                    "[Retry] отказ: cutoff=$cutoffSortOrder удалил бы " +
+                        "${cutoffRows.size - cutoffSortOrder} из ${cutoffRows.size} строк — " +
+                        "якорь заведомо неверный, история НЕ изменена",
+                )
+                withContext(Dispatchers.Main) {
+                    appendSystemInfo(
+                        text = context.getString(R.string.chat_cutoff_implausible),
+                        iconKind = "info",
+                    )
+                    reloadSessionFromDb()
+                }
+                return@launch
             }
+            chatRepository.archiveAndDeleteMessagesAfter(sid, cutoffSortOrder, "retry")
 
             // Rebuild agentHistory from remaining DB messages
             agentHistory.clear()
@@ -5682,14 +5745,17 @@ class ChatViewModel(
      * T187: drop the message at [messageId] *and* every later message
      * (in UI, in agentHistory, and on disk) so the new sendMessage()
      * call below this can persist the edited text as a fresh user
-     * turn at the same position. Reuses the cutoff-search machinery
-     * from retryFromMessage but offsets by `entity.sortOrder` (not
-     * +1) — retry preserves the original turn, edit replaces it.
+     * turn at the same position.
+     *
+     * [T-window-safe-cutoff] Returns false when the edited bubble could NOT be
+     * anchored to a persisted row. The caller must then abandon the send: if it
+     * carried on, the edited text would be appended as a NEW turn while the
+     * original stayed on disk — a silent duplicate instead of a replacement.
      */
-    private suspend fun truncateBeforeEdit(messageId: String) {
+    private suspend fun truncateBeforeEdit(messageId: String): Boolean {
         val messages = _messages.value
         val index = messages.indexOfFirst { it.id == messageId }
-        if (index < 0) return
+        if (index < 0) return false
 
         val deletedMessages = messages.subList(index, messages.size).toList()
         val kept = messages.subList(0, index)
@@ -5702,50 +5768,39 @@ class ChatViewModel(
         revokeMemoryWritesInDeletedMessages(deletedMessages)
 
         val sid = realSessionId.takeIf { it.isNotEmpty() } ?: sessionId
-        // Visible-user index of the *edited* message — count user turns
-        // strictly before `index`, which is the 0-based ordinal of the
-        // edited turn itself.
-        val visibleUserIndex = messages.subList(0, index).count { it.role == "user" }
+        // [T-window-safe-cutoff] Same id-based anchor as retryFromMessage — see
+        // MessageCutoff. Edit semantics differ only in which end of the bubble
+        // decides: the edited turn is being rewritten, so it goes too.
+        val edited = messages[index]
         val dbMessages = chatRepository.loadMessages(sid)
-        var visibleUserCount = 0
-        var cutoffSortOrder = -1
-        for (entity in dbMessages) {
-            if (entity.role == "user") {
-                val hasText = try {
-                    val arr = org.json.JSONArray(entity.partsJson)
-                    (0 until arr.length()).any { i ->
-                        val o = arr.getJSONObject(i)
-                        // [T-android-retry-attachment-loss] Exclude the now-
-                        // persisted <user-attached-files> XML text part so this
-                        // "is this a visible user bubble?" count stays identical
-                        // to pre-XML-persistence behaviour. An attachments-only
-                        // turn must NOT flip to hasText just because the XML
-                        // inventory is now a text part — that would shift the
-                        // retry/edit cutoff onto the wrong message.
-                        // [T-ios-retry-anchor-synthetic-user] Likewise exclude
-                        // resume()'s synthetic stop-continue <system-reminder>
-                        // user row — it has no UI bubble, so counting it shifts
-                        // the cutoff one user message too early.
-                        o.optString("type") == "text" &&
-                            stripAttachedFilesXml(o.optString("value", "")).isNotBlank() &&
-                            !o.optString("value", "").trimStart().startsWith("<system-reminder>")
-                    }
-                } catch (_: Exception) { true }
-                if (hasText) {
-                    if (visibleUserCount == visibleUserIndex) {
-                        // ChatDao.deleteMessagesAfter is `sort_order >= keepCount`
-                        // → passing this row's sortOrder deletes IT and everything
-                        // after, which is exactly what edit semantics want.
-                        cutoffSortOrder = entity.sortOrder
-                        break
-                    }
-                    visibleUserCount++
-                }
-            }
+        val cutoffRows = dbMessages.map {
+            com.openminis.app.data.MessageCutoff.Row(it.id, it.sortOrder)
         }
-        if (cutoffSortOrder >= 0) {
-            chatRepository.archiveAndDeleteMessagesAfter(sid, cutoffSortOrder, "edit")
+        val anchorIds = com.openminis.app.data.MessageCutoff.candidateIds(
+            sourceDbIds = edited.sourceDbIds,
+            bubbleId = edited.id,
+        )
+        val cutoffSortOrder = com.openminis.app.data.MessageCutoff
+            .editKeepCount(anchorIds, cutoffRows) ?: -1
+        if (cutoffSortOrder < 0 ||
+            !com.openminis.app.data.MessageCutoff.isPlausible(cutoffSortOrder, cutoffRows.size)
+        ) {
+            // Refuse: leave the persisted history exactly as it is and put the
+            // UI back in sync with disk. The composer keeps the user's text, so
+            // nothing they typed is lost — they can send it as a new turn.
+            AppLogger.warning(
+                TAG,
+                "[Edit] отказ: cutoff=$cutoffSortOrder rows=${cutoffRows.size} " +
+                    "sourceDbIds=${edited.sourceDbIds.size} — история НЕ изменена",
+            )
+            appendSystemInfo(
+                text = context.getString(R.string.chat_cutoff_unresolved),
+                iconKind = "info",
+            )
+            reloadSessionFromDb()
+            return false
         }
+        chatRepository.archiveAndDeleteMessagesAfter(sid, cutoffSortOrder, "edit")
         agentHistory.clear()
         toolLoopDetector.reset()
         val remaining = chatRepository.loadMessages(sid)
@@ -5756,6 +5811,7 @@ class ChatViewModel(
             TAG_STREAM,
             "✏️ truncateBeforeEdit cutoffSortOrder=$cutoffSortOrder remaining=${remaining.size}"
         )
+        return true
     }
 
     /**
@@ -6189,7 +6245,14 @@ class ChatViewModel(
             val activeSessionId = ensureSession()
 
             if (editingId != null) {
-                truncateBeforeEdit(editingId)
+                // [T-window-safe-cutoff] Anchor unresolved ⇒ the original turn is
+                // still on disk. Sending now would duplicate it instead of
+                // replacing it, so abort the send; truncateBeforeEdit already
+                // told the user and restored the list from disk.
+                if (!truncateBeforeEdit(editingId)) {
+                    _editingMessageId.value = null
+                    return@launch
+                }
             }
 
             val prepared = prepareUserAttachments(currentAttachments, activeSessionId)
@@ -8265,16 +8328,43 @@ class ChatViewModel(
                         actual is com.openminis.app.data.model.LLMError.TransientError ||
                         is5xx
                     )
-                    if (isTransient && retryAttempt < AUTO_RETRY_DELAYS_SEC.size) {
-                        val delaySec = AUTO_RETRY_DELAYS_SEC[retryAttempt]
+                    // [T-offline-retry-budget] Budget depends on WHY the turn
+                    // failed. A parked radio ("Unable to resolve host") needs
+                    // tens of seconds and a real connectivity wait; a reaped
+                    // pooled socket ("connection closed") needs eviction plus
+                    // another attempt. One fixed 1/2/4 ladder served neither and
+                    // killed the turn while the fix was still pending.
+                    val retryKind = com.openminis.app.data.TransientRetryBudget
+                        .classify(actual.message)
+                    val maxAttempts = if (isTransient) {
+                        com.openminis.app.data.TransientRetryBudget.maxAttempts(retryKind)
+                    } else 0
+                    if (isTransient && retryAttempt >= maxAttempts) {
+                        AppLogger.warning(
+                            TAG,
+                            "[Retry] бюджет исчерпан: kind=$retryKind attempts=$retryAttempt " +
+                                "err=${actual.message?.take(120)}",
+                        )
+                    }
+                    if (isTransient && retryAttempt < maxAttempts) {
+                        val delaySec = com.openminis.app.data.TransientRetryBudget
+                            .delaySecForAttempt(retryKind, retryAttempt)
                         retryAttempt += 1
                         val errDesc = actual.message ?: actual.javaClass.simpleName
-                        Log.w(TAG, "🔁 Transient error on ${currentProvider.model.displayName}, retry $retryAttempt/${AUTO_RETRY_DELAYS_SEC.size} in ${delaySec}s: $errDesc")
+                        Log.w(TAG, "🔁 Transient error on ${currentProvider.model.displayName}, retry $retryAttempt/$maxAttempts (kind=$retryKind) in ${delaySec}s: $errDesc")
                         withContext(Dispatchers.Main) {
                             _autoRetryAttempt.value = retryAttempt
                             // Show the error inline on the streaming assistant message during countdown.
                             // Keeps isStreaming=true so the UI doesn't tear down the streaming state.
-                            setTransientInlineError("$errDesc — retrying ($retryAttempt/${AUTO_RETRY_DELAYS_SEC.size})…")
+                            setTransientInlineError(
+                                if (retryKind == com.openminis.app.data.TransientRetryBudget.Kind.OFFLINE) {
+                                    context.getString(
+                                        R.string.chat_retry_offline, retryAttempt, maxAttempts,
+                                    )
+                                } else {
+                                    "$errDesc — retrying ($retryAttempt/$maxAttempts)…"
+                                },
+                            )
                         }
                         try {
                             for (remaining in delaySec downTo 1) {
@@ -8299,12 +8389,12 @@ class ChatViewModel(
                         // class only, wait for connectivity to actually return
                         // before retrying. Bounded so a genuinely offline device
                         // still fails in reasonable time instead of hanging.
-                        if (com.openminis.app.data.DnsFailurePolicy
-                                .isNameResolutionFailure(actual.message)
+                        if (com.openminis.app.data.TransientRetryBudget
+                                .awaitsConnectivity(retryKind)
                         ) {
                             withContext(Dispatchers.Main) {
                                 setTransientInlineError(
-                                    "$errDesc — waiting for network…",
+                                    context.getString(R.string.chat_retry_waiting_network),
                                 )
                             }
                             val online = com.openminis.app.network.NetworkMonitor
@@ -8333,7 +8423,8 @@ class ChatViewModel(
                         // + DB writes left the chat socket idle long enough for a
                         // VPN/proxy to reap it. Other transient errors keep the
                         // pool (live sockets are still useful to them).
-                        if (com.openminis.app.data.StaleConnectionPolicy
+                        if (com.openminis.app.data.TransientRetryBudget.evictsPool(retryKind) ||
+                            com.openminis.app.data.StaleConnectionPolicy
                                 .shouldEvictBeforeRetry(actual.message)
                         ) {
                             AppLogger.warning(
