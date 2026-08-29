@@ -6,14 +6,23 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * [T-provider-ux] Folder grouping inside the chat model picker.
+ * [T-provider-ux] Chat model picker sections.
+ *
+ * The behaviour that matters most here: the picker and the settings provider
+ * list must answer "where does this provider live" identically. A provider in no
+ * folder belongs under its provider type on BOTH screens.
  */
 class ProviderPickerSectionsTest {
 
-    private fun inst(id: String, label: String, folder: String? = null) = ProviderInstance(
+    private fun inst(
+        id: String,
+        label: String,
+        folder: String? = null,
+        type: ProviderType = ProviderType.openAI,
+    ) = ProviderInstance(
         id = id,
         label = label,
-        providerType = ProviderType.openAI,
+        providerType = type,
         credentialType = ProviderCredential.apiKey,
         folder = folder,
     )
@@ -21,46 +30,63 @@ class ProviderPickerSectionsTest {
     private fun counts(vararg pairs: Pair<String, Int>) = pairs.toMap()
 
     @Test
-    fun `instances sharing a folder collapse into one block`() {
+    fun `ungrouped providers are filed under their provider type, like the settings list`() {
+        val list = listOf(
+            inst("1", "key A"),
+            inst("2", "key B"),
+            inst("3", "claude", type = ProviderType.anthropic),
+        )
+        val s = ProviderPickerSections.build(list, counts("1" to 2, "2" to 3, "3" to 1))
+        assertEquals(listOf("OpenAI", "Anthropic"), s.map { it.title })
+        assertEquals(ProviderListSections.Kind.TYPE, s[0].kind)
+        assertEquals(listOf("1", "2"), s[0].instanceIds)
+        assertEquals(5, s[0].entryCount)
+        // The type is carried so the header can wear the brand colour.
+        assertEquals(ProviderType.openAI, s[0].type)
+        assertEquals(ProviderType.anthropic, s[1].type)
+    }
+
+    @Test
+    fun `grouping matches the settings list exactly`() {
         val list = listOf(
             inst("1", "k1", folder = "GoRouter"),
             inst("2", "k2", folder = "GoRouter"),
             inst("3", "loose"),
+            inst("4", "claude", type = ProviderType.anthropic),
         )
-        val blocks = ProviderPickerSections.build(list, counts("1" to 3, "2" to 4, "3" to 2))
-        assertEquals(2, blocks.size)
-        val folder = blocks[0] as ProviderPickerSections.Block.Folder
-        assertEquals("GoRouter", folder.name)
-        assertEquals(listOf("1", "2"), folder.instances)
-        // Header count is the sum, so a collapsed folder still says how much is inside.
-        assertEquals(7, folder.entryCount)
-        assertTrue(blocks[1] is ProviderPickerSections.Block.Loose)
+        val counts = counts("1" to 1, "2" to 1, "3" to 1, "4" to 1)
+        val picker = ProviderPickerSections.build(list, counts).map { it.title to it.kind }
+        val settings = ProviderListSections.build(list).map { it.title to it.kind }
+        assertEquals(settings, picker)
     }
 
     @Test
-    fun `single-instance folder is not given a nesting level`() {
-        // Nesting one provider would cost a tap and buy no grouping.
+    fun `folders keep a nesting level even with one member`() {
+        // Earlier this degraded a single-member folder into a bare card, which
+        // made the same provider appear in a folder on one screen and loose on
+        // the other. Consistency with the settings list wins.
         val list = listOf(inst("1", "only", folder = "Solo"))
-        val blocks = ProviderPickerSections.build(list, counts("1" to 5))
-        assertEquals(1, blocks.size)
-        assertTrue(blocks[0] is ProviderPickerSections.Block.Loose)
-        assertEquals("1", (blocks[0] as ProviderPickerSections.Block.Loose).instanceId)
+        val s = ProviderPickerSections.build(list, counts("1" to 5))
+        assertEquals(1, s.size)
+        assertEquals("Solo", s[0].title)
+        assertEquals(ProviderListSections.Kind.FOLDER, s[0].kind)
     }
 
     @Test
-    fun `instances filtered out by search do not appear`() {
+    fun `entry counts sum across members and drop empty instances`() {
         val list = listOf(
             inst("1", "k1", folder = "GoRouter"),
             inst("2", "k2", folder = "GoRouter"),
         )
-        // Only one child survived the filter → folder degrades to a loose block.
-        val blocks = ProviderPickerSections.build(list, counts("1" to 2))
-        assertEquals(1, blocks.size)
-        assertTrue(blocks[0] is ProviderPickerSections.Block.Loose)
+        // Only one child survived the search filter.
+        val s = ProviderPickerSections.build(list, counts("1" to 2))
+        assertEquals(1, s.size)
+        assertEquals(listOf("1"), s[0].instanceIds)
+        assertEquals(2, s[0].entryCount)
     }
 
     @Test
-    fun `folder whose every child was filtered out disappears entirely`() {
+    fun `section whose every member was filtered out disappears`() {
         val list = listOf(
             inst("1", "k1", folder = "GoRouter"),
             inst("2", "k2", folder = "GoRouter"),
@@ -70,83 +96,61 @@ class ProviderPickerSectionsTest {
 
     @Test
     fun `zero count is treated as absent`() {
-        val list = listOf(inst("1", "k1"))
-        assertTrue(ProviderPickerSections.build(list, counts("1" to 0)).isEmpty())
+        assertTrue(ProviderPickerSections.build(listOf(inst("1", "k")), counts("1" to 0)).isEmpty())
     }
 
     @Test
-    fun `folders come before loose instances and keep alphabetical order`() {
-        val list = listOf(
-            inst("1", "loose"),
-            inst("2", "z1", folder = "Zeta"),
-            inst("3", "z2", folder = "Zeta"),
-            inst("4", "a1", folder = "Alpha"),
-            inst("5", "a2", folder = "Alpha"),
-        )
-        val blocks = ProviderPickerSections.build(
-            list,
-            counts("1" to 1, "2" to 1, "3" to 1, "4" to 1, "5" to 1),
-        )
-        assertEquals(
-            listOf("Alpha", "Zeta"),
-            blocks.filterIsInstance<ProviderPickerSections.Block.Folder>().map { it.name },
-        )
-        assertTrue(blocks.last() is ProviderPickerSections.Block.Loose)
+    fun `picker keys are namespaced away from the settings list keys`() {
+        val list = listOf(inst("1", "k1", folder = "GoRouter"), inst("2", "k2", folder = "GoRouter"))
+        val picker = ProviderPickerSections.build(list, counts("1" to 1, "2" to 1)).single()
+        val settings = ProviderListSections.build(list).single()
+        assertFalse(picker.key == settings.key)
+        assertEquals("picker:" + settings.key, picker.key)
+        // Opening a folder in settings must not open it in the picker.
+        assertFalse(ProviderPickerSections.isExpanded(picker, "", setOf(settings.key)))
     }
 
     @Test
-    fun `folder spelling variants merge`() {
-        val list = listOf(
-            inst("1", "k1", folder = "GoRouter"),
-            inst("2", "k2", folder = "gorouter "),
-        )
-        val blocks = ProviderPickerSections.build(list, counts("1" to 1, "2" to 1))
-        assertEquals(1, blocks.size)
-        assertEquals("GoRouter", (blocks[0] as ProviderPickerSections.Block.Folder).name)
+    fun `folderKey agrees with build`() {
+        val list = listOf(inst("1", "k1", folder = "Go  Router"), inst("2", "k2", folder = "go router"))
+        val built = ProviderPickerSections.build(list, counts("1" to 1, "2" to 1)).single()
+        assertEquals(built.key, ProviderPickerSections.folderKey("GO ROUTER"))
     }
 
     @Test
-    fun `block keys are unique and stable`() {
+    fun `collapsed by default, opened by search or by the user`() {
+        val list = listOf(inst("1", "k1", folder = "GoRouter"), inst("2", "k2", folder = "GoRouter"))
+        val s = ProviderPickerSections.build(list, counts("1" to 1, "2" to 1)).single()
+        assertFalse(ProviderPickerSections.isExpanded(s, "", emptySet()))
+        assertTrue(ProviderPickerSections.isExpanded(s, "gpt", emptySet()))
+        assertTrue(ProviderPickerSections.isExpanded(s, "", setOf(s.key)))
+    }
+
+    @Test
+    fun `the section holding the active model opens itself`() {
+        // Opening the picker onto a wall of closed headers, with no clue which
+        // one holds the current model, is worse than the flat list it replaced.
         val list = listOf(
             inst("1", "k1", folder = "GoRouter"),
             inst("2", "k2", folder = "GoRouter"),
-            inst("3", "loose"),
+            inst("3", "other", folder = "Elsewhere"),
+            inst("4", "other2", folder = "Elsewhere"),
         )
-        val c = counts("1" to 1, "2" to 1, "3" to 1)
-        val first = ProviderPickerSections.build(list, c).map { it.key }
-        val second = ProviderPickerSections.build(list, c).map { it.key }
-        assertEquals(first, second)
-        assertEquals(first.size, first.toSet().size)
+        val sections = ProviderPickerSections.build(
+            list, counts("1" to 1, "2" to 1, "3" to 1, "4" to 1),
+        )
+        val auto = ProviderPickerSections.keysContaining(sections, "2")
+        val go = sections.first { it.title == "GoRouter" }
+        val other = sections.first { it.title == "Elsewhere" }
+        assertEquals(setOf(go.key), auto)
+        assertTrue(ProviderPickerSections.isExpanded(go, "", emptySet(), auto))
+        assertFalse(ProviderPickerSections.isExpanded(other, "", emptySet(), auto))
     }
 
     @Test
-    fun `picker folder keys cannot collide with provider list keys`() {
-        // The two screens persist expansion separately; identical names must not
-        // share one preference entry.
-        assertFalse(
-            ProviderPickerSections.folderKey("GoRouter") ==
-                ProviderListSections.folderKey("GoRouter"),
-        )
-    }
-
-    @Test
-    fun `picker key collapses whitespace so it cannot inject the store delimiter`() {
-        assertEquals("pickerFolder:go router", ProviderPickerSections.folderKey("Go  Router"))
-        assertEquals("pickerFolder:go router", ProviderPickerSections.folderKey("Go\nRouter"))
-    }
-
-    @Test
-    fun `folders are collapsed by default and forced open while searching`() {
-        val list = listOf(
-            inst("1", "k1", folder = "GoRouter"),
-            inst("2", "k2", folder = "GoRouter"),
-        )
-        val folder = ProviderPickerSections
-            .build(list, counts("1" to 1, "2" to 1))
-            .filterIsInstance<ProviderPickerSections.Block.Folder>()
-            .single()
-        assertFalse(ProviderPickerSections.isFolderExpanded(folder, "", emptySet()))
-        assertTrue(ProviderPickerSections.isFolderExpanded(folder, "gpt", emptySet()))
-        assertTrue(ProviderPickerSections.isFolderExpanded(folder, "", setOf(folder.key)))
+    fun `keysContaining tolerates a null or unknown instance`() {
+        val sections = ProviderPickerSections.build(listOf(inst("1", "k")), counts("1" to 1))
+        assertTrue(ProviderPickerSections.keysContaining(sections, null).isEmpty())
+        assertTrue(ProviderPickerSections.keysContaining(sections, "nope").isEmpty())
     }
 }

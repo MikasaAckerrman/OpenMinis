@@ -20,8 +20,20 @@ object ProviderFolders {
     /** Trimmed folder name, or null when the instance is ungrouped. */
     fun normalize(raw: String?): String? = raw?.trim()?.takeIf { it.isNotEmpty() }
 
-    /** Case/whitespace-insensitive identity used to merge spelling variants. */
-    fun key(raw: String?): String? = normalize(raw)?.lowercase()
+    /**
+     * Case/whitespace-insensitive identity used to merge spelling variants.
+     *
+     * Internal whitespace runs are collapsed as well as trimmed, so "Go Router"
+     * and "Go  Router" are one folder. This is THE definition of folder identity
+     * in the codebase — section keys, accent colours and grouping all derive from
+     * it rather than re-implementing the rule, because a second copy that
+     * normalizes slightly differently means two screens disagreeing about
+     * whether two providers are in the same folder.
+     */
+    fun key(raw: String?): String? =
+        normalize(raw)?.replace(WHITESPACE_RUN, " ")?.lowercase()
+
+    private val WHITESPACE_RUN = Regex("\\s+")
 
     data class Section(
         /** Display name — the first spelling seen in config order. */
@@ -49,7 +61,7 @@ object ProviderFolders {
                 ungrouped.add(inst)
                 continue
             }
-            val k = name.lowercase()
+            val k = key(inst.folder) ?: continue
             displayNames.getOrPut(k) { name }
             buckets.getOrPut(k) { ArrayList() }.add(inst)
         }

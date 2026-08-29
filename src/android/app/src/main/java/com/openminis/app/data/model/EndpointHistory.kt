@@ -101,4 +101,49 @@ object EndpointHistory {
             }
             .sortedWith(compareByDescending<Suggestion> { it.useCount }.thenBy { it.url.lowercase() })
     }
+
+    /**
+     * Visible rows for the suggestion list: [query]-filtered, capped at [limit].
+     *
+     * Why a cap: the raw list is as long as the user's provider collection, and
+     * an add-provider form that pushes its own Save button off-screen behind a
+     * 17-row history is worse than no history. The UI scrolls within the cap
+     * instead of growing, and the count of hidden rows is reported so the list
+     * never silently truncates.
+     *
+     * Matching covers the URL and the labels of the instances using it, so
+     * "gorouter" finds the host and "sonnet" finds the host that key sits on.
+     */
+    data class Filtered(
+        val visible: List<Suggestion>,
+        /** How many matched but did not fit in [limit]. */
+        val hiddenCount: Int,
+        /** Total matches, ignoring [limit]. */
+        val matchCount: Int,
+    )
+
+    fun filter(
+        suggestions: List<Suggestion>,
+        query: String,
+        limit: Int = DEFAULT_VISIBLE,
+    ): Filtered {
+        val matched = if (query.isBlank()) suggestions else suggestions.filter { s ->
+            FuzzySearch.matchesAny(query, s.url, *s.labels.toTypedArray())
+        }
+        // limit <= 0 is treated as "no cap" rather than "show nothing": a caller
+        // passing 0 by accident should not silently produce an empty list.
+        val capped = if (limit <= 0) matched else matched.take(limit)
+        return Filtered(
+            visible = capped,
+            hiddenCount = (matched.size - capped.size).coerceAtLeast(0),
+            matchCount = matched.size,
+        )
+    }
+
+    /**
+     * Rows shown before scrolling. Five is a deliberate compromise: enough that
+     * the common gateways are all visible at once, few enough that the endpoint
+     * field and the form below it stay on screen.
+     */
+    const val DEFAULT_VISIBLE: Int = 5
 }

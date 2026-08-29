@@ -41,22 +41,26 @@ object ProviderListSections {
          * searching "gorouter" means the folder, not one key in it.
          */
         val matchedByTitle: Boolean = false,
+        /**
+         * Provider type for a [Kind.TYPE] section, null for folders. Carried
+         * here so the UI can tint the header with the same brand colour as the
+         * dots on the rows inside it, without re-deriving the type from the
+         * title string.
+         */
+        val type: ProviderType? = null,
     )
 
     /**
      * Stable key for a folder section.
      *
-     * Whitespace runs are collapsed to single spaces, which does two things:
-     * "Go  Router" and "Go Router" address one section, and — because the
-     * collapsed-state store is a newline-delimited string — a folder name
-     * carrying a newline (possible via an imported provider JSON, since the UI
-     * field is single-line but the import path is not) cannot corrupt the
-     * preference by injecting a delimiter.
+     * Derived from [ProviderFolders.key], which is the single definition of
+     * folder identity — spelling variants that get merged into one folder must
+     * address one section, and the collapsed-state store is newline-delimited so
+     * a name carrying a newline (reachable via provider import, where nothing
+     * strips control characters) must not inject a delimiter.
      */
     fun folderKey(name: String): String =
-        "folder:" + name.trim().replace(WHITESPACE_RUN, " ").lowercase()
-
-    private val WHITESPACE_RUN = Regex("\\s+")
+        "folder:" + (ProviderFolders.key(name) ?: "")
 
     fun typeKey(type: ProviderType): String = "type:" + type.name
 
@@ -66,8 +70,12 @@ object ProviderListSections {
      * Includes the endpoint because with a dozen same-named relay keys the URL
      * is often the only thing that tells them apart, and excludes the API key
      * for the obvious reason.
+     *
+     * Public because the chat model picker matches providers by the same rule
+     * (via [PickerSearch]); two definitions would mean a query that finds a
+     * provider in settings and not in the picker.
      */
-    private fun instanceMatches(inst: ProviderInstance, query: String): Boolean =
+    fun instanceMatches(inst: ProviderInstance, query: String): Boolean =
         FuzzySearch.matchesAny(
             query,
             inst.label,
@@ -117,6 +125,7 @@ object ProviderListSections {
                     kind = Kind.TYPE,
                     instances = kept,
                     matchedByTitle = titleMatch && query.isNotEmpty(),
+                    type = type,
                 ),
             )
         }

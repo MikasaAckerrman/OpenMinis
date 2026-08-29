@@ -1,109 +1,100 @@
 package com.openminis.app.data.model
 
 /**
- * [T-provider-ux] Grouping for the chat model picker: instances that share a
- * folder are gathered under one collapsible folder block, everything else stays
- * a top-level block exactly as before.
+ * [T-provider-ux] Section layout for the chat model picker.
  *
- * Why: the picker listed one card per provider instance. With a dozen keys on
- * the same gateway that is a dozen near-identical cards to scroll past, which is
- * the "everything mixed together" complaint. Folders already exist as a concept
- * in the provider list, so the picker reuses [ProviderFolders] rather than
- * inventing a second grouping rule that could disagree with the settings screen.
+ * Grouping is NOT defined here — it delegates to [ProviderListSections], which
+ * is what the settings provider list uses. That is the point: the picker used to
+ * render one flat card per instance, so a provider that belongs to no folder had
+ * no visible home at all, while the settings screen filed it under its provider
+ * type ("OpenAI"). Two screens describing the same providers differently is the
+ * "everything mixed together" complaint. Now both answer "where does this
+ * provider live" with one function.
  *
- * Ordering is deliberately NOT alphabetical across the whole list: folders keep
- * [ProviderFolders]'s alphabetical order and appear first, then loose instances
- * in config order. That matches the provider list, so the two screens read the
- * same way.
+ * What this object adds on top: entry counts (an instance whose models were all
+ * filtered out must not leave an empty card behind) and the collapse rules.
  */
 object ProviderPickerSections {
 
-    sealed interface Block {
+    data class Section(
         /** Stable key for LazyColumn identity and persisted collapse state. */
-        val key: String
-
-        /** A user folder holding one or more instances. */
-        data class Folder(
-            override val key: String,
-            val name: String,
-            /** Instance id → its entries, in the order the picker should render. */
-            val instances: List<String>,
-            /** Total entries across [instances] — shown on the collapsed header. */
-            val entryCount: Int,
-        ) : Block
-
-        /** A single instance with no folder. */
-        data class Loose(
-            override val key: String,
-            val instanceId: String,
-        ) : Block
-    }
+        val key: String,
+        val title: String,
+        val kind: ProviderListSections.Kind,
+        /** Member instance ids, in the order the picker should render them. */
+        val instanceIds: List<String>,
+        /** Total entries across [instanceIds] — shown on the collapsed header. */
+        val entryCount: Int,
+        /** Provider type for a TYPE section; null for folders. Drives the accent. */
+        val type: ProviderType? = null,
+    )
 
     /**
-     * Stable key for a picker folder block.
-     *
-     * Whitespace-collapsed for the same reason as
-     * [ProviderListSections.folderKey]: the collapsed-state store is a
-     * newline-delimited string, and a folder name can reach the app through the
-     * provider-import path where nothing strips newlines.
+     * Namespace the settings-list key so the two screens keep INDEPENDENT
+     * collapse state. Sharing it would mean opening a folder in settings
+     * silently opened it in the chat picker, which is not what either gesture
+     * asked for.
      */
-    fun folderKey(name: String): String =
-        "pickerFolder:" + name.trim().replace(Regex("\\s+"), " ").lowercase()
+    fun sectionKey(listKey: String): String = "picker:$listKey"
+
+    /** Convenience for tests and callers that only have a folder name. */
+    fun folderKey(name: String): String = sectionKey(ProviderListSections.folderKey(name))
 
     /**
-     * Build the block list.
+     * Build the sections.
      *
-     * @param instanceEntryCounts instance id → number of entries that survived
-     *   the picker's own search filter. Instances absent from this map (or with
-     *   0) are dropped: the picker already removes empty providers, and a folder
-     *   whose every child was filtered out must disappear rather than render as
-     *   an empty header.
      * @param instances all enabled instances, in config order.
+     * @param instanceEntryCounts instance id → number of entries that survived
+     *   the picker's own search filter. Absent or 0 means the instance is
+     *   dropped, and a section left with no members disappears rather than
+     *   rendering as a bare header.
      */
     fun build(
         instances: List<ProviderInstance>,
         instanceEntryCounts: Map<String, Int>,
-    ): List<Block> {
+    ): List<Section> {
         val visible = instances.filter { (instanceEntryCounts[it.id] ?: 0) > 0 }
-        val layout = ProviderFolders.layout(visible)
-        val out = ArrayList<Block>()
-
-        for (folder in layout.folders) {
-            // A folder with a single instance is NOT worth a nesting level — it
-            // would add a tap to reach one provider and make the list deeper for
-            // no grouping benefit. Render it as if it were loose.
-            if (folder.instances.size == 1) {
-                val only = folder.instances.first()
-                out.add(Block.Loose(key = "pickerInstance:${only.id}", instanceId = only.id))
-                continue
-            }
-            out.add(
-                Block.Folder(
-                    key = folderKey(folder.name),
-                    name = folder.name,
-                    instances = folder.instances.map { it.id },
-                    entryCount = folder.instances.sumOf { instanceEntryCounts[it.id] ?: 0 },
-                ),
+        return ProviderListSections.build(visible).map { section ->
+            Section(
+                key = sectionKey(section.key),
+                title = section.title,
+                kind = section.kind,
+                instanceIds = section.instances.map { it.id },
+                entryCount = section.instances.sumOf { instanceEntryCounts[it.id] ?: 0 },
+                type = section.type,
             )
         }
-
-        for (inst in layout.ungrouped) {
-            out.add(Block.Loose(key = "pickerInstance:${inst.id}", instanceId = inst.id))
-        }
-
-        return out
     }
 
     /**
-     * Whether a folder block renders open.
+     * Whether a section renders open.
      *
-     * Same rule as the provider list: collapsed by default, but a non-empty
-     * search forces every folder open, because a match hidden inside a closed
-     * folder looks like "no results".
+     * Three reasons a section opens, in order of precedence:
+     *  1. A non-empty search — a match hidden inside a closed section looks like
+     *     "no results".
+     *  2. It contains the currently active model. Opening the picker should show
+     *     you where you are; landing on a wall of closed headers with no clue
+     *     which one holds the current selection is worse than the flat list it
+     *     replaced.
+     *  3. The user opened it, which is remembered.
      */
-    fun isFolderExpanded(
-        block: Block.Folder,
+    fun isExpanded(
+        section: Section,
         query: String,
-        expandedKeys: Set<String>,
-    ): Boolean = query.isNotEmpty() || block.key in expandedKeys
+        userExpandedKeys: Set<String>,
+        autoExpandKeys: Set<String> = emptySet(),
+    ): Boolean = query.isNotEmpty() ||
+        section.key in autoExpandKeys ||
+        section.key in userExpandedKeys
+
+    /**
+     * Keys of the sections holding [instanceId] — the auto-expand set for the
+     * active model. Returns a set rather than a single key because an instance
+     * can only be in one section today, but callers pass several (active entry
+     * plus, later, pinned ones) and a set makes that a non-change.
+     */
+    fun keysContaining(sections: List<Section>, instanceId: String?): Set<String> {
+        if (instanceId == null) return emptySet()
+        return sections.filter { instanceId in it.instanceIds }.map { it.key }.toSet()
+    }
 }

@@ -92,6 +92,8 @@ jobs:
             --tests 'com.openminis.app.data.model.EndpointHistoryTest' \
             --tests 'com.openminis.app.data.model.ProviderListSectionsTest' \
             --tests 'com.openminis.app.data.model.ProviderPickerSectionsTest' \
+            --tests 'com.openminis.app.data.model.SectionAccentTest' \
+            --tests 'com.openminis.app.data.model.PickerSearchTest' \
             --tests 'com.openminis.app.feedback.CompletionFeedbackPolicyTest' \
             --tests 'com.openminis.app.feedback.VibrationPatternsTest' \
             --tests 'com.openminis.app.data.MessageSurgeryMergedTurnTest' \

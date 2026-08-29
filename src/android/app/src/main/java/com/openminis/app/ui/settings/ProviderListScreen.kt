@@ -52,6 +52,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.res.stringResource
 import com.openminis.app.data.model.ProviderInstance
 import com.openminis.app.data.model.ProviderListSections
+import com.openminis.app.data.model.SectionAccent
 import com.openminis.app.data.repository.ProviderRepository
 import com.openminis.app.ui.components.SectionTextField
 import com.openminis.app.R
@@ -340,6 +341,9 @@ private fun ProviderSectionCard(
     content: @Composable ColumnScope.() -> Unit,
 ) {
     SettingsSection(header = section.title) {
+        val accent = Color(
+            SectionAccent.forSection(section.kind, section.title, section.type),
+        )
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -347,16 +351,28 @@ private fun ProviderSectionCard(
                 .padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(
-                imageVector = if (section.kind == ProviderListSections.Kind.FOLDER) {
-                    Icons.Outlined.Folder
-                } else {
-                    Icons.Outlined.VpnKey
-                },
-                contentDescription = null,
-                modifier = Modifier.size(20.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            // Accent-tinted icon chip: a type section wears its provider's brand
+            // colour (matching the dots on the rows inside it), a folder wears a
+            // palette colour that cannot be mistaken for a brand hue. Without
+            // this, every header was the same grey and a screen of collapsed
+            // sections gave no clue what kind of thing you were looking at.
+            Box(
+                modifier = Modifier
+                    .size(30.dp)
+                    .background(accent.copy(alpha = 0.18f), RoundedCornerShape(9.dp)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = if (section.kind == ProviderListSections.Kind.FOLDER) {
+                        Icons.Outlined.Folder
+                    } else {
+                        Icons.Outlined.VpnKey
+                    },
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = accent,
+                )
+            }
             Spacer(Modifier.width(12.dp))
             Text(
                 // The count stays visible while collapsed — a closed section

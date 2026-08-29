@@ -922,7 +922,10 @@
     <string name="provider_detail_duplicate_done">Duplicated as \"%1$s\"</string>
     <string name="provider_detail_duplicate_failed">Could not duplicate this provider</string>
     <string name="provider_detail_duplicate_footer">Creates a second provider with the same endpoint, models and API key. Useful for reusing one gateway key with different settings.</string>
-    <string name="add_provider_endpoint_recent">Previously used endpoints</string>
+    <string name="add_provider_endpoint_recent_count_header">Previously used endpoints (%1$d)</string>
+    <string name="add_provider_endpoint_recent_search">Search endpoints</string>
+    <string name="add_provider_endpoint_recent_none">No matching endpoint</string>
+    <string name="add_provider_endpoint_recent_more">%1$d more — use search to narrow</string>
     <string name="add_provider_endpoint_recent_count">Used by %1$d</string>
     <string name="add_provider_endpoint_recent_other_type">Used with %1$s</string>
     <string name="model_picker_folder_summary">%1$d providers · %2$d models</string>
@@ -1311,7 +1314,7 @@
     <string name="thinking_level_sheet_title">Thinking Intensity</string>
     <string name="model_picker_title">Choose Model</string>
     <string name="model_picker_done">Done</string>
-    <string name="model_picker_search_placeholder">Search models</string>
+    <string name="model_picker_search_placeholder">Search providers and models</string>
     <string name="model_picker_search_clear">Clear</string>
     <string name="model_picker_groups_section">Model Groups</string>
     <string name="model_picker_groups_edit">Edit</string>

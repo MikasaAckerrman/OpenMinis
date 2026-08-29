@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -31,6 +32,9 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Diamond
 import androidx.compose.material.icons.filled.FlashOn
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Key
@@ -75,6 +79,7 @@ import com.openminis.app.data.model.EndpointHistory
 import com.openminis.app.data.model.ProviderCredential
 import com.openminis.app.data.model.ProviderInstance
 import com.openminis.app.data.model.ProviderType
+import com.openminis.app.data.model.SectionAccent
 import com.openminis.app.data.repository.ProviderRepository
 import com.openminis.app.R
 import kotlinx.coroutines.launch
@@ -191,15 +196,35 @@ private val providerDisplayOrder = listOf(
     ProviderType.openRouter,
 )
 
-/** Icon and color per provider type, matching iOS SF Symbols. */
-private fun providerIcon(type: ProviderType): Pair<ImageVector, Color> = when (type) {
-    ProviderType.openAI -> Icons.Default.Hub to Color(0xFF4CAF50)           // green
-    ProviderType.anthropic -> Icons.Default.AutoAwesome to Color(0xFFAB47BC) // purple
-    ProviderType.gemini -> Icons.Default.Diamond to Color(0xFF42A5F5)        // blue
-    ProviderType.openRouter -> Icons.Default.AltRoute to Color(0xFF00BCD4)    // cyan
-    ProviderType.xAI -> Icons.Default.FlashOn to Color(0xFFFF7043)           // orange — Grok visual cue
-    // [T-kimi-oauth] Indigo — matches iOS's Kimi accent.
-    ProviderType.kimiCode -> Icons.Default.Terminal to Color(0xFF5C6BC0)
+/**
+ * Max height of the endpoint-history list before it scrolls.
+ *
+ * Sized for [EndpointHistory.DEFAULT_VISIBLE] rows at the ~44dp each row
+ * occupies (two text lines plus 8dp vertical padding). A pixel height rather
+ * than a row count because Compose has no "show N children then scroll"
+ * primitive, and the point of the cap is bounded SPACE — the form and its Save
+ * button must stay reachable regardless of how tall a row ends up.
+ */
+private val ENDPOINT_HISTORY_MAX_HEIGHT = 220.dp
+
+/**
+ * Icon and color per provider type, matching iOS SF Symbols.
+ *
+ * [T-provider-ux] Colours come from [SectionAccent] rather than repeated
+ * literals: this table, the chat picker's dots and the section headers were
+ * three copies of one palette.
+ */
+private fun providerIcon(type: ProviderType): Pair<ImageVector, Color> {
+    val icon = when (type) {
+        ProviderType.openAI -> Icons.Default.Hub
+        ProviderType.anthropic -> Icons.Default.AutoAwesome
+        ProviderType.gemini -> Icons.Default.Diamond
+        ProviderType.openRouter -> Icons.Default.AltRoute
+        ProviderType.xAI -> Icons.Default.FlashOn
+        // [T-kimi-oauth] Terminal glyph — matches iOS's Kimi treatment.
+        ProviderType.kimiCode -> Icons.Default.Terminal
+    }
+    return icon to Color(SectionAccent.providerTypeColor(type))
 }
 
 /** Returns available credential types per provider. */
@@ -600,54 +625,152 @@ private fun ColumnScope.ApiKeyConfigSection(
                 // Retyping a gateway host from memory for the twelfth key is
                 // where typos come from, and a typo'd base URL fails as an auth
                 // error, which sends the user hunting the wrong problem.
-                // Suggestions are ordered by how often each is used.
+                //
+                // COLLAPSED by default and capped at 5 rows with its own search:
+                // an expanded 17-row history pushes the rest of the form (and
+                // the Save button) off screen, so the affordance that was meant
+                // to save typing costs a scroll instead. The header states the
+                // count, so a closed list is not a dead end.
                 val allInstances = providerRepository.config.collectAsState().value.instances
                 val endpointSuggestions = remember(allInstances, providerType) {
                     EndpointHistory.suggestions(allInstances, providerType)
                 }
                 if (endpointSuggestions.isNotEmpty()) {
-                    Spacer(Modifier.height(8.dp))
-                    RowLabel(text = stringResource(R.string.add_provider_endpoint_recent))
-                    endpointSuggestions.forEach { s ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { onCustomBaseURLChange(s.url) }
-                                .padding(vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = s.url,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                )
-                                Text(
-                                    // A host that has only ever served a
-                                    // different provider type is usually the
-                                    // wrong paste (an Anthropic relay dropped
-                                    // into OpenAI 404s in a way that looks like
-                                    // a key problem), so say so instead of
-                                    // silently offering it as equivalent.
-                                    text = if (s.usedByOtherType) {
-                                        stringResource(
-                                            R.string.add_provider_endpoint_recent_other_type,
-                                            s.types.joinToString(", ") { it.displayName },
-                                        )
-                                    } else {
-                                        stringResource(
-                                            R.string.add_provider_endpoint_recent_count,
-                                            s.useCount,
-                                        )
-                                    },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = if (s.usedByOtherType) {
-                                        MaterialTheme.colorScheme.error
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurfaceVariant
-                                    },
-                                )
+                    var historyOpen by remember { mutableStateOf(false) }
+                    var historyQuery by remember { mutableStateOf("") }
+                    // Searching implies wanting to see results; keeping the list
+                    // closed while the user types into it would be absurd.
+                    val filtered = remember(endpointSuggestions, historyQuery) {
+                        EndpointHistory.filter(endpointSuggestions, historyQuery)
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                historyOpen = !historyOpen
+                                if (!historyOpen) historyQuery = ""
                             }
+                            .padding(vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Default.History,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            text = stringResource(
+                                R.string.add_provider_endpoint_recent_count_header,
+                                endpointSuggestions.size,
+                            ),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Icon(
+                            if (historyOpen) Icons.Default.KeyboardArrowUp
+                            else Icons.Default.KeyboardArrowDown,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (historyOpen) {
+                        // The search field only earns its space once the list is
+                        // longer than what fits without scrolling.
+                        if (endpointSuggestions.size > EndpointHistory.DEFAULT_VISIBLE) {
+                            SectionTextField(
+                                value = historyQuery,
+                                onValueChange = { historyQuery = it },
+                                placeholder = stringResource(
+                                    R.string.add_provider_endpoint_recent_search,
+                                ),
+                                singleLine = true,
+                            )
+                        }
+                        if (filtered.visible.isEmpty()) {
+                            Text(
+                                text = stringResource(R.string.add_provider_endpoint_recent_none),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(vertical = 10.dp),
+                            )
+                        }
+                        // Fixed max height + scroll rather than an unbounded
+                        // Column: the cap is what keeps the form usable, and a
+                        // scrollable region makes the rest reachable without
+                        // growing the page.
+                        Column(
+                            modifier = Modifier
+                                .heightIn(max = ENDPOINT_HISTORY_MAX_HEIGHT)
+                                .verticalScroll(rememberScrollState()),
+                        ) {
+                            filtered.visible.forEach { s ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            onCustomBaseURLChange(s.url)
+                                            // Picking a value answers the
+                                            // question the list was open for.
+                                            historyOpen = false
+                                            historyQuery = ""
+                                        }
+                                        .padding(vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = s.url,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                        )
+                                        Text(
+                                            // A host that has only ever served a
+                                            // different provider type is usually
+                                            // the wrong paste (an Anthropic relay
+                                            // dropped into OpenAI 404s in a way
+                                            // that looks like a key problem), so
+                                            // say so instead of silently offering
+                                            // it as equivalent.
+                                            text = if (s.usedByOtherType) {
+                                                stringResource(
+                                                    R.string.add_provider_endpoint_recent_other_type,
+                                                    s.types.joinToString(", ") { it.displayName },
+                                                )
+                                            } else {
+                                                stringResource(
+                                                    R.string.add_provider_endpoint_recent_count,
+                                                    s.useCount,
+                                                )
+                                            },
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = if (s.usedByOtherType) {
+                                                MaterialTheme.colorScheme.error
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurfaceVariant
+                                            },
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        // Never truncate silently: say how many matches the cap
+                        // is hiding, so the search field is discoverable as the
+                        // way to reach them.
+                        if (filtered.hiddenCount > 0) {
+                            Text(
+                                text = stringResource(
+                                    R.string.add_provider_endpoint_recent_more,
+                                    filtered.hiddenCount,
+                                ),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 4.dp, bottom = 8.dp),
+                            )
                         }
                     }
                 }

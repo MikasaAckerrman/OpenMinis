@@ -137,6 +137,83 @@ class EndpointHistoryTest {
         assertEquals(listOf(ProviderType.openAI, ProviderType.anthropic), s.types)
     }
 
+    // ── filter / cap ────────────────────────────────────────────────────────
+
+    @Test
+    fun `filter caps the visible rows and reports what was hidden`() {
+        val list = (1..9).map { inst("$it", "k$it", url = "https://h$it.example") }
+        val all = EndpointHistory.suggestions(list)
+        assertEquals(9, all.size)
+        val f = EndpointHistory.filter(all, "", limit = 5)
+        assertEquals(5, f.visible.size)
+        assertEquals(4, f.hiddenCount)
+        assertEquals(9, f.matchCount)
+    }
+
+    @Test
+    fun `filter keeps the most-used rows, not an arbitrary five`() {
+        val list = listOf(
+            inst("1", "a", url = "https://rare.example"),
+            inst("2", "b", url = "https://common.example"),
+            inst("3", "c", url = "https://common.example"),
+        )
+        val f = EndpointHistory.filter(EndpointHistory.suggestions(list), "", limit = 1)
+        assertEquals("https://common.example", f.visible.single().url)
+    }
+
+    @Test
+    fun `filter matches the url`() {
+        val list = listOf(
+            inst("1", "a", url = "https://gorouter.app"),
+            inst("2", "b", url = "https://agentrouter.org"),
+        )
+        val f = EndpointHistory.filter(EndpointHistory.suggestions(list), "gorou")
+        assertEquals("https://gorouter.app", f.visible.single().url)
+        assertEquals(0, f.hiddenCount)
+    }
+
+    @Test
+    fun `filter also matches the labels of instances using the endpoint`() {
+        // Searching the key you remember should find the host it sits on.
+        val list = listOf(
+            inst("1", "Sonnet main", url = "https://gorouter.app"),
+            inst("2", "other", url = "https://elsewhere.example"),
+        )
+        val f = EndpointHistory.filter(EndpointHistory.suggestions(list), "sonnet")
+        assertEquals("https://gorouter.app", f.visible.single().url)
+    }
+
+    @Test
+    fun `filter with no matches yields an empty visible list, not everything`() {
+        val list = listOf(inst("1", "a", url = "https://gorouter.app"))
+        val f = EndpointHistory.filter(EndpointHistory.suggestions(list), "zzzzz")
+        assertTrue(f.visible.isEmpty())
+        assertEquals(0, f.matchCount)
+        assertEquals(0, f.hiddenCount)
+    }
+
+    @Test
+    fun `blank query is not treated as a filter`() {
+        val list = listOf(inst("1", "a", url = "https://gorouter.app"))
+        assertEquals(1, EndpointHistory.filter(EndpointHistory.suggestions(list), "   ").matchCount)
+    }
+
+    @Test
+    fun `non-positive limit means no cap rather than an empty list`() {
+        // A caller passing 0 by accident should not silently hide the history.
+        val list = (1..7).map { inst("$it", "k$it", url = "https://h$it.example") }
+        val all = EndpointHistory.suggestions(list)
+        assertEquals(7, EndpointHistory.filter(all, "", limit = 0).visible.size)
+        assertEquals(7, EndpointHistory.filter(all, "", limit = -3).visible.size)
+    }
+
+    @Test
+    fun `hiddenCount is never negative when fewer rows than the cap`() {
+        val list = listOf(inst("1", "a", url = "https://gorouter.app"))
+        val f = EndpointHistory.filter(EndpointHistory.suggestions(list), "", limit = 5)
+        assertEquals(0, f.hiddenCount)
+    }
+
     // ── FuzzySearch ─────────────────────────────────────────────────────────
 
     @Test
