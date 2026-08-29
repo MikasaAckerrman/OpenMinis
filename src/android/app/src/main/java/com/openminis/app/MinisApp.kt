@@ -266,6 +266,13 @@ class MinisApp : Application(), ImageLoaderFactory {
         // `LoggingManager.startIfEnabled()` (called from MinisApp.swift:143).
         AppLogger.init(this)
 
+        // [T-mutation-journal] Deliberately independent of AppLogger's on/off
+        // preference: AppLogger defaults to DISABLED, which is why the 2c7ae861
+        // history loss had zero app-side evidence. The journal is always on and
+        // records only destructive DB events, so it is both cheap and the one
+        // file that can answer "where did my messages go".
+        com.openminis.app.data.MutationJournal.init(this)
+
         // Bug 2 (MIUI silent kill) diagnostic: write a launch-cycle beacon
         // so a subsequent launch can observe whether the previous run
         // exited cleanly (onTerminate hit) or was force-killed by LMK /

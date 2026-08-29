@@ -787,6 +787,17 @@ object DebugMethodRegistry {
             example = ex("sessionId" to "6D0F…", "dryRun" to true),
         ),
         MethodSpec(
+            name = "chat.journal.read",
+            description = "Read the always-on mutation journal — every truncation, refusal, wipe, rewrite, compact and archive-restore, tab-separated, oldest→newest. Independent of the Settings logging toggle, so it is populated even when app logging was never enabled.",
+            params = listOf(
+                ParamSpec("limit", "int", required = false, default = 200, description = "Return at most this many of the newest matching lines. Clamped [1,5000]."),
+                ParamSpec("sessionId", "string", required = false, description = "Only lines for this session (matched on the journalled 8-char prefix)."),
+                ParamSpec("kind", "string", required = false, description = "Filter by event kind: DELETE | REFUSE | WIPE | REWRITE | COMPACT | RESTORE."),
+            ),
+            returns = "{exists, path, sizeBytes, totalLines, matchedLines, count, lines:[string]}",
+            example = ex("sessionId" to "2c7ae861", "kind" to "DELETE"),
+        ),
+        MethodSpec(
             name = "chat.session.delete",
             description = "Permanently delete a session and its messages. Cancels any in-flight run first.",
             params = listOf(

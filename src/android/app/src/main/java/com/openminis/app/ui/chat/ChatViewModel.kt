@@ -2039,6 +2039,17 @@ class ChatViewModel(
                     .onFailure {
                         Log.w(TAG, "Failed to persist compact marker: ${it.message}")
                     }
+                // [T-mutation-journal] Compaction folds context; it must NEVER
+                // remove rows. Journalling it makes that verifiable: a COMPACT
+                // line with no adjacent DELETE line is proof the messages stayed
+                // on disk. The reverse (rows vanishing around a compact) would
+                // show up immediately.
+                com.openminis.app.data.MutationJournal.recordCompact(
+                    sessionId = sid,
+                    anchorMessageId = lastCompactedDbId,
+                    compactedCount = toCompact.size,
+                    summaryLength = summary.length,
+                )
                 _compactSummary.value = summary
                 // Keep the marker in memory so effectiveAgentHistory() can
                 // resolve the boundary on the very next outgoing turn.
@@ -2318,6 +2329,15 @@ class ChatViewModel(
                 for (id in plan.deleteIds) {
                     removed += runCatching { chatRepository.dao.deleteMessageById(sid, id) }.getOrDefault(0)
                 }
+                // [T-mutation-journal] Single-row surgery is the one delete path
+                // that intentionally has NO archive (the user is removing a turn
+                // from a session they keep using). Journal it so it can never be
+                // confused with rows vanishing on their own.
+                com.openminis.app.data.MutationJournal.recordWipe(
+                    sessionId = sid,
+                    op = "surgery-delete(${plan.deleteIds.size}→$removed)",
+                    totalRows = surgical.size,
+                )
 
                 // [T-delete-attachment-bytes] Drop the attachment FILES of every
                 // row we just removed. Nothing else can reference them —
@@ -5094,6 +5114,15 @@ class ChatViewModel(
         // Persist: drop messages + compact markers. Files (workspace,
         // attachments, offloads) intentionally retained.
         viewModelScope.launch {
+            // [T-mutation-journal] clearChat is the one intentional whole-session
+            // wipe reachable from the chat UI. Journal it so "all my messages are
+            // gone" can be answered with "you confirmed Clear Chat at HH:MM"
+            // instead of a shrug.
+            com.openminis.app.data.MutationJournal.recordWipe(
+                sessionId = sid,
+                op = "clearChat",
+                totalRows = runCatching { chatRepository.messageCount(sid) }.getOrDefault(-1),
+            )
             chatRepository.dao.deleteMessages(sid)
             chatRepository.dao.deleteCompactMarkers(sid)
             Log.i(TAG, "clearChat: session=$sid wiped (files preserved)")
@@ -5545,6 +5574,13 @@ class ChatViewModel(
                         "строкой БД (sourceDbIds=${message.sourceDbIds.size}, rows=${cutoffRows.size}) — " +
                         "история НЕ изменена",
                 )
+                com.openminis.app.data.MutationJournal.recordRefusal(
+                    sessionId = sid,
+                    op = "retry",
+                    keepCount = -1,
+                    totalRows = cutoffRows.size,
+                    reason = "anchor-unresolved",
+                )
                 withContext(Dispatchers.Main) {
                     appendSystemInfo(
                         text = context.getString(R.string.chat_cutoff_unresolved),
@@ -5560,6 +5596,13 @@ class ChatViewModel(
                     "[Retry] отказ: cutoff=$cutoffSortOrder удалил бы " +
                         "${cutoffRows.size - cutoffSortOrder} из ${cutoffRows.size} строк — " +
                         "якорь заведомо неверный, история НЕ изменена",
+                )
+                com.openminis.app.data.MutationJournal.recordRefusal(
+                    sessionId = sid,
+                    op = "retry",
+                    keepCount = cutoffSortOrder,
+                    totalRows = cutoffRows.size,
+                    reason = "implausible",
                 )
                 withContext(Dispatchers.Main) {
                     appendSystemInfo(
@@ -5845,6 +5888,13 @@ class ChatViewModel(
                 TAG,
                 "[Edit] отказ: cutoff=$cutoffSortOrder rows=${cutoffRows.size} " +
                     "sourceDbIds=${edited.sourceDbIds.size} — история НЕ изменена",
+            )
+            com.openminis.app.data.MutationJournal.recordRefusal(
+                sessionId = sid,
+                op = "edit",
+                keepCount = cutoffSortOrder,
+                totalRows = cutoffRows.size,
+                reason = if (cutoffSortOrder < 0) "anchor-unresolved" else "implausible",
             )
             appendSystemInfo(
                 text = context.getString(R.string.chat_cutoff_unresolved),

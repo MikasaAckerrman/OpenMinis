@@ -161,6 +161,8 @@ class DebugRPCHandler(private val context: Context) {
             // [T-deleted-archive-rpc] Archive of rows removed by retry/edit.
             "chat.deleted.list" -> DeletedMessagesMethods.list(context, params)
             "chat.deleted.restore" -> DeletedMessagesMethods.restore(context, params)
+            // [T-mutation-journal] Always-on record of destructive DB operations.
+            "chat.journal.read" -> MutationJournalMethods.read(context, params)
 
             // Debug-only: direct CLI / offload-handler invocation (T344).
             // Registered solely on DEBUG builds so release APKs cannot expose it.

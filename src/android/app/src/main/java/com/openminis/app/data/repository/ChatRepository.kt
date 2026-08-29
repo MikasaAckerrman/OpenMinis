@@ -113,10 +113,23 @@ class ChatRepository(internal val dao: ChatDao) {
         val runId = session?.agentRunId
         if (session?.isAgentShowcase == 1 && runId != null) {
             for (worker in dao.listAgentRunSessions(runId)) {
+                // [T-mutation-journal] Journal each wipe: an explicit session
+                // delete is legitimate, but it must be distinguishable after the
+                // fact from rows vanishing on their own.
+                com.openminis.app.data.MutationJournal.recordWipe(
+                    sessionId = worker.id,
+                    op = "deleteSession-worker",
+                    totalRows = dao.messageCountForSession(worker.id),
+                )
                 dao.deleteMessages(worker.id)
                 dao.deleteSession(worker.id)
             }
         }
+        com.openminis.app.data.MutationJournal.recordWipe(
+            sessionId = id,
+            op = "deleteSession",
+            totalRows = dao.messageCountForSession(id),
+        )
         dao.deleteMessages(id)
         dao.deleteSession(id)
     }
@@ -254,6 +267,13 @@ class ChatRepository(internal val dao: ChatDao) {
                     "session=${sessionId.take(8)} keepCount=$keepCount total=$totalRows: " +
                     verdict.reason,
             )
+            com.openminis.app.data.MutationJournal.recordRefusal(
+                sessionId = sessionId,
+                op = reason,
+                keepCount = keepCount,
+                totalRows = totalRows,
+                reason = "chokepoint",
+            )
             return -1
         }
         val doomed = (totalRows - keepCount).coerceAtLeast(0)
@@ -262,6 +282,15 @@ class ChatRepository(internal val dao: ChatDao) {
             keepCount = keepCount,
             deletedAt = System.currentTimeMillis(),
             reason = reason,
+        )
+        // [T-mutation-journal] Recorded AFTER the transaction commits, so a line
+        // in the journal means the rows really are gone (and archived).
+        com.openminis.app.data.MutationJournal.recordDelete(
+            sessionId = sessionId,
+            op = reason,
+            keepCount = keepCount,
+            totalRows = totalRows,
+            removed = doomed,
         )
         return doomed
     }

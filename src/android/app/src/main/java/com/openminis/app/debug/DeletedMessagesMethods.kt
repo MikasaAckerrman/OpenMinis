@@ -103,6 +103,11 @@ internal object DeletedMessagesMethods {
                     )
                 },
             )
+            com.openminis.app.data.MutationJournal.recordRestore(
+                sessionId = sessionId,
+                restored = toInsert.size,
+                skipped = skipped.size,
+            )
         }
 
         return JSONObject().apply {
