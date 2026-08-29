@@ -133,8 +133,10 @@ jobs:
             --tests 'com.openminis.app.data.TransientRetryBudgetTest' \
             --tests 'com.openminis.app.data.CompactDividerCountTest' \
             --tests 'com.openminis.app.data.MutationJournalTest' \
+            --tests 'com.openminis.app.data.SessionDeletionPolicyTest' \
             --tests 'com.openminis.app.debug.HeadlessRetryStatusTest' \
             --tests 'com.openminis.app.ui.chat.UiCopyCapsuleTest' \
+            --tests 'com.openminis.app.ui.chat.UiCopyDiffVerdictTest' \
             --tests 'com.openminis.app.ui.chat.MinisTextKitSelectionOrderTest'
         # `offload.*` already covers AgentArtifactStoreTest — the artifact store
         # lives in that package on purpose, next to the runner that uses it.
