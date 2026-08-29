@@ -604,7 +604,8 @@ private fun ColumnScope.ApiKeyConfigSection(
                 val allInstances = providerRepository.config.collectAsState().value.instances
                 val endpointSuggestions = remember(allInstances, providerType) {
                     EndpointHistory.suggestions(allInstances, providerType)
-                }                if (endpointSuggestions.isNotEmpty()) {
+                }
+                if (endpointSuggestions.isNotEmpty()) {
                     Spacer(Modifier.height(8.dp))
                     RowLabel(text = stringResource(R.string.add_provider_endpoint_recent))
                     endpointSuggestions.forEach { s ->
