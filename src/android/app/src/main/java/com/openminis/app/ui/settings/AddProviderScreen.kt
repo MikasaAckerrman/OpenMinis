@@ -71,6 +71,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.res.stringResource
 import com.openminis.app.auth.OpenAIOAuthManager
 import com.openminis.app.auth.OpenRouterOAuthManager
+import com.openminis.app.data.model.EndpointHistory
 import com.openminis.app.data.model.ProviderCredential
 import com.openminis.app.data.model.ProviderInstance
 import com.openminis.app.data.model.ProviderType
@@ -594,6 +595,61 @@ private fun ColumnScope.ApiKeyConfigSection(
                     placeholder = defaultUrl,
                     singleLine = true,
                 )
+                // [T-provider-ux] Endpoints already in use, mined from the
+                // existing instances (EndpointHistory, pure + unit-tested).
+                // Retyping a gateway host from memory for the twelfth key is
+                // where typos come from, and a typo'd base URL fails as an auth
+                // error, which sends the user hunting the wrong problem.
+                // Suggestions are ordered by how often each is used.
+                val allInstances = providerRepository.config.collectAsState().value.instances
+                val endpointSuggestions = remember(allInstances, providerType) {
+                    EndpointHistory.suggestions(allInstances, providerType)
+                }                if (endpointSuggestions.isNotEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    RowLabel(text = stringResource(R.string.add_provider_endpoint_recent))
+                    endpointSuggestions.forEach { s ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onCustomBaseURLChange(s.url) }
+                                .padding(vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = s.url,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
+                                Text(
+                                    // A host that has only ever served a
+                                    // different provider type is usually the
+                                    // wrong paste (an Anthropic relay dropped
+                                    // into OpenAI 404s in a way that looks like
+                                    // a key problem), so say so instead of
+                                    // silently offering it as equivalent.
+                                    text = if (s.usedByOtherType) {
+                                        stringResource(
+                                            R.string.add_provider_endpoint_recent_other_type,
+                                            s.types.joinToString(", ") { it.displayName },
+                                        )
+                                    } else {
+                                        stringResource(
+                                            R.string.add_provider_endpoint_recent_count,
+                                            s.useCount,
+                                        )
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (s.usedByOtherType) {
+                                        MaterialTheme.colorScheme.error
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
             }
             // Auto Append "/v1" toggle (not for Gemini — Gemini uses full path)
             if (providerType != ProviderType.gemini) {

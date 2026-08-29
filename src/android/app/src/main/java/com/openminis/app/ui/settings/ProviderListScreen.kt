@@ -9,6 +9,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -21,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.Folder
@@ -38,7 +40,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -49,9 +50,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.res.stringResource
-import com.openminis.app.data.model.ProviderFolders
 import com.openminis.app.data.model.ProviderInstance
+import com.openminis.app.data.model.ProviderListSections
 import com.openminis.app.data.repository.ProviderRepository
+import com.openminis.app.ui.components.SectionTextField
 import com.openminis.app.R
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -65,18 +67,24 @@ fun ProviderListScreen(
 ) {
     val config by providerRepository.config.collectAsState()
     val instances = config.instances
-    // [T-provider-folders] Folder layout comes from ProviderFolders (pure,
-    // unit-tested): user-defined folders first (alphabetical, spelling variants
-    // merged case-insensitively), then everything ungrouped by providerType
-    // exactly as before.
-    val folderLayout = remember(config) { ProviderFolders.layout(instances) }
-    val groupedInstances = folderLayout.ungrouped.groupBy { it.providerType }
     val context = LocalContext.current
 
-    // [T-provider-folders] Per-folder expand/collapse state, keyed by the
-    // case-folded folder name. Default expanded so naming a folder immediately
-    // shows its contents; collapsing is opt-in.
-    val expandedFolders = remember { mutableStateMapOf<String, Boolean>() }
+    // [T-provider-ux] Search + section layout live in ProviderListSections
+    // (pure, unit-tested): folders first, then ungrouped instances by provider
+    // type, filtered by the query. Both section kinds now share one render path
+    // — previously folders and type groups were two near-identical blocks and
+    // only folders could collapse.
+    var searchText by remember { mutableStateOf("") }
+    val sections = remember(config, searchText) {
+        ProviderListSections.build(instances, searchText)
+    }
+    val totalCount = instances.size
+    val shownCount = ProviderListSections.instanceCount(sections)
+
+    // Collapsed by default and PERSISTED: the list is a hub the user leaves and
+    // re-enters constantly (open folder → edit a key → back), and in-memory
+    // state would reopen everything each time.
+    var expandedKeys by remember { mutableStateOf(ProviderListPrefs.expandedKeys(context)) }
 
     var showMenu by remember { mutableStateOf(false) }
 
@@ -159,87 +167,67 @@ fun ProviderListScreen(
                 )
             }
         } else {
-            // [T-provider-folders] User-defined folders first — each is a
-            // section headed by the folder name with a tappable expand/collapse
-            // chevron and a "N keys" count. Collapsing hides the rows but keeps
-            // the header so the user can re-open it. Ungrouped providers follow,
-            // grouped by providerType exactly as before.
-            folderLayout.folders.forEach { section ->
-                val folderKey = section.name.lowercase()
-                val folderInstances = section.instances
-                val expanded = expandedFolders[folderKey] ?: true
-                SettingsSection(
-                    header = section.name,
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { expandedFolders[folderKey] = !expanded }
-                            .padding(horizontal = 14.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.Folder,
-                            contentDescription = null,
-                            modifier = Modifier.size(20.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Spacer(Modifier.width(12.dp))
-                        Text(
-                            text = stringResource(R.string.provider_list_folder_key_count, folderInstances.size),
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Medium,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.weight(1f),
-                        )
-                        Icon(
-                            imageVector = if (expanded) Icons.Default.KeyboardArrowDown
-                            else Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                            contentDescription = null,
-                            modifier = Modifier.size(22.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    if (expanded) {
-                        val divider = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(start = 38.dp, end = 14.dp)
-                                .height(0.5.dp)
-                                .background(divider),
-                        )
-                        folderInstances.forEachIndexed { index, instance ->
-                            ProviderInstanceRowResolved(
-                                instance = instance,
-                                providerRepository = providerRepository,
-                                context = context,
-                                onClick = { onProviderClick(instance.id) },
-                            )
-                            if (index < folderInstances.size - 1) {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(start = 38.dp, end = 14.dp)
-                                        .height(0.5.dp)
-                                        .background(divider),
+            // [T-provider-ux] One search field, then one render path for both
+            // section kinds. Sections are collapsed by default (persisted) and
+            // force-open while searching, so a result can never hide inside a
+            // closed folder.
+            SettingsSection {
+                SectionTextField(
+                    value = searchText,
+                    onValueChange = { searchText = it },
+                    placeholder = stringResource(R.string.provider_list_search_placeholder),
+                    singleLine = true,
+                    trailingIcon = if (searchText.isEmpty()) null else {
+                        {
+                            IconButton(onClick = { searchText = "" }) {
+                                Icon(
+                                    Icons.Default.Close,
+                                    contentDescription = stringResource(R.string.provider_list_search_clear),
+                                    modifier = Modifier.size(18.dp),
                                 )
                             }
                         }
-                    }
-                }
+                    },
+                )
             }
-            groupedInstances.forEach { (providerType, typeInstances) ->
-                SettingsSection(header = providerType.displayName) {
-                    typeInstances.forEachIndexed { index, instance ->
+
+            if (searchText.isNotEmpty()) {
+                Text(
+                    text = if (sections.isEmpty()) {
+                        stringResource(R.string.provider_list_search_no_results, searchText)
+                    } else {
+                        stringResource(R.string.provider_list_search_summary, shownCount, totalCount)
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 30.dp, vertical = 6.dp),
+                )
+            }
+
+            sections.forEach { section ->
+                val expanded = ProviderListSections.isExpanded(section, searchText, expandedKeys)
+                ProviderSectionCard(
+                    section = section,
+                    expanded = expanded,
+                    // Searching force-opens sections, so the chevron would be a
+                    // lie there: hide the toggle rather than show a control that
+                    // does nothing visible.
+                    toggleEnabled = searchText.isEmpty(),
+                    onToggle = {
+                        val next = !expanded
+                        ProviderListPrefs.setExpanded(context, section.key, next)
+                        expandedKeys = ProviderListPrefs.expandedKeys(context)
+                    },
+                ) {
+                    val divider = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                    section.instances.forEachIndexed { index, instance ->
                         ProviderInstanceRowResolved(
                             instance = instance,
                             providerRepository = providerRepository,
                             context = context,
                             onClick = { onProviderClick(instance.id) },
                         )
-                        if (index < typeInstances.size - 1) {
-                            val divider = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                        if (index < section.instances.size - 1) {
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -330,6 +318,77 @@ fun ProviderListScreen(
                     Text(stringResource(R.string.provider_list_import_provider), style = MaterialTheme.typography.bodyLarge)
                 }
             }
+        }
+    }
+}
+
+/**
+ * [T-provider-ux] One collapsible section for the provider list, used for BOTH
+ * user folders and automatic provider-type groups.
+ *
+ * Folders and type groups were previously two near-identical render blocks, and
+ * only folders could collapse — the divergence is exactly how "collapse all the
+ * things" turns into "collapse half the things". One composable, one behaviour;
+ * the folder icon is the only visual difference.
+ */
+@Composable
+private fun ProviderSectionCard(
+    section: ProviderListSections.Section,
+    expanded: Boolean,
+    toggleEnabled: Boolean,
+    onToggle: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    SettingsSection(header = section.title) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .then(if (toggleEnabled) Modifier.clickable(onClick = onToggle) else Modifier)
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = if (section.kind == ProviderListSections.Kind.FOLDER) {
+                    Icons.Outlined.Folder
+                } else {
+                    Icons.Outlined.VpnKey
+                },
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.width(12.dp))
+            Text(
+                // The count stays visible while collapsed — a closed section
+                // that says nothing about its size is just a dead end.
+                text = stringResource(R.string.provider_list_folder_key_count, section.instances.size),
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f),
+            )
+            if (toggleEnabled) {
+                Icon(
+                    imageVector = if (expanded) Icons.Default.KeyboardArrowDown
+                    else Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = stringResource(
+                        if (expanded) R.string.provider_list_collapse_section
+                        else R.string.provider_list_expand_section,
+                    ),
+                    modifier = Modifier.size(22.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        if (expanded) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 38.dp, end = 14.dp)
+                    .height(0.5.dp)
+                    .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+            )
+            content()
         }
     }
 }

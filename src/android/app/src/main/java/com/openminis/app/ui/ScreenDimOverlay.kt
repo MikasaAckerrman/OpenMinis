@@ -88,6 +88,15 @@ fun ScreenDimOverlay() {
 
     // Drive the backlight down while dimmed, hand control back on exit — so a
     // dimmed window can never be left stranded dark.
+    //
+    // [T-android-screen-dim fullscreen] Also hide the system bars. A black Box
+    // covers only the app's own surface: the OriginOS status bar (clock,
+    // battery) and the navigation bar are drawn by the system ON TOP of it, so
+    // without this the "black screen" is a black rectangle framed by two lit
+    // strips — exactly the pixels burn-in mitigation is trying to switch off.
+    // BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE keeps the bars reachable by a swipe
+    // instead of trapping the user, and hiding is reverted both when the
+    // overlay lifts and on dispose, so the bars can never be left gone.
     DisposableEffect(dimmed) {
         val window = (view.context as? android.app.Activity)?.window
         window?.let {
@@ -98,12 +107,23 @@ fun ScreenDimOverlay() {
                     ScreenDimPolicy.RESTORE_BRIGHTNESS
                 }
             }
+            val insets = androidx.core.view.WindowCompat.getInsetsController(it, view)
+            if (dimmed) {
+                insets.systemBarsBehavior =
+                    androidx.core.view.WindowInsetsControllerCompat
+                        .BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                insets.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+            } else {
+                insets.show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+            }
         }
         onDispose {
             window?.let {
                 it.attributes = it.attributes.apply {
                     screenBrightness = ScreenDimPolicy.RESTORE_BRIGHTNESS
                 }
+                androidx.core.view.WindowCompat.getInsetsController(it, view)
+                    .show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
             }
         }
     }
@@ -112,6 +132,9 @@ fun ScreenDimOverlay() {
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                // Paint into the cutout/inset area too. The activity is
+                // edge-to-edge, but a display cutout region is excluded by
+                // default on some OEM ROMs, which would leave a lit notch strip.
                 .zIndex(1000f)
                 .background(Color.Black)
                 .pointerInput(Unit) {

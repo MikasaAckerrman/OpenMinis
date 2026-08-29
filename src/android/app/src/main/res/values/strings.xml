@@ -910,6 +910,22 @@
     <!-- [T-provider-folders] User-defined folders in the provider list. -->
     <string name="provider_list_folder_key_count">%1$d providers</string>
     <string name="provider_detail_folder">Folder</string>
+    <!-- [T-provider-ux] Search, collapsed sections, duplication, endpoint history. -->
+    <string name="provider_list_search_placeholder">Search providers</string>
+    <string name="provider_list_search_clear">Clear</string>
+    <string name="provider_list_search_no_results">No providers match \"%1$s\"</string>
+    <string name="provider_list_search_summary">%1$d of %2$d providers</string>
+    <string name="provider_list_expand_section">Expand</string>
+    <string name="provider_list_collapse_section">Collapse</string>
+    <string name="provider_detail_duplicate">Duplicate</string>
+    <string name="provider_detail_duplicate_suffix">%1$s copy</string>
+    <string name="provider_detail_duplicate_done">Duplicated as \"%1$s\"</string>
+    <string name="provider_detail_duplicate_failed">Could not duplicate this provider</string>
+    <string name="provider_detail_duplicate_footer">Creates a second provider with the same endpoint, models and API key. Useful for reusing one gateway key with different settings.</string>
+    <string name="add_provider_endpoint_recent">Previously used endpoints</string>
+    <string name="add_provider_endpoint_recent_count">Used by %1$d</string>
+    <string name="add_provider_endpoint_recent_other_type">Used with %1$s</string>
+    <string name="model_picker_folder_summary">%1$d providers · %2$d models</string>
     <string name="provider_detail_folder_placeholder">No folder</string>
     <string name="provider_detail_folder_footer">Group providers from the same source under one folder in the provider list. Leave blank to keep this provider ungrouped.</string>
     <string name="provider_detail_export">Export</string>

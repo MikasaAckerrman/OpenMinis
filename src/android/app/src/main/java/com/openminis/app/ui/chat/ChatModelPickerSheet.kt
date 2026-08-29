@@ -228,6 +228,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
@@ -262,32 +263,111 @@ import com.openminis.app.data.model.LLMModel
 import com.openminis.app.data.model.ModelEntry
 import com.openminis.app.data.model.ModelGroup
 import com.openminis.app.data.model.ProviderConfig
+import com.openminis.app.data.model.ProviderInstance
+import com.openminis.app.data.model.ProviderPickerSections
 import com.openminis.app.data.model.ProviderType
 import com.openminis.app.data.model.RoutingStrategy
 import com.openminis.app.data.model.ThinkingLevel
 import com.openminis.app.data.repository.ChatRepository
 import com.openminis.app.data.repository.MemoryRepository
 import com.openminis.app.data.repository.ProviderRepository
+import com.openminis.app.ui.settings.ProviderListPrefs
 import com.openminis.app.ui.browser.BrowserSheet
 import com.openminis.app.ui.theme.ChatColors
 import com.openminis.app.ui.components.MinisTextButton
 
 /**
  * Fuzzy match: substring first, then all query chars appear in order.
- * Matches iOS SessionModelPicker.fuzzyMatch.
+ *
+ * [T-provider-ux] The implementation moved to [com.openminis.app.data.model.FuzzySearch]
+ * so the provider list can share it instead of growing a second copy. Kept as a
+ * thin alias because it is called in a dozen places in this file.
  */
-private fun fuzzyMatch(text: String, query: String): Boolean {
-    if (query.isEmpty()) return true
-    val q = query.lowercase()
-    val t = text.lowercase()
-    if (t.contains(q)) return true
-    var idx = 0
-    for (ch in q) {
-        val found = t.indexOf(ch, idx)
-        if (found < 0) return false
-        idx = found + 1
+private fun fuzzyMatch(text: String, query: String): Boolean =
+    com.openminis.app.data.model.FuzzySearch.matches(text, query)
+
+/**
+ * [T-provider-ux] One rendered row of the picker's provider area: either a
+ * folder header, or a provider card (optionally nested inside an open folder).
+ *
+ * A flat row list is what lets each provider card stay its own LazyColumn item.
+ * Nesting the member cards inside the folder's own item would compose every
+ * child just to draw a collapsed header.
+ */
+private data class PickerRow(
+    val folder: ProviderPickerSections.Block.Folder? = null,
+    val folderExpanded: Boolean = false,
+    val instance: ProviderInstance? = null,
+    val entries: List<ModelEntry> = emptyList(),
+    val insideFolder: Boolean = false,
+)
+
+/**
+ * [T-provider-ux] Folder header row inside the model picker. Mirrors the
+ * provider-list section header: folder icon, provider + model counts, chevron.
+ */
+@Composable
+private fun PickerFolderHeader(
+    folder: ProviderPickerSections.Block.Folder,
+    expanded: Boolean,
+    toggleEnabled: Boolean,
+    onToggle: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp)
+            .background(
+                MaterialTheme.colorScheme.surfaceContainerHighest,
+                RoundedCornerShape(14.dp),
+            )
+            .then(if (toggleEnabled) Modifier.clickable(onClick = onToggle) else Modifier)
+            .padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.Outlined.Folder,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.width(10.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                folder.name,
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            // Both counts stay visible while collapsed: a closed folder that
+            // says nothing about its contents is a dead end.
+            Text(
+                stringResource(
+                    R.string.model_picker_folder_summary,
+                    folder.instances.size,
+                    folder.entryCount,
+                ),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+            )
+        }
+        if (toggleEnabled) {
+            Box(
+                modifier = Modifier
+                    .size(28.dp)
+                    .background(MaterialTheme.colorScheme.secondaryContainer, CircleShape)
+                    .clip(CircleShape)
+                    .clickable(onClick = onToggle),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+            }
+        }
     }
-    return true
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -343,8 +423,7 @@ internal fun ModelPickerSheet(
     }
 
     // Filtered entries by instance
-    val allInstancesWithEntries = remember(config, searchText) {
-        val t0 = System.nanoTime()
+    val allInstancesWithEntries = remember(config, searchText) {        val t0 = System.nanoTime()
         var totalCount = 0
         val result = config.instances
             .filter { it.isEnabled }
@@ -368,6 +447,57 @@ internal fun ModelPickerSheet(
         val ms = (System.nanoTime() - t0) / 1_000_000.0
         AppLogger.info("ModelPicker", "[ModelPicker] all providers loaded: total $totalCount items, ${"%.1f".format(ms)}ms")
         result
+    }
+
+    // [T-provider-ux] Flatten the folder grouping into the row sequence the
+    // LazyColumn renders: a folder header, then (when open) its member cards,
+    // then loose provider cards. Building this as a list rather than nesting
+    // Columns keeps every provider card a separate LazyColumn item, so a folder
+    // holding 17 keys does not compose all of them to draw one header.
+    val pickerContext = LocalContext.current
+    var expandedPickerFolders by remember {
+        mutableStateOf(ProviderListPrefs.expandedKeys(pickerContext))
+    }
+    val pickerRows = remember(allInstancesWithEntries, searchText, expandedPickerFolders) {
+        val entriesById = allInstancesWithEntries.associate { it.first.id to it.second }
+        val instancesById = allInstancesWithEntries.associate { it.first.id to it.first }
+        val blocks = ProviderPickerSections.build(
+            instances = allInstancesWithEntries.map { it.first },
+            instanceEntryCounts = entriesById.mapValues { it.value.size },
+        )
+        val rows = ArrayList<PickerRow>()
+        for (block in blocks) {
+            when (block) {
+                is ProviderPickerSections.Block.Folder -> {
+                    val expanded = ProviderPickerSections.isFolderExpanded(
+                        block, searchText, expandedPickerFolders,
+                    )
+                    rows.add(PickerRow(folder = block, folderExpanded = expanded))
+                    if (expanded) {
+                        for (id in block.instances) {
+                            val inst = instancesById[id] ?: continue
+                            rows.add(
+                                PickerRow(
+                                    instance = inst,
+                                    entries = entriesById[id].orEmpty(),
+                                    insideFolder = true,
+                                ),
+                            )
+                        }
+                    }
+                }
+                is ProviderPickerSections.Block.Loose -> {
+                    val inst = instancesById[block.instanceId] ?: continue
+                    rows.add(
+                        PickerRow(
+                            instance = inst,
+                            entries = entriesById[block.instanceId].orEmpty(),
+                        ),
+                    )
+                }
+            }
+        }
+        rows
     }
 
     ModalBottomSheet(
@@ -763,20 +893,54 @@ internal fun ModelPickerSheet(
                     }
                 }
 
-                // ── Individual Models by Provider (one section card per provider) ──
-                // Each provider becomes a single grouped card containing: an
-                // embedded header row with the collapse chevron, then either
-                // the collapsed summary row or the expanded entry list. Cards
-                // are visually separated from each other by a 12dp gap, and
-                // sit on a higher tonal surface so the boundary between
-                // providers is unmistakable even on the dark sheet background.
+                // ── Individual Models by Provider ──
+                // [T-provider-ux] Instances that share a folder are gathered
+                // under one collapsible folder block; a dozen keys on the same
+                // gateway used to be a dozen near-identical cards to scroll
+                // past. Grouping comes from ProviderPickerSections (pure,
+                // unit-tested) which delegates to the same ProviderFolders used
+                // by the provider list, so the two screens cannot disagree
+                // about what folder a provider is in.
+                //
+                // Each provider is still one grouped card: an embedded header
+                // row with the collapse chevron, then either the collapsed
+                // summary row or the expanded entry list.
                 if (allInstancesWithEntries.isNotEmpty()) {
-                    allInstancesWithEntries.forEach { (instance, entries) ->
+                    pickerRows.forEach { row ->
+                        val folder = row.folder
+                        if (folder != null) {
+                            item(key = folder.key) {
+                                PickerFolderHeader(
+                                    folder = folder,
+                                    expanded = row.folderExpanded,
+                                    // Search force-opens folders, so a chevron
+                                    // there would suggest a control that does
+                                    // nothing.
+                                    toggleEnabled = searchText.isEmpty(),
+                                    onToggle = {
+                                        val next = !row.folderExpanded
+                                        ProviderListPrefs.setExpanded(pickerContext, folder.key, next)
+                                        expandedPickerFolders = ProviderListPrefs.expandedKeys(pickerContext)
+                                    },
+                                )
+                            }
+                            return@forEach
+                        }
+                        val instance = row.instance ?: return@forEach
+                        val entries = row.entries
                         val isCollapsed = collapsedInstanceIds.contains(instance.id)
                         item(key = "section_${instance.id}") {
                             Column(
                                 modifier = Modifier
-                                    .padding(horizontal = 16.dp, vertical = 6.dp)
+                                    // Cards inside an open folder are inset so
+                                    // the nesting is visible without a second
+                                    // background layer.
+                                    .padding(
+                                        start = if (row.insideFolder) 28.dp else 16.dp,
+                                        end = 16.dp,
+                                        top = 6.dp,
+                                        bottom = 6.dp,
+                                    )
                                     .background(
                                         MaterialTheme.colorScheme.surfaceContainerHigh,
                                         RoundedCornerShape(14.dp),

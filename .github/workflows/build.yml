@@ -89,6 +89,9 @@ jobs:
             --tests 'com.openminis.app.offload.*' \
             --tests 'com.openminis.app.config.ConfigPathResolverTest' \
             --tests 'com.openminis.app.data.model.ProviderFoldersTest' \
+            --tests 'com.openminis.app.data.model.EndpointHistoryTest' \
+            --tests 'com.openminis.app.data.model.ProviderListSectionsTest' \
+            --tests 'com.openminis.app.data.model.ProviderPickerSectionsTest' \
             --tests 'com.openminis.app.feedback.CompletionFeedbackPolicyTest' \
             --tests 'com.openminis.app.feedback.VibrationPatternsTest' \
             --tests 'com.openminis.app.data.MessageSurgeryMergedTurnTest' \
