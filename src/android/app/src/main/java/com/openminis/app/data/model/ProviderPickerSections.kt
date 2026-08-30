@@ -69,29 +69,28 @@ object ProviderPickerSections {
     /**
      * Whether a section renders open.
      *
-     * Three reasons a section opens, in order of precedence:
+     * Two reasons a section opens:
      *  1. A non-empty search — a match hidden inside a closed section looks like
      *     "no results".
-     *  2. It contains the currently active model. Opening the picker should show
-     *     you where you are; landing on a wall of closed headers with no clue
-     *     which one holds the current selection is worse than the flat list it
-     *     replaced.
-     *  3. The user opened it, which is remembered.
+     *  2. It is in [userExpandedKeys].
+     *
+     * The active model's section is NOT special-cased here. It is seeded into the
+     * caller's expanded set instead (see [keysContaining]), because forcing it
+     * open on every evaluation would make its chevron a no-op — the user could
+     * not close the one section they are most likely to want closed after
+     * picking a model.
      */
     fun isExpanded(
         section: Section,
         query: String,
         userExpandedKeys: Set<String>,
-        autoExpandKeys: Set<String> = emptySet(),
-    ): Boolean = query.isNotEmpty() ||
-        section.key in autoExpandKeys ||
-        section.key in userExpandedKeys
+    ): Boolean = query.isNotEmpty() || section.key in userExpandedKeys
 
     /**
-     * Keys of the sections holding [instanceId] — the auto-expand set for the
-     * active model. Returns a set rather than a single key because an instance
-     * can only be in one section today, but callers pass several (active entry
-     * plus, later, pinned ones) and a set makes that a non-change.
+     * Keys of the sections holding [instanceId] — the initial expanded set when
+     * the picker opens. Returns a set rather than a single key because an
+     * instance is in exactly one section today, but seeding several (active entry
+     * plus, later, pinned ones) then becomes a non-change.
      */
     fun keysContaining(sections: List<Section>, instanceId: String?): Set<String> {
         if (instanceId == null) return emptySet()

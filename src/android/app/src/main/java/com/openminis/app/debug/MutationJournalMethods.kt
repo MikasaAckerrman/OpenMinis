@@ -2,22 +2,37 @@ package com.openminis.app.debug
 
 import android.content.Context
 import com.openminis.app.data.MutationJournal
+import com.openminis.app.data.NetworkJournal
 import org.json.JSONObject
+import java.io.File
 
 /**
- * [T-mutation-journal] Read the always-on destructive-operation journal over
- * RPC so "where did my messages go" can be answered from a shell without
- * pulling files off the device.
+ * [T-mutation-journal] Read the always-on journals over RPC so "where did my
+ * messages go" and "why did the session stop" can be answered from a shell
+ * without pulling files off the device.
  */
 internal object MutationJournalMethods {
 
     /** `chat.journal.read` — tail of the mutation journal. */
-    fun read(context: Context, params: JSONObject): JSONObject {
+    fun read(context: Context, params: JSONObject): JSONObject =
+        readJournal(MutationJournal.file(), params)
+
+    /**
+     * [T-network-journal] `chat.network.journal` — tail of the network journal.
+     *
+     * Shares [readJournal] with the mutation journal on purpose: both files have
+     * the same TSV shape and the same filter needs, and two copies of the tail
+     * logic would drift in exactly the small ways that make a diagnostic
+     * untrustworthy (one truncating the session id differently from the other).
+     */
+    fun readNetwork(context: Context, params: JSONObject): JSONObject =
+        readJournal(NetworkJournal.file(), params)
+
+    private fun readJournal(f: File?, params: JSONObject): JSONObject {
         val limit = params.optInt("limit", 200).coerceIn(1, 5000)
         val sessionFilter = params.optString("sessionId", "").takeIf { it.isNotEmpty() }
         val kindFilter = params.optString("kind", "").takeIf { it.isNotEmpty() }?.uppercase()
 
-        val f = MutationJournal.file()
         if (f == null || !f.exists()) {
             return JSONObject().apply {
                 put("exists", false)

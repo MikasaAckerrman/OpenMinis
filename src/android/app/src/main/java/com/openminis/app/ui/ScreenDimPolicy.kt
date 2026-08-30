@@ -41,16 +41,121 @@ object ScreenDimPolicy {
     }
 
     /**
-     * Window brightness to request while dimmed.
+     * Fade durations, in milliseconds.
      *
-     * 0f (not [android.view.WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_OFF],
-     * which is -1f and means "restore system default") drives the backlight to
-     * its minimum. On AMOLED the black pixels are already unlit; this kills the
-     * remaining panel glow without turning the screen OFF, which would let the
-     * radio park again.
+     * Asymmetric on purpose. Fading IN is ambient — it happens while the user is
+     * not looking, so it can be slow enough to avoid a jarring blink. Fading OUT
+     * is a direct response to a deliberate gesture, and anything above ~150ms
+     * there reads as the app being slow to wake.
+     *
+     * The overlay used to appear and vanish instantly, which on a full-screen
+     * black surface looks like the display glitching rather than a UI state
+     * changing.
      */
-    const val DIMMED_BRIGHTNESS = 0f
+    const val FADE_IN_MS = 260
 
-    /** Sentinel meaning "hand brightness control back to the system". */
-    const val RESTORE_BRIGHTNESS = -1f
+    /** @see FADE_IN_MS */
+    const val FADE_OUT_MS = 140
+}
+
+/**
+ * [T-android-screen-dim wake-gesture] Accumulator deciding whether the finger
+ * movement on the black overlay is a deliberate "wake up" gesture.
+ *
+ * ## Why a gesture and not a tap
+ *
+ * A tap is what the user's palm, a pocket, or a sleeve produces by accident. The
+ * overlay covers a running session, so waking it by accident both lights an
+ * AMOLED panel for no reason and — before this existed — could deliver that same
+ * touch to whatever control happened to be underneath.
+ *
+ * So waking requires movement, and specifically movement that reverses: swipe
+ * one way, then back. A single long swipe is something a hand brushing the
+ * screen can produce; a reversal within one gesture is not. This is the same
+ * reasoning behind "swipe left and right to unlock" on wearables.
+ *
+ * ## Contract
+ *
+ * The instance is stateful and single-gesture: [reset] on pointer-down,
+ * [accumulate] per movement, and the moment it returns true the caller wakes the
+ * screen. Distances are in PIXELS — the caller converts from dp so thresholds
+ * mean the same physical travel on any density.
+ */
+class ScreenDimWakeGesture {
+
+    private var travelPx = 0f
+    private var directionChanges = 0
+    private var lastDx = 0f
+    private var lastDy = 0f
+
+    /** Begin a new gesture. Called on pointer-down. */
+    fun reset() {
+        travelPx = 0f
+        directionChanges = 0
+        lastDx = 0f
+        lastDy = 0f
+    }
+
+    /**
+     * Feed one movement delta.
+     *
+     * @param dx horizontal movement since the previous event, in pixels.
+     * @param dy vertical movement since the previous event, in pixels.
+     * @param minTravelPx total path length required, in pixels.
+     * @return true once this gesture qualifies as a deliberate wake.
+     */
+    fun accumulate(
+        dx: Float,
+        dy: Float,
+        minTravelPx: Float,
+        minDirectionChanges: Int = MIN_DIRECTION_CHANGES,
+    ): Boolean {
+        // Path length, not displacement: a back-and-forth swipe ends where it
+        // started, so displacement would score it as zero movement.
+        travelPx += kotlin.math.hypot(dx.toDouble(), dy.toDouble()).toFloat()
+
+        // A reversal is a sign flip on either axis, ignoring jitter below
+        // JITTER_PX so a slow drag does not rack up "changes" from noise.
+        if (kotlin.math.abs(dx) > JITTER_PX) {
+            if (lastDx != 0f && sign(dx) != sign(lastDx)) directionChanges++
+            lastDx = dx
+        }
+        if (kotlin.math.abs(dy) > JITTER_PX) {
+            if (lastDy != 0f && sign(dy) != sign(lastDy)) directionChanges++
+            lastDy = dy
+        }
+
+        return travelPx >= minTravelPx && directionChanges >= minDirectionChanges
+    }
+
+    /** Total path travelled in the current gesture, in pixels. Diagnostics. */
+    val travelledPx: Float get() = travelPx
+
+    /** Direction reversals seen in the current gesture. Diagnostics. */
+    val reversals: Int get() = directionChanges
+
+    private fun sign(v: Float): Int = if (v > 0f) 1 else -1
+
+    companion object {
+        /**
+         * Required path length, in dp.
+         *
+         * Sized so a reversal cannot be satisfied by two adjacent jitter runs:
+         * roughly a third of a phone's width out and back.
+         */
+        const val MIN_TRAVEL_DP = 200f
+
+        /**
+         * Reversals required. One means "out and back", which no single brush
+         * across the screen produces.
+         */
+        const val MIN_DIRECTION_CHANGES = 1
+
+        /**
+         * Per-event movement below this (px) is treated as noise for the purpose
+         * of direction tracking. It still counts toward travel, because slow
+         * deliberate movement is real movement.
+         */
+        const val JITTER_PX = 2f
+    }
 }

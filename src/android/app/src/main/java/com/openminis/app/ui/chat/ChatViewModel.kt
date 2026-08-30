@@ -4387,8 +4387,8 @@ class ChatViewModel(
             //           reminder text — text-cancel handler committed it
             //           but [resume] never re-entered the agent loop.
             val lastEntry = agentHistory.lastOrNull()
-            if (lastEntry != null && !_isStreaming.value) {
-                val isInterrupted = when (lastEntry.role) {
+            if (lastEntry != null) {
+                val lastRowLooksInterrupted = when (lastEntry.role) {
                     LLMMessage.Role.USER -> {
                         val parts = lastEntry.contentParts
                         val allToolResults = parts.isNotEmpty() &&
@@ -4403,9 +4403,32 @@ class ChatViewModel(
                     }
                     else -> false
                 }
-                if (isInterrupted) {
+                // [T-resume-banner-false-stopped] The local `_isStreaming` flag is
+                // NOT sufficient here. It belongs to one ViewModel instance, while
+                // SessionActivityTracker is the process-wide truth maintained by
+                // the streamJob itself. Mid-agent-loop the last persisted row IS
+                // an assistant turn with a pending tool_use — indistinguishable
+                // from a genuinely interrupted loop — so a ViewModel that does not
+                // own the running stream used to declare the session stopped while
+                // it was still working. A run of 502s widens that window, which is
+                // why the user saw it right after them.
+                val streamingProcessWide = com.openminis.app.service
+                    .SessionActivityTracker.activeSessions.value
+                    .contains(realSessionId.ifEmpty { sessionId })
+                if (com.openminis.app.data.ResumeVisibilityPolicy.canClaimInterrupted(
+                        localStreaming = _isStreaming.value,
+                        sessionStreamingProcessWide = streamingProcessWide,
+                        lastRowLooksInterrupted = lastRowLooksInterrupted,
+                    )
+                ) {
                     _canResume.value = true
                     Log.i(TAG, "loadSession: detected interrupted agent loop, canResume=true (lastRole=${lastEntry.role})")
+                } else if (lastRowLooksInterrupted) {
+                    Log.i(
+                        TAG,
+                        "loadSession: last row looks interrupted but the session is streaming " +
+                            "(local=${_isStreaming.value} process=$streamingProcessWide) — no Resume",
+                    )
                 }
             }
             fullHistoryReady.value = true
@@ -8012,6 +8035,12 @@ class ChatViewModel(
             // so we catch at collect level and unwrap.
             var collectDone = false
             var retryAttempt = 0  // per-turn auto-retry counter (resets on each new turn)
+            // [T-network-journal] Error class of the most recent transient
+            // failure, so the recovery line can name WHICH class was survived.
+            // Nullable rather than defaulted to GENERIC: "no transient failure
+            // happened" and "a generic one did" are different facts, and the
+            // recovery line is only written when retryAttempt > 0 anyway.
+            var lastRetryKind: com.openminis.app.data.TransientRetryBudget.Kind? = null
             var rateLimitAttempt = 0  // per-turn 429 backoff counter (Retry-After aware)
             var quotaBackoffAttempt = 0
             while (!collectDone) {
@@ -8402,6 +8431,18 @@ class ChatViewModel(
                     lastFileToolInputMs = 0L
                     lastOtherToolInputMs = 0L
                     collectDone = true
+                    // [T-network-journal] The turn recovered after N transient
+                    // failures. Recorded because a failure-only log makes every
+                    // survived hiccup look fatal — this line is what says the
+                    // per-class retry budget is doing its job in the field.
+                    if (retryAttempt > 0) {
+                        com.openminis.app.data.NetworkJournal.recordRecovery(
+                            sessionId = realSessionId.ifEmpty { sessionId },
+                            host = currentProvider.throttleKey,
+                            kind = lastRetryKind?.name ?: "GENERIC",
+                            attempts = retryAttempt,
+                        )
+                    }
                     // Stream completed without error — clear any lingering retry UI state.
                     if (_autoRetryAttempt.value != 0 || _autoRetryCountdown.value != 0) {
                         _autoRetryAttempt.value = 0
@@ -8480,24 +8521,71 @@ class ChatViewModel(
                             "[Retry] бюджет исчерпан: kind=$retryKind attempts=$retryAttempt " +
                                 "err=${actual.message?.take(120)}",
                         )
+                        // [T-network-journal] The turn is about to fail for real.
+                        // This is the line the user's "session stopped with an
+                        // error" question needs: which class, which host, how
+                        // many attempts were spent, and the final message.
+                        com.openminis.app.data.NetworkJournal.recordGiveUp(
+                            sessionId = realSessionId.ifEmpty { sessionId },
+                            host = currentProvider.throttleKey,
+                            kind = retryKind.name,
+                            attempts = retryAttempt,
+                            message = actual.message,
+                        )
                     }
                     if (isTransient && retryAttempt < maxAttempts) {
                         val delaySec = com.openminis.app.data.TransientRetryBudget
                             .delaySecForAttempt(retryKind, retryAttempt)
                         retryAttempt += 1
+                        lastRetryKind = retryKind
                         val errDesc = actual.message ?: actual.javaClass.simpleName
+                        // [T-network-journal] Failure WITH its context. The
+                        // context is the diagnostic part: concurrent streams
+                        // explain a NAT reaping the idle session's socket while a
+                        // busy one masks it, and screen-off explains a parked
+                        // radio. Without these fields every diagnosis of "why did
+                        // it stop" is a guess.
+                        com.openminis.app.data.NetworkJournal.recordFailure(
+                            sessionId = realSessionId.ifEmpty { sessionId },
+                            host = currentProvider.throttleKey,
+                            kind = retryKind.name,
+                            attempt = retryAttempt,
+                            maxAttempts = maxAttempts,
+                            ctx = com.openminis.app.data.NetworkJournal.Context(
+                                concurrentStreams = com.openminis.app.service
+                                    .SessionActivityTracker.activeSessions.value.size,
+                                screenOn = runCatching {
+                                    (context.getSystemService(android.content.Context.POWER_SERVICE)
+                                        as? android.os.PowerManager)?.isInteractive
+                                }.getOrNull(),
+                                online = com.openminis.app.network.NetworkMonitor.isOnlineNow(),
+                            ),
+                            message = actual.message,
+                        )
+                        val retryWaitStartMs = System.currentTimeMillis()
+                        var evictedPoolThisRetry = false
                         Log.w(TAG, "🔁 Transient error on ${currentProvider.model.displayName}, retry $retryAttempt/$maxAttempts (kind=$retryKind) in ${delaySec}s: $errDesc")
                         withContext(Dispatchers.Main) {
                             _autoRetryAttempt.value = retryAttempt
                             // Show the error inline on the streaming assistant message during countdown.
                             // Keeps isStreaming=true so the UI doesn't tear down the streaming state.
                             setTransientInlineError(
-                                if (retryKind == com.openminis.app.data.TransientRetryBudget.Kind.OFFLINE) {
-                                    context.getString(
-                                        R.string.chat_retry_offline, retryAttempt, maxAttempts,
-                                    )
-                                } else {
-                                    "$errDesc — retrying ($retryAttempt/$maxAttempts)…"
+                                // [T-network-journal] Per-class wording. The raw
+                                // exception text is meaningless to a reader
+                                // ("connection closed" reads as if they did
+                                // something), and a bad gateway is specifically
+                                // NOT their problem — saying so stops them from
+                                // hunting their own key or network.
+                                when (retryKind) {
+                                    com.openminis.app.data.TransientRetryBudget.Kind.OFFLINE ->
+                                        context.getString(
+                                            R.string.chat_retry_offline, retryAttempt, maxAttempts,
+                                        )
+                                    com.openminis.app.data.TransientRetryBudget.Kind.BAD_GATEWAY ->
+                                        context.getString(
+                                            R.string.chat_retry_bad_gateway, retryAttempt, maxAttempts,
+                                        )
+                                    else -> "$errDesc — retrying ($retryAttempt/$maxAttempts)…"
                                 },
                             )
                         }
@@ -8567,7 +8655,22 @@ class ChatViewModel(
                                 "[T-android-stale-conn-retry-hang] evicting shared LLM pool before retry",
                             )
                             com.openminis.app.network.NetworkMonitor.evictLLMConnectionsNow()
+                            evictedPoolThisRetry = true
                         }
+                        // [T-network-journal] Written AFTER the waits and the
+                        // eviction so `waited` is the real elapsed time, not the
+                        // planned backoff: for an OFFLINE retry the connectivity
+                        // await dominates, and the planned number would hide it.
+                        // That figure is what says whether the budget is enough.
+                        com.openminis.app.data.NetworkJournal.recordRetry(
+                            sessionId = realSessionId.ifEmpty { sessionId },
+                            host = currentProvider.throttleKey,
+                            kind = retryKind.name,
+                            attempt = retryAttempt,
+                            waitedMs = System.currentTimeMillis() - retryWaitStartMs,
+                            onlineNow = com.openminis.app.network.NetworkMonitor.isOnlineNow(),
+                            evictedPool = evictedPoolThisRetry,
+                        )
                         // Roll back partial blocks from the failed stream attempt so the retried
                         // stream's deltas don't double-append on top of stale content. Previous
                         // turns (everything before turnStartBlockIndex) are preserved.

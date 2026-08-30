@@ -273,6 +273,13 @@ class MinisApp : Application(), ImageLoaderFactory {
         // file that can answer "where did my messages go".
         com.openminis.app.data.MutationJournal.init(this)
 
+        // [T-network-journal] Same reasoning, for the other class of event the
+        // user has to ask about after the fact: "the session stopped with a
+        // network error and I do not know why". Records the failure WITH its
+        // context (concurrent streams, screen state, connectivity) and the
+        // retry outcome, so a diagnosis does not have to be a guess.
+        com.openminis.app.data.NetworkJournal.init(this)
+
         // Bug 2 (MIUI silent kill) diagnostic: write a launch-cycle beacon
         // so a subsequent launch can observe whether the previous run
         // exited cleanly (onTerminate hit) or was force-killed by LMK /

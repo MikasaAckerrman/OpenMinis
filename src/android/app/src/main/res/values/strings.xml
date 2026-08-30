@@ -205,6 +205,9 @@
     <string name="quicktest_audio_replay">Replay</string>
     <string name="quicktest_transcript_result">Spoken: "%1$s"\nHeard: "%2$s"</string>
     <string name="quicktest_clip_failed">Couldn\'t synthesize the local test clip.</string>
+    <string name="model_groups_voice_section">Voice</string>
+    <string name="model_groups_voice_bound_count">%1$d bound</string>
+    <string name="model_groups_voice_unbound">not configured</string>
     <string name="model_groups_voice_input">Voice Input</string>
     <string name="model_groups_voice_output">Voice Output</string>
     <!-- [T-mcp-env-var-picker-android] Insert a reference to an App env var as $$VAR -->
@@ -922,11 +925,9 @@
     <string name="provider_detail_duplicate_done">Duplicated as \"%1$s\"</string>
     <string name="provider_detail_duplicate_failed">Could not duplicate this provider</string>
     <string name="provider_detail_duplicate_footer">Creates a second provider with the same endpoint, models and API key. Useful for reusing one gateway key with different settings.</string>
-    <string name="add_provider_endpoint_recent_count_header">Previously used endpoints (%1$d)</string>
-    <string name="add_provider_endpoint_recent_search">Search endpoints</string>
-    <string name="add_provider_endpoint_recent_none">No matching endpoint</string>
-    <string name="add_provider_endpoint_recent_more">%1$d more — use search to narrow</string>
     <string name="add_provider_endpoint_recent_count">Used by %1$d</string>
+    <string name="add_provider_endpoint_completion_header">Endpoints you already use</string>
+    <string name="add_provider_endpoint_completion_dismiss">Dismiss</string>
     <string name="add_provider_endpoint_recent_other_type">Used with %1$s</string>
     <string name="model_picker_folder_summary">%1$d providers · %2$d models</string>
     <string name="provider_detail_folder_placeholder">No folder</string>
@@ -1612,6 +1613,7 @@
     <string name="chat_cutoff_implausible">Retry cancelled: it would have deleted most of this chat, which means the anchor was wrong. Nothing was changed.</string>
     <!-- [T-offline-retry-budget] Shown while a turn is being retried after a name-resolution failure (device had no usable network). %1$d = attempt, %2$d = max. -->
     <string name="chat_retry_offline">No network — waiting and retrying (%1$d/%2$d)…</string>
+    <string name="chat_retry_bad_gateway">Gateway error upstream — retrying (%1$d/%2$d)…</string>
     <string name="chat_retry_waiting_network">Waiting for the network to come back…</string>
     <!-- [T-error-persist-android] Shown when the model returns an empty reply (no text, no tools). -->
     <string name="error_empty_response_generic">Model returned an empty response. Please try again or switch models.</string>

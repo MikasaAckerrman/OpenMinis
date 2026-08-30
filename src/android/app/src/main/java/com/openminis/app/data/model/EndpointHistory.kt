@@ -146,4 +146,53 @@ object EndpointHistory {
      * field and the form below it stay on screen.
      */
     const val DEFAULT_VISIBLE: Int = 5
+
+    /**
+     * Inline completions for what the user is typing into the endpoint field.
+     *
+     * Distinct from [filter] on purpose, and NOT fuzzy. This fires while the user
+     * types a URL they intend to submit, so a match must be something they are
+     * plausibly in the middle of typing: `tab` → `https://tabitoken.com/v1`.
+     * Fuzzy matching would offer `https://api.openai.com` for "ai", and a
+     * suggestion that lands a wrong base URL in the field produces an auth-shaped
+     * failure that sends the user hunting the wrong problem.
+     *
+     * So matching is prefix-based, on three forms of each candidate:
+     *  - the whole URL (`https://tab…`),
+     *  - the URL with the scheme stripped (`tabitoken.com/v1` — nobody types
+     *    `https://` first when they know the host),
+     *  - the registrable-ish host label after `www.`.
+     *
+     * A query equal to a candidate produces nothing: there is no completion to
+     * offer for something already typed in full, and leaving the row up makes the
+     * user dismiss a suggestion that would be a no-op.
+     *
+     * @param limit max rows; the field's dropdown is small by design.
+     */
+    fun complete(
+        suggestions: List<Suggestion>,
+        query: String,
+        limit: Int = INLINE_COMPLETION_LIMIT,
+    ): List<Suggestion> {
+        val q = query.trim()
+        if (q.isEmpty()) return emptyList()
+        val qLower = q.lowercase()
+        val matches = suggestions.filter { s ->
+            val url = s.url.lowercase()
+            if (url == qLower) return@filter false
+            val noScheme = url.substringAfter("://", url)
+            val noWww = noScheme.removePrefix("www.")
+            url.startsWith(qLower) ||
+                noScheme.startsWith(qLower) ||
+                noWww.startsWith(qLower)
+        }
+        return if (limit <= 0) matches else matches.take(limit)
+    }
+
+    /**
+     * Rows offered as inline completions. Deliberately smaller than
+     * [DEFAULT_VISIBLE]: this dropdown floats over the form while the keyboard is
+     * up, so it competes for the little space left.
+     */
+    const val INLINE_COMPLETION_LIMIT: Int = 4
 }

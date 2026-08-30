@@ -127,9 +127,11 @@ class ProviderPickerSectionsTest {
     }
 
     @Test
-    fun `the section holding the active model opens itself`() {
+    fun `the active model's section is seeded open, and stays closable`() {
         // Opening the picker onto a wall of closed headers, with no clue which
         // one holds the current model, is worse than the flat list it replaced.
+        // But it is SEEDED, not forced: forcing would make the chevron a no-op
+        // on the one section the user is most likely to close after picking.
         val list = listOf(
             inst("1", "k1", folder = "GoRouter"),
             inst("2", "k2", folder = "GoRouter"),
@@ -139,12 +141,14 @@ class ProviderPickerSectionsTest {
         val sections = ProviderPickerSections.build(
             list, counts("1" to 1, "2" to 1, "3" to 1, "4" to 1),
         )
-        val auto = ProviderPickerSections.keysContaining(sections, "2")
+        val seed = ProviderPickerSections.keysContaining(sections, "2")
         val go = sections.first { it.title == "GoRouter" }
         val other = sections.first { it.title == "Elsewhere" }
-        assertEquals(setOf(go.key), auto)
-        assertTrue(ProviderPickerSections.isExpanded(go, "", emptySet(), auto))
-        assertFalse(ProviderPickerSections.isExpanded(other, "", emptySet(), auto))
+        assertEquals(setOf(go.key), seed)
+        assertTrue(ProviderPickerSections.isExpanded(go, "", seed))
+        assertFalse(ProviderPickerSections.isExpanded(other, "", seed))
+        // The user closes it: removing the key must actually close it.
+        assertFalse(ProviderPickerSections.isExpanded(go, "", seed - go.key))
     }
 
     @Test

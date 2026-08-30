@@ -190,6 +190,17 @@ class NetworkMonitor {
                 _connectivity.first { it }
                 true
             } ?: false
+
+        /**
+         * Current value of the connectivity mirror, without suspending.
+         *
+         * For diagnostics only ([com.openminis.app.data.NetworkJournal]): a
+         * failure line needs to state whether the device believed it was online
+         * at that instant. Deliberately NOT used to gate requests — the mirror
+         * defaults to `true` when the monitor was never started, so a decision
+         * based on it could skip a request that would have worked.
+         */
+        fun isOnlineNow(): Boolean = _connectivity.value
     }
 
     private val _status = MutableStateFlow(NetworkStatus.DISCONNECTED)

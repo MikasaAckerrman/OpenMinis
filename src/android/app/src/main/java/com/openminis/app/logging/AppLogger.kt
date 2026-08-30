@@ -403,11 +403,13 @@ object AppLogger {
      * exactly the failure the journal exists to prevent, and it is the same shape
      * as the incident (the evidence aged out before anyone looked).
      *
-     * These files manage their own size instead: MutationJournal trims by bytes,
-     * LaunchCycleBeacon's entries are one tiny line per launch.
+     * These files manage their own size instead: MutationJournal and
+     * NetworkJournal trim by bytes, LaunchCycleBeacon's entries are one tiny line
+     * per launch.
      */
     private val PRUNE_EXEMPT = setOf(
         "mutation-journal.log",
+        "network-journal.log",
         "launch-beacon.log",
     )
 

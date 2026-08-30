@@ -438,6 +438,17 @@ fun ChatScreen(
     val messages by viewModel.uiMessages.collectAsState()
     val hasOlderMessages by viewModel.hasOlderMessages.collectAsState()
     val isStreaming by viewModel.isStreaming.collectAsState()
+    // [T-resume-banner-false-stopped] Process-wide streaming truth. `isStreaming`
+    // above belongs to ONE ViewModel instance; SessionActivityTracker is
+    // maintained by the streamJob itself and is authoritative. When they disagree
+    // the chat was showing "Interrupted — tap Resume" over a session that was
+    // still working. Hoisted here (not inside the LazyColumn) because
+    // LazyListScope is not a composable scope.
+    val processStreamingSessions by com.openminis.app.service
+        .SessionActivityTracker.activeSessions.collectAsState()
+    val sessionStreamingNow = processStreamingSessions.contains(
+        viewModel.realSessionId.ifEmpty { sessionId },
+    )
     // [T-agent-graph-live-progress] Non-null while a graph run started from this
     // chat is in flight; swaps the typing dots for the per-agent progress card.
     val activeAgentRunTaskId by viewModel.activeAgentRunTaskId.collectAsState()
@@ -2322,6 +2333,32 @@ fun ChatScreen(
                                     Icon(Icons.Default.Memory, contentDescription = null)
                                 },
                             )
+                            // [T-provider-ux] Move to… — moved here from a
+                            // floating capsule pinned over the composer's
+                            // top-right corner. That capsule overlapped the
+                            // text field on a narrow screen and could not be
+                            // dismissed (dismissOnClickOutside = false), so a
+                            // share-seeded draft left it sitting on top of what
+                            // the user was typing until the turn was sent. The
+                            // action is rare and deliberate, which is exactly
+                            // what a menu is for; the entry only appears while a
+                            // share-injected draft is actually movable.
+                            val canMoveDraft by viewModel.hasInjectedShareContent.collectAsState()
+                            if (canMoveDraft) {
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.move_to_sheet_title)) },
+                                    onClick = {
+                                        showChatMenu = false
+                                        showMoveSheet = true
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.AutoMirrored.Filled.ArrowForward,
+                                            contentDescription = null,
+                                        )
+                                    },
+                                )
+                            }
                             MinisMenuDivider()
                             // Clear Chat (iOS parity, red)
                             DropdownMenuItem(
@@ -3219,7 +3256,18 @@ fun ChatScreen(
                         .lastOrNull { it.role == "assistant" }
                         ?.error
                         ?.isNotBlank() == true
-                    if (canResume && !isStreaming && error == null && !lastAssistantHasError) {
+                    // [T-resume-banner-false-stopped] Gate also checks the
+                    // PROCESS-wide streaming set (hoisted above the LazyColumn as
+                    // `sessionStreamingNow` — LazyListScope is not a composable
+                    // scope, so the flow cannot be collected here).
+                    if (com.openminis.app.data.ResumeVisibilityPolicy.showResumeBanner(
+                            canResume = canResume,
+                            localStreaming = isStreaming,
+                            sessionStreamingProcessWide = sessionStreamingNow,
+                            hasScreenError = error != null,
+                            lastAssistantHasError = lastAssistantHasError,
+                        )
+                    ) {
                         item(key = "__resume_banner__", contentType = "resume_banner") {
                             ResumeBanner(onResume = {
                                 viewModel.resume()
@@ -4360,15 +4408,6 @@ fun ChatScreen(
                         isAntiAlias = true
                     }
                 }
-                // T185: Move-to-session capsule mirrors iOS
-                // AIChatView.swift:1816 (.overlay(alignment: .topTrailing))
-                // on the input card. We render it as the first child of the
-                // composer Column, right-aligned, so it visually sits inside
-                // the input card's top-right corner — Compose doesn't have a
-                // free overlay primitive that doesn't need a Box wrapper,
-                // and an in-flow Row at the top with Arrangement.End is the
-                // cleanest equivalent.
-                val showMoveCapsule by viewModel.hasInjectedShareContent.collectAsState()
                 // Mirrors iOS swipe-up-to-send: drag the input bar upward —
                 // if it holds text, a floating send-arrow + "Release to send"
                 // capsule track the finger; releasing past `swipeArmFraction`
@@ -4485,96 +4524,6 @@ fun ChatScreen(
                         }
                         .padding(top = if (attachments.isNotEmpty()) 8.dp else 4.dp),
                 ) {
-                    // T185: Move-to capsule lives INSIDE the composer card,
-                    // pinned 8dp from the top-right corner, mirroring iOS
-                    // AIChatView.swift:1816 (.overlay(alignment: .topTrailing)
-                    // padding(.top, 6).padding(.trailing, 10)). A Popup
-                    // keeps it out of the composer's layout flow so the
-                    // attachment row + text field still own the full
-                    // vertical rhythm.
-                    if (showMoveCapsule) {
-                        // T185: align Move-to right edge with the
-                        // attachment row + button row (both 12dp). The
-                        // anchorBounds rect is in px, so convert via
-                        // LocalDensity rather than treating the constant
-                        // as dp directly.
-                        val popupDensity = androidx.compose.ui.platform.LocalDensity.current
-                        val rightInsetPx = with(popupDensity) { 12.dp.roundToPx() }
-                        val topInsetPx = with(popupDensity) { 6.dp.roundToPx() }
-                        androidx.compose.ui.window.Popup(
-                            popupPositionProvider = remember(rightInsetPx, topInsetPx) {
-                                object : androidx.compose.ui.window.PopupPositionProvider {
-                                    override fun calculatePosition(
-                                        anchorBounds: androidx.compose.ui.unit.IntRect,
-                                        windowSize: androidx.compose.ui.unit.IntSize,
-                                        layoutDirection: androidx.compose.ui.unit.LayoutDirection,
-                                        popupContentSize: androidx.compose.ui.unit.IntSize,
-                                    ): androidx.compose.ui.unit.IntOffset {
-                                        val x = (anchorBounds.right - popupContentSize.width - rightInsetPx)
-                                            .coerceIn(0, (windowSize.width - popupContentSize.width).coerceAtLeast(0))
-                                        val y = (anchorBounds.top + topInsetPx).coerceAtLeast(0)
-                                        return androidx.compose.ui.unit.IntOffset(x, y)
-                                    }
-                                }
-                            },
-                            onDismissRequest = {},
-                            properties = androidx.compose.ui.window.PopupProperties(
-                                focusable = false,
-                                dismissOnBackPress = false,
-                                dismissOnClickOutside = false,
-                            ),
-                        ) {
-                            androidx.compose.material3.Surface(
-                                shape = androidx.compose.foundation.shape.CircleShape,
-                                // Mirrors iOS .ultraThinMaterial — solid-
-                                // looking pill against the input bg.
-                                // Without a hairline border the capsule
-                                // washed out into the input card on the
-                                // light theme, which is why it stopped
-                                // reading as a pill.
-                                color = MaterialTheme.colorScheme.surfaceVariant,
-                                shadowElevation = 0.dp,
-                                tonalElevation = 0.dp,
-                                border = androidx.compose.foundation.BorderStroke(
-                                    0.5.dp,
-                                    ChatColors.thumbnailBorder,
-                                ),
-                                modifier = Modifier.clickable { showMoveSheet = true },
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.padding(start = 8.dp, end = 12.dp, top = 2.dp, bottom = 2.dp),
-                                ) {
-                                    // arrow.right.circle look-alike: an
-                                    // outlined ring around a → glyph.
-                                    Box(
-                                        modifier = Modifier
-                                            .size(15.dp)
-                                            .border(
-                                                1.dp,
-                                                ChatColors.secondaryText,
-                                                CircleShape,
-                                            ),
-                                        contentAlignment = Alignment.Center,
-                                    ) {
-                                        Icon(
-                                            Icons.AutoMirrored.Filled.ArrowForward,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(10.dp),
-                                            tint = ChatColors.secondaryText,
-                                        )
-                                    }
-                                    Spacer(Modifier.width(6.dp))
-                                    Text(
-                                        "Move to…",
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Medium,
-                                        color = ChatColors.secondaryText,
-                                    )
-                                }
-                            }
-                        }
-                    }
                     // Attachment thumbnails inside the box (iOS: 64×64 squares)
                     if (attachments.isNotEmpty()) {
                         LazyRow(

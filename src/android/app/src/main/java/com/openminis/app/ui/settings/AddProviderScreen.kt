@@ -64,6 +64,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -197,15 +201,145 @@ private val providerDisplayOrder = listOf(
 )
 
 /**
- * Max height of the endpoint-history list before it scrolls.
+ * [T-provider-ux] Endpoint text field with an inline completion dropdown.
  *
- * Sized for [EndpointHistory.DEFAULT_VISIBLE] rows at the ~44dp each row
- * occupies (two text lines plus 8dp vertical padding). A pixel height rather
- * than a row count because Compose has no "show N children then scroll"
- * primitive, and the point of the cap is bounded SPACE — the form and its Save
- * button must stay reachable regardless of how tall a row ends up.
+ * The completion list appears only while what you typed is a prefix of an
+ * endpoint you already use, and only while the field has focus. That is the whole
+ * point of replacing the old always-present collapsible history: no permanent UI,
+ * no extra taps, and the suggestion arrives at the moment it is useful.
+ *
+ * Design notes:
+ *  - Rendered in-flow under the field, not in a [androidx.compose.ui.window.Popup].
+ *    A popup would float over the form and, with the keyboard up, is what made the
+ *    old list feel like it was in the way. In-flow means the form reflows and the
+ *    Save button stays reachable.
+ *  - Hidden as soon as the field loses focus, so it cannot linger over the rest of
+ *    the form after you have moved on.
+ *  - `dismissedFor` suppresses the dropdown for the exact string the user
+ *    dismissed. Without it, closing the list and continuing to type the same
+ *    prefix would pop it straight back up, which reads as the UI arguing.
  */
-private val ENDPOINT_HISTORY_MAX_HEIGHT = 220.dp
+@Composable
+private fun EndpointFieldWithCompletion(
+    value: String,
+    onValueChange: (String) -> Unit,
+    placeholder: String,
+    suggestions: List<EndpointHistory.Suggestion>,
+) {
+    var focused by remember { mutableStateOf(false) }
+    var dismissedFor by remember { mutableStateOf<String?>(null) }
+    val completions = remember(suggestions, value) {
+        EndpointHistory.complete(suggestions, value)
+    }
+    val show = focused && completions.isNotEmpty() && dismissedFor != value
+
+    SectionTextField(
+        value = value,
+        onValueChange = {
+            // Typing something new invalidates an earlier dismissal: the user is
+            // now asking about a different string.
+            if (dismissedFor != null && it != dismissedFor) dismissedFor = null
+            onValueChange(it)
+        },
+        placeholder = placeholder,
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(
+            // Uri keyboard: gives the user "/" and ".com" directly and suppresses
+            // autocorrect, which otherwise "fixes" host names into prose.
+            keyboardType = KeyboardType.Uri,
+            imeAction = ImeAction.Done,
+        ),
+        fieldModifier = Modifier.onFocusChanged { focused = it.isFocused },
+    )
+    if (show) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 2.dp, bottom = 4.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    Icons.Default.History,
+                    contentDescription = null,
+                    modifier = Modifier.size(14.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = stringResource(R.string.add_provider_endpoint_completion_header),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    modifier = Modifier.weight(1f),
+                )
+                // An explicit dismiss: the list sits between the field and the
+                // rest of the form, and a user who wants a URL that merely starts
+                // like an existing one needs a way to get it out of the way.
+                Text(
+                    text = stringResource(R.string.add_provider_endpoint_completion_dismiss),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .clickable { dismissedFor = value }
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                )
+            }
+            completions.forEach { s ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            onValueChange(s.url)
+                            // Picking answers the question; without clearing this
+                            // the list would re-open on the value it just wrote.
+                            dismissedFor = s.url
+                        }
+                        .padding(vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = s.url,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            // A host that has only ever served a different
+                            // provider type is usually the wrong paste: an
+                            // Anthropic relay dropped into OpenAI 404s in a way
+                            // that looks like a key problem.
+                            text = if (s.usedByOtherType) {
+                                stringResource(
+                                    R.string.add_provider_endpoint_recent_other_type,
+                                    s.types.joinToString(", ") { it.displayName },
+                                )
+                            } else {
+                                stringResource(
+                                    R.string.add_provider_endpoint_recent_count,
+                                    s.useCount,
+                                )
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (s.usedByOtherType) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                    }
+                    Icon(
+                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                    )
+                }
+            }
+        }
+    }
+}
 
 /**
  * Icon and color per provider type, matching iOS SF Symbols.
@@ -614,166 +748,34 @@ private fun ColumnScope.ApiKeyConfigSection(
         ) {
             SettingsCardBlock {
                 RowLabel(text = stringResource(R.string.add_provider_custom_api_base_optional))
-                SectionTextField(
-                    value = customBaseURL,
-                    onValueChange = onCustomBaseURLChange,
-                    placeholder = defaultUrl,
-                    singleLine = true,
-                )
-                // [T-provider-ux] Endpoints already in use, mined from the
-                // existing instances (EndpointHistory, pure + unit-tested).
-                // Retyping a gateway host from memory for the twelfth key is
-                // where typos come from, and a typo'd base URL fails as an auth
-                // error, which sends the user hunting the wrong problem.
-                //
-                // COLLAPSED by default and capped at 5 rows with its own search:
-                // an expanded 17-row history pushes the rest of the form (and
-                // the Save button) off screen, so the affordance that was meant
-                // to save typing costs a scroll instead. The header states the
-                // count, so a closed list is not a dead end.
+                // Endpoints already in use, mined from the existing instances
+                // (EndpointHistory, pure + unit-tested) rather than kept as a
+                // separate stored list: the instances ARE the history and cannot
+                // go stale, so a deleted provider's URL stops being offered
+                // exactly when it should.
                 val allInstances = providerRepository.config.collectAsState().value.instances
                 val endpointSuggestions = remember(allInstances, providerType) {
                     EndpointHistory.suggestions(allInstances, providerType)
                 }
-                if (endpointSuggestions.isNotEmpty()) {
-                    var historyOpen by remember { mutableStateOf(false) }
-                    var historyQuery by remember { mutableStateOf("") }
-                    // Searching implies wanting to see results; keeping the list
-                    // closed while the user types into it would be absurd.
-                    val filtered = remember(endpointSuggestions, historyQuery) {
-                        EndpointHistory.filter(endpointSuggestions, historyQuery)
-                    }
-                    Spacer(Modifier.height(4.dp))
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                historyOpen = !historyOpen
-                                if (!historyOpen) historyQuery = ""
-                            }
-                            .padding(vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(
-                            Icons.Default.History,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Spacer(Modifier.width(10.dp))
-                        Text(
-                            text = stringResource(
-                                R.string.add_provider_endpoint_recent_count_header,
-                                endpointSuggestions.size,
-                            ),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.weight(1f),
-                        )
-                        Icon(
-                            if (historyOpen) Icons.Default.KeyboardArrowUp
-                            else Icons.Default.KeyboardArrowDown,
-                            contentDescription = null,
-                            modifier = Modifier.size(20.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    if (historyOpen) {
-                        // The search field only earns its space once the list is
-                        // longer than what fits without scrolling.
-                        if (endpointSuggestions.size > EndpointHistory.DEFAULT_VISIBLE) {
-                            SectionTextField(
-                                value = historyQuery,
-                                onValueChange = { historyQuery = it },
-                                placeholder = stringResource(
-                                    R.string.add_provider_endpoint_recent_search,
-                                ),
-                                singleLine = true,
-                            )
-                        }
-                        if (filtered.visible.isEmpty()) {
-                            Text(
-                                text = stringResource(R.string.add_provider_endpoint_recent_none),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(vertical = 10.dp),
-                            )
-                        }
-                        // Fixed max height + scroll rather than an unbounded
-                        // Column: the cap is what keeps the form usable, and a
-                        // scrollable region makes the rest reachable without
-                        // growing the page.
-                        Column(
-                            modifier = Modifier
-                                .heightIn(max = ENDPOINT_HISTORY_MAX_HEIGHT)
-                                .verticalScroll(rememberScrollState()),
-                        ) {
-                            filtered.visible.forEach { s ->
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable {
-                                            onCustomBaseURLChange(s.url)
-                                            // Picking a value answers the
-                                            // question the list was open for.
-                                            historyOpen = false
-                                            historyQuery = ""
-                                        }
-                                        .padding(vertical = 8.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            text = s.url,
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            color = MaterialTheme.colorScheme.onSurface,
-                                        )
-                                        Text(
-                                            // A host that has only ever served a
-                                            // different provider type is usually
-                                            // the wrong paste (an Anthropic relay
-                                            // dropped into OpenAI 404s in a way
-                                            // that looks like a key problem), so
-                                            // say so instead of silently offering
-                                            // it as equivalent.
-                                            text = if (s.usedByOtherType) {
-                                                stringResource(
-                                                    R.string.add_provider_endpoint_recent_other_type,
-                                                    s.types.joinToString(", ") { it.displayName },
-                                                )
-                                            } else {
-                                                stringResource(
-                                                    R.string.add_provider_endpoint_recent_count,
-                                                    s.useCount,
-                                                )
-                                            },
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = if (s.usedByOtherType) {
-                                                MaterialTheme.colorScheme.error
-                                            } else {
-                                                MaterialTheme.colorScheme.onSurfaceVariant
-                                            },
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                        // Never truncate silently: say how many matches the cap
-                        // is hiding, so the search field is discoverable as the
-                        // way to reach them.
-                        if (filtered.hiddenCount > 0) {
-                            Text(
-                                text = stringResource(
-                                    R.string.add_provider_endpoint_recent_more,
-                                    filtered.hiddenCount,
-                                ),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(top = 4.dp, bottom = 8.dp),
-                            )
-                        }
-                    }
-                }
+                // [T-provider-ux] Endpoint field with inline completion.
+                //
+                // Replaces the collapsible "previously used endpoints" list that
+                // used to sit under this field. The list answered the right need
+                // — do not retype a gateway host from memory for the twelfth key,
+                // because a typo'd base URL fails as an AUTH error and sends you
+                // hunting the wrong problem — but it answered it in the wrong
+                // shape: a permanent block of UI you had to open, read and close,
+                // for a value you were already typing.
+                //
+                // Completion happens where the typing happens. Type "tab" and the
+                // full "https://tabitoken.com/v1" is one tap away; type nothing
+                // and there is no UI at all.
+                EndpointFieldWithCompletion(
+                    value = customBaseURL,
+                    onValueChange = onCustomBaseURLChange,
+                    placeholder = defaultUrl,
+                    suggestions = endpointSuggestions,
+                )
             }
             // Auto Append "/v1" toggle (not for Gemini — Gemini uses full path)
             if (providerType != ProviderType.gemini) {
@@ -1057,11 +1059,20 @@ private fun ColumnScope.OAuthConfigSection(
         ) {
             SettingsCardBlock {
                 RowLabel(text = stringResource(R.string.add_provider_custom_api_base_optional))
-                SectionTextField(
+                // Same completion as the API-key form. This is the OAuth
+                // "configure manually" path, and it is the one MORE likely to
+                // point at a third-party gateway — leaving it as a bare field
+                // would mean the endpoint you use most often is the one you have
+                // to retype from memory.
+                val oauthAllInstances = providerRepository.config.collectAsState().value.instances
+                val oauthEndpointSuggestions = remember(oauthAllInstances, providerType) {
+                    EndpointHistory.suggestions(oauthAllInstances, providerType)
+                }
+                EndpointFieldWithCompletion(
                     value = customBaseURL,
                     onValueChange = { customBaseURL = it },
                     placeholder = defaultUrl,
-                    singleLine = true,
+                    suggestions = oauthEndpointSuggestions,
                 )
                 Spacer(Modifier.height(12.dp))
                 RowLabel(text = stringResource(R.string.add_provider_bearer_token))

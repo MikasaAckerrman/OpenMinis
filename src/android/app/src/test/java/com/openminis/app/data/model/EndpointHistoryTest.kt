@@ -214,6 +214,95 @@ class EndpointHistoryTest {
         assertEquals(0, f.hiddenCount)
     }
 
+    // ── inline completion ───────────────────────────────────────────────────
+
+    private fun completionFixture() = EndpointHistory.suggestions(
+        listOf(
+            inst("1", "tabi key", url = "https://tabitoken.com/v1"),
+            inst("2", "go key", url = "https://gorouter.app"),
+            inst("3", "agent key", url = "https://agentrouter.org"),
+            inst("4", "openai", url = "https://api.openai.com"),
+        ),
+    )
+
+    @Test
+    fun `typing a host prefix completes the full endpoint`() {
+        val c = EndpointHistory.complete(completionFixture(), "tab")
+        assertEquals(listOf("https://tabitoken.com/v1"), c.map { it.url })
+    }
+
+    @Test
+    fun `completion ignores the scheme the user has not typed`() {
+        // Nobody types "https://" before the host they already know.
+        assertEquals(
+            listOf("https://gorouter.app"),
+            EndpointHistory.complete(completionFixture(), "goroute").map { it.url },
+        )
+    }
+
+    @Test
+    fun `completion also matches when the scheme IS typed`() {
+        assertEquals(
+            listOf("https://agentrouter.org"),
+            EndpointHistory.complete(completionFixture(), "https://agent").map { it.url },
+        )
+    }
+
+    @Test
+    fun `completion is prefix-based, not fuzzy`() {
+        // THE point of a separate function: fuzzy would offer api.openai.com for
+        // "ai", and a wrong base URL fails as an auth error, which sends the user
+        // hunting the wrong problem.
+        assertTrue(EndpointHistory.complete(completionFixture(), "ai").isEmpty())
+        assertTrue(EndpointHistory.complete(completionFixture(), "router").isEmpty())
+    }
+
+    @Test
+    fun `an exact match offers nothing`() {
+        // There is no completion to offer for something already typed in full;
+        // leaving the row up makes the user dismiss a no-op.
+        assertTrue(
+            EndpointHistory.complete(completionFixture(), "https://gorouter.app").isEmpty(),
+        )
+        // Trailing slash and case are the same URL, so also nothing.
+        assertTrue(
+            EndpointHistory.complete(completionFixture(), " HTTPS://GoRouter.app/ ").isEmpty(),
+        )
+    }
+
+    @Test
+    fun `an empty or blank query offers nothing`() {
+        // Unlike filter(), where blank means "show the whole history".
+        assertTrue(EndpointHistory.complete(completionFixture(), "").isEmpty())
+        assertTrue(EndpointHistory.complete(completionFixture(), "   ").isEmpty())
+    }
+
+    @Test
+    fun `completion respects the row limit and keeps frequency order`() {
+        val list = listOf(
+            inst("1", "a", url = "https://tabitoken.com/v1"),
+            inst("2", "b", url = "https://tabitoken.com/v1"),
+            inst("3", "c", url = "https://tabix.dev"),
+            inst("4", "d", url = "https://tabi-relay.net"),
+            inst("5", "e", url = "https://tabi.example"),
+            inst("6", "f", url = "https://tabiz.io"),
+        )
+        val all = EndpointHistory.complete(EndpointHistory.suggestions(list), "tab", limit = 0)
+        assertEquals(5, all.size)
+        // Most-used first — suggestions() already sorted, complete() must not
+        // reshuffle.
+        assertEquals("https://tabitoken.com/v1", all.first().url)
+        assertEquals(2, EndpointHistory.complete(EndpointHistory.suggestions(list), "tab", limit = 2).size)
+    }
+
+    @Test
+    fun `www prefix is transparent to completion`() {
+        val list = listOf(inst("1", "a", url = "https://www.relay.example/v1"))
+        val s = EndpointHistory.suggestions(list)
+        assertEquals(1, EndpointHistory.complete(s, "relay").size)
+        assertEquals(1, EndpointHistory.complete(s, "www.rel").size)
+    }
+
     // ── FuzzySearch ─────────────────────────────────────────────────────────
 
     @Test

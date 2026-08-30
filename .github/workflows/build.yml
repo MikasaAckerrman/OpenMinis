@@ -126,18 +126,21 @@ jobs:
             --tests 'com.openminis.app.data.HostActivityTrackerTest' \
             --tests 'com.openminis.app.data.DnsFailurePolicyTest' \
             --tests 'com.openminis.app.ui.ScreenDimPolicyTest' \
+            --tests 'com.openminis.app.ui.ScreenDimWakeGestureTest' \
             --tests 'com.openminis.app.data.PostAnchorPruneTest' \
             --tests 'com.openminis.app.data.RequestBudgetTest' \
             --tests 'com.openminis.app.data.SendGatePolicyTest' \
             --tests 'com.openminis.app.data.MessageCutoffTest' \
             --tests 'com.openminis.app.data.TransientRetryBudgetTest' \
+            --tests 'com.openminis.app.data.ResumeVisibilityPolicyTest' \
             --tests 'com.openminis.app.data.CompactDividerCountTest' \
             --tests 'com.openminis.app.data.MutationJournalTest' \
             --tests 'com.openminis.app.data.SessionDeletionPolicyTest' \
             --tests 'com.openminis.app.debug.HeadlessRetryStatusTest' \
             --tests 'com.openminis.app.ui.chat.UiCopyCapsuleTest' \
             --tests 'com.openminis.app.ui.chat.UiCopyDiffVerdictTest' \
-            --tests 'com.openminis.app.ui.chat.MinisTextKitSelectionOrderTest'
+            --tests 'com.openminis.app.ui.chat.MinisTextKitSelectionOrderTest' \
+            --tests 'com.openminis.app.ui.chat.ShardOrderTest'
         # `offload.*` already covers AgentArtifactStoreTest — the artifact store
         # lives in that package on purpose, next to the runner that uses it.
 

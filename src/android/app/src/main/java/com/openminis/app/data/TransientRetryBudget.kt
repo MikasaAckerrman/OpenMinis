@@ -30,7 +30,17 @@ object TransientRetryBudget {
         /** Socket died under us (pool reap, stream reset, abrupt close). */
         CONNECTION,
 
-        /** Everything else transient: 5xx, generic network error. */
+        /**
+         * Upstream gateway failure: 502/504 and the relay-shaped "bad gateway"
+         * bodies. Separate from [GENERIC] because the failing hop is BETWEEN the
+         * relay and the model, so the relay usually answers instantly — the whole
+         * 1/2/4 ladder can be spent in under ten seconds while the upstream is
+         * still switching nodes. Bad-gateway runs are also bursty (the user saw a
+         * run of 502s), so a 3-attempt budget dies mid-burst.
+         */
+        BAD_GATEWAY,
+
+        /** Everything else transient: other 5xx, generic network error. */
         GENERIC,
     }
 
@@ -45,10 +55,40 @@ object TransientRetryBudget {
         "software caused connection abort",
     )
 
-    fun classify(message: String?): Kind = when {
-        DnsFailurePolicy.isNameResolutionFailure(message) -> Kind.OFFLINE
-        message != null && CONNECTION_MARKERS.any { message.lowercase().contains(it) } -> Kind.CONNECTION
-        else -> Kind.GENERIC
+    /**
+     * Bad-gateway markers.
+     *
+     * Deliberately NOT the bare digits "502"/"504": provider error text carries
+     * request ids and model names, and a request id containing 502 would
+     * misclassify an unrelated failure. ChatViewModel's own 5xx detection hit this
+     * same trap and anchors on the bracket/prefix form; these markers do the same,
+     * matching the two shapes the providers actually build — `[502] …` from a JSON
+     * body and `HTTP 502: …` when the body was not JSON — plus the worded bodies
+     * relays return.
+     */
+    private val BAD_GATEWAY_MARKERS = listOf(
+        "[502]",
+        "[504]",
+        "http 502",
+        "http 504",
+        "bad gateway",
+        "gateway time-out",
+        "gateway timeout",
+        "upstream connect error",
+        "upstream request timeout",
+    )
+
+    fun classify(message: String?): Kind {
+        if (DnsFailurePolicy.isNameResolutionFailure(message)) return Kind.OFFLINE
+        if (message == null) return Kind.GENERIC
+        val lower = message.lowercase()
+        // CONNECTION first: a dead socket is about OUR transport and needs pool
+        // eviction, which a bad-gateway retry must not trigger (its sockets are
+        // fine). A message that somehow matched both is more likely reporting the
+        // socket, since that is the layer we can act on.
+        if (CONNECTION_MARKERS.any { lower.contains(it) }) return Kind.CONNECTION
+        if (BAD_GATEWAY_MARKERS.any { lower.contains(it) }) return Kind.BAD_GATEWAY
+        return Kind.GENERIC
     }
 
     /** Total attempts allowed for [kind] before the turn is failed. */
@@ -61,6 +101,10 @@ object TransientRetryBudget {
         // Evict-and-retry usually succeeds on the first repeat; a couple of
         // spares cover a proxy reaping several pooled sockets in a row.
         Kind.CONNECTION -> 4
+        // A relay switching upstream nodes answers 502 immediately, so the 1/2/4
+        // ladder is spent in ~7s — often before the switch completes. More
+        // attempts on a longer ladder is what actually rides out a burst.
+        Kind.BAD_GATEWAY -> 5
         Kind.GENERIC -> 3
     }
 
@@ -76,6 +120,16 @@ object TransientRetryBudget {
         if (attempt < 0) return 0
         return when (kind) {
             Kind.OFFLINE -> 1
+            // A gateway switching upstream nodes needs seconds, not milliseconds,
+            // and it answers instantly — so the ladder must supply the patience
+            // the server does not. Caps at 10s: past that the user is better
+            // served by a fallback provider than by more waiting.
+            Kind.BAD_GATEWAY -> when (attempt) {
+                0 -> 2
+                1 -> 4
+                2 -> 6
+                else -> 10
+            }
             else -> when (attempt) {
                 0 -> 1
                 1 -> 2

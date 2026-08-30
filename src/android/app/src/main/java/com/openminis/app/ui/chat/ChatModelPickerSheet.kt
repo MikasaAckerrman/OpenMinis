@@ -88,7 +88,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -203,7 +202,6 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -224,7 +222,6 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.IntrinsicSize
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.filled.Cancel
@@ -276,7 +273,6 @@ import com.openminis.app.data.model.ThinkingLevel
 import com.openminis.app.data.repository.ChatRepository
 import com.openminis.app.data.repository.MemoryRepository
 import com.openminis.app.data.repository.ProviderRepository
-import com.openminis.app.ui.settings.ProviderListPrefs
 import com.openminis.app.ui.browser.BrowserSheet
 import com.openminis.app.ui.theme.ChatColors
 import com.openminis.app.ui.components.MinisTextButton
@@ -467,35 +463,38 @@ internal fun ModelPickerSheet(
         result
     }
 
-    // [T-provider-ux] Flatten the section grouping into the row sequence the
-    // LazyColumn renders: a section header, then (when open) its member cards.
-    // Building this as a list rather than nesting Columns keeps every provider
-    // card a separate LazyColumn item, so a section holding 17 keys does not
-    // compose all of them to draw one header.
-    val pickerContext = LocalContext.current
-    var expandedPickerSections by remember {
-        mutableStateOf(ProviderListPrefs.expandedKeys(pickerContext))
-    }
-    val pickerRows = remember(
-        allInstancesWithEntries, searchText, expandedPickerSections, activeEntryId,
-    ) {
-        val entriesById = allInstancesWithEntries.associate { it.first.id to it.second }
-        val instancesById = allInstancesWithEntries.associate { it.first.id to it.first }
-        val sections = ProviderPickerSections.build(
+    // Sections themselves do not depend on what is expanded, so they are built
+    // first — that lets the initial expand state be SEEDED from them rather than
+    // forced on every recomposition. Forcing would make the active section's
+    // chevron a no-op: the user could not close the one section they were most
+    // likely to want closed after picking.
+    val pickerSections = remember(allInstancesWithEntries) {
+        val counts = allInstancesWithEntries.associate { it.first.id to it.second.size }
+        ProviderPickerSections.build(
             instances = allInstancesWithEntries.map { it.first },
-            instanceEntryCounts = entriesById.mapValues { it.value.size },
+            instanceEntryCounts = counts,
         )
-        // Auto-open the section holding the active model: opening the picker onto
-        // a wall of closed headers, with no clue which one holds the current
-        // selection, is worse than the flat list this replaced.
+    }
+    // Collapse state is per-OPEN and in memory on purpose: every time the sheet
+    // opens, everything is closed except the section holding the model in use.
+    // Persisting it (as the settings list does) would mean reopening the picker
+    // into whatever was left expanded three sessions ago, which is the wall of
+    // open cards this grouping exists to remove. The settings list is a hub you
+    // navigate away from and back to, so its state is worth remembering; the
+    // picker is a one-shot "choose a model" gesture.
+    var expandedPickerSections by remember(pickerSections, activeEntryId) {
         val activeInstanceId = allInstancesWithEntries
             .firstOrNull { (_, entries) -> entries.any { it.id == activeEntryId } }
             ?.first?.id
-        val autoExpand = ProviderPickerSections.keysContaining(sections, activeInstanceId)
+        mutableStateOf(ProviderPickerSections.keysContaining(pickerSections, activeInstanceId))
+    }
+    val pickerRows = remember(pickerSections, allInstancesWithEntries, searchText, expandedPickerSections) {
+        val entriesById = allInstancesWithEntries.associate { it.first.id to it.second }
+        val instancesById = allInstancesWithEntries.associate { it.first.id to it.first }
         val rows = ArrayList<PickerRow>()
-        for (section in sections) {
+        for (section in pickerSections) {
             val expanded = ProviderPickerSections.isExpanded(
-                section, searchText, expandedPickerSections, autoExpand,
+                section, searchText, expandedPickerSections,
             )
             rows.add(PickerRow(section = section, sectionExpanded = expanded))
             if (!expanded) continue
@@ -538,10 +537,22 @@ internal fun ModelPickerSheet(
             }
         },
     ) {
+        // Height follows the CONTENT, capped at 90% of the screen.
+        //
+        // It used to be a flat fillMaxHeight(0.9f) with the list inside at
+        // weight(1f, fill = false). That combination is what made the sheet feel
+        // like it closed at random: the sheet was always 90% tall, the list only
+        // as tall as its rows, so everything below the last row was a dead strip
+        // that belonged to the sheet. A drag started there — which is most of the
+        // sheet once sections are collapsed — was never a scroll, it was a
+        // dismiss. Sizing to content removes the strip instead of trying to
+        // out-guess the gesture.
+        val configuration = LocalConfiguration.current
+        val maxSheetHeight = remember(configuration) { (configuration.screenHeightDp * 0.9f).dp }
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .fillMaxHeight(0.9f)
+                .heightIn(max = maxSheetHeight)
                 .padding(bottom = 32.dp)
                 .navigationBarsPadding(),
         ) {
@@ -597,6 +608,11 @@ internal fun ModelPickerSheet(
                 },
             )
 
+            // weight(1f, fill = false) so the list takes only the height it
+            // needs, up to whatever the capped Column leaves it. With the cap
+            // above, "the sheet is taller than its content" can no longer happen,
+            // so no part of the sheet is a dead zone that silently dismisses
+            // instead of scrolling.
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -932,8 +948,11 @@ internal fun ModelPickerSheet(
                                     toggleEnabled = searchText.isEmpty(),
                                     onToggle = {
                                         val next = !row.sectionExpanded
-                                        ProviderListPrefs.setExpanded(pickerContext, section.key, next)
-                                        expandedPickerSections = ProviderListPrefs.expandedKeys(pickerContext)
+                                        expandedPickerSections = if (next) {
+                                            expandedPickerSections + section.key
+                                        } else {
+                                            expandedPickerSections - section.key
+                                        }
                                     },
                                 )
                             }

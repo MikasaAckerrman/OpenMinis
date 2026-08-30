@@ -793,6 +793,17 @@ object DebugMethodRegistry {
             example = ex("sessionId" to "2c7ae861", "kind" to "DELETE"),
         ),
         MethodSpec(
+            name = "chat.network.journal",
+            description = "Read the always-on network journal — every transient failure with the context that explains it (concurrent streams, screen on/off, connectivity, host) plus the retry outcome. Answers \"why did the session stop with a network error\". Independent of the Settings logging toggle, and size-trimmed rather than age-trimmed, so evidence does not expire before anyone looks.",
+            params = listOf(
+                ParamSpec("limit", "int", required = false, default = 200, description = "Return at most this many of the newest matching lines. Clamped [1,5000]."),
+                ParamSpec("sessionId", "string", required = false, description = "Only lines for this session (matched on the journalled 8-char prefix)."),
+                ParamSpec("kind", "string", required = false, description = "Filter by event kind: FAIL | RETRY | OK | GIVEUP."),
+            ),
+            returns = "{exists, path, sizeBytes, totalLines, matchedLines, count, lines:[string]}",
+            example = ex("kind" to "GIVEUP", "limit" to 50),
+        ),
+        MethodSpec(
             name = "chat.session.delete",
             description = "REFUSED (T-no-agent-session-deletion): permanently destroying a session and its messages is reserved for the user in the app UI. There is no undo, and no agent workflow needs it — compaction (chat.compact.before) keeps every message row on disk and only shrinks what is sent to the model. The `confirm` param was never a safeguard on this surface: the caller writes its own params.",
             params = listOf(

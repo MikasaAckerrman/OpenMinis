@@ -762,7 +762,11 @@ class SelectionController {
         // Fall back to y-comparison only when the ids carry no order key.
         val ka = shardOrderKey(a.shard)
         val kb = shardOrderKey(b.shard)
-        if (ka != null && kb != null && a.shard.messageId == b.shard.messageId) {
+        // [T-android-selection-gaps] Same guard as isShardBetween: the keys only
+        // order shards that share a fragment owner. Ordering the two ENDPOINTS
+        // wrongly is the worst case of all — selectedPlainText slices from the
+        // "first" and stops at the "last", so a swapped pair returns a fragment.
+        if (ka != null && kb != null && ShardOrder.comparableByKey(listOf(a.shard, b.shard))) {
             return if (ka <= kb) a to b else b to a
         }
         val sA = shards[a.shard] ?: return null
@@ -963,21 +967,33 @@ class SelectionController {
      * so use that order even after LazyColumn recycled an endpoint. For the
      * uncommon cross-message selection there is no chat-row order in this
      * controller yet; retain the visible-Y fallback rather than inventing one.
-     */
-    private fun shardsInDocumentOrder(
+     */    private fun shardsInDocumentOrder(
         first: TextPosition,
         last: TextPosition,
     ): List<TextShardId> {
         val ids = (selectionDocument.keys + shards.keys).distinct()
         if (first.shard.messageId == last.shard.messageId) {
             val messageIds = ids.filter { it.messageId == first.shard.messageId }
-            if (messageIds.all { shardOrderKey(it) != null }) {
+            // [T-android-selection-gaps] Sort by id only when the ids actually
+            // determine an order: same message AND same fragment owner. Two
+            // fragments of DIFFERENT source blocks both start their blockIndex at
+            // 0, so key-sorting across owners would assert a false order — and
+            // because the walk skips until `first` and breaks at `last`, a false
+            // order does not mis-sort, it DROPS text.
+            if (ShardOrder.comparableByKey(messageIds)) {
                 return messageIds.sortedBy { shardOrderKey(it) }
             }
         }
-        return ids.sortedBy { id ->
-            shards[id]?.positionInWindow()?.y ?: Float.POSITIVE_INFINITY
-        }
+        // Visual fallback. Unregistered (recycled) shards have no position, so
+        // they sort last rather than tying at an arbitrary spot in the middle:
+        // a tail that is off-screen is exactly what a long selection looks like,
+        // and dropping it silently was the reported bug.
+        return ids.sortedWith(
+            compareBy(
+                { shards[it] == null },
+                { shards[it]?.positionInWindow()?.y ?: Float.POSITIVE_INFINITY },
+            ),
+        )
     }
 }
 
@@ -1122,19 +1138,11 @@ fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSelectionForShard(
  * are single-shard so the comparison never has to disambiguate.
  */
 internal fun shardOrderKey(id: TextShardId): Long? {
-    val s = id.shardId
-    // MdText disambiguates sibling Text composables by appending `#subIndex`:
-    // `mdblock:<parent>:<blockIndex>#<subIndex>`. The old parser fed `3#2`
-    // to toIntOrNull(), returned null, and silently fell back to moving
-    // window-Y coordinates. That is why selection order flipped while scrolling.
-    val base = s.substringBeforeLast('#', missingDelimiterValue = s)
-    val subIndex = if ('#' in s) s.substringAfterLast('#').toIntOrNull() ?: 0 else 0
-    val lastColon = base.lastIndexOf(':')
-    if (lastColon < 0) return null
-    val blockIndex = base.substring(lastColon + 1).toLongOrNull() ?: return null
+    val parsed = ShardOrder.parse(id) ?: return null
+    val blockIndex = parsed.blockIndex ?: return null
     // A million sibling text nodes inside one markdown block is impossible in
     // practice; this keeps block order dominant and sibling order stable.
-    return blockIndex * 1_000_000L + subIndex.toLong().coerceAtLeast(0L)
+    return blockIndex * 1_000_000L + parsed.subIndex.toLong().coerceAtLeast(0L)
 }
 
 internal fun SelectionController.isShardBetween(
@@ -1154,7 +1162,11 @@ internal fun SelectionController.isShardBetween(
     val orderB = shardOrderKey(b)
     val orderM = shardOrderKey(middle)
     if (orderA != null && orderB != null && orderM != null &&
-        a.messageId == b.messageId && middle.messageId == a.messageId
+        // [T-android-selection-gaps] Also require one fragment owner: `text:`
+        // and `legacy` ids report blockIndex 0 for every block, so without this
+        // two shards from different blocks would compare as equal-ish and a
+        // middle shard could be judged "between" when it is not.
+        ShardOrder.comparableByKey(listOf(a, b, middle))
     ) {
         val lo = minOf(orderA, orderB)
         val hi = maxOf(orderA, orderB)
