@@ -132,6 +132,7 @@ jobs:
             --tests 'com.openminis.app.data.SendGatePolicyTest' \
             --tests 'com.openminis.app.data.MessageCutoffTest' \
             --tests 'com.openminis.app.data.TransientRetryBudgetTest' \
+            --tests 'com.openminis.app.data.FallbackDecisionTest' \
             --tests 'com.openminis.app.data.ResumeVisibilityPolicyTest' \
             --tests 'com.openminis.app.data.CompactDividerCountTest' \
             --tests 'com.openminis.app.data.MutationJournalTest' \

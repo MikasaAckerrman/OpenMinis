@@ -1614,6 +1614,7 @@
     <!-- [T-offline-retry-budget] Shown while a turn is being retried after a name-resolution failure (device had no usable network). %1$d = attempt, %2$d = max. -->
     <string name="chat_retry_offline">No network — waiting and retrying (%1$d/%2$d)…</string>
     <string name="chat_retry_bad_gateway">Gateway error upstream — retrying (%1$d/%2$d)…</string>
+    <string name="chat_retry_no_response">Server sent nothing for 2 min — reconnecting (%1$d/%2$d)…</string>
     <string name="chat_retry_waiting_network">Waiting for the network to come back…</string>
     <!-- [T-error-persist-android] Shown when the model returns an empty reply (no text, no tools). -->
     <string name="error_empty_response_generic">Model returned an empty response. Please try again or switch models.</string>

@@ -8585,6 +8585,10 @@ class ChatViewModel(
                                         context.getString(
                                             R.string.chat_retry_bad_gateway, retryAttempt, maxAttempts,
                                         )
+                                    com.openminis.app.data.TransientRetryBudget.Kind.NO_RESPONSE ->
+                                        context.getString(
+                                            R.string.chat_retry_no_response, retryAttempt, maxAttempts,
+                                        )
                                     else -> "$errDesc — retrying ($retryAttempt/$maxAttempts)…"
                                 },
                             )
@@ -8805,8 +8809,44 @@ class ChatViewModel(
                     }
                     val isEmptyResponse = com.openminis.app.provider.EmptyStreamPolicy
                         .isEmptyResponse(actual)
-                    val shouldFallback = isRateLimit || isContentFilter || is5xx || isEmptyResponse ||
-                        fallbackStrategy == com.openminis.app.data.model.FallbackStrategy.always
+                    // [T-exhausted-transient-falls-back] A transient class that
+                    // spent its whole budget on this provider must hand the turn
+                    // to the next one. Without this the turn simply FAILED, and
+                    // both errors the user kept seeing land here:
+                    //
+                    //   "Transient error: HTTP 502: error code: 502"
+                    //   "Transient error: no response from server (120s)"
+                    //
+                    // Both are LLMError.TransientError, because mapHttpError
+                    // routes 500/502/503/504/529 to TransientError and the TTFB
+                    // watchdog throws TransientError directly. But `is5xx` only
+                    // matches LLMError.ProviderError, so it was false for every
+                    // HTTP-status 5xx that came through mapHttpError — the exact
+                    // shape it was written for. shouldFallback therefore stayed
+                    // false under the `default` strategy, the group's other
+                    // members were never tried, and the same dead gateway got
+                    // retried until the budget ran out. That is why it read as
+                    // "always this error": one bad upstream, no escape hatch.
+                    //
+                    // Gated on the budget being SPENT, not merely on the error
+                    // being transient: retrying the same provider first is right
+                    // (a blip usually clears), and jumping on the first failure
+                    // would strand the healthy provider the user chose.
+                    val retriesExhausted = com.openminis.app.data.FallbackDecision
+                        .transientBudgetSpent(
+                            isTransient = isTransient,
+                            attemptsUsed = retryAttempt,
+                            maxAttempts = maxAttempts,
+                        )
+                    val shouldFallback = com.openminis.app.data.FallbackDecision.shouldFallback(
+                        isRateLimit = isRateLimit,
+                        isContentFilter = isContentFilter,
+                        isHttp5xxProviderError = is5xx,
+                        isEmptyResponse = isEmptyResponse,
+                        transientRetriesExhausted = retriesExhausted,
+                        strategyIsAlways = fallbackStrategy ==
+                            com.openminis.app.data.model.FallbackStrategy.always,
+                    )
                     val next = if (shouldFallback) remainingFallbacks.removeFirstOrNull() else null
                     if (next != null) {
                         val reason = when {

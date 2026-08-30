@@ -31,6 +31,20 @@ object TransientRetryBudget {
         CONNECTION,
 
         /**
+         * The TTFB watchdog fired: the request was written, the socket accepted
+         * it, and the server sent nothing for 120s.
+         *
+         * Split out of [CONNECTION] because the WAIT is already paid before the
+         * error exists. A dropped socket fails in milliseconds, so CONNECTION's
+         * 4 attempts cost almost nothing; here each attempt costs a further two
+         * minutes, and 4 of them strand the turn for eight — during which the
+         * user has no idea whether anything is happening. Eviction still applies
+         * (a socket that swallowed a request is not reusable), but the budget has
+         * to be small.
+         */
+        NO_RESPONSE,
+
+        /**
          * Upstream gateway failure: 502/504 and the relay-shaped "bad gateway"
          * bodies. Separate from [GENERIC] because the failing hop is BETWEEN the
          * relay and the model, so the relay usually answers instantly — the whole
@@ -44,6 +58,13 @@ object TransientRetryBudget {
         GENERIC,
     }
 
+    /**
+     * TTFB-watchdog marker. Kept as the single source shared with
+     * [StaleConnectionPolicy.STALE_MARKER] so the two cannot disagree about what
+     * a silent server looks like.
+     */
+    private val NO_RESPONSE_MARKER = StaleConnectionPolicy.STALE_MARKER
+
     private val CONNECTION_MARKERS = listOf(
         "connection closed",
         "connection reset",
@@ -51,7 +72,6 @@ object TransientRetryBudget {
         "goaway",
         "unexpected end of stream",
         "broken pipe",
-        "no response from server",
         "software caused connection abort",
     )
 
@@ -82,7 +102,11 @@ object TransientRetryBudget {
         if (DnsFailurePolicy.isNameResolutionFailure(message)) return Kind.OFFLINE
         if (message == null) return Kind.GENERIC
         val lower = message.lowercase()
-        // CONNECTION first: a dead socket is about OUR transport and needs pool
+        // NO_RESPONSE before CONNECTION: the watchdog message is a connection
+        // fault too, but its budget must be the small one — each attempt costs
+        // another 120s wall-clock, which CONNECTION's ladder does not account for.
+        if (lower.contains(NO_RESPONSE_MARKER.lowercase())) return Kind.NO_RESPONSE
+        // CONNECTION next: a dead socket is about OUR transport and needs pool
         // eviction, which a bad-gateway retry must not trigger (its sockets are
         // fine). A message that somehow matched both is more likely reporting the
         // socket, since that is the layer we can act on.
@@ -101,6 +125,12 @@ object TransientRetryBudget {
         // Evict-and-retry usually succeeds on the first repeat; a couple of
         // spares cover a proxy reaping several pooled sockets in a row.
         Kind.CONNECTION -> 4
+        // Each attempt burns another 120s of the watchdog before it can fail, so
+        // the budget buys minutes, not seconds: 2 attempts ≈ 4 minutes worst
+        // case. Past that, handing the turn to another provider (which
+        // FallbackDecision now does on exhaustion) beats waiting on a gateway
+        // that has already swallowed two requests in silence.
+        Kind.NO_RESPONSE -> 2
         // A relay switching upstream nodes answers 502 immediately, so the 1/2/4
         // ladder is spent in ~7s — often before the switch completes. More
         // attempts on a longer ladder is what actually rides out a burst.
@@ -130,6 +160,10 @@ object TransientRetryBudget {
                 2 -> 6
                 else -> 10
             }
+            // The 120s watchdog already elapsed before this error existed, so an
+            // extra sleep only adds dead time on top of a wait the user has
+            // already sat through. Retry immediately after the pool eviction.
+            Kind.NO_RESPONSE -> 0
             else -> when (attempt) {
                 0 -> 1
                 1 -> 2
@@ -143,7 +177,11 @@ object TransientRetryBudget {
 
     /**
      * True when the pooled sockets must be dropped before retrying. Reusing a
-     * corpse is the whole failure mode for [Kind.CONNECTION].
+     * corpse is the whole failure mode for [Kind.CONNECTION], and a socket that
+     * accepted a request and then went silent for 120s ([Kind.NO_RESPONSE]) is
+     * equally unusable — that is precisely the stale-pooled-socket signature
+     * [StaleConnectionPolicy] was written for.
      */
-    fun evictsPool(kind: Kind): Boolean = kind == Kind.CONNECTION
+    fun evictsPool(kind: Kind): Boolean =
+        kind == Kind.CONNECTION || kind == Kind.NO_RESPONSE
 }
