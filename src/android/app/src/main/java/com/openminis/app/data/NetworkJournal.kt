@@ -159,18 +159,14 @@ object NetworkJournal {
     )
 
     /**
-     * [T-same-model-failover] The turn moved to a DIFFERENT endpoint.
+     * [T-network-journal] The turn moved to a DIFFERENT endpoint (group fallback).
      *
      * Without this line the journal could not answer whether a handover happened
-     * at all: a turn that failed over and then succeeded looked identical to one
-     * that never tried. That ambiguity is exactly what made the user's GIVEUP
-     * entries diagnostic — the ABSENCE of this record is what proved the
-     * candidate list was empty.
+     * at all: a turn that switched provider and then succeeded looked identical to
+     * one that never had a candidate. Diagnostic only — nothing reads it back.
      *
-     * @param sameModel true when the destination serves the same modelId (a
-     *   different door to the identical answer) rather than a different model
-     *   from the group. Worth distinguishing: only the latter changes what the
-     *   user is talking to.
+     * @param sameModel true when the destination serves the same modelId. Worth
+     *   distinguishing: only a different model changes what the user is talking to.
      */
     fun recordFallback(
         sessionId: String,
@@ -196,6 +192,18 @@ object NetworkJournal {
      * Error text, single-line and bounded. Newlines and tabs would break the
      * TSV shape this file is greppable because of.
      */
+    /**
+     * [T-auto-resume] An automatic resume is starting.
+     */
+    fun recordAutoResume(
+        sessionId: String,
+        cause: String,
+        attempt: Int,
+        delaySec: Int,
+    ) {
+        write("AUTO_RESUME", cause, sessionId, "attempt=$attempt", "delay=${delaySec}s")
+    }
+
     private fun shorten(message: String?): String {
         if (message.isNullOrBlank()) return "-"
         val flat = message.replace('\n', ' ').replace('\t', ' ').trim()

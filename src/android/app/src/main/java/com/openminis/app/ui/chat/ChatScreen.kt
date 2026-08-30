@@ -3260,7 +3260,22 @@ fun ChatScreen(
                     // PROCESS-wide streaming set (hoisted above the LazyColumn as
                     // `sessionStreamingNow` — LazyListScope is not a composable
                     // scope, so the flow cannot be collected here).
-                    if (com.openminis.app.data.ResumeVisibilityPolicy.showResumeBanner(
+                    //
+                    // [T-auto-resume] Show the auto-resume countdown instead of
+                    // the manual Resume banner when an automatic retry is pending.
+                    val autoResumeCountdown by viewModel.autoResumeCountdown.collectAsState()
+                    val autoResumeAttempt by viewModel.autoResumeAttempt.collectAsState()
+                    if (autoResumeCountdown > 0) {
+                        item(key = "__auto_resume_banner__", contentType = "auto_resume_banner") {
+                            AutoResumeBanner(
+                                countdown = autoResumeCountdown,
+                                attempt = autoResumeAttempt,
+                                onCancel = {
+                                    viewModel.cancelStream()
+                                },
+                            )
+                        }
+                    } else if (com.openminis.app.data.ResumeVisibilityPolicy.showResumeBanner(
                             canResume = canResume,
                             localStreaming = isStreaming,
                             sessionStreamingProcessWide = sessionStreamingNow,

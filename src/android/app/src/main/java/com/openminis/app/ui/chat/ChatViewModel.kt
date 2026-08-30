@@ -33,7 +33,6 @@ import com.openminis.app.data.model.LLMModel
 import com.openminis.app.data.model.LLMStreamChunk
 import com.openminis.app.data.model.LLMUsage
 import com.openminis.app.data.model.ModelGroup
-import com.openminis.app.data.model.SameModelFailover
 import com.openminis.app.data.model.ThinkingLevel
 import com.openminis.app.R
 import com.openminis.app.data.repository.ChatRepository
@@ -957,6 +956,14 @@ class ChatViewModel(
     /** Seconds remaining in the current auto-retry countdown (0 = not counting down). */
     private val _autoRetryCountdown = MutableStateFlow(0)
     val autoRetryCountdown: StateFlow<Int> = _autoRetryCountdown.asStateFlow()
+
+    /** [T-auto-resume] Auto-resume attempt number (0 = not resuming). */
+    private val _autoResumeAttempt = MutableStateFlow(0)
+    val autoResumeAttempt: StateFlow<Int> = _autoResumeAttempt.asStateFlow()
+
+    /** [T-auto-resume] Seconds remaining in the auto-resume countdown. */
+    private val _autoResumeCountdown = MutableStateFlow(0)
+    val autoResumeCountdown: StateFlow<Int> = _autoResumeCountdown.asStateFlow()
 
     // [T-android-stale-streamjob-clears-isstreaming] @Volatile so cross-coroutine
     // reads (the orphaned previous streamJob's tail block running on a different
@@ -5011,33 +5018,6 @@ class ChatViewModel(
      * not the beginning — so retry doesn't re-trigger the same fallback chain.
      */
     private fun buildFallbackProviders(primaryProvider: LLMProvider): List<LLMProvider> {
-        val groupFallbacks = buildGroupFallbackProviders(primaryProvider)
-        // [T-same-model-failover] A session bound to a MODEL (not a group) used
-        // to get an EMPTY list here, which meant failover did not exist for it:
-        // `buildGroupFallbackProviders` starts with `selectedGroupId ?: return
-        // emptyList()`, and the user's only groups are Voice Input/Output. Their
-        // journal shows the consequence — two 120s silences on gorouter.app and
-        // then GIVEUP, while the same model sat on 55 other instances.
-        //
-        // Appended rather than substituted: an explicit group is a deliberate
-        // choice of WHICH models may answer, so it keeps priority. Same-model
-        // endpoints extend the tail — a different door to the identical model,
-        // so the answer the user gets does not change, only the transport.
-        val sameModel = buildSameModelFailoverProviders(primaryProvider)
-        if (sameModel.isEmpty()) return groupFallbacks
-        // Dedupe by endpoint identity: a group member and a same-model candidate
-        // can be the same instance+model, and dialling it twice would spend the
-        // turn's patience on one door.
-        val seen = groupFallbacks.mapTo(mutableSetOf()) { it.throttleKey to it.model.id }
-        return groupFallbacks + sameModel.filter { seen.add(it.throttleKey to it.model.id) }
-    }
-
-    /**
-     * The original group-based fallback chain: next members of the session's
-     * model group, cycling from the current one. Empty when the session is not
-     * bound to a group.
-     */
-    private fun buildGroupFallbackProviders(primaryProvider: LLMProvider): List<LLMProvider> {
         val groupId = _selectedGroupId.value ?: return emptyList()
         val config = providerRepository.config.value
         val group = config.modelGroups.find { it.id == groupId } ?: return emptyList()
@@ -5061,85 +5041,6 @@ class ChatViewModel(
             result.add(p)
         }
         return result
-    }
-
-    /**
-     * [T-same-model-failover] Other endpoints serving the SAME model as
-     * [primaryProvider], best-first.
-     *
-     * This is the answer to "gorouter can work, it just goes silent — waiting
-     * longer is pointless". Instead of extending the TTFB watchdog again, the
-     * turn walks through a different door to the identical model. Ordering and
-     * filtering live in [SameModelFailover] (pure, unit-tested); this only
-     * resolves config into candidates and instantiates the chosen ones.
-     */
-    private fun buildSameModelFailoverProviders(
-        primaryProvider: LLMProvider,
-    ): List<LLMProvider> {
-        val config = providerRepository.config.value
-        val modelId = primaryProvider.model.id
-        val failedHost = primaryProvider.throttleKey
-        val activeEntryId = _activeEntryId.value
-
-        // Candidate view of the config. Credential presence is checked WITHOUT
-        // loading the key material into the candidate: the policy only needs the
-        // boolean, and the key is fetched once, later, for endpoints actually
-        // dialled.
-        val candidates = config.modelEntries.mapNotNull { entry ->
-            if (entry.model.id != modelId) return@mapNotNull null
-            val instance = config.instances.find { it.id == entry.providerInstanceId }
-                ?: return@mapNotNull null
-            SameModelFailover.Candidate(
-                entryId = entry.id,
-                instanceId = instance.id,
-                modelId = entry.model.id,
-                // Same host notion as the throttle bucket and the per-host idle
-                // tracker — one definition of endpoint identity, not three.
-                host = instance.effectiveBaseURL
-                    ?.let { com.openminis.app.provider.LlmDispatchGate.keyForUrl(it) }
-                    ?: instance.providerType.name,
-                isEnabled = instance.isEnabled,
-                isHidden = entry.isHidden,
-                hasCredential = providerRepository.loadApiKey(instance.id) != null,
-            )
-        }
-
-        val chosen = SameModelFailover.candidatesFor(
-            modelId = modelId,
-            failedEntryId = activeEntryId,
-            failedHost = failedHost,
-            all = candidates,
-        )
-        if (chosen.isEmpty()) return emptyList()
-
-        val built = chosen.mapNotNull { cand ->
-            val entry = config.modelEntries.find { it.id == cand.entryId }
-                ?: return@mapNotNull null
-            val instance = config.instances.find { it.id == cand.instanceId }
-                ?: return@mapNotNull null
-            val apiKey = providerRepository.loadApiKey(instance.id) ?: return@mapNotNull null
-            try {
-                ProviderFactory.create(instance, apiKey, entry.model, context)
-            } catch (_: Exception) {
-                // A malformed endpoint must not sink the whole failover chain —
-                // skip that door and keep the others.
-                null
-            }
-        }
-        // Drop any candidate that resolved to the SAME host the turn just failed
-        // on. `failedHost` is the live provider's throttleKey, while candidate
-        // hosts are derived from config; if a stale/blank customBaseURL made the
-        // two disagree, the "escape" would dial the dead gateway again.
-        val distinct = built.filterNot { it.throttleKey.equals(failedHost, ignoreCase = true) }
-        val usable = distinct.ifEmpty { built }
-        if (usable.isNotEmpty()) {
-            AppLogger.info(
-                TAG,
-                "[T-same-model-failover] $modelId: ${usable.size} alternate endpoint(s) " +
-                    "queued after $failedHost",
-            )
-        }
-        return usable
     }
 
     /**
@@ -5870,6 +5771,100 @@ class ChatViewModel(
                     AppLogger.error(TAG_STREAM, "$label runAgentLoop EXCEPTION ${e.javaClass.simpleName}: ${e.message}")
                     Log.e(TAG, "Agent loop error ($label)", e)
                     setInlineError(e.message ?: "Unknown error")
+                    
+                    // [T-auto-resume] Decide whether to resume automatically.
+                    // Only transport faults may be resumed, and only when the user
+                    // has not moved on. The policy is pure: it decides, the VM
+                    // executes (timer + resume call).
+                    val isTransient = e is com.openminis.app.data.model.LLMError.TransientError
+                    val cause = com.openminis.app.data.AutoResumePolicy.classify(e.message, isTransient)
+                    val lastAssistantMsg = _messages.value.lastOrNull { it.role == "assistant" }
+                    val hasPartialAnswer = lastAssistantMsg?.let {
+                        it.content.isNotBlank() || it.toolBlocks.isNotEmpty()
+                    } ?: false
+                    // The user cancelled or sent a new message DURING the failed
+                    // attempt if the prompt queue gained an entry. Check it before
+                    // deciding — a fresh prompt means the user has moved on.
+                    val userSentNewMessage = _promptQueue.value.isNotEmpty()
+                    val decision = com.openminis.app.data.AutoResumePolicy.decide(
+                        cause = cause,
+                        attemptsUsed = _autoResumeAttempt.value,
+                        userCancelled = false,  // cancel kills the job, never reaches here
+                        userSentNewMessage = userSentNewMessage,
+                        hasPartialAnswer = hasPartialAnswer,
+                    )
+                    
+                    when (decision) {
+                        is com.openminis.app.data.AutoResumePolicy.Decision.Resume -> {
+                            AppLogger.info(
+                                TAG_STREAM,
+                                "$label auto-resume attempt ${decision.attempt}/${com.openminis.app.data.AutoResumePolicy.MAX_ATTEMPTS} after ${decision.delaySec}s for $cause",
+                            )
+                            _autoResumeAttempt.value = decision.attempt
+                            com.openminis.app.data.NetworkJournal.recordAutoResume(
+                                sessionId = activeSessionId,
+                                cause = cause.name,
+                                attempt = decision.attempt,
+                                delaySec = decision.delaySec,
+                            )
+                            // Wait for connectivity if DNS failed; otherwise just delay.
+                            if (com.openminis.app.data.AutoResumePolicy.awaitsConnectivity(cause)) {
+                                com.openminis.app.network.NetworkMonitor.awaitConnectivity()
+                            }
+                            // Countdown with 1s ticks so the UI can show progress.
+                            try {
+                                var remaining = decision.delaySec
+                                while (remaining > 0) {
+                                    _autoResumeCountdown.value = remaining
+                                    kotlinx.coroutines.delay(1_000L)
+                                    remaining -= 1
+                                }
+                            } finally {
+                                _autoResumeCountdown.value = 0
+                            }
+                            // Clear the inline error from the failed attempt before
+                            // resuming, so the user does not see "Transient error"
+                            // flash above a successfully-resumed turn.
+                            withContext(Dispatchers.Main) { clearInlineError() }
+                            // Resume from the partial answer. Mirrors the manual
+                            // Resume button path: continue from where we left off.
+                            // DO NOT pass through `resume()` — it checks canResume
+                            // and re-appends a system reminder, both wrong here.
+                            // Instead, just call runAgentLoop again with the same
+                            // provider (no fallback — the policy decided to retry
+                            // the same endpoint). History is already in place from
+                            // the failed attempt; the fresh stream continues it.
+                            try {
+                                AppLogger.info(TAG_STREAM, "$label auto-resume runAgentLoop CALL")
+                                runAgentLoop(
+                                    provider = launchedProvider,
+                                    systemPrompt = systemPrompt,
+                                    fallbackProviders = fallbackProviders,
+                                    fallbackStrategy = activeFallbackStrategy,
+                                )
+                                // Success: clear the attempt counter so the next
+                                // error (if any) starts fresh.
+                                _autoResumeAttempt.value = 0
+                                AppLogger.info(TAG_STREAM, "$label auto-resume SUCCESS")
+                            } catch (resumeEx: Exception) {
+                                // The resumed attempt also failed. Log it but do NOT
+                                // recurse — let it fall through to the regular error
+                                // path (markStreamError + finally) so the user sees
+                                // the failure. The next manual retry or auto-resume
+                                // will count as attempt+1.
+                                AppLogger.error(
+                                    TAG_STREAM,
+                                    "$label auto-resume FAILED attempt=${decision.attempt}: ${resumeEx.message}",
+                                )
+                                setInlineError(resumeEx.message ?: "Unknown error")
+                            }
+                        }
+                        is com.openminis.app.data.AutoResumePolicy.Decision.Stop -> {
+                            AppLogger.info(TAG_STREAM, "$label auto-resume STOP: ${decision.reason}")
+                            _autoResumeAttempt.value = 0
+                        }
+                    }
+                    
                     // T298: flag the upcoming setInactive() so the
                     // background completion notifier renders the ❌
                     // variant instead of a clean success.
@@ -8975,11 +8970,10 @@ class ChatViewModel(
                         val isRealModelChange = next.model.id != currentProvider.model.id
                         fallbackReasons.add("⚠️ ${currentProvider.model.displayName}: $reason")
                         Log.i(TAG, "🔀 $reason on ${currentProvider.model.displayName}, switching to ${next.model.displayName} (realModelChange=$isRealModelChange)")
-                        // [T-same-model-failover] Record the handover itself. The
-                        // journal previously could not distinguish "failed over
-                        // and recovered" from "never had a candidate" — and it was
-                        // the ABSENCE of such a line next to the user's GIVEUP
-                        // entries that proved the candidate list was empty.
+                        // [T-network-journal] Record the handover itself, so the
+                        // journal can distinguish "switched provider and
+                        // recovered" from "never had a candidate to switch to".
+                        // Diagnostic only — it does not decide anything.
                         com.openminis.app.data.NetworkJournal.recordFallback(
                             sessionId = realSessionId.ifEmpty { sessionId },
                             fromHost = currentProvider.throttleKey,
@@ -8997,13 +8991,12 @@ class ChatViewModel(
                         // in sync with the instance we actually used.)
                         _modelName.value = currentProvider.model.displayName
                         // Update activeEntryId so model picker reflects the switch.
-                        // [T-same-model-failover] Match the model AND the endpoint
-                        // host. `find { it.model.id == … }` alone returns the FIRST
-                        // entry for that model, and the user has 56 entries for one
-                        // model — so it named an arbitrary instance, not the one now
-                        // in use. That matters beyond the label: the next turn's
-                        // failover excludes `activeEntryId`, so a wrong id would
-                        // exclude a healthy door and leave the dead one eligible.
+                        // Match the model AND the endpoint host: `find { it.model
+                        // .id == … }` alone returns the FIRST entry for that model,
+                        // and the user has dozens of entries per model — so it
+                        // named an arbitrary instance rather than the one actually
+                        // in use, mislabelling the provider in the top bar and the
+                        // picker.
                         val newEntry = providerRepository.config.value.modelEntries.firstOrNull { e ->
                             e.model.id == currentProvider.model.id &&
                                 providerRepository.instance(e.providerInstanceId)
