@@ -8551,7 +8551,7 @@ class ChatViewModel(
                             kind = retryKind.name,
                             attempt = retryAttempt,
                             maxAttempts = maxAttempts,
-                            ctx = com.openminis.app.data.NetworkJournal.Context(
+                            ctx = com.openminis.app.data.NetworkJournal.FailureContext(
                                 concurrentStreams = com.openminis.app.service
                                     .SessionActivityTracker.activeSessions.value.size,
                                 screenOn = runCatching {

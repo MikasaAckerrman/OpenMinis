@@ -77,6 +77,10 @@ object NetworkJournal {
      * so the caller, which already holds these values, cannot disagree with a
      * second reader.
      *
+     * Named FailureContext, not Context: a nested `Context` shadows
+     * `android.content.Context` for every member of this object, so [init]'s
+     * parameter silently became this class and `filesDir` stopped resolving.
+     *
      * @param concurrentStreams sessions streaming right now, including this one.
      *   The reason it matters: with several sessions on DIFFERENT hosts, one
      *   busy session's traffic used to mask an idle one whose pooled socket had
@@ -85,7 +89,7 @@ object NetworkJournal {
      *   off, which is the usual cause of a resolve failure mid-task.
      * @param online what the connectivity mirror reported.
      */
-    data class Context(
+    data class FailureContext(
         val concurrentStreams: Int,
         val screenOn: Boolean?,
         val online: Boolean?,
@@ -98,7 +102,7 @@ object NetworkJournal {
         kind: String,
         attempt: Int,
         maxAttempts: Int,
-        ctx: Context,
+        ctx: FailureContext,
         message: String?,
     ) = write(
         "FAIL", kind, sessionId,
