@@ -33,6 +33,7 @@ import com.openminis.app.data.model.LLMModel
 import com.openminis.app.data.model.LLMStreamChunk
 import com.openminis.app.data.model.LLMUsage
 import com.openminis.app.data.model.ModelGroup
+import com.openminis.app.data.model.SameModelFailover
 import com.openminis.app.data.model.ThinkingLevel
 import com.openminis.app.R
 import com.openminis.app.data.repository.ChatRepository
@@ -5010,6 +5011,33 @@ class ChatViewModel(
      * not the beginning — so retry doesn't re-trigger the same fallback chain.
      */
     private fun buildFallbackProviders(primaryProvider: LLMProvider): List<LLMProvider> {
+        val groupFallbacks = buildGroupFallbackProviders(primaryProvider)
+        // [T-same-model-failover] A session bound to a MODEL (not a group) used
+        // to get an EMPTY list here, which meant failover did not exist for it:
+        // `buildGroupFallbackProviders` starts with `selectedGroupId ?: return
+        // emptyList()`, and the user's only groups are Voice Input/Output. Their
+        // journal shows the consequence — two 120s silences on gorouter.app and
+        // then GIVEUP, while the same model sat on 55 other instances.
+        //
+        // Appended rather than substituted: an explicit group is a deliberate
+        // choice of WHICH models may answer, so it keeps priority. Same-model
+        // endpoints extend the tail — a different door to the identical model,
+        // so the answer the user gets does not change, only the transport.
+        val sameModel = buildSameModelFailoverProviders(primaryProvider)
+        if (sameModel.isEmpty()) return groupFallbacks
+        // Dedupe by endpoint identity: a group member and a same-model candidate
+        // can be the same instance+model, and dialling it twice would spend the
+        // turn's patience on one door.
+        val seen = groupFallbacks.mapTo(mutableSetOf()) { it.throttleKey to it.model.id }
+        return groupFallbacks + sameModel.filter { seen.add(it.throttleKey to it.model.id) }
+    }
+
+    /**
+     * The original group-based fallback chain: next members of the session's
+     * model group, cycling from the current one. Empty when the session is not
+     * bound to a group.
+     */
+    private fun buildGroupFallbackProviders(primaryProvider: LLMProvider): List<LLMProvider> {
         val groupId = _selectedGroupId.value ?: return emptyList()
         val config = providerRepository.config.value
         val group = config.modelGroups.find { it.id == groupId } ?: return emptyList()
@@ -5033,6 +5061,85 @@ class ChatViewModel(
             result.add(p)
         }
         return result
+    }
+
+    /**
+     * [T-same-model-failover] Other endpoints serving the SAME model as
+     * [primaryProvider], best-first.
+     *
+     * This is the answer to "gorouter can work, it just goes silent — waiting
+     * longer is pointless". Instead of extending the TTFB watchdog again, the
+     * turn walks through a different door to the identical model. Ordering and
+     * filtering live in [SameModelFailover] (pure, unit-tested); this only
+     * resolves config into candidates and instantiates the chosen ones.
+     */
+    private fun buildSameModelFailoverProviders(
+        primaryProvider: LLMProvider,
+    ): List<LLMProvider> {
+        val config = providerRepository.config.value
+        val modelId = primaryProvider.model.id
+        val failedHost = primaryProvider.throttleKey
+        val activeEntryId = _activeEntryId.value
+
+        // Candidate view of the config. Credential presence is checked WITHOUT
+        // loading the key material into the candidate: the policy only needs the
+        // boolean, and the key is fetched once, later, for endpoints actually
+        // dialled.
+        val candidates = config.modelEntries.mapNotNull { entry ->
+            if (entry.model.id != modelId) return@mapNotNull null
+            val instance = config.instances.find { it.id == entry.providerInstanceId }
+                ?: return@mapNotNull null
+            SameModelFailover.Candidate(
+                entryId = entry.id,
+                instanceId = instance.id,
+                modelId = entry.model.id,
+                // Same host notion as the throttle bucket and the per-host idle
+                // tracker — one definition of endpoint identity, not three.
+                host = instance.effectiveBaseURL
+                    ?.let { com.openminis.app.provider.LlmDispatchGate.keyForUrl(it) }
+                    ?: instance.providerType.name,
+                isEnabled = instance.isEnabled,
+                isHidden = entry.isHidden,
+                hasCredential = providerRepository.loadApiKey(instance.id) != null,
+            )
+        }
+
+        val chosen = SameModelFailover.candidatesFor(
+            modelId = modelId,
+            failedEntryId = activeEntryId,
+            failedHost = failedHost,
+            all = candidates,
+        )
+        if (chosen.isEmpty()) return emptyList()
+
+        val built = chosen.mapNotNull { cand ->
+            val entry = config.modelEntries.find { it.id == cand.entryId }
+                ?: return@mapNotNull null
+            val instance = config.instances.find { it.id == cand.instanceId }
+                ?: return@mapNotNull null
+            val apiKey = providerRepository.loadApiKey(instance.id) ?: return@mapNotNull null
+            try {
+                ProviderFactory.create(instance, apiKey, entry.model, context)
+            } catch (_: Exception) {
+                // A malformed endpoint must not sink the whole failover chain —
+                // skip that door and keep the others.
+                null
+            }
+        }
+        // Drop any candidate that resolved to the SAME host the turn just failed
+        // on. `failedHost` is the live provider's throttleKey, while candidate
+        // hosts are derived from config; if a stale/blank customBaseURL made the
+        // two disagree, the "escape" would dial the dead gateway again.
+        val distinct = built.filterNot { it.throttleKey.equals(failedHost, ignoreCase = true) }
+        val usable = distinct.ifEmpty { built }
+        if (usable.isNotEmpty()) {
+            AppLogger.info(
+                TAG,
+                "[T-same-model-failover] $modelId: ${usable.size} alternate endpoint(s) " +
+                    "queued after $failedHost",
+            )
+        }
+        return usable
     }
 
     /**
@@ -8868,6 +8975,19 @@ class ChatViewModel(
                         val isRealModelChange = next.model.id != currentProvider.model.id
                         fallbackReasons.add("⚠️ ${currentProvider.model.displayName}: $reason")
                         Log.i(TAG, "🔀 $reason on ${currentProvider.model.displayName}, switching to ${next.model.displayName} (realModelChange=$isRealModelChange)")
+                        // [T-same-model-failover] Record the handover itself. The
+                        // journal previously could not distinguish "failed over
+                        // and recovered" from "never had a candidate" — and it was
+                        // the ABSENCE of such a line next to the user's GIVEUP
+                        // entries that proved the candidate list was empty.
+                        com.openminis.app.data.NetworkJournal.recordFallback(
+                            sessionId = realSessionId.ifEmpty { sessionId },
+                            fromHost = currentProvider.throttleKey,
+                            toHost = next.throttleKey,
+                            modelId = next.model.id,
+                            sameModel = !isRealModelChange,
+                            reason = reason,
+                        )
                         currentProvider = next
                         // Also update class-level provider so the next sendMessage() starts from here
                         this@ChatViewModel.currentProvider = next
@@ -8876,8 +8996,26 @@ class ChatViewModel(
                         // model name, but still keep activeEntryId / provider name
                         // in sync with the instance we actually used.)
                         _modelName.value = currentProvider.model.displayName
-                        // Update activeEntryId so model picker reflects the switch
-                        val newEntry = providerRepository.config.value.modelEntries.find {
+                        // Update activeEntryId so model picker reflects the switch.
+                        // [T-same-model-failover] Match the model AND the endpoint
+                        // host. `find { it.model.id == … }` alone returns the FIRST
+                        // entry for that model, and the user has 56 entries for one
+                        // model — so it named an arbitrary instance, not the one now
+                        // in use. That matters beyond the label: the next turn's
+                        // failover excludes `activeEntryId`, so a wrong id would
+                        // exclude a healthy door and leave the dead one eligible.
+                        val newEntry = providerRepository.config.value.modelEntries.firstOrNull { e ->
+                            e.model.id == currentProvider.model.id &&
+                                providerRepository.instance(e.providerInstanceId)
+                                    ?.effectiveBaseURL
+                                    ?.let {
+                                        com.openminis.app.provider.LlmDispatchGate.keyForUrl(it)
+                                    }
+                                    ?.equals(currentProvider.throttleKey, ignoreCase = true) == true
+                        } ?: providerRepository.config.value.modelEntries.find {
+                            // Fallback to model-only matching: a built-in provider
+                            // has no customBaseURL, so host matching cannot apply
+                            // and the old behaviour is still correct there.
                             it.model.id == currentProvider.model.id
                         }
                         if (newEntry != null) {

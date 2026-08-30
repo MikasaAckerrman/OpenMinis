@@ -126,11 +126,15 @@ object TransientRetryBudget {
         // spares cover a proxy reaping several pooled sockets in a row.
         Kind.CONNECTION -> 4
         // Each attempt burns another 120s of the watchdog before it can fail, so
-        // the budget buys minutes, not seconds: 2 attempts ≈ 4 minutes worst
-        // case. Past that, handing the turn to another provider (which
-        // FallbackDecision now does on exhaustion) beats waiting on a gateway
-        // that has already swallowed two requests in silence.
-        Kind.NO_RESPONSE -> 2
+        // the budget buys minutes, not seconds. ONE retry, because that is what
+        // the recoverable case actually needs: the pool eviction below gives the
+        // retry a FRESH socket, which is the whole cure for a reaped/half-open
+        // connection. If the server is silent on a live socket too, a second
+        // 120s wait changes nothing — [com.openminis.app.data.model.SameModelFailover]
+        // now supplies another endpoint for the same model, and walking through
+        // that door beats another two minutes of nothing. The user's journal
+        // shows exactly this: two 120s silences on gorouter.app, then GIVEUP.
+        Kind.NO_RESPONSE -> 1
         // A relay switching upstream nodes answers 502 immediately, so the 1/2/4
         // ladder is spent in ~7s — often before the switch completes. More
         // attempts on a longer ladder is what actually rides out a burst.

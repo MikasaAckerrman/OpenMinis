@@ -158,6 +158,35 @@ object NetworkJournal {
         "last=${shorten(message)}",
     )
 
+    /**
+     * [T-same-model-failover] The turn moved to a DIFFERENT endpoint.
+     *
+     * Without this line the journal could not answer whether a handover happened
+     * at all: a turn that failed over and then succeeded looked identical to one
+     * that never tried. That ambiguity is exactly what made the user's GIVEUP
+     * entries diagnostic — the ABSENCE of this record is what proved the
+     * candidate list was empty.
+     *
+     * @param sameModel true when the destination serves the same modelId (a
+     *   different door to the identical answer) rather than a different model
+     *   from the group. Worth distinguishing: only the latter changes what the
+     *   user is talking to.
+     */
+    fun recordFallback(
+        sessionId: String,
+        fromHost: String?,
+        toHost: String?,
+        modelId: String,
+        sameModel: Boolean,
+        reason: String?,
+    ) = write(
+        "FALLBACK", if (sameModel) "SAME_MODEL" else "OTHER_MODEL", sessionId,
+        "from=${fromHost ?: "?"}",
+        "to=${toHost ?: "?"}",
+        "model=$modelId",
+        "reason=${shorten(reason)}",
+    )
+
     // ─── internals ────────────────────────────────────────────────────────
 
     private fun boolWord(v: Boolean?, t: String, f: String): String =

@@ -113,9 +113,12 @@ class FallbackDecisionTest {
     @Test
     fun `no-response gets a small budget because each attempt costs 120 seconds`() {
         val k = TransientRetryBudget.Kind.NO_RESPONSE
-        // 2 attempts ≈ 4 minutes worst case. CONNECTION's 4 would be 8, during
-        // which the user sees nothing happening.
-        assertEquals(2, TransientRetryBudget.maxAttempts(k))
+        // ONE retry: the eviction below gives it a fresh socket, which cures the
+        // reaped-connection case. If the server is silent on a live socket too, a
+        // second 120s wait changes nothing — SameModelFailover supplies another
+        // endpoint for the same model instead. The user's journal showed two 120s
+        // silences on one host followed by GIVEUP; that second wait was pure cost.
+        assertEquals(1, TransientRetryBudget.maxAttempts(k))
         assertTrue(
             "the watchdog budget must stay below the plain-socket one",
             TransientRetryBudget.maxAttempts(k) <
