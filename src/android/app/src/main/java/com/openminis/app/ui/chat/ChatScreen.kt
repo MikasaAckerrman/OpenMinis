@@ -438,6 +438,10 @@ fun ChatScreen(
     val messages by viewModel.uiMessages.collectAsState()
     val hasOlderMessages by viewModel.hasOlderMessages.collectAsState()
     val isStreaming by viewModel.isStreaming.collectAsState()
+    // [T-auto-resume] Hoisted here (same scope as isStreaming) so the banner
+    // can read them inside LazyListScope (which is not a composable scope).
+    val autoResumeCountdown by viewModel.autoResumeCountdown.collectAsState()
+    val autoResumeAttempt by viewModel.autoResumeAttempt.collectAsState()
     // [T-resume-banner-false-stopped] Process-wide streaming truth. `isStreaming`
     // above belongs to ONE ViewModel instance; SessionActivityTracker is
     // maintained by the streamJob itself and is authoritative. When they disagree
@@ -3263,8 +3267,6 @@ fun ChatScreen(
                     //
                     // [T-auto-resume] Show the auto-resume countdown instead of
                     // the manual Resume banner when an automatic retry is pending.
-                    val autoResumeCountdown by viewModel.autoResumeCountdown.collectAsState()
-                    val autoResumeAttempt by viewModel.autoResumeAttempt.collectAsState()
                     if (autoResumeCountdown > 0) {
                         item(key = "__auto_resume_banner__", contentType = "auto_resume_banner") {
                             AutoResumeBanner(

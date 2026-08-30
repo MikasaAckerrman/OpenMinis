@@ -5809,7 +5809,7 @@ class ChatViewModel(
                             )
                             // Wait for connectivity if DNS failed; otherwise just delay.
                             if (com.openminis.app.data.AutoResumePolicy.awaitsConnectivity(cause)) {
-                                com.openminis.app.network.NetworkMonitor.awaitConnectivity()
+                                com.openminis.app.network.NetworkMonitor.awaitConnectivity(timeoutMs = 30_000L)
                             }
                             // Countdown with 1s ticks so the UI can show progress.
                             try {

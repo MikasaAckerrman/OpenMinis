@@ -120,6 +120,7 @@ object AutoResumePolicy {
                 m.contains("[503]") || m.contains("http 503") ||
                 m.contains("[504]") || m.contains("http 504") -> Cause.BAD_GATEWAY
             m.contains("connection closed") || m.contains("connection reset") ||
+                m.contains("stream was reset") ||
                 m.contains("unexpected end of stream") ||
                 m.contains("software caused connection abort") -> Cause.CONNECTION
             else -> Cause.OTHER

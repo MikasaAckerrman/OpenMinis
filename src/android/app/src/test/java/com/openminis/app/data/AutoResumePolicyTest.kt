@@ -50,6 +50,16 @@ class AutoResumePolicyTest {
     }
 
     @Test
+    fun `HTTP2 RST_STREAM is classified as CONNECTION`() {
+        // codezdew freekey opus 5: "stream was reset: PROTOCOL_ERROR"
+        val msg = "stream was reset: PROTOCOL_ERROR"
+        assertEquals(
+            AutoResumePolicy.Cause.CONNECTION,
+            AutoResumePolicy.classify(msg, isTransient = true),
+        )
+    }
+
+    @Test
     fun `a fatal error is never reclassified as transport, whatever its text says`() {
         // The type is the authority. This is the trap that made `is5xx` never
         // fire: it checked ProviderError while mapHttpError produced
