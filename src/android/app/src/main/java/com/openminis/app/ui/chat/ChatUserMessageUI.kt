@@ -570,6 +570,14 @@ internal fun UserAttachmentList(
     val imageCount = imageUris.size
     val fileNames = allFileNames.drop(imageCount)
 
+    // [T-attachment-numbering] One shared sequence across images and files so
+    // the user can name a tile out loud ("picture 2") and the model resolves it
+    // to the same file — the `n="N"` attribute in <user-attached-files> is
+    // assigned from the same policy. Skipped for a lone attachment: "the
+    // picture" is already unambiguous and a "1" badge is pure noise.
+    val numbered = com.openminis.app.data.model.AttachmentIndex
+        .shouldNumber(imageCount, fileNames.size)
+
     val tileSize = 64.dp
 
     FlowRow(
@@ -582,39 +590,62 @@ internal fun UserAttachmentList(
             val request = remember(uri) {
                 ImageRequest.Builder(context).data(uri).limitDisplaySize().build()
             }
-            AsyncImage(
-                model = request,
-                contentDescription = "Image attachment",
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .size(tileSize)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(ChatColors.secondaryBg)
-                    .border(0.5.dp, ChatColors.thumbnailBorder, RoundedCornerShape(8.dp))
-                    // [T-attachment-longpress-menu] combinedClickable, not
-                    // clickable: tap still opens the viewer, long-press now
-                    // forwards to the bubble menu instead of being eaten.
-                    .combinedClickable(
-                        onClick = { previewImageIndex = idx },
-                        onLongClick = onLongPress,
-                    ),
-            )
+            // [T-attachment-numbering] Badge is drawn in a Box on top of the
+            // thumbnail rather than beside it: the FlowRow is right-aligned and
+            // tightly spaced, so anything added outside the 64dp tile shifts
+            // the whole row's layout.
+            Box(modifier = Modifier.size(tileSize)) {
+                AsyncImage(
+                    model = request,
+                    contentDescription = if (numbered) {
+                        "Image attachment ${com.openminis.app.data.model.AttachmentIndex.imageNumber(idx)}"
+                    } else "Image attachment",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(ChatColors.secondaryBg)
+                        .border(0.5.dp, ChatColors.thumbnailBorder, RoundedCornerShape(8.dp))
+                        // [T-attachment-longpress-menu] combinedClickable, not
+                        // clickable: tap still opens the viewer, long-press now
+                        // forwards to the bubble menu instead of being eaten.
+                        .combinedClickable(
+                            onClick = { previewImageIndex = idx },
+                            onLongClick = onLongPress,
+                        ),
+                )
+                if (numbered) {
+                    AttachmentNumberBadge(
+                        number = com.openminis.app.data.model.AttachmentIndex.imageNumber(idx),
+                        modifier = Modifier.align(Alignment.TopStart),
+                    )
+                }
+            }
         }
 
         fileNames.forEachIndexed { idx, name ->
             val uri = nonImageUris.getOrNull(idx)
-            FileAttachmentTile(
-                fileName = name,
-                tileSize = tileSize,
-                onClick = {
-                    // T150: route into FilePreviewScreen when we have a stable
-                    // host URI for this attachment (set via mediaRef on send
-                    // and on session restore). Fall back to no-op when the
-                    // chip predates T150 persistence.
-                    if (uri != null) onPreviewFile(uri, name)
-                },
-                onLongClick = onLongPress,
-            )
+            Box(modifier = Modifier.size(tileSize)) {
+                FileAttachmentTile(
+                    fileName = name,
+                    tileSize = tileSize,
+                    onClick = {
+                        // T150: route into FilePreviewScreen when we have a stable
+                        // host URI for this attachment (set via mediaRef on send
+                        // and on session restore). Fall back to no-op when the
+                        // chip predates T150 persistence.
+                        if (uri != null) onPreviewFile(uri, name)
+                    },
+                    onLongClick = onLongPress,
+                )
+                if (numbered) {
+                    AttachmentNumberBadge(
+                        number = com.openminis.app.data.model.AttachmentIndex
+                            .fileNumber(idx, imageCount),
+                        modifier = Modifier.align(Alignment.TopStart),
+                    )
+                }
+            }
         }
     }
 
@@ -633,6 +664,38 @@ internal fun UserAttachmentList(
             },
             startIndex = startIdx,
             onDismiss = { previewImageIndex = null },
+        )
+    }
+}
+
+/**
+ * [T-attachment-numbering] Small ordinal badge overlaid on an attachment tile.
+ *
+ * Drawn as an overlay inside the tile bounds (not beside it) because the
+ * enclosing FlowRow is right-aligned with tight 6dp spacing — anything that
+ * grows the tile's footprint reflows the whole row. High-contrast pill so it
+ * stays legible over a dark photo as well as a light one.
+ */
+@Composable
+private fun AttachmentNumberBadge(
+    number: Int,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .padding(3.dp)
+            .size(16.dp)
+            .clip(RoundedCornerShape(4.dp))
+            .background(Color.Black.copy(alpha = 0.62f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = number.toString(),
+            fontSize = 10.sp,
+            lineHeight = 10.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = Color.White,
+            maxLines = 1,
         )
     }
 }

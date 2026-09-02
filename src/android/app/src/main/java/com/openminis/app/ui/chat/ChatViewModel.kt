@@ -11053,7 +11053,24 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
             "minis-sessions/$sessionId/attachments/uploads",
         ).apply { mkdirs() }
         // Metadata captured per attachment for the <user-attached-files> XML.
-        data class UploadMeta(val linuxPath: String, val size: Long, val modifiedIso: String)
+        // [T-attachment-numbering] `isImage` is recorded because this list is
+        // filled in the user's PICK order while the bubble renders images
+        // first. The XML must be numbered in the order the user sees, so the
+        // block below reorders by this flag; without it "picture 2" would name
+        // a different file on screen than in the payload.
+        //
+        // `imagePartIndex` is the slot this image takes in `imageParts` (null
+        // for files). Needed because a failed uploads-dir write skips the meta
+        // but still appends the image part, so the two lists can be
+        // same-ordered yet different-length — counting alone would then trim
+        // the wrong entry when ImageBudget tail-drops.
+        data class UploadMeta(
+            val linuxPath: String,
+            val size: Long,
+            val modifiedIso: String,
+            val isImage: Boolean,
+            val imagePartIndex: Int? = null,
+        )
         val metas = mutableListOf<UploadMeta>()
         val nowMs = System.currentTimeMillis()
         val isoFormatter = java.text.SimpleDateFormat(
@@ -11115,7 +11132,18 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                 val linuxPath = if (uploadOk) "/var/minis/attachments/uploads/$safeName" else null
                 if (linuxPath != null) {
                     imageUploadPaths.add(linuxPath)
-                    metas.add(UploadMeta(linuxPath = linuxPath, size = rawBytes.size.toLong(), modifiedIso = nowStr))
+                    metas.add(
+                        UploadMeta(
+                            linuxPath = linuxPath,
+                            size = rawBytes.size.toLong(),
+                            modifiedIso = nowStr,
+                            isImage = true,
+                            // Slot this image will occupy in imageParts — the
+                            // add happens right below, so the current size IS
+                            // the index.
+                            imagePartIndex = imageParts.size,
+                        )
+                    )
                 }
 
                 imageParts.add(LLMMessage.ImagePart(inferenceBytes, attachment.mimeType, linuxPath = linuxPath))
@@ -11175,7 +11203,14 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
             }
 
             val linuxPath = "/var/minis/attachments/uploads/$safeName"
-            metas.add(UploadMeta(linuxPath = linuxPath, size = dest.length(), modifiedIso = nowStr))
+            metas.add(
+                UploadMeta(
+                    linuxPath = linuxPath,
+                    size = dest.length(),
+                    modifiedIso = nowStr,
+                    isImage = false,
+                )
+            )
         }
 
         // T-imgsize: byte-level budget enforcement. The resizeImageBytes pass
@@ -11205,6 +11240,18 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
             while (imageNames.size > newSize) imageNames.removeAt(imageNames.size - 1)
             while (imageMediaRefPartsJson.size > newSize) imageMediaRefPartsJson.removeAt(imageMediaRefPartsJson.size - 1)
             while (imageUploadPaths.size > newSize) imageUploadPaths.removeAt(imageUploadPaths.size - 1)
+            // [T-attachment-numbering] `metas` is the other parallel list, and
+            // the symmetric tail-drop above missed it because it holds BOTH
+            // kinds and so does not look parallel. Left untrimmed, the XML
+            // would number an image the bubble no longer renders, and every
+            // file number after it would name a different tile than the user
+            // sees — the precise ambiguity the numbering exists to remove.
+            //
+            // Dropping by `imagePartIndex >= newSize` rather than by counting:
+            // an image whose uploads-dir write failed has no meta at all, so
+            // "the last N image metas" is not the same set as "the metas of the
+            // dropped image parts".
+            metas.removeAll { it.isImage && (it.imagePartIndex ?: 0) >= newSize }
             if (budgetResult.mutated) {
                 AppLogger.info(
                     TAG,
@@ -11218,11 +11265,20 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         // per attachment (image and non-image) that successfully landed in
         // the iSH uploads dir — gives the model a metadata-only inventory
         // it can resolve via shell tools when content is needed.
-        val xml = if (metas.isEmpty()) null else buildString {
+        //
+        // [T-attachment-numbering] `n="N"` is the number printed on the tile in
+        // the chat bubble, so the user can say "picture 2" and mean one exact
+        // file. Emission order is images-then-files to match
+        // UserAttachmentList's render order — `metas` itself is in pick order,
+        // which for a mixed pick is NOT the on-screen order.
+        val orderedMetas = metas.filter { it.isImage } + metas.filterNot { it.isImage }
+        val xml = if (orderedMetas.isEmpty()) null else buildString {
             append("<user-attached-files>\n")
-            for (m in metas) {
+            orderedMetas.forEachIndexed { idx, m ->
                 val urlPath = m.linuxPath.removePrefix("/var/minis/")
-                append("  <file path=\"")
+                append("  <file n=\"")
+                append(idx + 1)
+                append("\" path=\"")
                 append(m.linuxPath)
                 append("\" url=\"minis://")
                 append(urlPath)

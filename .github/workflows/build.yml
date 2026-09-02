@@ -134,6 +134,8 @@ jobs:
             --tests 'com.openminis.app.data.TransientRetryBudgetTest' \
             --tests 'com.openminis.app.data.FallbackDecisionTest' \
             --tests 'com.openminis.app.data.AutoResumePolicyTest' \
+            --tests 'com.openminis.app.data.AssistantTurnCopyTest' \
+            --tests 'com.openminis.app.data.model.AttachmentIndexTest' \
             --tests 'com.openminis.app.data.ResumeVisibilityPolicyTest' \
             --tests 'com.openminis.app.data.CompactDividerCountTest' \
             --tests 'com.openminis.app.data.MutationJournalTest' \

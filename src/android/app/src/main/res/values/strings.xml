@@ -1287,6 +1287,11 @@
     <!-- [T-message-surgery] Real (persisted) message delete / rewrite. -->
     <string name="msg_longpress_delete">Delete message</string>
     <string name="msg_longpress_rewrite">Rewrite text</string>
+    <!-- [T-copy-whole-answer] Copy the whole assistant reply (prose only, tool
+         payloads and reasoning excluded). -->
+    <string name="msg_longpress_copy_answer">Copy whole answer</string>
+    <string name="msg_copy_answer_toast">Answer copied</string>
+    <string name="msg_copy_answer_empty_toast">Nothing to copy in this turn</string>
     <string name="msg_delete_busy_streaming">Stop the current response before editing the history.</string>
     <string name="msg_delete_busy_compacting">Wait for compaction to finish before editing the history.</string>
     <string name="msg_delete_not_found">That message is no longer in this session.</string>

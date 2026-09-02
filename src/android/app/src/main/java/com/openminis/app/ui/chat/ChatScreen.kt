@@ -3528,6 +3528,48 @@ fun ChatScreen(
                                 onDelete = if (isStreaming) null else ({
                                     pendingDeleteMessageId = originalMessageId(item.messageId)
                                 }),
+                                // [T-copy-whole-answer] Copy the prose of the
+                                // whole turn. Reads from `messages` (the same
+                                // list the renderer flattens) rather than
+                                // re-reading the DB: the user is copying what
+                                // they can see, and a disk read would also
+                                // bring back <system-reminder> blocks the UI
+                                // strips. Allowed mid-stream — copying does not
+                                // mutate history — and falls back to a toast
+                                // when the turn is tool calls only.
+                                onCopyAnswer = {
+                                    val realId = originalMessageId(item.messageId)
+                                    val msg = messages.firstOrNull { it.id == realId }
+                                    val blocks = msg?.toolBlocks?.map {
+                                        com.openminis.app.data.AssistantTurnCopy.Block(
+                                            kind = it.kind,
+                                            content = it.content,
+                                        )
+                                    } ?: emptyList()
+                                    val text = com.openminis.app.data.AssistantTurnCopy.plainText(
+                                        blocks = blocks,
+                                        legacyContent = msg?.content ?: "",
+                                    )
+                                    if (text.isEmpty()) {
+                                        android.widget.Toast.makeText(
+                                            context,
+                                            context.getString(R.string.msg_copy_answer_empty_toast),
+                                            android.widget.Toast.LENGTH_SHORT,
+                                        ).show()
+                                    } else {
+                                        val cb = context.getSystemService(
+                                            android.content.Context.CLIPBOARD_SERVICE,
+                                        ) as android.content.ClipboardManager
+                                        cb.setPrimaryClip(
+                                            android.content.ClipData.newPlainText("answer", text),
+                                        )
+                                        android.widget.Toast.makeText(
+                                            context,
+                                            context.getString(R.string.msg_copy_answer_toast),
+                                            android.widget.Toast.LENGTH_SHORT,
+                                        ).show()
+                                    }
+                                },
                             )
                             is FlatChatItem.AssistantFooter -> {
                                 // [T-msg-timestamps] Finish stamp under the
