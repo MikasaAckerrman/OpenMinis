@@ -1155,8 +1155,7 @@
 
     <!-- T-selection-add-to-input — long-press text selection menu action -->
     <string name="selection_add_to_chat_input">Add to Chat Input</string>
-    <string name="selection_read_aloud">Read Aloud</string>
-    <!-- T-minis-textkit selection menu actions (Copy / Copy Markdown / Copy Rich Text) -->
+    <!-- T-minis-textkit selection menu actions (Copy / Copy All / Copy Markdown / Copy Rich Text) -->
     <string name="selection_copy">Copy</string>
     <string name="selection_copy_markdown">Copy Markdown</string>
     <string name="selection_copy_rich_text">Copy Rich Text</string>

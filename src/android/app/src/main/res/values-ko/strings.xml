@@ -915,7 +915,6 @@
     <string name="sessionlist_welcome_step_done">완료</string>
     <!-- T-selection-add-to-input — 길게 누르기 선택 메뉴 "입력란에 추가" -->
     <string name="selection_add_to_chat_input">입력란에 추가</string>
-    <string name="selection_read_aloud">읽어주기</string>
     <!-- T-minis-textkit 선택 메뉴 버튼 -->
     <string name="selection_copy">복사</string>
     <string name="selection_copy_markdown">Markdown 복사</string>

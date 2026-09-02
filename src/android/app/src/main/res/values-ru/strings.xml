@@ -925,7 +925,6 @@
     <string name="notif_config_confirm_body_multi">%d изменений требуют вашего рассмотрения — откройте Minis, чтобы принять или отклонить.</string>
     <string name="notif_task_failed_body">Задача завершилась с ошибкой. Нажмите, чтобы открыть чат.</string>
     <string name="selection_add_to_chat_input">Добавить в поле ввода чата</string>
-    <string name="selection_read_aloud">Озвучить</string>
     <string name="selection_copy">Копировать</string>
     <string name="selection_copy_markdown">Копировать Markdown</string>
     <!-- [T-copy-whole-answer] «Копировать всё» — весь ответ целиком, а не
