@@ -928,6 +928,12 @@
     <string name="selection_read_aloud">Озвучить</string>
     <string name="selection_copy">Копировать</string>
     <string name="selection_copy_markdown">Копировать Markdown</string>
+    <!-- [T-copy-whole-answer] «Копировать всё» — весь ответ целиком, а не
+         протащенный пальцем фрагмент. Подпись КОРОТКАЯ намеренно: этот бар
+         (MinisMarkdownTextToolbar) не имеет horizontalScroll, и длинные
+         русские подписи уже занимают всю ширину телефона. -->
+    <string name="selection_copy_whole_answer">Копировать всё</string>
+    <string name="selection_copied_whole_answer_toast">Ответ скопирован целиком</string>
     <string name="selection_copy_rich_text">Копировать форматированный текст</string>
     <string name="selection_copied_toast">Скопировано: %1$s</string>
     <string name="selection_copied_as_markdown_toast">Скопировано как Markdown</string>

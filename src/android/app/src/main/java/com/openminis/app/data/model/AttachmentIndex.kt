@@ -65,6 +65,28 @@ object AttachmentIndex {
     }
 
     /**
+     * Numbers for a list still in PICK order, aligned with the input.
+     *
+     * The composer holds attachments in the order the user picked them, but the
+     * bubble and the XML inventory both use images-first order. Numbering the
+     * composer chips by their pick position would print a different number than
+     * the one the model ends up reading for the same file — so the chip would
+     * say "2" and "picture 2" would mean something else. This maps each
+     * position to its number in the images-first sequence.
+     *
+     * [isImage] is a predicate rather than a split list so the caller does not
+     * have to build (and keep in sync) a second pair of lists just to ask.
+     */
+    fun <T> numberInPickOrder(items: List<T>, isImage: (T) -> Boolean): List<Int> {
+        val imageTotal = items.count(isImage)
+        var nextImage = 1
+        var nextFile = imageTotal + 1
+        return items.map { item ->
+            if (isImage(item)) nextImage++ else nextFile++
+        }
+    }
+
+    /**
      * The number to show on a tile, given the UI's own split.
      *
      * [UserAttachmentList] knows `imageUris` and the dropped-prefix file names;

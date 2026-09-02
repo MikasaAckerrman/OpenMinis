@@ -104,4 +104,45 @@ class AttachmentIndexTest {
         assertEquals(listOf(1, 2, 3), entries.map { it.number })
         assertEquals(listOf(true, false, false), entries.map { it.isImage })
     }
+
+    @Test
+    fun `numberInPickOrder matches what the bubble will show`() {
+        // Composer holds pick order [doc, photo, zip]; the bubble and the XML
+        // both use images-first order, so the photo is 1 and the two files are
+        // 2 and 3 in pick order among themselves. Numbering the chips by their
+        // pick position would have printed doc=1, photo=2 — a different number
+        // than the model reads for the same file.
+        val picked = listOf(false, true, false)
+        assertEquals(listOf(2, 1, 3),
+            AttachmentIndex.numberInPickOrder(picked) { it })
+    }
+
+    @Test
+    fun `numberInPickOrder agrees with assign for every arrangement`() {
+        // Property, not an example: whatever the pick order, the number a chip
+        // shows must equal the number assign() gives that same attachment in
+        // images-first order. Checked over all 4-element image/file patterns.
+        for (bits in 0 until 16) {
+            val picked = (0 until 4).map { bits shr it and 1 == 1 }
+            val chips = AttachmentIndex.numberInPickOrder(picked) { it }
+            val entries = AttachmentIndex.assign(
+                imageCount = picked.count { it },
+                nonImageCount = picked.count { !it },
+            )
+            // Position of each pick in images-first display order.
+            var img = 0
+            var file = picked.count { it }
+            val displayPos = picked.map { isImage ->
+                if (isImage) img++ else file++
+            }
+            val expected = displayPos.map { entries[it].number }
+            assertEquals("pattern $bits", expected, chips)
+        }
+    }
+
+    @Test
+    fun `numberInPickOrder on empty list yields nothing`() {
+        assertEquals(emptyList<Int>(),
+            AttachmentIndex.numberInPickOrder(emptyList<Boolean>()) { it })
+    }
 }

@@ -3080,17 +3080,7 @@ fun ChatScreen(
                 // scrolling back in re-registers the shard and the highlight
                 // redraws automatically.
                 val selectionController = remember { SelectionController() }
-                // [T-android-selection-readaloud] Player backing the selection
-                // toolbar's "Read Aloud". Screen-scoped and independent of the
-                // voice panel's own player (that one only exists while voice
-                // mode is active), so reading a selection works any time. Built
-                // lazily on first use — an unused ChatScreen never binds a TTS
-                // engine — and shut down with the screen.
-                val selectionReader = remember { LazyReadAloudPlayer(context) }
-                DisposableEffect(selectionReader) {
-                    onDispose { selectionReader.shutdown() }
-                }
-                val markdownToolbar = remember(context, messageBounds, viewModel, inputFocusRequester, keyboardController, selectionController, selectionReader) {
+                val markdownToolbar = remember(context, messageBounds, viewModel, inputFocusRequester, keyboardController, selectionController) {
                     MinisMarkdownTextToolbar(
                         context = context,
                         registry = messageBounds,
@@ -3104,7 +3094,6 @@ fun ChatScreen(
                             }
                             keyboardController?.show()
                         },
-                        onReadAloud = { snippet -> selectionReader.speak(snippet) },
                         selectionController = selectionController,
                     )
                 }
@@ -3853,10 +3842,6 @@ fun ChatScreen(
                             try { inputFocusRequester.requestFocus() } catch (_: IllegalStateException) {}
                             keyboardController?.show()
                         },
-                        // [T-android-selection-readaloud] Speak the selection
-                        // through the same screen-scoped lazy player the
-                        // Compose-SelectionContainer toolbar uses.
-                        onReadAloud = { snippet -> selectionReader.speak(snippet) },
                     ),
                 )
                 // iOS-style selection handle dots, one at each endpoint.
@@ -4597,7 +4582,20 @@ fun ChatScreen(
                             // past the top-right; no extra spacedBy needed.
                             horizontalArrangement = Arrangement.spacedBy(0.dp),
                         ) {
-                            items(attachments, key = { it.id }) { attachment ->
+                            // [T-attachment-numbering] Numbers computed for the
+                            // whole row before rendering: a chip's number
+                            // depends on how many IMAGES the turn has, which no
+                            // single item can know. Composer order is pick
+                            // order; numberInPickOrder maps it to the
+                            // images-first sequence the bubble and the XML use,
+                            // so the badge on a chip equals the number the
+                            // model will read for that same file.
+                            val chipNumbers = remember(attachments) {
+                                com.openminis.app.data.model.AttachmentIndex
+                                    .numberInPickOrder(attachments) { it.isImage }
+                            }
+                            val showChipNumbers = attachments.size >= 2
+                            itemsIndexed(attachments, key = { _, a -> a.id }) { chipIndex, attachment ->
                                 // T-pwa-2: long-press menu only appears for
                                 // .html / .htm attachments. The menu lives in
                                 // a Box that anchors to the chip; the sheet
@@ -4612,6 +4610,8 @@ fun ChatScreen(
                                 AttachmentChip(
                                     attachment = attachment,
                                     onRemove = { viewModel.removeAttachment(attachment.id) },
+                                    number = if (showChipNumbers)
+                                        chipNumbers.getOrNull(chipIndex) else null,
                                     // TODO(webapp-hidden): long-press opened
                                     // the WebApp "Add to Home Screen" menu —
                                     // disabled while entry point is hidden.

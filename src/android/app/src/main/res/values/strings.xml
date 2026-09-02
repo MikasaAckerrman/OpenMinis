@@ -1162,6 +1162,10 @@
     <string name="selection_copy_rich_text">Copy Rich Text</string>
     <!-- Toast messages shown after a selection-menu Copy action fires. %1$s = preview of copied text. -->
     <string name="selection_copied_toast">Copied: %1$s</string>
+    <!-- [T-copy-whole-answer] Selection-menu action: the entire message as
+         readable plain text, not just the dragged substring. -->
+    <string name="selection_copy_whole_answer">Copy All</string>
+    <string name="selection_copied_whole_answer_toast">Whole answer copied</string>
     <string name="selection_copied_as_markdown_toast">Copied as Markdown</string>
     <string name="selection_copied_as_rich_text_toast">Copied as Rich Text</string>
     <!-- [T-markdown-table-copy-actions] Long-press menu actions and toasts on rendered markdown tables. -->
