@@ -4570,6 +4570,25 @@ fun ChatScreen(
                 ) {
                     // Attachment thumbnails inside the box (iOS: 64×64 squares)
                     if (attachments.isNotEmpty()) {
+                        // [T-attachment-numbering] Numbers computed for the
+                        // whole row, OUTSIDE the LazyRow: a chip's number
+                        // depends on how many IMAGES the turn has, which no
+                        // single item can know. Composer order is pick order;
+                        // numberInPickOrder maps it to the images-first
+                        // sequence the bubble and the XML use, so the badge on
+                        // a chip equals the number the model will read for that
+                        // same file.
+                        //
+                        // Must be here and not in the content lambda: that
+                        // lambda is LazyListScope, not a composable scope, so
+                        // remember() there does not compile.
+                        val chipNumbers = remember(attachments) {
+                            com.openminis.app.data.model.AttachmentIndex
+                                .numberInPickOrder(attachments) { it.isImage }
+                        }
+                        // A single attachment needs no number: "the picture" is
+                        // unambiguous and a lone "1" badge is noise.
+                        val showChipNumbers = attachments.size >= 2
                         LazyRow(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -4582,19 +4601,6 @@ fun ChatScreen(
                             // past the top-right; no extra spacedBy needed.
                             horizontalArrangement = Arrangement.spacedBy(0.dp),
                         ) {
-                            // [T-attachment-numbering] Numbers computed for the
-                            // whole row before rendering: a chip's number
-                            // depends on how many IMAGES the turn has, which no
-                            // single item can know. Composer order is pick
-                            // order; numberInPickOrder maps it to the
-                            // images-first sequence the bubble and the XML use,
-                            // so the badge on a chip equals the number the
-                            // model will read for that same file.
-                            val chipNumbers = remember(attachments) {
-                                com.openminis.app.data.model.AttachmentIndex
-                                    .numberInPickOrder(attachments) { it.isImage }
-                            }
-                            val showChipNumbers = attachments.size >= 2
                             itemsIndexed(attachments, key = { _, a -> a.id }) { chipIndex, attachment ->
                                 // T-pwa-2: long-press menu only appears for
                                 // .html / .htm attachments. The menu lives in
