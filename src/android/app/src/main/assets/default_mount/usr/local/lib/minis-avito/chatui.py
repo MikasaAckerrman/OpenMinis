@@ -16,7 +16,7 @@ TIME = re.compile(r'^(0?\d|1\d|2[0-3]):[0-5]\d$')
 NOISE_EXACT = re.compile(r'^(назад|отправить|написать сообщение|чат|онлайн|'
                          r'была в сети|сегодня|вчера|прочитано|доставлено|'
                          r'скопировать|авито\s*доставк[аи]|открыть профиль|'
-                         r'пожаловаться)$', re.I)
+                         r'пожаловаться|в сети|была? в? сети)$', re.I)
 NOISE_PREFIX = re.compile(r'^(чат с |переписк)', re.I)
 
 def nodes_texts(nodes):
@@ -60,9 +60,20 @@ def parse(dump, only_avito=True):
         m['who'] = 'продавец' if frac < 0.45 else ('ты' if frac > 0.55 else '?')
     return msgs
 
+def detect_context(msgs):
+    t = ' '.join(m['text'].lower() for m in msgs)
+    if 'написать сообщение' in t or 'в сети' in t or 'печатает' in t:
+        return 'chat'
+    if 'в корзину' in t or 'купить с доставкой' in t or 'авито гарантия' in t:
+        return 'item'
+    return 'unknown'
+
 def fmt(msgs):
     if not msgs:
         return 'сообщений не найдено — открыт ли чат Авито?'
+    ctx = detect_context(msgs)
+    if ctx == 'item':
+        return 'На экране КАРТОЧКА объявления, не чат. Открой переписку (кнопка «Написать» → существующий чат).'
     lines = []
     for m in msgs:
         tm = (' ' + m['time']) if m['time'] else ''
