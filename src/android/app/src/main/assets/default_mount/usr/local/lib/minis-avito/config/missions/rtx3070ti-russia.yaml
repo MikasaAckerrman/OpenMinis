@@ -1,0 +1,34 @@
+# RTX 3070 Ti: дешёвая, бюджет ПК 55к, торг до 24к, смотрим все (дороже тоже)
+
+mission: rtx3070ti-russia
+target:
+  model: "3070 Ti"
+  desktop_only: true
+search:
+  base_query: "rtx 3070 ti"
+  params:
+    pmin: 15000
+    pmax: 40000
+    s: "104"          # свежие первыми
+region: rossiya
+category_path: /tovary_dlya_kompyutera
+post_filters:
+  - desktop-only-3070ti
+  - model-required
+  - delivery-preferred
+score:
+  low_rating: 20
+  no_rating: 15
+  too_cheap: 25
+  no_price: 40
+  near_1_2_days: -3
+  far_delivery: 10
+  high_rating: -5
+  price_vs_median:
+    below_15: -8
+    below_5: -4
+    above_10: 10
+  no_delivery_penalty: 12
+  title_bonus:
+    patterns: ["3070 ti", "3070ti"]
+    score: -5

@@ -1,0 +1,33 @@
+description: Только десктопная 3070 Ti (не 3060ti/4070ti и не ноутбуки)
+name: desktop-only-3070ti
+rules:
+  hard_exclude_title:
+  - (?i)\b(3060|4060|4070|5060|5070)\s*ti\b
+  - (?i)\b(3070|4060|5060)\s*m\b
+  - (?i)laptop
+  - (?i)ноутбук
+  - (?i)на запчасти
+  - (?i)реболл
+  - (?i)без видеовыход
+  - (?i)не работает
+  - (?i)для ремонта
+  price_is_range:
+    action: exclude
+    pattern: (\d[\d\s]*)\s*[\-—–]\s*(\d[\d\s]*)\s*₽
+  price_with_discount:
+    action: keep
+    fields:
+    - old_price
+    - new_price
+    - discount_pct
+    pattern: (\d[\d\s]*)\s*₽\s*(\d[\d\s]*)\s*₽\s*[−\-]\s*(\d+)\s*%
+  require_title:
+  - (?i)rtx[\s/]*\d{4}
+  - (?i)gtx[\s/]*\d{4}
+  - (?i)geforce
+  - (?i)видеокарт
+  - (?i)radeon
+  soft_warn_title:
+  - (?i)майнинг
+  - (?i)reball
+  - (?i)для восстановления
