@@ -253,6 +253,10 @@ def score_items(items, mission):
         if not it.get('price'):
             s += score_cfg.get('no_price', 40)
             it.setdefault('flags', []).append('no_price')
+        # Флаги описания (descflags.py): перекуп/гарантия/майнинг/торг
+        desc_score = score_cfg.get('desc_flags', {})
+        for f in it.get('desc_flags') or []:
+            s += desc_score.get(f, 0)
         it['risk_score'] = s
     return items, median
 

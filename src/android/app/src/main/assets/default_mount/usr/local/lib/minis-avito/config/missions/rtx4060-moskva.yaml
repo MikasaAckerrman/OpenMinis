@@ -37,6 +37,19 @@ score:
     price_below_market_20pct: 15
     price_below_market_35pct: 35
   no_price: 40
+  desc_flags:
+    trade_in: 8
+    warranty: -10
+    seals: -5
+    artifacts_ok: -5
+    artifacts_bad: 25
+    artifacts_conflict: 20
+    mining_mentioned: 10
+    mining_denied: 5
+    parts_swap: -3
+    box: -3
+    negotiable: -5
+    installment: 5
 output:
   rank_by: value
   top_n: 15
