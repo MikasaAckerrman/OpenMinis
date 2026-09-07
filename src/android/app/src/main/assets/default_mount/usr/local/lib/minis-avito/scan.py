@@ -183,15 +183,14 @@ def parse_fields(raw_item):
     # Это отсекает модель «rtx 3070», время «8 часов», «(6)» отзывов.
     def _ru(int_part):
         return int(int_part.replace('\xa0', '').replace('\u202f', '').replace(' ', ''))
-    pm = re.search(r'(?<!\d)(\d{1,3}(?:[\s\xa0\u202f]\d{3})+)(?!\d)(?:\s*₽)?', text)   # 15 000
-    if not pm:
-        # Слитная цена без ₽: только 5-значная (GPU не бывает 9999 и дешевле),
-        # иначе «rtx 3070 15000» спутает 3070 с ценой.
-        pm2 = re.search(r'(?<![\dа-яё])(\d{5,6})(?!\d)(?:\s*₽)?', text, re.I)
-        if pm2:
-            out['price'] = _ru(pm2.group(1))
-    else:
-        out['price'] = _ru(pm.group(1))
+    # Цена: только если рядом ₽. Без ₽ цена не берётся ВООБЩЕ:
+    # в grep без ₽ легко сбивается модель («rtx 3070 15000») и отзывы («(6)»).
+    # Лагаем только суммы ≥10 000: GPU дешевле — битвая/кузовная/доставка, не карта.
+    pm = re.search(r'(?<!\d)(\d{1,3}(?:[\s\xa0\u202f]\d{3}){1,}|[1-9]\d{4,5})\s*₽', text)
+    if pm:
+        price_val = _ru(pm.group(1))
+        if price_val >= 10000:
+            out['price'] = price_val
     if out.get('price'):
         sm = re.search(r'(\d{1,3}(?:[\s\xa0\u202f]\d{3})+)\s*₽\s+(\d{1,3}(?:[\s\xa0\u202f]\d{3})+)\s*₽\s*[−\-]\s*(\d+)\s*%', text)
         if sm:
