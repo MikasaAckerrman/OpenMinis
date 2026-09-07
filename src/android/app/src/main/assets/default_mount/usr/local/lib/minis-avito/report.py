@@ -46,7 +46,10 @@ def main():
     n = 3
     if '--n' in sys.argv:
         n = int(sys.argv[sys.argv.index('--n') + 1])
-    scan = json.load(open(src))
+    try:
+        scan = json.load(open(src, encoding='utf-8'))
+    except (json.JSONDecodeError, OSError) as e:
+        sys.exit(f'не читается скан {src}: {e}')
     items = scan['items'][:n]
     for i, it in enumerate(items, 1):
         print(f"\n=== ЛОТ {i} (риск {it.get('risk_score')}) ===")

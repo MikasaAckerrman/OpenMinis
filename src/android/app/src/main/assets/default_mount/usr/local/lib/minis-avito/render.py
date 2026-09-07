@@ -100,7 +100,10 @@ def main():
     ap.add_argument('--out', help='файл для записи (по умолчанию stdout)')
     args = ap.parse_args()
 
-    scan = json.load(open(args.scan, encoding='utf-8'))
+    try:
+        scan = json.load(open(args.scan, encoding='utf-8'))
+    except (json.JSONDecodeError, OSError) as e:
+        sys.exit(f'не читается скан {args.scan}: {e}')
     text = render_scan(scan, args.top)
     if args.out:
         Path(args.out).write_text(text, encoding='utf-8')

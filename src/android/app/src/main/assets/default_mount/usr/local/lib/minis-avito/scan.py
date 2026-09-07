@@ -136,14 +136,23 @@ FILTERS = {
 def parse_fields(raw_item):
     text = raw_item['raw']
     out = dict(raw_item)
-    # Цена
-    pm = re.search(r'(\d{1,3}(?:\s\d{3})*)\s*₽', text)
-    if pm:
-        out['price'] = int(pm.group(1).replace('\xa0', '').replace(' ', ''))
-        # Цена со скидкой: "20 900 ₽ 22 000 ₽ -5%"
-        sm = re.search(r'(\d{1,3}(?:\s\d{3})*)\s*₽\s+(\d{1,3}(?:\s\d{3})*)\s*₽\s*[−\-]\s*(\d+)\s*%', text)
+    # Цена: число ≥10 000 (у GPU сотни не бывают) либо с явным ₽.
+    # Это отсекает модель «rtx 3070», время «8 часов», «(6)» отзывов.
+    def _ru(int_part):
+        return int(int_part.replace('\xa0', '').replace(' ', ''))
+    pm = re.search(r'(?<!\d)(\d{1,3}(?:[\s\xa0]\d{3})+)(?!\d)(?:\s*₽)?', text)   # 15 000
+    if not pm:
+        # Слитная цена без ₽: только 5-значная (GPU не бывает 9999 и дешевле),
+        # иначе «rtx 3070 15000» спутает 3070 с ценой.
+        pm2 = re.search(r'(?<![\dа-яё])(\d{5,6})(?!\d)(?:\s*₽)?', text, re.I)
+        if pm2:
+            out['price'] = _ru(pm2.group(1))
+    else:
+        out['price'] = _ru(pm.group(1))
+    if out.get('price'):
+        sm = re.search(r'(\d{1,3}(?:[\s\xa0]\d{3})+)\s*₽\s+(\d{1,3}(?:[\s\xa0]\d{3})+)\s*₽\s*[−\-]\s*(\d+)\s*%', text)
         if sm:
-            out['old_price'] = int(sm.group(2).replace('\xa0', '').replace(' ', ''))
+            out['old_price'] = _ru(sm.group(2))
             out['discount_pct'] = int(sm.group(3))
     # Рейтинг и отзывы
     rm = re.search(r'(\d[.,]\d)\s*\((\d+)\)', text)
@@ -245,11 +254,18 @@ def score_items(items, mission):
 
 
 def _parse_threshold(name):
-    """Переводит 'gte_4_8' → 4.8, 'lt_4_5' → 4.5, 'no_rating' → None."""
+    """Переводит 'gte_4_8' → 4.8, 'lt_4_5' → 4.5, 'no_rating' → None.
+
+    Формат: <направление>_<целая>[_<дробь>]. Подчёркивание — разделитель
+    дробной части, т.к. YAML-ключи без точек. 'gte_4_8' = 4.8, 'lt_4' = 4.0.
+    """
     if name == 'no_rating':
         return 'no_rating'
-    m = re.match(r'[a-z]+_(\d[.,]?\d?)', name)
-    return float(m.group(1).replace(',', '.')) if m else None
+    m = re.match(r'(gte|lt)_(\d)(?:_(\d))?$', name)
+    if not m:
+        return None
+    frac = m.group(3) or '0'
+    return float(f'{m.group(2)}.{frac}')
 
 
 def summarize(items, median):
