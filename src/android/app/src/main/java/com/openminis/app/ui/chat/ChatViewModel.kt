@@ -931,6 +931,52 @@ class ChatViewModel(
         _activeEntryId.value = entryId
         refreshAttributedContextUsage(reason)
     }
+
+    /**
+     * [T-switch-context-fit] Warn at model-switch time when the session's
+     * context no longer fits the newly selected model's window.
+     *
+     * ## The failure this fixes
+     *
+     * User report: switch model → type message → send → provider rejects with
+     * "context too large" → manual /compact → (pre-fix) compaction could die
+     * on "Invalid API key" → session stranded. The user found out about the
+     * mismatch only AFTER wasting a send. Auto-compaction is a deliberate
+     * product no (see [checkContextBeforeSend]: compaction is manual only),
+     * so the fix within that contract is timing: surface the mismatch at the
+     * moment of the switch, with concrete numbers, BEFORE the next send.
+     *
+     * Called only from user-driven switches (selectEntry / selectGroup /
+     * selectGroupEntry) — session-restore and runtime-fallback activations
+     * stay silent so app start doesn't spam warnings for oversized sessions.
+     * Reuses [ContextPolicy] tiers so the thresholds match the send-time
+     * warning exactly.
+     */
+    private fun warnContextFitAfterSwitch() {
+        val window = effectiveContextWindowTokens() ?: return
+        val tokens = com.openminis.app.data.ContextPressure.resolve(
+            usageTokens = _lastTurnContextTokens.value,
+            estimatedTokens = estimateContextTokens(),
+        )
+        if (tokens <= 0) return
+        val policy = ContextPolicy.forContextWindow(window)
+        val modelName = currentModel?.displayName?.ifBlank { currentModel?.id } ?: "модель"
+        when (policy.check(tokens, window)) {
+            ContextPolicy.CheckResult.OK -> Unit
+            ContextPolicy.CheckResult.NEEDS_COMPACT -> appendSystemInfo(
+                text = "Модель переключена на $modelName. Контекст сессии ~$tokens ток. " +
+                    "при окне $window — выше порога сжатия. Следующий запрос может не уйти: " +
+                    "выполни /compact до отправки.",
+                iconKind = "compact",
+            )
+            ContextPolicy.CheckResult.EXHAUSTED -> appendSystemInfo(
+                text = "Модель переключена на $modelName. Контекст ~$tokens ток. превышает " +
+                    "окно $window, и окно слишком мало для сжатия. Начни новый чат или верни " +
+                    "модель с большим окном.",
+                iconKind = "compact",
+            )
+        }
+    }
     val lastTurnContextTokens: StateFlow<Int> = _lastTurnContextTokens.asStateFlow()
 
     /**
@@ -4851,6 +4897,7 @@ class ChatViewModel(
         if (resolved) {
             persistBinding("""{"type":"group","groupId":"$groupId"}""")
             applyGroupSessionDefaults(groupId)
+            warnContextFitAfterSwitch()
         }
     }
 
@@ -4862,6 +4909,7 @@ class ChatViewModel(
         if (resolved) {
             persistBinding("""{"type":"group","groupId":"$groupId","lastEntryId":"$entryId"}""")
             applyGroupSessionDefaults(groupId)
+            warnContextFitAfterSwitch()
             // [T-newchat-default-model-fallback-android] Record the actually-
             // resolved active entry as last-used (resolveProviderFromGroup may
             // fall back off a disabled member, so _activeEntryId is the truth).
@@ -4989,6 +5037,7 @@ class ChatViewModel(
         _selectedGroupId.value = null
         _selectedGroupName.value = ""
         activateModel(entry.model, entry.id, "user selected model entry")
+        warnContextFitAfterSwitch()
         _modelName.value = entry.model.displayName
         _providerName.value = instance.label.ifEmpty { entry.model.provider }
         currentProvider = ProviderFactory.create(instance, apiKey, entry.model, context)

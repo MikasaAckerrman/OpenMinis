@@ -65,6 +65,45 @@ object CompactRoute {
         "请求过于频繁", "请求频率",
     )
 
+    /**
+     * [T-compact-route-auth] Credential rejection: the key itself is refused,
+     * so NO request size is affordable on this provider — shrinking the
+     * summary (the quota ladder) cannot help, only a different provider with
+     * a working credential can.
+     *
+     * ## The failure this fixes
+     *
+     * Observed live: "Compaction failed: Invalid API key" stranded an
+     * oversized session even though the model group held two more models
+     * with valid keys. The send path already treats InvalidApiKey as
+     * fallbackable ([com.openminis.app.data.model.LLMError.isFallbackable]),
+     * but the compaction ladder routed it to Surface — the one tool that
+     * must not die had the weakest error handling. Relay detail: a 403 with
+     * a balance body is a QUOTA failure (see QuotaErrorDetection), while
+     * our provider mappers normalise true credential failures to
+     * "Invalid API key[: detail]" — matching that classified text (plus the
+     * raw relay spellings that leak through unmapped) is collision-free.
+     * Bare "401"/"403" substrings are deliberately NOT matched: quota
+     * pre-charge rejections share those status codes.
+     */
+    private val AUTH_MARKERS = listOf(
+        "invalid api key",
+        "invalid_api_key",
+        "incorrect api key",
+        "api key not valid",
+        "invalid x-api-key",
+        "unauthorized",
+        "not authenticated",
+        "authentication required",
+        "invalid token",
+        "token is invalid",
+    )
+
+    fun isAuthFailure(message: String): Boolean {
+        val m = message.lowercase()
+        return AUTH_MARKERS.any { m.contains(it) }
+    }
+
     fun isRateLimit(message: String): Boolean {
         val m = message.lowercase()
         return RATE_LIMIT_MARKERS.any { m.contains(it) }
@@ -111,10 +150,14 @@ object CompactRoute {
         val rateLimited = isRateLimit(errorMessage)
         val contentFiltered = com.openminis.app.provider.ContentFilterDetection
             .isContentFilterRejection(errorMessage)
-        if (!quota && !rateLimited && !contentFiltered) return Step.Surface(errorMessage)
-        if (contentFiltered) {
-            // [T-remove-local-compaction] Try the next model; if none is left,
-            // surface — no silent on-device digest.
+        val authRejected = isAuthFailure(errorMessage)
+        if (!quota && !rateLimited && !contentFiltered && !authRejected) return Step.Surface(errorMessage)
+        // [T-compact-route-auth] Auth and content-filter rejections share a
+        // route: neither gets cheaper with a smaller request, so skip the
+        // shrink ladder and go straight to the next provider. Surface only
+        // when every provider has refused — the session stays intact and the
+        // user is told which failure stranded it.
+        if (contentFiltered || authRejected) {
             return nextProviderIndex?.let { Step.NextProvider(it) }
                 ?: Step.Surface(errorMessage)
         }

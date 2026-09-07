@@ -138,4 +138,61 @@ class CompactRouteTest {
         val step = CompactRoute.next(both, currentMaxTokens = 8192, shrinkStepsUsed = 0, nextProviderIndex = 3)
         assertEquals(CompactRoute.Step.NextProvider(3), step)
     }
+
+    // [T-compact-route-auth] Observed live: "Compaction failed: Invalid API
+    // key" stranded an oversized session while the group held working
+    // fallbacks. The send path already falls over on InvalidApiKey
+    // (LLMError.isFallbackable); the compaction ladder must too.
+    private val authRejected = "Invalid API key: Incorrect API key provided: sk-abc***"
+
+    @Test
+    fun `auth failure routes to the next provider, never shrinks`() {
+        // A rejected credential does not get cheaper with a smaller summary —
+        // the quota shrink ladder must be skipped entirely.
+        val step = CompactRoute.next(
+            authRejected, currentMaxTokens = 8192, shrinkStepsUsed = 0, nextProviderIndex = 2,
+        )
+        assertEquals(CompactRoute.Step.NextProvider(2), step)
+    }
+
+    @Test
+    fun `auth failure skips shrink even after quota shrink steps were used`() {
+        // Ladder walked: quota → shrink → still failing on a bad key. The key
+        // rejection must not waste further shrinks; next provider directly.
+        val step = CompactRoute.next(
+            authRejected, currentMaxTokens = 4096, shrinkStepsUsed = 1, nextProviderIndex = 0,
+        )
+        assertEquals(CompactRoute.Step.NextProvider(0), step)
+    }
+
+    @Test
+    fun `auth failure with no provider left surfaces`() {
+        // Every credential refused — surface so the user knows exactly which
+        // failure stranded the session; history is left intact.
+        val step = CompactRoute.next(
+            authRejected, currentMaxTokens = 8192, shrinkStepsUsed = 0, nextProviderIndex = null,
+        )
+        assertTrue(step is CompactRoute.Step.Surface)
+    }
+
+    @Test
+    fun `auth detection covers relay spellings and the classified error text`() {
+        assertTrue(CompactRoute.isAuthFailure(authRejected))
+        assertTrue(CompactRoute.isAuthFailure("Invalid API key"))
+        assertTrue(CompactRoute.isAuthFailure("invalid_api_key"))
+        assertTrue(CompactRoute.isAuthFailure("HTTP 401 Unauthorized"))
+        assertTrue(CompactRoute.isAuthFailure("invalid x-api-key"))
+        assertTrue(CompactRoute.isAuthFailure("authentication required"))
+    }
+
+    @Test
+    fun `auth detection does not swallow unrelated 400s or quota bodies`() {
+        // "invalid role" is a malformed request, not a credential refusal —
+        // it must stay on the Surface path (existing behaviour).
+        assertFalse(CompactRoute.isAuthFailure("Provider error: [400] messages: invalid role"))
+        // A 403 with a balance body is a QUOTA failure, not auth — the
+        // provider mapper classifies it before CompactRoute sees it.
+        assertFalse(CompactRoute.isAuthFailure(quotaCn))
+        assertFalse(CompactRoute.isAuthFailure(rateLimited))
+    }
 }
