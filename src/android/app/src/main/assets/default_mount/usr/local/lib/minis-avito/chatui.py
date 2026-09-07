@@ -60,6 +60,41 @@ def parse(dump, only_avito=True):
         m['who'] = 'продавец' if frac < 0.45 else ('ты' if frac > 0.55 else '?')
     return msgs
 
+
+
+def scroll_to_top(max_swipes=12):
+    """Прокручиваю чат вверх до упора (история с самого начала)."""
+    import subprocess, json as _json
+    seen, all_texts = set(), []
+    for i in range(max_swipes):
+        subprocess.run(['android-a11y-cli', 'gesture', 'swipe',
+                        '--x1', '630', '--y1', '700', '--x2', '630', '--y2', '2200',
+                        '--duration', '400'], capture_output=True, timeout=20)
+        subprocess.run(['android-a11y-cli', 'wait', 'stable', '--timeout', '3'],
+                       capture_output=True, timeout=20)
+        p = subprocess.run(['android-a11y-cli', 'ui', 'dump'], capture_output=True, timeout=25)
+        try:
+            d = _json.loads(p.stdout)
+        except Exception:
+            continue
+        nodes = (d.get('data') or {}).get('nodes') or []
+        av = [n for n in nodes if isinstance(n, dict)
+              and str(n.get('packageName', '')).startswith(AVITO_PKGS)]
+        if not av:
+            continue
+        new = 0
+        for t, y, x, n in nodes_texts(av):
+            if NOISE_EXACT.match(t) or NOISE_PREFIX.match(t):
+                continue
+            key = (t[:80], y // 40)
+            if key not in seen:
+                seen.add(key)
+                all_texts.append((t, y, x))
+                new += 1
+        if new == 0:
+            break  # верх достигнут
+    return all_texts
+
 def detect_context(msgs):
     t = ' '.join(m['text'].lower() for m in msgs)
     if 'написать сообщение' in t or 'в сети' in t or 'печатает' in t:
@@ -86,7 +121,20 @@ def main():
         dump = json.load(open(a[1], encoding='utf-8'))
     else:
         dump = json.load(sys.stdin)
-    print(fmt(parse(dump)))
+    if a and '--full' in a:
+        rows = scroll_to_top()
+        msgs = []
+        w = 1260
+        for t, y, x in rows:
+            if TIME.match(t):
+                if msgs and not msgs[-1].get('time'):
+                    msgs[-1]['time'] = t
+                continue
+            frac = (x + 60) / w
+            msgs.append({'text': t, 'who': 'продавец' if frac < 0.45 else ('ты' if frac > 0.55 else '?'), 'time': None})
+        print(fmt(msgs))
+    else:
+        print(fmt(parse(dump)))
 
 if __name__ == '__main__':
     main()
