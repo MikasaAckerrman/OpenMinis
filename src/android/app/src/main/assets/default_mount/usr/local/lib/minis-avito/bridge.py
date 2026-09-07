@@ -31,7 +31,24 @@ def main():
     safe = mission.replace('/', '_')
     buf = TMP / f'bridge_{safe}.json'
     append = '--append' in argv
-    chunk = decode(sys.stdin.read())
+    from_offload = '--from-offload' in argv
+    if from_offload:
+        # Полный b64 из последнего execute_js-offload (base64 — ascii,
+        # offload не обрезает). Без этого конвейер требует ручного
+        # перебивания b64 через file_write (ломается на кириллице).
+        import glob, re
+        offs = sorted(glob.glob('/var/minis/offloads/tools/browser_use_*.txt'),
+                      key=os.path.getmtime)
+        if not offs:
+            raise SystemExit('нет offload-файлов execute_js')
+        t = open(offs[-1], encoding='utf-8').read()
+        m = re.search(r'[A-Za-z0-9+/=]{500,}', t)
+        if not m:
+            raise SystemExit('в offload нет base64-блока')
+        raw = m.group(0)
+    else:
+        raw = sys.stdin.read()
+    chunk = decode(raw)
 
     if append:
         prev = json.loads(buf.read_text(encoding='utf-8')) if buf.exists() else []
