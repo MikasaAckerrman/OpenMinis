@@ -1,143 +1,131 @@
 #!/usr/bin/env python3
 """residual.py — РАЗДЕЛЕНИЕ остаточной ошибки на два источника.
 
-Директива пользователя: не смешивать в один показатель
-    RECONSTRUCTION ERROR   (то, что механизм обязан уметь)
-  + UNAVAILABLE ASSET ERROR (форма глифов недоступного шрифта)
+Смешивать их в один показатель нельзя:
+    GLYPH-FORM      форма глифов недоступного шрифта — внешнее ограничение
+    RECONSTRUCTION  геометрия, цвета, поверхности — это механизм обязан уметь
 
-МЕТОД. Для каждого элемента строим маску текста ПО ОРИГИНАЛУ: пиксель
-относится к тексту, если он внутри ink-bbox строк этого элемента И его цвет
-ближе к цвету текста, чем к цвету фона/поверхности. Всё остальное —
-геометрия/поверхности/рамки/ассеты. Считаем MAE отдельно по каждой маске.
+МЕТОД. Маска глифов строится ИЗ ОРИГИНАЛА (рендер в её построение не входит,
+поэтому объявить собственный промах «текстом» невозможно). Внутри каждого
+измеренного бокса: поверхность = доминирующий цвет бокса, ink = всё, что от
+неё отличается, из ink оставляются только ТОНКИЕ структуры (штрих 1..3px) —
+так штрихи букв отделяются от сплошных пятен вроде иконок и спрайтов.
+Расширение ±1px только внутри бокса: край antialias принадлежит форме буквы.
 
-Ключевое: маска строится из ОРИГИНАЛА, а не из рендера — иначе можно было бы
-«спрятать» свои ошибки, объявив их текстом.
+ИСПРАВЛЕНО. Прежняя версия несла список TEXT_ZONES из 24 боксов с
+координатами и цветами диалога «Настройки» CS 1.6. На любом другом скриншоте
+эти зоны указывали в пустоту: маска текста выходила пустой, весь остаток
+записывался в RECONSTRUCTION, и отчёт печатал «GLYPH-FORM 0.00 / 0.0%» —
+уверенное число, означающее лишь то, что зоны не совпали с кадром.
+Теперь боксы берутся из boxes.json (их измеряет `minis-uicopy boxes`).
 """
-import sys, os, json
+import json
+import os
+import sys
+
+import numpy as np
 from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from uicopy_ctx import ctx
+import metrics as M  # noqa: E402
+from uicopy_ctx import ctx  # noqa: E402
+
 HERE = ctx().dir
-TOOLS = os.path.dirname(os.path.abspath(__file__))
-ORIG = f"{HERE}/ORIGINAL.png"
-REND = sys.argv[1] if len(sys.argv) > 1 else f"{HERE}/render_v9.png"
+ORIG = os.path.join(HERE, "ORIGINAL.png")
+REND = sys.argv[1] if len(sys.argv) > 1 else None
+if not REND:
+    print("usage: residual <render.png>", file=sys.stderr)
+    sys.exit(2)
+if not os.path.isabs(REND):
+    REND = os.path.join(HERE, REND)
 
-a = Image.open(ORIG).convert("RGB")
-b = Image.open(REND).convert("RGB")
-pa, pb = a.load(), b.load()
-W, H = a.size
+a_im = Image.open(ORIG).convert("RGB")
+b_im = Image.open(REND).convert("RGB")
+if a_im.size != b_im.size:
+    print("!! РАЗНЫЙ РАЗМЕР %s vs %s" % (a_im.size, b_im.size))
+    sys.exit(2)
+a, b = np.asarray(a_im), np.asarray(b_im)
+H, W = a.shape[:2]
 
-# Текстовые зоны: (ink-bbox с запасом 1px, цвет текста, цвет подложки)
-TEXT_ZONES = [
-    ((52, 17, 168, 39), (249, 249, 248), (76, 88, 68)),      # Настройки
-    ((21, 55, 189, 79), (195, 180, 80), (76, 88, 68)),       # таб active
-    ((199, 55, 328, 79), (237, 238, 236), (76, 88, 68)),     # Клавиатура
-    ((358, 55, 427, 79), (237, 238, 236), (76, 88, 68)),     # Мышь
-    ((480, 55, 532, 79), (237, 238, 236), (76, 88, 68)),     # Звук
-    ((602, 55, 669, 79), (237, 238, 236), (76, 88, 68)),     # Видео
-    ((724, 55, 770, 79), (237, 238, 236), (76, 88, 68)),     # HUD
-    ((845, 55, 933, 79), (237, 238, 236), (76, 88, 68)),     # Аккаунт
-    ((967, 55, 1061, 79), (237, 238, 236), (76, 88, 68)),    # Система
-    ((84, 131, 165, 151), (183, 191, 177), (76, 88, 68)),    # Аватар
-    ((84, 259, 176, 276), (183, 191, 177), (76, 88, 68)),    # Логотип
-    ((536, 131, 662, 151), (183, 191, 177), (76, 88, 68)),   # Имя игрока
-    ((536, 258, 879, 279), (183, 191, 177), (76, 88, 68)),   # Пароль…
-    ((230, 163, 362, 183), (205, 211, 200), (76, 88, 68)),   # Загрузить…
-    ((230, 350, 395, 369), (205, 211, 200), (76, 88, 68)),   # Изменить цвет
-    ((95, 456, 290, 474), (205, 211, 200), (76, 88, 68)),    # Дополнительно…
-    ((649, 616, 680, 632), (205, 211, 200), (76, 88, 68)),   # OK
-    ((799, 616, 883, 632), (205, 211, 200), (76, 88, 68)),   # Отмена
-    ((949, 616, 1072, 637), (114, 125, 108), (76, 88, 68)),  # Применить
-    ((84, 395, 506, 414), (151, 162, 141), (76, 88, 68)),    # disabled 1
-    ((84, 421, 215, 438), (151, 162, 141), (76, 88, 68)),    # disabled 2
-    ((544, 163, 703, 185), (190, 196, 185), (62, 70, 55)),   # [B]KoHTpE
-    ((225, 221, 324, 240), (190, 196, 185), (62, 70, 55)),   # cts_team
-    ((227, 294, 305, 311), (190, 196, 185), (62, 70, 55)),   # lambda
-]
+box_path = os.path.join(HERE, "boxes.json")
+if not os.path.exists(box_path):
+    print("!! нет boxes.json — сначала `minis-uicopy boxes`.")
+    print("   Без измеренных боксов маску глифов построить нечем, а печатать")
+    print("   GLYPH-FORM = 0 было бы ложью: это не «шрифт совпал», а «зоны")
+    print("   не заданы».")
+    sys.exit(2)
 
-# ВАЖНО (иначе разделение врёт в свою пользу): вокруг каждого глифа есть
-# ANTIALIAS — пиксели, которые ближе к ПОДЛОЖКЕ, но существуют только из-за
-# формы буквы. Измерено в зоне (128,16): O #e1e3e0 против R #4c5844 — это
-# полуторный край глифа 'Н', а не дефект геометрии. Такие пиксели тоже
-# принадлежат glyph-form, поэтому маска расширяется на ±1px ВНУТРИ текстовых
-# зон. За пределами зон расширения нет — своих ошибок не спрячешь.
-DILATE = 1
+data = json.load(open(box_path))
+elements = [{"name": e["name"], "box": tuple(e["box"])}
+            for e in data.get("elements", [])]
+# Боксы во весь кадр (внешняя рамка, контейнер диалога) исключаются: их
+# «поверхность» — фон всего кадра, и тогда в ink попадёт вообще всё
+# содержимое, а не штрихи букв.
+frame = 0.5 * W * H
+elements = [e for e in elements
+            if (e["box"][2] - e["box"][0]) * (e["box"][3] - e["box"][1]) < frame]
 
+# Маска строится по ОБОИМ растрам: зоны заданы боксами оригинала, но глиф
+# чужого шрифта физически занимает другие пиксели — там, где в оригинале
+# фон, в рендере штрих. Замер на эталоне: без второго растра 31.0% различий
+# уезжало в RECONSTRUCTION, хотя это форма букв; с ним — 10.8%.
+glyph = M.text_mask(a, elements, rend_rgb=b)
+l1 = np.abs(a.astype(np.int32) - b.astype(np.int32)).sum(axis=2)
 
-def dist(c1, c2):
-    return abs(c1[0]-c2[0]) + abs(c1[1]-c2[1]) + abs(c1[2]-c2[2])
+g_n = int(glyph.sum())
+r_n = W * H - g_n
+g_sum = int(l1[glyph].sum()) if g_n else 0
+r_sum = int(l1[~glyph].sum()) if r_n else 0
+g_mae = g_sum / (3.0 * g_n) if g_n else 0.0
+r_mae = r_sum / (3.0 * r_n) if r_n else 0.0
+tot_mae = (g_sum + r_sum) / (3.0 * W * H)
+share_g = 100.0 * g_sum / (g_sum + r_sum) if (g_sum + r_sum) else 0.0
 
+# SSIM отдельно по не-текстовой части: структурная ошибка геометрии, не
+# размытая формой букв. MAE и SSIM ошибаются в противоположные стороны,
+# поэтому один без другого позволяет объявить «готово» на неверном рендере.
+la, lb = M.to_luma(a), M.to_luma(b)
+ssim_all = M.ssim(la, lb)
 
-def build_text_mask():
-    """Маска текста ИЗ ОРИГИНАЛА: ближе к ink чем к подложке, плюс ±DILATE
-    внутри той же зоны (antialias-край глифа)."""
-    mask = bytearray(W * H)
-    for (x0, y0, x1, y1), ink, base in TEXT_ZONES:
-        core = []
-        for y in range(max(0, y0), min(H, y1)):
-            for x in range(max(0, x0), min(W, x1)):
-                c = pa[x, y]
-                if dist(c, ink) < dist(c, base):
-                    mask[y * W + x] = 1
-                    core.append((x, y))
-        # расширение только ВНУТРИ зоны
-        for (x, y) in core:
-            for dy in range(-DILATE, DILATE + 1):
-                for dx in range(-DILATE, DILATE + 1):
-                    nx, ny = x + dx, y + dy
-                    if x0 <= nx < x1 and y0 <= ny < y1 and 0 <= nx < W and 0 <= ny < H:
-                        mask[ny * W + nx] = 1
-    return mask
+print("РЕНДЕР: %s" % os.path.basename(REND))
+print("боксов для маски: %d (из %d в boxes.json, рамки во весь кадр отброшены)"
+      % (len(elements), len(data.get("elements", []))))
+print()
+print("%-34s %10s %11s %7s %15s"
+      % ("источник", "пикселей", "доля кадра", "MAE", "вклад в ошибку"))
+print("%-34s %10d %10.2f%% %7.2f %14.1f%%"
+      % ("GLYPH-FORM (шрифт недоступен)", g_n, 100.0 * g_n / (W * H), g_mae, share_g))
+print("%-34s %10d %10.2f%% %7.2f %14.1f%%"
+      % ("RECONSTRUCTION (геометрия/цвет)", r_n, 100.0 * r_n / (W * H), r_mae,
+         100.0 - share_g))
+print("%-34s %10d %10.2f%% %7.2f %14.1f%%" % ("ИТОГО", W * H, 100.0, tot_mae, 100.0))
+print()
+print("SSIM всего кадра: %.4f" % ssim_all)
 
+if g_n == 0:
+    print()
+    print("ВНИМАНИЕ: маска глифов пуста. Это НЕ «шрифт совпал» — это значит,")
+    print("что внутри измеренных боксов не нашлось тонких структур. Проверь")
+    print("boxes.json: вероятно, детекция дала одни крупные пятна.")
 
-def main():
-    mask = build_text_mask()
-    t_sum = t_n = 0
-    g_sum = g_n = 0
-    for y in range(H):
-        row = y * W
-        for x in range(W):
-            d = dist(pa[x, y], pb[x, y])
-            if mask[row + x]:
-                t_sum += d; t_n += 1
-            else:
-                g_sum += d; g_n += 1
-    t_mae = t_sum / (3.0 * t_n) if t_n else 0
-    g_mae = g_sum / (3.0 * g_n) if g_n else 0
-    tot = (t_sum + g_sum) / (3.0 * W * H)
-    share_t = 100.0 * t_sum / (t_sum + g_sum) if (t_sum + g_sum) else 0
+# Остаточная RECONSTRUCTION-ошибка в единицах заметности, не в L1: L1 > 12
+# ничего не говорит о том, видно ли это глазом.
+lab_a, lab_b = M.srgb_to_lab(a), M.srgb_to_lab(b)
+de = M.de76(lab_a, lab_b)
+bad = int((~glyph & (de > M.JND_DE76)).sum())
+print()
+print("НЕ-глифовых пикселей выше порога заметности (dE76 > %.1f): %d (%.3f%% от них)"
+      % (M.JND_DE76, bad, 100.0 * bad / r_n if r_n else 0.0))
+print("→ это и есть остаточная RECONSTRUCTION-ошибка, которую можно устранять")
 
-    print(f"РЕНДЕР: {REND.split('/')[-1]}")
-    print(f"\n{'источник':38s} {'пикселей':>10s} {'доля кадра':>11s} "
-          f"{'MAE':>7s} {'вклад в ошибку':>15s}")
-    print(f"{'GLYPH-FORM (шрифт недоступен)':38s} {t_n:10d} "
-          f"{100.0*t_n/(W*H):10.2f}% {t_mae:7.2f} {share_t:14.1f}%")
-    print(f"{'RECONSTRUCTION (геометрия/цвет/…)':38s} {g_n:10d} "
-          f"{100.0*g_n/(W*H):10.2f}% {g_mae:7.2f} {100-share_t:14.1f}%")
-    print(f"{'ИТОГО':38s} {W*H:10d} {100.0:10.2f}% {tot:7.2f} {100.0:14.1f}%")
-
-    # сколько пикселей вне текста ещё различаются заметно
-    bad = 0
-    for y in range(H):
-        row = y * W
-        for x in range(W):
-            if not mask[row + x] and dist(pa[x, y], pb[x, y]) > 12:
-                bad += 1
-    print(f"\nНЕ-текстовых пикселей с |d|>12: {bad} "
-          f"({100.0*bad/g_n:.3f}% от не-текстовых)")
-    print("→ это и есть остаточная RECONSTRUCTION-ошибка, которую можно "
-          "устранять дальше")
-
-    with open(f"{HERE}/residual.json", "w") as f:
-        json.dump({"render": REND.split('/')[-1],
-                   "glyph": {"px": t_n, "mae": round(t_mae, 3),
-                             "share_pct": round(share_t, 2)},
-                   "reconstruction": {"px": g_n, "mae": round(g_mae, 3),
-                                      "share_pct": round(100-share_t, 2),
-                                      "px_over_12": bad}},
-                  f, ensure_ascii=False, indent=1)
-
-
-if __name__ == "__main__":
-    main()
+out = {
+    "render": os.path.basename(REND),
+    "boxes_used": len(elements),
+    "glyph": {"px": g_n, "mae": round(g_mae, 3), "share_pct": round(share_g, 2)},
+    "reconstruction": {"px": r_n, "mae": round(r_mae, 3),
+                       "share_pct": round(100.0 - share_g, 2),
+                       "px_over_jnd": bad},
+    "ssim": round(ssim_all, 4),
+}
+with open(os.path.join(HERE, "residual.json"), "w") as f:
+    json.dump(out, f, ensure_ascii=False, indent=1)

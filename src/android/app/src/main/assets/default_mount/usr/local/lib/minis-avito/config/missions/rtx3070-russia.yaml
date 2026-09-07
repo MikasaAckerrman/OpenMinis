@@ -1,0 +1,71 @@
+# Mission: найти RTX 3070 по всей России с доставкой до 26к
+# Замер 2026-09-07: доставка между городами работает, поэтому местоположение
+# продавца не важно. Сортируем по цене, фильтруем мусор, рейтинг как сигнал.
+mission: rtx3070-russia
+
+target:
+  brand: NVIDIA
+  series: rtx_30
+  model: "3070"
+
+# Ищем по всей России
+region: rossiya
+category_path: /tovary_dlya_kompyutera
+
+search:
+  base_query: "rtx 3070"
+  params:
+    s: 1                  # дешевле сначала
+    pmin: 18000            # ниже почти всегда майнинг или дефект
+    pmax: 28000            # выше — премиум модели, отдельная история
+  pages: 3                # до 90 лотов, норма для одного скана
+
+post_filters:
+  - desktop-only          # обязательно: убрать 3070 ti/m/laptop/майнинг
+  - delivery-required     # обязательно: только с доставкой
+
+extract:
+  - price
+  - title
+  - seller_name
+  - seller_rating
+  - seller_reviews
+  - location
+  - delivery_days
+  - installments
+  - posted
+  - thumb
+
+# Скоринг после фильтрации: 0 = лучший
+score:
+  # Базовый risk от паттернов в заголовке
+  title_risk_patterns:
+    mining: {pattern: "(?i)майнинг", score: 25}
+    not_working: {pattern: "(?i)(не работает|не включается)", score: 80}
+    no_outputs: {pattern: "(?i)без видеовыход", score: 70}
+    repaired: {pattern: "(?i)(реболл|ремонт)", score: 35}
+
+  # Рейтинг
+  rating_thresholds:
+    no_rating: {score: 15}
+    lt_4_0: {score: 25}
+    lt_4_5: {score: 20}
+    gte_4_8: {score: -5}
+
+  # Цена относительно медианы
+  price_vs_median:
+    below_25pct: {score: 35}     # слишком дёшево = подозрительно
+    below_15pct: {score: 15}
+    within_15pct: {score: 0}     # нейтрально
+    above_15pct: {score: -10}    # можно, но редко
+
+  # Доставка
+  delivery:
+    far_3plus_days: {score: 10}
+    near_1_2_days: {score: -3}
+
+output:
+  rank_by: "total_score"   # по сумме score (меньше = лучше)
+  top_n: 15
+  save_json: true
+  save_screenshots: false

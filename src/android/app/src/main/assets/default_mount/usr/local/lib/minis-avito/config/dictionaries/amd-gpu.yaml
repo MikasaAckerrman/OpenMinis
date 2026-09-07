@@ -1,0 +1,41 @@
+# Синонимы для карт AMD Radeon.
+brand: AMD
+
+brand_synonyms:
+  - "rx"
+  - "radeon"
+  - "amd"
+  - "аэмди"
+
+series:
+  rx_7000: ["7600", "7700", "7800", "7900"]
+  rx_6000: ["6500", "6600", "6700", "6800", "6900"]
+  rx_5000: ["5500", "5600", "5700"]
+  rx_500:  ["550", "560", "570", "580", "590"]
+  vega:    ["56", "64"]
+
+mobile_markers:
+  - "мобильная"
+  - "laptop"
+  - "ноутбук"
+  - "для ноутбука"
+
+exclude_variants:
+  - "xt"
+  - "xtx"
+  - "gmk"
+
+board_partners:
+  - "sapphire"
+  - "powercolor"
+  - "asus"
+  - "msi"
+  - "gigabyte"
+  - "xfx"
+  - "asrock"
+
+partner_lines:
+  premium:   ["nitro+", "red devil", "suprim", "rog strix"]
+  gaming:    ["pulse", "phantom", "gaming"]
+  mainstream: ["dual", "ventus", "eagle", "battleaxe"]
+  budget:    ["pulse", "gaming"]

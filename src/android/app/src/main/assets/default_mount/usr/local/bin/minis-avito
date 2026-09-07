@@ -1,0 +1,75 @@
+#!/bin/sh
+# minis-avito — сбор и разбор объявлений Авито (миссии, скоринг, вопросы).
+#
+# Тонкая обёртка: гарантирует python3 + yaml, затем запускает инструмент
+# из /usr/local/lib/minis-avito/. Канал данных — browser_use (DOM),
+# не curl: лимитер channel.py в параллельных сессиях не использовать.
+
+LIB="/usr/local/lib/minis-avito"
+LOG="/var/minis/workspace/.avito.log"
+_log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG" 2>/dev/null; }
+
+usage() {
+  cat <<'EOF'
+minis-avito — поиск и разбор объявлений Авито.
+
+ИСПОЛЬЗОВАНИЕ
+  minis-avito <команда> [аргументы]
+
+СКАНИРОВАНИЕ (канал: browser_use, без curl)
+  scan <mission> --url-only     URL для вкладки браузера
+  scan <mission> --info         показать конфиг миссии
+  scan <mission> --process      лоты из DOM (JSON на stdin) -> скоринг, топ-5
+
+РАЗБОР
+  render <scan.json> [--top N]  карточки лотов в markdown для чата
+  qa   <context.json>           подбор вопросов продавцу (humanize)
+
+ПЕРЕПИСКА (по скриншоту)
+  chat <screenshot.png>         OCR -> кто что писал
+  chat <dump.json> --from-dump  точный текст из a11y-дампа
+
+МИССИИ: config/missions/*.yaml. Новая миссия = копия существующей.
+Правило параллельности: в двух сессиях работать только через browser_use.
+EOF
+}
+
+ensure_env() {
+  if ! command -v python3 > /dev/null 2>&1; then
+    _log "installing python3"
+    apk add --quiet python3 >> "$LOG" 2>&1
+  fi
+  if ! python3 -c "import yaml" 2>/dev/null; then
+    _log "installing pyyaml"
+    apk add --quiet py3-yaml >> "$LOG" 2>&1 || \
+      pip install --quiet --break-system-packages pyyaml >> "$LOG" 2>&1
+  fi
+}
+
+CMD="$1"; [ -n "$CMD" ] && shift
+
+case "$CMD" in
+  ""|-h|--help|help) usage; exit 0 ;;
+
+  doctor)
+    for c in python3; do printf "%-10s " "$c"; command -v $c 2>/dev/null || echo "НЕТ"; done
+    python3 -c "import yaml;print('pyyaml     OK')" 2>/dev/null || echo "pyyaml     НЕТ"
+    echo "инструменты: $LIB"
+    ls "$LIB"/*.py 2>/dev/null | wc -l | tr -d '\n'; echo " скриптов"
+    ls "$LIB"/config/missions/*.yaml 2>/dev/null | wc -l | tr -d '\n'; echo " миссий"
+    ;;
+
+  scan)
+    ensure_env
+    MISSION="$1"
+    [ -z "$MISSION" ] && { echo "usage: minis-avito scan <mission> [--url-only|--info|--process]"; exit 2; }
+    exec python3 "$LIB/scan.py" "$@" ;;
+  render) ensure_env; exec python3 "$LIB/render.py" "$@" ;;
+  qa)     ensure_env; exec python3 "$LIB/humanize.py" "$@" ;;
+  chat)   ensure_env; exec python3 "$LIB/chatread.py" "$@" ;;
+
+  *)
+    echo "minis-avito: неизвестная команда '$CMD'" >&2
+    echo "смотри: minis-avito --help" >&2
+    exit 2 ;;
+esac

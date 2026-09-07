@@ -1,0 +1,52 @@
+# Mission: найти RTX 4060 в Москве в диапазоне 22-30к
+# Замер 2026-09-07: 19 лотов с правильным фильтром
+mission: rtx4060-moskva
+
+target:
+  brand: NVIDIA
+  series: rtx_40
+  model: "4060"
+
+region: moskva
+category_path: /tovary_dlya_kompyutera
+
+search:
+  base_query: "rtx 4060"
+  params:
+    s: 1
+    pmin: 22000
+    pmax: 30000
+    localPriority: 1
+  pages: 2
+
+post_filters:
+  - desktop-only
+  - in-this-region:moskva
+
+extract:
+  - price
+  - title
+  - seller_name
+  - seller_rating
+  - seller_reviews
+  - location
+  - metro_marker
+  - delivery
+  - installments
+  - posted
+  - thumb
+
+score:
+  median_check: true
+  risk:
+    mining: 25
+    no_rating: 15
+    rating_lt_4_5: 20
+    price_below_market_20pct: 15
+    price_below_market_35pct: 35
+
+output:
+  rank_by: "value"
+  top_n: 15
+  save_json: true
+  save_screenshots: false
