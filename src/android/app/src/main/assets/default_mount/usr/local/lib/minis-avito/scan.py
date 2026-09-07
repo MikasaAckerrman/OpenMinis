@@ -58,14 +58,18 @@ def load_filter(name: str) -> dict:
 
 # ----- URL builder ----------------------------------------------------------
 
-def build_url(mission: dict) -> str:
-    """Собрать URL по mission-конфигу."""
+def build_url(mission: dict, overrides: dict = None) -> str:
+    """Собрать URL по mission-конфигу. overrides перекрывает pmin/pmax/q/s/p."""
     region = mission.get('region', 'rossiya')
     cat = mission.get('category_path', '/tovary_dlya_kompyutera')
     search = mission.get('search', {})
-    q = search.get('base_query', '')
-    params = search.get('params', {})
-    qs = [f'q={q.replace(" ", "+")}']
+    params = dict(search.get('params', {}))
+    if overrides:
+        for k in ('pmin', 'pmax', 'q', 's', 'p'):
+            if overrides.get(k) is not None:
+                params[k] = overrides[k]
+    q = params.pop('q', search.get('base_query', ''))
+    qs = [f'q={str(q).replace(" ", "+")}'] if q else []
     for k, v in params.items():
         qs.append(f'{k}={v}')
     return f'https://www.avito.ru/{region}{cat}?' + '&'.join(qs)
@@ -78,8 +82,10 @@ def _compile(patterns):
 
 
 def apply_filter_hard_exclude(items, fdef):
-    """Жёсткие исключения по regex в сыром тексте."""
-    patterns = _compile(fdef.get('rules', {}).get('hard_exclude_title', []))
+    """Жёсткие исключения + обязательные маркеры (require_title) в сыром тексте."""
+    rules = fdef.get('rules', {})
+    patterns = _compile(rules.get('hard_exclude_title', []))
+    require = _compile(rules.get('require_title', []))
     kept, dropped = [], []
     for it in items:
         excluded = False
@@ -88,6 +94,11 @@ def apply_filter_hard_exclude(items, fdef):
                 excluded = True
                 it['reason'] = f'hard_exclude: {pat.pattern[:40]}'
                 break
+        if not excluded and require:
+            hit = any(p.search(it['raw']) for p in require)
+            if not hit:
+                excluded = True
+                it['reason'] = 'require_title: нет GPU-маркера'
         (dropped if excluded else kept).append(it)
     return kept, dropped
 
@@ -128,11 +139,11 @@ def parse_fields(raw_item):
     # Цена
     pm = re.search(r'(\d{1,3}(?:\s\d{3})*)\s*₽', text)
     if pm:
-        out['price'] = int(pm.group(1).replace(' ', ''))
+        out['price'] = int(pm.group(1).replace('\xa0', '').replace(' ', ''))
         # Цена со скидкой: "20 900 ₽ 22 000 ₽ -5%"
         sm = re.search(r'(\d{1,3}(?:\s\d{3})*)\s*₽\s+(\d{1,3}(?:\s\d{3})*)\s*₽\s*[−\-]\s*(\d+)\s*%', text)
         if sm:
-            out['old_price'] = int(sm.group(2).replace(' ', ''))
+            out['old_price'] = int(sm.group(2).replace('\xa0', '').replace(' ', ''))
             out['discount_pct'] = int(sm.group(3))
     # Рейтинг и отзывы
     rm = re.search(r'(\d[.,]\d)\s*\((\d+)\)', text)
@@ -357,7 +368,8 @@ def cli_mission_info(name):
 
 if __name__ == '__main__':
     if len(sys.argv) < 2 or sys.argv[1] in ('-h', '--help'):
-        print('usage: scan.py <mission_name> [--url-only|--info]')
+        print('usage: scan.py <mission_name> [--url-only|--info] '
+              '[--pmin N] [--pmax N] [--q "text"]')
         print()
         print('missions:')
         for p in (CONFIG / 'missions').glob('*.yaml'):
@@ -365,9 +377,20 @@ if __name__ == '__main__':
         sys.exit(0)
 
     name = sys.argv[1]
-    flag = sys.argv[2] if len(sys.argv) > 2 else '--info'
+    # Оверрайды: --pmin/--pmax/--q поверх миссии
+    ov, rest = {}, []
+    i = 2
+    while i < len(sys.argv):
+        a = sys.argv[i]
+        if a in ('--pmin', '--pmax') and i + 1 < len(sys.argv):
+            ov[a[2:]] = int(sys.argv[i + 1]); i += 2
+        elif a == '--q' and i + 1 < len(sys.argv):
+            ov['q'] = sys.argv[i + 1]; i += 2
+        else:
+            rest.append(a); i += 1
+    flag = rest[0] if rest else '--info'
     if flag == '--url-only':
-        print(build_url(load_mission(name)))
+        print(build_url(load_mission(name), overrides=ov))
     elif flag == '--info':
         cli_mission_info(name)
     else:
