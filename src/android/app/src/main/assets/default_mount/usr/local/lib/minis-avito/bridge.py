@@ -10,7 +10,7 @@
 Буфер чистится только ПОСЛЕ успешного скоринга (крэш scan.py не
 теряет накопленные лоты).
 """
-import base64, binascii, json, os, subprocess, sys
+import base64, binascii, json, os, re, subprocess, sys
 from pathlib import Path
 
 HERE = Path(__file__).parent
@@ -32,19 +32,25 @@ def main():
     buf = TMP / f'bridge_{safe}.json'
     append = '--append' in argv
     from_offload = '--from-offload' in argv
-    if from_offload:
-        # Полный b64 из последнего execute_js-offload (base64 — ascii,
-        # offload не обрезает). Без этого конвейер требует ручного
-        # перебивания b64 через file_write (ломается на кириллице).
-        import glob, re
-        offs = sorted(glob.glob('/var/minis/offloads/tools/browser_use_*.txt'),
-                      key=os.path.getmtime)
-        if not offs:
-            raise SystemExit('нет offload-файлов execute_js')
-        t = open(offs[-1], encoding='utf-8').read()
+    # Параллельные вкладки: mtime-порядок ненадёжен (файл A может записаться
+    # позже начала B) — указывай offload ЯВНО через AVITO_OFFLOAD.
+    explicit = os.environ.get('AVITO_OFFLOAD')
+    if from_offload or explicit:
+        if explicit:
+            src = explicit
+            if not os.path.exists(src):
+                raise SystemExit(f'offload не найден: {src}')
+        else:
+            import glob
+            offs = sorted(glob.glob('/var/minis/offloads/tools/browser_use_*.txt'),
+                          key=os.path.getmtime)
+            if not offs:
+                raise SystemExit('нет offload-файлов execute_js')
+            src = offs[-1]
+        t = open(src, encoding='utf-8').read()
         m = re.search(r'[A-Za-z0-9+/=]{500,}', t)
         if not m:
-            raise SystemExit('в offload нет base64-блока')
+            raise SystemExit(f'в offload нет base64-блока: {src}')
         raw = m.group(0)
     else:
         raw = sys.stdin.read()

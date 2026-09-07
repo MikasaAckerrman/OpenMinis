@@ -1,0 +1,72 @@
+mission: rtx3070-russia
+target:
+  brand: NVIDIA
+  series: rtx_30
+  model: 3060ti
+region: rossiya
+category_path: /tovary_dlya_kompyutera
+search:
+  base_query: rtx 3060 ti
+  params:
+    s: 104
+    pmin: 12000
+    pmax: 35000
+  pages: 3
+  fresh_first: true
+post_filters:
+- desktop-only
+- delivery-required
+extract:
+- price
+- title
+- seller_name
+- seller_rating
+- seller_reviews
+- location
+- delivery_days
+- installments
+- posted
+- thumb
+score:
+  title_risk_patterns:
+    mining:
+      pattern: (?i)майнинг
+      score: 25
+    not_working:
+      pattern: (?i)(не работает|не включается)
+      score: 80
+    no_outputs:
+      pattern: (?i)без видеовыход
+      score: 70
+    repaired:
+      pattern: (?i)(реболл|ремонт)
+      score: 35
+  rating_thresholds:
+    no_rating:
+      score: 15
+    lt_4_0:
+      score: 25
+    lt_4_5:
+      score: 20
+    gte_4_8:
+      score: -5
+  price_vs_median:
+    below_25pct:
+      score: 35
+    below_15pct:
+      score: 15
+    within_15pct:
+      score: 0
+    above_15pct:
+      score: -10
+  delivery:
+    far_3plus_days:
+      score: 10
+    near_1_2_days:
+      score: -3
+  no_price: 40
+output:
+  rank_by: total_score
+  top_n: 15
+  save_json: true
+  save_screenshots: false
