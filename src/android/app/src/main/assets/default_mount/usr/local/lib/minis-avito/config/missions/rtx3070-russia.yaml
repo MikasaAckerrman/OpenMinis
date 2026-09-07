@@ -15,7 +15,8 @@ search:
   fresh_first: true
 post_filters:
 - desktop-only
-- delivery-required
+- model-required
+- delivery-preferred
 extract:
 - price
 - title
@@ -64,6 +65,8 @@ score:
       score: 10
     near_1_2_days:
       score: -3
+    no_delivery:
+      score: 12
   no_price: 40
   desc_flags:
     trade_in: 8

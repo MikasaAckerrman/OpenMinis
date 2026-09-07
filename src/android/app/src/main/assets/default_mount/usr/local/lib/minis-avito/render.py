@@ -69,7 +69,7 @@ def render_item(it, n=0):
 
 🛡️ риск: {risk_txt}
 
-🔗 [Открыть объявление]({it.get('url', '')})
+🔗 [Открыть объявление](https://www.avito.ru{it.get('url', '')})
 """
     return out.strip()
 

@@ -125,9 +125,52 @@ def apply_filter_delivery(items, fdef):
     return kept, dropped
 
 
+
+
+def apply_filter_model_required(items, rules, mission=None):
+    """Модель из mission.target.model обязана быть в заголовке.
+    desktop-only пропускает любую rtx/gtx — здесь сужаем до своей."""
+    import re as _re
+    model = (mission or {}).get('target', {}).get('model', '')
+    if not model:
+        return items, []
+    pat = _re.compile(r'(?i)\b' + _re.escape(model) + r'\b')
+    kept, dropped = [], []
+    for it in items:
+        text = (it.get('raw') or '')
+        if pat.search(text):
+            kept.append(it)
+        else:
+            it['reason'] = f'model-required: нет "{model}" в заголовке'
+            dropped.append(it)
+    return kept, dropped
+
+
+
+
+def apply_filter_delivery_preferred(items, rules, mission=None):
+    """Доставка желательна, но не обязательна: без неё лот получает
+    флаг no_delivery (+12 риск), не выбрасывается."""
+    import re as _re
+    pat = _re.compile(r'Доставка от (\d)')
+    kept = []
+    for it in items:
+        m = pat.search(it.get('raw') or '')
+        if m:
+            it['delivery_days'] = int(m.group(1))
+            it.setdefault('flags', []).append('near' if it['delivery_days'] <= 2 else 'far')
+        else:
+            fl = it.setdefault('flags', [])
+            fl.append('no_delivery')
+        kept.append(it)
+    return kept, []
+
+
 FILTERS = {
     'desktop-only': apply_filter_hard_exclude,
     'delivery-required': apply_filter_delivery,
+    'model-required': apply_filter_model_required,
+    'delivery-preferred': apply_filter_delivery_preferred,
 }
 
 
@@ -318,6 +361,13 @@ def dedup_by_url(items):
     return unique, dups
 
 
+def _drop_stats(dropped):
+    """Счётчик причин дропа: {'hard_exclude': 20, 'model-required': 9, ...}"""
+    from collections import Counter
+    c = Counter((x.get('reason') or '?').split(':')[0] for x in dropped)
+    return dict(c)
+
+
 def run_on_items(raw_items, mission):
     """raw_items = [{raw, url, ...}, ...] — то, что вернул браузер.
     Применяем фильтры, считаем score, возвращаем dict."""
@@ -328,7 +378,10 @@ def run_on_items(raw_items, mission):
         fn = FILTERS.get(name)
         if fn is None:
             continue
-        items, dropped = fn(items, load_filter(name))
+        if name in ('model-required', 'delivery-preferred'):
+            items, dropped = fn(items, None, mission)
+        else:
+            items, dropped = fn(items, load_filter(name), mission) if fn.__code__.co_argcount == 3 else fn(items, load_filter(name))
         dropped_total.extend(dropped)
 
     items, median = score_items(items, mission)
@@ -344,7 +397,8 @@ def run_on_items(raw_items, mission):
         'dropped': len(dropped_total),
         'stats': stats,
         'items': items_ranked,
-        'dropped_log': dropped_total[:20],   # не тащим всё, только превью
+        'dropped_log': dropped_total,
+        'drop_stats': _drop_stats(dropped_total),
     }
 
 
