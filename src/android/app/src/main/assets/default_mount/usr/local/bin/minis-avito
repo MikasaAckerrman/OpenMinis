@@ -22,6 +22,7 @@ case "$1" in
   cross)  shift; AVITO_RAW="$RAW" exec python3 "$DIR/cross.py" "$@" ;;
   watch)  shift; AVITO_RAW="$RAW" exec python3 "$DIR/watch.py" "$@" ;;
   run)    shift; MINIS_SESSION="${MINIS_SESSION:-s0}" exec python3 "$DIR/run.py" "$@" ;;
+  chatui) exec python3 "$DIR/chatui.py" "$@" ;;
   test)
     shift
     set -e
@@ -78,6 +79,7 @@ avito — объявления Авито: сбор, анализ и evidence-о
                                   украденные фото, шаблонные описания
   avito watch save | diff | list | history <id>
   avito run <миссия> [--n5]     лоты на stdin (b64) -> скан+снимок+карточки
+  avito chatui [--dump f]       чат Авито с экрана (a11y, без OCR)
                                   снимки во времени: снижение цены, что ушло
   avito shortlist [--budget N] [--top N]
                                   отобрать ссылки для добора карточек
