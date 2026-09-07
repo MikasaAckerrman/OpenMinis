@@ -249,6 +249,10 @@ def score_items(items, mission):
         if it.get('delivery_near'):
             s += score_cfg.get('delivery', {}).get('near_1_2_days', {}).get('score', -3)
             it.setdefault('flags', []).append('near')
+        # Без цены торг невозможен — лот вниз списка до ручного разбора
+        if not it.get('price'):
+            s += score_cfg.get('no_price', 40)
+            it.setdefault('flags', []).append('no_price')
         it['risk_score'] = s
     return items, median
 

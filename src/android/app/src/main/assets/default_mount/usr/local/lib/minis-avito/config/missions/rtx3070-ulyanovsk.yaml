@@ -1,61 +1,44 @@
-# Mission: найти RTX 3070 в Ульяновске до 25 000 ₽
-# Замер 2026-09-07: медиана 24 000, разумный торг 21-23 500.
 mission: rtx3070-ulyanovsk
-
-# Целевая модель
 target:
   brand: NVIDIA
   series: rtx_30
-  model: "3070"
-
-# Регион и категория
+  model: '3070'
 region: ulyanovsk
 category_path: /tovary_dlya_kompyutera
-
-# Фильтры выдачи (URL-параметры)
 search:
-  base_query: "rtx 3070"
+  base_query: rtx 3070
   params:
-    s: 1                    # дешевле сначала
+    s: 104
     pmin: 15000
     pmax: 26000
-    localPriority: 1         # строго свой город (ограничивает число, не исключает)
+    localPriority: 1
   pages: 2
-
-# Фильтры после парсинга (по тексту и структуре)
 post_filters:
-  - desktop-only
-  - in-this-region:ulyanovsk
-
-# Что вытаскивать из каждого лота
+- desktop-only
+- in-this-region:ulyanovsk
 extract:
-  - price
-  - title
-  - seller_name
-  - seller_rating
-  - seller_reviews
-  - location
-  - metro_marker
-  - delivery
-  - installments
-  - posted
-  - thumb
-
-# Скоринг после фильтрации
+- price
+- title
+- seller_name
+- seller_rating
+- seller_reviews
+- location
+- metro_marker
+- delivery
+- installments
+- posted
+- thumb
 score:
-  # Стоимость относительно медианы
   median_check: true
-  # Риск: майнинг, низкий рейтинг, нет гарантий
   risk:
     mining: 25
     no_rating: 15
     rating_lt_4_5: 20
     price_below_market_20pct: 15
     price_below_market_35pct: 35
-
-# Что выводить в финал
+  no_price: 40
 output:
-  rank_by: "value"             # value / risk / price
+  rank_by: value
   top_n: 12
   save_json: true
-  save_screenshots: false      # сначала структура, фото — точечно
+  save_screenshots: false
