@@ -28,7 +28,7 @@ def decode(raw):
 def main():
     argv = sys.argv[1:]
     mission = next((a for a in argv if not a.startswith('-')), 'rtx3070-russia')
-    safe = mission.replace('/', '_')
+    safe = re.sub(r'[^a-zA-Z0-9._-]', '_', mission)
     buf = TMP / f'bridge_{safe}.json'
     append = '--append' in argv
     from_offload = '--from-offload' in argv
@@ -59,7 +59,7 @@ def main():
     if append:
         prev = json.loads(buf.read_text(encoding='utf-8')) if buf.exists() else []
         prev.extend(chunk)
-        tmp_write = buf.with_suffix('.tmp')
+        tmp_write = buf.with_suffix(f'.{os.getpid()}.tmp')
         tmp_write.write_text(json.dumps(prev, ensure_ascii=False), encoding='utf-8')
         tmp_write.replace(buf)
         print(f'буфер[{safe}]: {len(prev)} лотов')

@@ -92,7 +92,7 @@ def apply_filter_hard_exclude(items, fdef):
         for pat in patterns:
             if pat.search(it['raw']):
                 excluded = True
-                it['reason'] = f'hard_exclude: {pat.pattern[:40]}'
+                it['reason'] = f'hard_exclude: {pat.pattern}'
                 break
         if not excluded and require:
             hit = any(p.search(it['raw']) for p in require)
@@ -139,8 +139,8 @@ def parse_fields(raw_item):
     # Цена: число ≥10 000 (у GPU сотни не бывают) либо с явным ₽.
     # Это отсекает модель «rtx 3070», время «8 часов», «(6)» отзывов.
     def _ru(int_part):
-        return int(int_part.replace('\xa0', '').replace(' ', ''))
-    pm = re.search(r'(?<!\d)(\d{1,3}(?:[\s\xa0]\d{3})+)(?!\d)(?:\s*₽)?', text)   # 15 000
+        return int(int_part.replace('\xa0', '').replace('\u202f', '').replace(' ', ''))
+    pm = re.search(r'(?<!\d)(\d{1,3}(?:[\s\xa0\u202f]\d{3})+)(?!\d)(?:\s*₽)?', text)   # 15 000
     if not pm:
         # Слитная цена без ₽: только 5-значная (GPU не бывает 9999 и дешевле),
         # иначе «rtx 3070 15000» спутает 3070 с ценой.
@@ -150,7 +150,7 @@ def parse_fields(raw_item):
     else:
         out['price'] = _ru(pm.group(1))
     if out.get('price'):
-        sm = re.search(r'(\d{1,3}(?:[\s\xa0]\d{3})+)\s*₽\s+(\d{1,3}(?:[\s\xa0]\d{3})+)\s*₽\s*[−\-]\s*(\d+)\s*%', text)
+        sm = re.search(r'(\d{1,3}(?:[\s\xa0\u202f]\d{3})+)\s*₽\s+(\d{1,3}(?:[\s\xa0\u202f]\d{3})+)\s*₽\s*[−\-]\s*(\d+)\s*%', text)
         if sm:
             out['old_price'] = _ru(sm.group(2))
             out['discount_pct'] = int(sm.group(3))

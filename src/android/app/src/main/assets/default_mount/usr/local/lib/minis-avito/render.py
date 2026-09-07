@@ -75,8 +75,12 @@ def render_item(it, n=0):
 
 
 def render_scan(scan, top=5):
-    """Рендер полного скана: статистика + топ."""
+    """Рендер полного скана: статистика + топ. Принимает dict скана
+    или голый список лотов (тогда без статистики). top=None = все лоты."""
+    if isinstance(scan, list):
+        scan = {'items': scan}
     items = scan.get('items', [])
+    top = len(items) if top is None else int(top)
     stats = scan.get('stats', {})
     s = f"""
 ## Скан: {scan.get('mission', '?')}
