@@ -44,7 +44,10 @@ def main():
 
     items = chunk
     if buf.exists():
-        items = json.loads(buf.read_text(encoding='utf-8')) + chunk
+        # Дедуп при слиянии: пагинация сдвигает выдачу, один лот может
+        # прийти в двух чанках. Дубли завышают вес лота в медиане.
+        from scan import dedup_by_url
+        items, _ = dedup_by_url(json.loads(buf.read_text(encoding='utf-8')) + chunk)
     final = TMP / f'bridge_{safe}_{os.getpid()}.json'
     final.write_text(json.dumps(items, ensure_ascii=False), encoding='utf-8')
     try:

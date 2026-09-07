@@ -294,11 +294,27 @@ def rank(items, by='total_score'):
 
 # ----- Главный запуск -------------------------------------------------------
 
+def dedup_by_url(items):
+    """Убирает дубли по url (пагинация сдвигает выдачу: лот на p=1
+    повторяется на p=2). Оставляет ПЕРВОЕ вхождение — с более ранней
+    страницы, свежие данные вторых копий теряются, но медиана честнее,
+    чем задвоение. Возвращает (unique, dup_count)."""
+    seen, unique, dups = set(), [], 0
+    for it in items:
+        key = it.get('url') or f"raw:{it.get('raw', '')[:120]}"
+        if key in seen:
+            dups += 1
+            continue
+        seen.add(key)
+        unique.append(it)
+    return unique, dups
+
+
 def run_on_items(raw_items, mission):
     """raw_items = [{raw, url, ...}, ...] — то, что вернул браузер.
     Применяем фильтры, считаем score, возвращаем dict."""
-    items = [parse_fields(r) for r in raw_items]
-    dropped_total = []
+    items, dup_count = dedup_by_url([parse_fields(r) for r in raw_items])
+    dropped_total = [{'raw': '(дубль по url)', 'reason': 'dedup'}] * dup_count
     for f in mission.get('post_filters', []):
         name = f.split(':')[0]
         fn = FILTERS.get(name)
