@@ -6,6 +6,13 @@ target:
   desktop_only: true
 search:
   base_query: "rtx 3070 ti"
+  # Полное покрытие написаний 3070 Ti: продавцы пишут кто как.
+  aliases:
+    - "ртх 3070 ти"       # кириллица + «ти»
+    - "rtx 3070ти"        # слитная ti
+    - "3070 ti 8gb"       # без rtx
+    - "rtx3070 ti"        # слитный rtx
+    - "geforce 3070 ti"   # через geforce
   params:
     pmin: 15000
     pmax: 40000

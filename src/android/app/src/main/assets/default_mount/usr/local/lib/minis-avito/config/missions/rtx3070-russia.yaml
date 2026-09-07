@@ -7,6 +7,13 @@ region: rossiya
 category_path: /tovary_dlya_kompyutera
 search:
   base_query: rtx 3070
+  # Полное покрытие: варианты написания, которыми реально пишут продавцы.
+  # Каждый alias = отдельный поисковый URL; результаты мержатся с дедупом.
+  aliases:
+    - "ртх 3070"          # кириллица целиком
+    - "rtx3070"           # слитно
+    - "3070 8gb"          # без rtx (частая форма)
+    - "geforce 3070"      # через geforce
   params:
     s: 104
     pmin: 18000

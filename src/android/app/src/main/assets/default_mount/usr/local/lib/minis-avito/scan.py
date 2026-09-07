@@ -59,7 +59,9 @@ def load_filter(name: str) -> dict:
 # ----- URL builder ----------------------------------------------------------
 
 def build_url(mission: dict, overrides: dict = None) -> str:
-    """Собрать URL по mission-конфигу. overrides перекрывает pmin/pmax/q/s/p."""
+    """Собрать URL по mission-конфигу. overrides перекрывает pmin/pmax/q/s/p.
+    search.aliases: список альтернативных запросов («ртх 3070ти» и т.п.).
+    Возвращает список URL — по одному на alias (первый = base_query)."""
     region = mission.get('region', 'rossiya')
     cat = mission.get('category_path', '/tovary_dlya_kompyutera')
     search = mission.get('search', {})
@@ -69,10 +71,17 @@ def build_url(mission: dict, overrides: dict = None) -> str:
             if overrides.get(k) is not None:
                 params[k] = overrides[k]
     q = params.pop('q', search.get('base_query', ''))
-    qs = [f'q={str(q).replace(" ", "+")}'] if q else []
-    for k, v in params.items():
-        qs.append(f'{k}={v}')
-    return f'https://www.avito.ru/{region}{cat}?' + '&'.join(qs)
+    queries = [q] if q else []
+    for a in search.get('aliases', []):
+        if a not in queries:
+            queries.append(a)
+    urls = []
+    for query in queries:
+        qs = [f'q={str(query).replace(" ", "+")}'] if query else []
+        for k, v in params.items():
+            qs.append(f'{k}={v}')
+        urls.append(f'https://www.avito.ru/{region}{cat}?' + '&'.join(qs))
+    return urls
 
 
 # ----- Фильтры --------------------------------------------------------------
