@@ -107,7 +107,9 @@ def t_score():
 
 # 5. URL builder
 def t_url():
-    url = build_url(load_mission('rtx3070-russia'))
+    urls = build_url(load_mission('rtx3070-russia'))   # список с алиасами
+    check('URL-ов >= 1', isinstance(urls, list) and len(urls) >= 1, urls)
+    url = urls[0]
     check('URL имеет rossiya', 'rossiya' in url, url)
     check('URL имеет q', 'q=rtx+3070' in url, url)
     check('URL имеет pmin', 'pmin=18000' in url, url)
