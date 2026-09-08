@@ -13,7 +13,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.DeleteSweep
-import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material.icons.outlined.RecordVoiceOver
 import androidx.compose.material.icons.outlined.Accessibility
 import androidx.compose.material.icons.outlined.BatteryAlert
@@ -214,62 +213,11 @@ fun SystemPermissionsScreen(onBack: () -> Unit) {
                 )
             }
 
-            // [T-browser-camera-gate] Browser camera toggle: getUserMedia()
-            // support for the built-in browser (liveness/identity checks).
-            // Video only — audio capture is never granted to a page. Both
-            // gates must hold: this toggle AND the OS CAMERA permission,
-            // requested at toggle-on time (never from a page callback).
-            var cameraToggle by remember {
-                mutableStateOf(com.openminis.app.browser.BrowserCameraGate.isEnabled(context))
-            }
-            var cameraOsGranted by remember {
-                mutableStateOf(com.openminis.app.browser.BrowserCameraGate.hasOsPermission(context))
-            }
-            val cameraPermLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-                androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
-            ) { granted ->
-                cameraOsGranted = granted ||
-                    com.openminis.app.browser.BrowserCameraGate.hasOsPermission(context)
-                if (cameraOsGranted) {
-                    // OS grant arrived: flip the in-app toggle on (this was a
-                    // toggle-on attempt that had to stop for the OS dialog).
-                    cameraToggle = true
-                    com.openminis.app.browser.BrowserCameraGate.setEnabled(context, true)
-                } else {
-                    Toast.makeText(
-                        context,
-                        context.getString(R.string.browser_camera_os_denied),
-                        Toast.LENGTH_LONG,
-                    ).show()
-                }
-            }
-            SettingsSection(
-                header = stringResource(R.string.browser_camera_section),
-                footer = stringResource(R.string.browser_camera_footer),
-            ) {
-                SettingsSwitchRow(
-                    icon = Icons.Outlined.PhotoCamera,
-                    title = stringResource(R.string.browser_camera_toggle),
-                    subtitle = stringResource(R.string.browser_camera_warning),
-                    checked = cameraToggle,
-                    onCheckedChange = { on ->
-                        if (!on) {
-                            cameraToggle = false
-                            com.openminis.app.browser.BrowserCameraGate.setEnabled(context, false)
-                            return@SettingsSwitchRow
-                        }
-                        // Toggle ON: needs the OS permission too. Ask once;
-                        // the launcher callback above finishes enabling.
-                        if (com.openminis.app.browser.BrowserCameraGate.hasOsPermission(context)) {
-                            cameraToggle = true
-                            com.openminis.app.browser.BrowserCameraGate.setEnabled(context, true)
-                        } else {
-                            cameraPermLauncher.launch(android.Manifest.permission.CAMERA)
-                        }
-                    },
-                    showDivider = false,
-                )
-            }
+            // NOTE [T-browser-camera-gate-relocation]: the browser camera
+            // toggle lives in OffloadPermissionScreen (the reachable
+            // "Разрешения" screen behind minis://settings/permissions). This
+            // screen's route (SYSTEM_PERMISSIONS) is not linked from any UI,
+            // so anything placed here is unreachable.
         }
     }
 }
