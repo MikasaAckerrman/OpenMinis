@@ -10,7 +10,13 @@
 import json, os, re, sys, base64, subprocess, argparse, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ENGINE = os.path.join(os.path.dirname(HERE), 'web-deep')
+# Движок web-deep: сначала встроенная копия (mount /usr/local/lib/minis-avito,
+# автономный инструмент в Minis), затем скилловая (песочница). Один код —
+# обе среды; порядок даёт приоритет свежему скиллу, если он есть рядом.
+ENGINE = next(p for p in (
+    os.path.join(HERE, 'engine'),
+    os.path.join(os.path.dirname(HERE), 'web-deep'),
+) if os.path.isfile(os.path.join(p, 'channel.py')))
 if ENGINE not in sys.path:
     sys.path.insert(0, ENGINE)
 from channel import Channel

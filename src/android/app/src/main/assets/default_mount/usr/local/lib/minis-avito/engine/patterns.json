@@ -1,0 +1,88 @@
+{
+  "_comment": "ЕДИНЫЙ источник правды для обёрток состояния. Читают probe.py, extract.py (напрямую) и browser.js (через sink GET /patterns.json). Три копии одного списка неизбежно расходятся — поэтому копия одна.",
+  "_flags": "s = DOTALL/dotAll, i = IGNORECASE. В Python маппится на re.S|re.I, в JS на флаги RegExp.",
+  "_kind": "json = группа 1 это готовый JSON; jsonstr = группа 1 это JSON-строка, нужен двойной parse (снять экранирование, потом распарсить объект)",
+  "patterns": [
+    {
+      "name": "__NEXT_DATA__",
+      "re": "<script[^>]+id=\"__NEXT_DATA__\"[^>]*>(\\{[\\s\\S]*?\\})</script>",
+      "flags": "s",
+      "kind": "json",
+      "seen": "Next.js: большинство современных магазинов и СМИ"
+    },
+    {
+      "name": "__NUXT__",
+      "re": "window\\.__NUXT__\\s*=\\s*(\\{[\\s\\S]*?\\});?\\s*</script>",
+      "flags": "s",
+      "kind": "json",
+      "seen": "Nuxt/Vue"
+    },
+    {
+      "name": "__INITIAL_STATE__",
+      "re": "window\\.__INITIAL_STATE__\\s*=\\s*(\\{[\\s\\S]*?\\})\\s*;?\\s*(?:</script>|\\n)",
+      "flags": "s",
+      "kind": "json",
+      "seen": "Vue SSR, старые React-сборки"
+    },
+    {
+      "name": "__initialData__",
+      "re": "window\\.__initialData__\\s*=\\s*(\"(?:[^\"\\\\]|\\\\.)*\")",
+      "flags": "s",
+      "kind": "jsonstr",
+      "seen": "Avito (мобильная вёрстка): search.allItems, item.item"
+    },
+    {
+      "name": "__preloadedState__",
+      "re": "window\\.__preloadedState__\\s*=\\s*(\"(?:[^\"\\\\]|\\\\.)*\")",
+      "flags": "s",
+      "kind": "jsonstr",
+      "seen": "Avito (десктопная вёрстка)"
+    },
+    {
+      "name": "__APOLLO_STATE__",
+      "re": "window\\.__APOLLO_STATE__\\s*=\\s*(\\{[\\s\\S]*?\\})\\s*;?",
+      "flags": "s",
+      "kind": "json",
+      "seen": "GraphQL/Apollo"
+    },
+    {
+      "name": "__remixContext",
+      "re": "window\\.__remixContext\\s*=\\s*(\\{[\\s\\S]*?\\});",
+      "flags": "s",
+      "kind": "json",
+      "seen": "Remix"
+    },
+    {
+      "name": "__sveltekit",
+      "re": "__sveltekit_\\w+\\s*=\\s*(\\{[\\s\\S]*?\\});",
+      "flags": "s",
+      "kind": "json",
+      "seen": "SvelteKit"
+    },
+    {
+      "name": "json-ld",
+      "re": "<script[^>]+type=\"application/ld\\+json\"[^>]*>([\\s\\S]*?)</script>",
+      "flags": "s",
+      "kind": "json",
+      "seen": "почти везде: Product, Article, Book, Course — цена, автор, рейтинг"
+    },
+    {
+      "name": "__mfe_state__",
+      "re": "<script[^>]*data-mfe-state=\"true\"[^>]*>([\\s\\S]*?)</script>",
+      "flags": "s",
+      "kind": "json",
+      "seen": "Avito SSR: loaderData.data.catalog.items"
+    }
+  ],
+  "block_markers": [
+    "Доступ ограничен",
+    "проверка безопасности",
+    "Just a moment",
+    "Attention Required",
+    "Access denied",
+    "Are you a robot",
+    "Вы не робот",
+    "Проверьте, что вы не робот",
+    "Checking your browser"
+  ]
+}

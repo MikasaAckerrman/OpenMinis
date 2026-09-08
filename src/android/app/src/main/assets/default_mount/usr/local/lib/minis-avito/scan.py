@@ -71,10 +71,14 @@ def build_url(mission: dict, overrides: dict = None) -> str:
             if overrides.get(k) is not None:
                 params[k] = overrides[k]
     q = params.pop('q', search.get('base_query', ''))
+    # Явный --q (overrides) = точное намерение пользователя: алиасы миссии
+    # НЕ подмешиваются (иначе «ryzen 7 5700x» смешивался с «ртх 3070 ти»).
+    explicit_q = bool(overrides and overrides.get('q'))
     queries = [q] if q else []
-    for a in search.get('aliases', []):
-        if a not in queries:
-            queries.append(a)
+    if not explicit_q:
+        for a in search.get('aliases', []):
+            if a not in queries:
+                queries.append(a)
     urls = []
     for query in queries:
         qs = [f'q={str(query).replace(" ", "+")}'] if query else []

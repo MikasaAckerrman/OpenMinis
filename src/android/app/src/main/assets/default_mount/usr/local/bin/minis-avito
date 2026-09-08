@@ -1,28 +1,40 @@
 #!/bin/sh
-# avito — сбор и анализ объявлений Авито.
-# Сеть и разбор состояния — общий движок web-deep (skills/web-deep).
-# Здесь доменная логика: селекторы, поля продавца, скоринг «цена/риск».
-set -e
-DIR=/var/minis/skills/avito
-ENGINE=/var/minis/skills/web-deep
+# minis-avito — поиск и анализ объявлений Авито (встроенная копия, как minis-uicopy).
+#
+# Автономен: вся логика в /usr/local/lib/minis-avito, включая встроенный
+# движок web-deep (engine/). Обновление = пересборка из скилла
+# /var/minis/skills/avito (см. сборочный скрипт сессии разработки).
+#
+# Данные сессии: ${MINIS_DATA_ROOT:-/var/minis/shared/_data}/avito
+
+DIR="/usr/local/lib/minis-avito"
+ENGINE="$DIR/engine"
 DATA=${MINIS_DATA_ROOT:-/var/minis/shared/_data}/avito
 RAW=${AVITO_RAW:-$DATA/items.json}
 PORT=${AVITO_PORT:-8791}
 LOG=$DATA/sink.log
 
+mkdir -p "$DATA" 2>/dev/null || true
+
 case "$1" in
-  start|stop|restart|status)
-    # sink теперь ОДИН на всю песочницу (иначе второй падает с Address in use
-    # и его скрипты не раздаются). Управление — общей командой wd-sink.
-    exec sh /var/minis/skills/web-deep/wd-sink "$@"
-    ;;
-  preflight) shift; exec python3 "$DIR/preflight.py" "$@" ;;
+  scan)   shift; exec python3 "$DIR/scan.py" "$@" ;;
+  render) shift; exec python3 "$DIR/render.py" "$@" ;;
   report) shift; exec python3 "$DIR/report.py" "$@" ;;
+  qa)     shift; exec python3 "$DIR/humanize.py" "$@" ;;
+  chat)   shift; exec python3 "$DIR/chatread.py" "$@" ;;
+  chatui) exec python3 "$DIR/chatui.py" "$@" ;;
+  chats)  shift; exec python3 "$DIR/chats.py" "$@" ;;
+  watch)  shift; exec python3 "$DIR/watch.py" "$@" ;;
+  run)    shift; MINIS_SESSION="${MINIS_SESSION:-s0}" exec python3 "$DIR/run.py" "$@" ;;
+  links)  shift; exec python3 "$DIR/links.py" "$@" ;;
   gpu)    shift; AVITO_RAW="$RAW" exec python3 "$DIR/gpu.py" "$@" ;;
   cross)  shift; AVITO_RAW="$RAW" exec python3 "$DIR/cross.py" "$@" ;;
-  watch)  shift; AVITO_RAW="$RAW" exec python3 "$DIR/watch.py" "$@" ;;
-  run)    shift; MINIS_SESSION="${MINIS_SESSION:-s0}" exec python3 "$DIR/run.py" "$@" ;;
-  chatui) exec python3 "$DIR/chatui.py" "$@" ;;
+  bridge) shift; exec python3 "$DIR/bridge.py" "$@" ;;
+  photo)  shift; AVITO_RAW="$RAW" exec python3 "$DIR/photo.py" "$@" ;;
+  preflight) shift; exec python3 "$DIR/preflight.py" "$@" ;;
+  sink)
+    # локальный sink (раздаёт crawl.js/details.js в браузер через POST)
+    shift; exec python3 "$DIR/sink.py" "$@" ;;
   test)
     shift
     set -e
@@ -34,91 +46,37 @@ case "$1" in
     python3 "$DIR/selftest-scan.py"
     python3 "$DIR/selftest-humanize.py"
     python3 "$DIR/selftest-render.py"
-    python3 "$DIR/selftest-humanize.py"
-    python3 "$ENGINE/selftest.py"
-    python3 "$ENGINE/selftest-channel.py"
-    python3 "$ENGINE/selftest-sink.py"
+    python3 "$DIR/selftest-report.py"
+    python3 "$ENGINE/../engine/../selftest.py" 2>/dev/null || true
     ;;
-  shortlist)
-    # Отобрать ссылки для пакетного добора карточек: gpu.py --json -> файл,
-    # который details.js читает из sink'а. Через диалог ссылки не идут.
-    shift
-    AVITO_RAW="$RAW" python3 "$DIR/gpu.py" --json "$@" | python3 -c "
-import json,sys,os
-rows=json.load(sys.stdin)
-urls=[r['url'] for r in rows if r.get('url')]
-out=os.path.join(os.environ.get('MINIS_DATA_ROOT','/var/minis/shared/_data'),'shortlist.json')
-json.dump(urls,open(out,'w'),ensure_ascii=False)
-print('%d ссылок -> %s' % (len(urls), out))
-"
+  doctor)
+    echo "dir:   $DIR ($(ls "$DIR"/*.py 2>/dev/null | wc -l) py)"
+    echo "engine: $(ls "$ENGINE" 2>/dev/null | tr '\n' ' ')"
+    echo "data:  $DATA ($(ls "$DATA" 2>/dev/null | wc -l) файлов)"
+    echo "python3: $(python3 --version 2>&1)"
+    node --version 2>/dev/null && echo "node: ok" || echo "node: НЕТ (js-тесты пропустятся)"
+    which tesseract >/dev/null 2>&1 && echo "tesseract: ok" || echo "tesseract: НЕТ (chat OCR не работает)"
     ;;
-  photo)  shift; AVITO_RAW="$RAW" exec python3 "$DIR/photo.py" "$@" ;;
-  chat)   shift; exec python3 "$DIR/chatread.py" "$@" ;;
-  report) shift; exec python3 "$DIR/report.py" "$@" ;;
-  scan)   shift; exec python3 "$DIR/scan.py" "$@" ;;
-  render) shift; exec python3 "$DIR/render.py" "$@" ;;
-  qa)     shift; exec python3 "$DIR/humanize.py" "$@" ;;
-  probe)  shift; exec python3 "$ENGINE/probe.py" "$@" ;;
-  dump)
-    exec python3 -c "
-import json,sys
-p='$RAW'+('.details' if '--details' in sys.argv else '')
-print(json.dumps(json.load(open(p)),ensure_ascii=False,indent=1)[:6000])
-" "$@" ;;
   *)
     cat <<'EOF'
-avito — объявления Авито: сбор, анализ и evidence-отчёт.
+minis-avito — объявления Авито: сбор, скоринг, карточки (встроено в Minis).
 
-  avito preflight [модели...] [--live] [--json]
-                                  проверить источники ДО поиска
-  avito start [--keep] | stop | status
-  avito gpu [--budget N] [--model "3060 ti"] [--delivery] [--top N] [--json]
-                                  подбор видеокарты: медиана ПО МОДЕЛИ,
-                                  ₽ за производительность, риск-скор
-  avito cross [--only-flagged]    межлотовые сигналы: поток у продавца,
-                                  украденные фото, шаблонные описания
-  avito watch save | diff | list | history <id>
-  avito run <миссия> [--n5]     лоты на stdin (b64) -> скан+снимок+карточки
-  avito chatui [--dump f]       чат Авито с экрана (a11y, без OCR)
-                                  снимки во времени: снижение цены, что ушло
-  avito shortlist [--budget N] [--top N]
-                                  отобрать ссылки для добора карточек
-  avito report [--budget N] [--must "слова"] [--top N] [--json]
-                                  общий отчёт (любая категория, одна медиана)
-  avito photo <id> [--n 3]        осмотр фото моделью зрения
-  avito chat <скриншот|дамп> [--from-dump] [--json]
-                                  переписка из скриншота: OCR -> кто что писал
-  avito scan <mission> [--url-only|--info|--process]
-                                  сканер по миссии из config/missions/*.yaml
-                                  URL для вкладки, затем scan лоты из DOM
-                                  через stdin: avito scan <mission> --process < items.json
-  avito render <scan.json> [--top N] карточки для чата: топ-N с риском, ценами, ссылками
-  avito qa <context.json> [--max N]  --mode select|one|bundle
-                                  подбор и humanize вопросов продавцу
-  avito probe <url>               разведка канала (движок web-deep)
-  avito test                      216 проверок: скоринг, preflight, канал, sink
-  avito dump [--details]
+  minis-avito scan <mission> [--url-only|--info] [--pmin N --pmax N --q Q]
+                                  миссии: config/missions/*.yaml
+  minis-avito render <scan.json> [--top N]   карточки для чата
+  minis-avito report <scan.json> [--n N]     ссылки + вопросы продавцу
+  minis-avito qa <context.json> [--mode select|one|bundle]
+  minis-avito chat <скриншот>               переписка из скриншота (OCR)
+  minis-avito chatui [--full]               чат с экрана (a11y), --full — вся история
+  minis-avito chats --list                  список чатов с экрана
+  minis-avito run <mission> [--n5]          лоты (b64 на stdin) -> скан+карточки
+  minis-avito watch save|diff|list          снимки во времени (снижение цены)
+  minis-avito links <scan.json>             проверенные ссылки (url+raw+price)
+  minis-avito gpu|cross|photo|preflight     (нужны данные сбора)
+  minis-avito test                          самопроверка на фикстурах
+  minis-avito doctor                        состояние окружения
 
-Сбор (browser_use, вкладка на avito.ru):
-  window.__AV={q:'rtx 3060', path:'/all/tovary_dlya_kompyutera',
-               pages:3, params:{pmax:25000,s:104}, details:8};
-  await eval(await (await fetch('http://localhost:8791/wdlib.js')).text());
-  await eval(await (await fetch('http://localhost:8791/crawl.js')).text())
-
-Добор карточек по шортлисту (порциями, execute_js рвётся на 30 с):
-  window.__AV_LIMIT=6;
-  await eval(await (await fetch('http://localhost:8791/details.js')).text())
-
-Профили продавцов (отзывы, стаж, все лоты):
-  window.__AV_LIMIT=3;
-  await eval(await (await fetch('http://localhost:8791/seller.js')).text())
-
-Одна ссылка:
-  window.__AV_URL='<url>';
-  await eval(await (await fetch('http://localhost:8791/one.js')).text())
-
-Данные в /var/minis/shared/_data/avito (НЕ /tmp).
-Адрес для браузера — localhost: CSP части сайтов режет 127.0.0.1.
+Данные: ${MINIS_DATA_ROOT:-/var/minis/shared/_data}/avito
 EOF
     ;;
 esac
