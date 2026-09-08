@@ -71,19 +71,23 @@ object BrowserCameraGate {
 
     /**
      * Decide a WebView [PermissionRequest]. Must be called on the UI thread
-     * (WebChromeClient callbacks are). Grants ONLY
-     * [PermissionRequest.RESOURCE_VIDEO_CAPTURE]; every other resource —
-     * audio capture, protected media id, MIDI — is denied.
+     * (WebChromeClient callbacks are).
      *
-     * Subset grants: a page asking for {video, audio} receives {video} —
-     * the API accepts a subset and pages fall back to video-only streams,
-     * which is exactly what a liveness check wants. Audio-only requests
-     * get a full deny.
+     * [T-camera-audio-pair] Chromium getUserMedia is all-or-nothing per call:
+     * a page asking {video, audio} FAILS ENTIRELY (NotAllowedError → blank
+     * liveness widgets) when only video is granted — measured live, the
+     * original "pages fall back to video-only" assumption was wrong.
+     * Contract now: video is granted when the toggle+OS permission hold;
+     * audio is granted ONLY in the same grant when the page asked for BOTH
+     * (many liveness SDKs request the pair for anti-spoofing) and the OS
+     * RECORD_AUDIO permission holds. Audio-ONLY requests are still denied —
+     * the microphone is never handed out without a video stream.
      *
      * @return true if video was granted, false if denied.
      */
     fun handle(request: PermissionRequest, context: Context): Boolean {
         val wantsVideo = request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
+        val wantsAudio = request.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
         if (!wantsVideo) {
             AppLogger.info(TAG, "deny: no video resource in ${request.resources.toList()}")
             request.deny()
@@ -99,8 +103,25 @@ object BrowserCameraGate {
             request.deny()
             return false
         }
-        AppLogger.info(TAG, "grant: VIDEO_CAPTURE (video only, audio stripped)")
-        request.grant(arrayOf(PermissionRequest.RESOURCE_VIDEO_CAPTURE))
+        val grant = mutableListOf(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
+        if (wantsAudio && hasOsAudioPermission(context)) {
+            // Paired audio: only together with video, only when the page
+            // asked for both, only when the OS microphone permission holds.
+            grant.add(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
+            AppLogger.info(TAG, "grant: VIDEO+AUDIO (paired, liveness SDK)")
+        } else if (wantsAudio) {
+            AppLogger.info(TAG, "grant: VIDEO only (page wanted audio too, but OS RECORD_AUDIO missing)")
+        } else {
+            AppLogger.info(TAG, "grant: VIDEO_CAPTURE (video only)")
+        }
+        request.grant(grant.toTypedArray())
         return true
     }
+
+    /** OS-level RECORD_AUDIO runtime permission state (paired-audio path). */
+    fun hasOsAudioPermission(context: Context): Boolean =
+        ContextCompat.checkSelfPermission(
+            context.applicationContext,
+            android.Manifest.permission.RECORD_AUDIO,
+        ) == PackageManager.PERMISSION_GRANTED
 }
