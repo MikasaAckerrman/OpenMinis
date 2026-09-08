@@ -82,4 +82,59 @@ class ProtectedTailTest {
     fun `empty history returns no anchor`() {
         assertEquals(-1, ProtectedTail.anchorIndex(emptyList(), protectedUserTurns = 6))
     }
+
+    // [T-compact-tail-vs-window] The tail must scale with the model's window:
+    // a fixed 6-turn tail on a small-context model outweighs the window and
+    // makes compaction mathematically unable to fit the session — the
+    // "compacted but the request still doesn't fit" trap after switching
+    // from a large-context model to a small one.
+    @Test
+    fun `protected tail scales down with the context window`() {
+        assertEquals(6, ProtectedTail.protectedTurnsForWindow(128_000))
+        assertEquals(6, ProtectedTail.protectedTurnsForWindow(200_000))
+        assertEquals(5, ProtectedTail.protectedTurnsForWindow(64_000))
+        assertEquals(5, ProtectedTail.protectedTurnsForWindow(127_999))
+        assertEquals(4, ProtectedTail.protectedTurnsForWindow(32_000))
+        assertEquals(4, ProtectedTail.protectedTurnsForWindow(63_999))
+        assertEquals(3, ProtectedTail.protectedTurnsForWindow(16_000))
+        assertEquals(3, ProtectedTail.protectedTurnsForWindow(31_999))
+        assertEquals(2, ProtectedTail.protectedTurnsForWindow(15_999))
+        assertEquals(2, ProtectedTail.protectedTurnsForWindow(8_000))
+        assertEquals(2, ProtectedTail.protectedTurnsForWindow(4_096))
+    }
+
+    @Test
+    fun `default equals the large-window tier`() {
+        // The default constant stays meaningful: it is the value used when no
+        // window is known, and it must equal the ≥128k tier so an unknown
+        // window behaves like a generous one (matches the pre-fix constant 6).
+        assertEquals(
+            ProtectedTail.DEFAULT_PROTECTED_USER_TURNS,
+            ProtectedTail.protectedTurnsForWindow(128_000),
+        )
+    }
+
+    @Test
+    fun `small window compacts more - anchor moves below the fresh turns`() {
+        // 8 user turns (16 entries, user at even indices); on a 128k window
+        // the last 6 user turns stay verbatim (protectStart=4 → anchor=3).
+        // On a 16k window only the last 3 stay verbatim (protectStart=10 →
+        // anchor=9), so compaction covers MORE of the settled history —
+        // exactly the behaviour a small-context model needs to fit.
+        val entries = convo(8)
+        val bigWindowAnchor = ProtectedTail.anchorIndex(
+            entries,
+            protectedUserTurns = ProtectedTail.protectedTurnsForWindow(128_000),
+        )
+        val smallWindowAnchor = ProtectedTail.anchorIndex(
+            entries,
+            protectedUserTurns = ProtectedTail.protectedTurnsForWindow(16_000),
+        )
+        assertEquals(3, bigWindowAnchor)
+        assertEquals(9, smallWindowAnchor)
+        // The invariant "smaller window → anchor lower-or-equal (compacts at
+        // least as much)" holds for every tier pair by construction; pinned
+        // here with the extreme pair.
+        org.junit.Assert.assertTrue(smallWindowAnchor >= bigWindowAnchor)
+    }
 }

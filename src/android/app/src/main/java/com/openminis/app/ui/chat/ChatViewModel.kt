@@ -281,7 +281,10 @@ class ChatViewModel(
         // replies) stay verbatim; everything older is folded into the summary
         // with a recency-weighted detail gradient. The byte gate at the
         // provider boundary still bounds the payload.
-        private const val COMPACT_KEEP_RECENT_USER_TURNS = 6
+        // [T-compact-tail-vs-window] COMPACT_KEEP_RECENT_USER_TURNS removed:
+        // the protected tail is now sized per-model-window by
+        // ProtectedTail.protectedTurnsForWindow() (see compactAll and
+        // effectiveAgentHistory).
         /// Max per-tool-call retained `accumulated` JSON snapshots from
         /// `ToolInputDelta`. Drained on preflight failure for diagnosis.
         private const val TOOL_INPUT_CHUNK_RING_MAX = 10
@@ -1915,7 +1918,13 @@ class ChatViewModel(
         // the summary — they stay in postAnchor, sent verbatim and shown active.
         // Compaction squeezes only the older, settled part of the history.
         // Build the pure-logic view once and delegate the decision.
-        val protectedTurns = COMPACT_KEEP_RECENT_USER_TURNS
+        // [T-compact-tail-vs-window] N is sized by the ACTIVE model's window,
+        // not a fixed 6: on a small-context model a 6-turn verbatim tail can
+        // outweigh the whole window and make compaction mathematically
+        // unable to fit the session (the "compacted but still too big" trap).
+        val protectedTurns = com.openminis.app.data.ProtectedTail.protectedTurnsForWindow(
+            effectiveContextWindowTokens() ?: 128_000,
+        )
         val ptEntries = history.map { m ->
             com.openminis.app.data.ProtectedTail.Entry(
                 isUser = m.role == LLMMessage.Role.USER,
@@ -2838,8 +2847,9 @@ class ChatViewModel(
         // ─── v2 markers (id-only anchor model) ─────────────────────────
         //
         // anchor = lastCompactedMessageId. What we send to the model:
-        //   1. last [COMPACT_KEEP_RECENT_USER_TURNS] user-text turns BEFORE
-        //      anchor (inclusive of anchor) — recent verbatim warm-up
+        //   1. last N user-text turns BEFORE
+        //      anchor (inclusive of anchor) — recent verbatim warm-up, N sized
+        //      by the model's window (ProtectedTail.protectedTurnsForWindow)
         //   2. the summary, INLINED as a `<context-summary>` text part
         //      prepended to the first user message AFTER anchor (preserves
         //      strict role alternation — no synthetic standalone user turn)
@@ -2879,7 +2889,15 @@ class ChatViewModel(
             // before the protected tail). They are read here as ordinary
             // summaries — no special-casing needed, the tail handling is
             // identical, so those old sessions keep opening correctly.
-            val keepN = COMPACT_KEEP_RECENT_USER_TURNS
+            // [T-compact-tail-vs-window] Read side mirrors the write side:
+            // the tail is sized by the CURRENT model's window, so a session
+            // compacted on a large model and reopened on a small one sends a
+            // smaller verbatim tail (and vice versa — walkBack just finds
+            // fewer turns than asked). This is what makes /compact able to
+            // actually FIT a session after switching to a small-context model.
+            val keepN = com.openminis.app.data.ProtectedTail.protectedTurnsForWindow(
+                effectiveContextWindowTokens() ?: 128_000,
+            )
             // Step 1: walk back from anchor collecting user-text turns. Stop
             // when EITHER we've collected N user-text turns OR including the
             // next turn would push preAnchor over 100 messages. Decisions

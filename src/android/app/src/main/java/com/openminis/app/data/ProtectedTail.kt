@@ -37,6 +37,40 @@ object ProtectedTail {
     const val DEFAULT_PROTECTED_USER_TURNS = 6
 
     /**
+     * [T-compact-tail-vs-window] Protected tail sized by the ACTIVE model's
+     * context window instead of the fixed [DEFAULT_PROTECTED_USER_TURNS].
+     *
+     * ## The failure this fixes
+     *
+     * User report: switch from a large-context model to a small-context one
+     * (or run /compact on the small one) → "compacted but the request still
+     * doesn't fit". Root cause: the protected tail was ALWAYS 6 user turns
+     * regardless of window. On a 128k+ window 6 verbatim agent turns (with
+     * their tool rounds) are noise; on a 32k window those same 6 turns can
+     * outweigh the entire budget — compaction squeezed only the OLD part,
+     * and the mathematically-uncompactable protected tail kept the session
+     * over the limit. Compaction must be sized RELATIVE to the window it
+     * is compacting FOR (user's own diagnosis, confirmed in code).
+     *
+     * Ladder (conservative — one turn per window tier down, floor of 2):
+     *   ≥128k → 6   64k–128k → 5   32k–64k → 4   16k–32k → 3   <16k → 2
+     *
+     * Read side uses the same function, so the tail a session SENDS tracks
+     * the model it is ON, not the model it was compacted on: reopening a
+     * compacted session on a smaller window trims the sent tail; on a larger
+     * one it simply finds fewer turns than asked and sends what exists.
+     *
+     * Pure logic — unit-tested.
+     */
+    fun protectedTurnsForWindow(contextWindow: Int): Int = when {
+        contextWindow >= 128_000 -> 6
+        contextWindow >= 64_000 -> 5
+        contextWindow >= 32_000 -> 4
+        contextWindow >= 16_000 -> 3
+        else -> 2
+    }
+
+    /**
      * One history entry reduced to what the anchor decision needs.
      *
      * @param isUser true for a user-role message (turn boundary).
