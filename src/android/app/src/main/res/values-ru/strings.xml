@@ -1362,6 +1362,11 @@
     <string name="voice_correction_clear">Удалить всё</string>
     <string name="voice_correction_cleared">Данные об исправлениях удалены</string>
     <string name="voice_provider_system">Система</string>
+    <string name="browser_camera_section">Камера в браузере</string>
+    <string name="browser_camera_toggle">Разрешить сайтам камеру</string>
+    <string name="browser_camera_warning">Внимание: даёт страницам встроенного браузера доступ к камере — только видео, без микрофона. Нужно для проверок личности («покажите лицо»). Выключено по умолчанию.</string>
+    <string name="browser_camera_footer">Работает и в браузере предпросмотра, и в браузере агента. Страница получает только видео-поток; доступ к микрофону не предоставляется никогда. Для включения требуется также системное разрешение камеры.</string>
+    <string name="browser_camera_os_denied">Системное разрешение камеры не выдано — включите его в настройках Android для Minis</string>
     <string name="add_provider_subtitle_kimi">Kimi Coding Plan — войдите с аккаунтом Kimi</string>
     <string name="kimi_login_title">Войти через Kimi Code</string>
     <string name="kimi_login_instructions">Откройте страницу подтверждения и введите этот код, чтобы авторизовать Minis:</string>

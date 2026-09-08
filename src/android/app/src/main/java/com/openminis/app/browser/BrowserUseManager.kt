@@ -10,6 +10,7 @@ import android.util.Base64
 import android.util.Log
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
+import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -479,6 +480,14 @@ class BrowserUseManager(
         webView.webChromeClient = object : WebChromeClient() {
             override fun onReceivedTitle(view: WebView, title: String?) {
                 _pageTitle.value = title ?: ""
+            }
+
+            // [T-browser-camera-gate] getUserMedia() support for the agent
+            // browser — same gate as the user-facing preview browser: toggle
+            // (Settings → Permissions) + OS CAMERA permission; VIDEO only.
+            override fun onPermissionRequest(request: PermissionRequest?) {
+                if (request == null) return
+                com.openminis.app.browser.BrowserCameraGate.handle(request, webView.context)
             }
 
             override fun onCreateWindow(

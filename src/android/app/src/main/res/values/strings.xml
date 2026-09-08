@@ -1650,6 +1650,11 @@
     <string name="voice_correction_clear">Clear All</string>
     <string name="voice_correction_cleared">Voice correction data cleared</string>
     <string name="voice_provider_system">System</string>
+    <string name="browser_camera_section">Browser camera</string>
+    <string name="browser_camera_toggle">Allow sites to use the camera</string>
+    <string name="browser_camera_warning">Warning: grants pages in the built-in browser access to the camera — video only, no microphone. Needed for identity checks ("show your face"). Off by default.</string>
+    <string name="browser_camera_footer">Applies to both the preview browser and the agent browser. Pages receive a video stream only; microphone access is never granted. Enabling also requires the system camera permission.</string>
+    <string name="browser_camera_os_denied">System camera permission not granted — enable it for Minis in Android settings</string>
     <string name="add_provider_subtitle_kimi">Kimi Coding Plan — sign in with your Kimi account</string>
     <string name="kimi_login_title">Sign in with Kimi Code</string>
     <string name="kimi_login_instructions">Open the verification page and enter this code to authorize Minis:</string>
