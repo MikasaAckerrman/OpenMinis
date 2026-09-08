@@ -24,13 +24,15 @@ def check_pair(url, raw, price, mission_model):
     """Возвращает список проблем пары url/raw. Пустой = пара согласована."""
     problems = []
     raw = _clean(raw)
-    # 1. цена
+    # 1. цена: точное членство среди числовых кандидатов в raw.
+    # Подстрочная проверка ('25000' in '307025000') слепа к «модель+цена».
     if price:
-        pm = re.search(r'(\d[\d\s]{2,8})\s*(?:₽|Р\b)', raw)
-        if pm:
-            in_raw = pm.group(1).replace(' ', '')
-            if str(price) not in in_raw:
-                problems.append('цена %s не в raw(%s)' % (price, in_raw))
+        block = re.search(r'(\d[\d\s\xa0\u202f]{2,14})\s*(?:₽|Р\b)', raw)
+        if block:
+            cands = re.findall(r'\d{1,3}(?:[\s\xa0\u202f]\d{3})+|[1-9]\d{4,5}', block.group(1))
+            vals = {int(c.replace('\xa0', '').replace('\u202f', '').replace(' ', '')) for c in cands}
+            if price not in vals:
+                problems.append('цена %s не в raw(%s)' % (price, sorted(vals)))
         else:
             problems.append('цена не найдена в raw')
     # Город НЕ проверяю: url хранит транслитерацию (moskva), raw — кириллицу (Москва).

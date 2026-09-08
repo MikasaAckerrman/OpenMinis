@@ -47,7 +47,6 @@ case "$1" in
     python3 "$DIR/selftest-humanize.py"
     python3 "$DIR/selftest-render.py"
     python3 "$DIR/selftest-report.py"
-    python3 "$ENGINE/../engine/../selftest.py" 2>/dev/null || true
     ;;
   doctor)
     echo "dir:   $DIR ($(ls "$DIR"/*.py 2>/dev/null | wc -l) py)"

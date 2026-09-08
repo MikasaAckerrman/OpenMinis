@@ -957,10 +957,13 @@ class ChatViewModel(
      */
     private fun warnContextFitAfterSwitch() {
         val window = effectiveContextWindowTokens() ?: return
-        val tokens = com.openminis.app.data.ContextPressure.resolve(
-            usageTokens = _lastTurnContextTokens.value,
-            estimatedTokens = estimateContextTokens(),
-        )
+        // Fast path: a valid provider usage sample (refreshAttributedContextUsage
+        // already zeroed it on route mismatch) is authoritative — skip the
+        // char-walk estimate, which is heavy enough to jank the UI thread this
+        // runs on. Same semantics as ContextPressure.resolve(usage, estimate):
+        // estimate is only consulted when no usage is available.
+        val usage = _lastTurnContextTokens.value
+        val tokens = if (usage > 0) usage else estimateContextTokens()
         if (tokens <= 0) return
         val policy = ContextPolicy.forContextWindow(window)
         val modelName = currentModel?.displayName?.ifBlank { currentModel?.id } ?: "модель"
