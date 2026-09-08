@@ -2033,34 +2033,67 @@ class ChatViewModel(
                 // joined transcript exceeds the model's context window, halve
                 // the message list and summarize each half independently, then
                 // merge. depth cap=3 prevents pathological recursion.
-                val rawSummary = generateCompactSummaryWithSplitting(
-                    messages = toCompact,
-                    previousSummary = existing,
-                    depth = 0,
-                ).trim()
-                // [T-context-maintenance] Post-process before storing. A
-                // summarisation model reliably adds filler ("Sure, here is
-                // the summary...") and paraphrases exact strings — the first
-                // wastes the context the summary was meant to save, the second
-                // destroys its only irreplaceable content. Filler is stripped;
-                // any identifier the model dropped is re-appended verbatim
-                // from the transcript. Never worse than what came back.
-                val summary = com.openminis.app.data.CompactQuality.polish(
-                    transcript = buildConversationTextForSummary(toCompact),
-                    summary = rawSummary,
-                ).trim()
-                if (summary.length != rawSummary.length) {
-                    AppLogger.info(
-                        TAG,
-                        "[Compact] polish: ${rawSummary.length} → ${summary.length} chars " +
-                            "(filler stripped / exact refs restored)",
-                    )
-                }
-                if (summary.isEmpty()) {
-                    withContext(Dispatchers.Main) {
-                        appendSystemInfo("Compaction produced no output — try again later.", "compact")
+                //
+                // [T-compact-mechanical-fallback] The model attempt is wrapped
+                // in its own try: ANY failure (quota / 400 / invalid key /
+                // exhausted route ladder) or empty output falls through to the
+                // deterministic MechanicalCompact digest below instead of
+                // leaving the user with an un-compactable session. The digest
+                // keeps user turns verbatim + the last assistant message, so
+                // "where we stopped" always survives a failed LLM route.
+                val modelSummary: String? = try {
+                    val rawSummary = generateCompactSummaryWithSplitting(
+                        messages = toCompact,
+                        previousSummary = existing,
+                        depth = 0,
+                    ).trim()
+                    // [T-context-maintenance] Post-process before storing.
+                    // (filler stripped, exact refs restored — never worse)
+                    val polished = com.openminis.app.data.CompactQuality.polish(
+                        transcript = buildConversationTextForSummary(toCompact),
+                        summary = rawSummary,
+                    ).trim()
+                    if (polished.length != rawSummary.length) {
+                        AppLogger.info(
+                            TAG,
+                            "[Compact] polish: ${rawSummary.length} → ${polished.length} chars " +
+                                "(filler stripped / exact refs restored)",
+                        )
                     }
-                    return@launch
+                    polished.takeIf { it.isNotEmpty() }
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (e: Exception) {
+                    Log.w(TAG, "[Compact] model summary failed; using mechanical digest", e)
+                    null
+                }
+                val summary: String = modelSummary ?: run {
+                    val digest = com.openminis.app.data.MechanicalCompact.buildDigest(
+                        turns = toCompact.map { m ->
+                            com.openminis.app.data.MechanicalCompact.Turn(
+                                isUser = m.role == LLMMessage.Role.USER,
+                                text = m.content,
+                            )
+                        },
+                    )
+                    if (digest.isBlank()) {
+                        withContext(Dispatchers.Main) {
+                            appendSystemInfo(
+                                "Compaction failed and nothing was preserved mechanically.",
+                                "compact",
+                            )
+                        }
+                        return@launch
+                    }
+                    withContext(Dispatchers.Main) {
+                        appendSystemInfo(
+                            text = "Модель сжатия недоступна — сессия сжата механически: " +
+                                "требования пользователя сохранены дословно, детальный пересказ " +
+                                "пропущен. Откат — кнопкой отмены последнего сжатия.",
+                            iconKind = "compact",
+                        )
+                    }
+                    digest
                 }
 
                 val sid = realSessionId.ifEmpty { sessionId }
