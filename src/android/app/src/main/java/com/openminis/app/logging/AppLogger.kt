@@ -237,6 +237,17 @@ object AppLogger {
         log("INFO", category, message)
     }
 
+    /**
+     * [T-sse-debug-hot-path] Cheap gate for HIGH-FREQUENCY debug logs (per
+     * streamed token, per scroll frame). When file logging is off (default),
+     * such a log costs a string build + Log.d on the COLLECTING thread —
+     * which for SSE is the UI thread, dozens of times per second while a
+     * response streams. Hot-path diagnostics must check this flag and skip
+     * entirely; cold per-request logs don't need to.
+     */
+    val isDebugEnabled: Boolean
+        get() = enabled
+
     fun warning(category: String, message: String) {
         log("WARN", category, message)
     }

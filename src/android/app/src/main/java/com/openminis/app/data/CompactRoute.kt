@@ -104,6 +104,44 @@ object CompactRoute {
         return AUTH_MARKERS.any { m.contains(it) }
     }
 
+    /**
+     * [T-compact-route-400] The model entry is dead on the relay: retrying the
+     * SAME id anywhere (or with a smaller budget) cannot help — only another
+     * group member can. Compaction sends just model+messages+max_tokens, so
+     * "does not exist" in this path is the model, not a stray field.
+     */
+    private val MODEL_GONE_MARKERS = listOf(
+        "model not found", "no such model", "does not exist",
+        "no longer exists", "model has been deprecated",
+        "invalid model", "unknown model", "model_deprecated",
+    )
+
+    fun isModelGone(message: String): Boolean {
+        val m = message.lowercase()
+        return MODEL_GONE_MARKERS.any { m.contains(it) }
+    }
+
+    /**
+     * [T-compact-route-400] The max_tokens VALUE was rejected as invalid for
+     * this model ("max_tokens must be at most 4096"). Semantically the same
+     * response as quota: request a smaller budget on the same model — that is
+     * exactly what the shrink ladder does. The compaction call sites used to
+     * let this 400 fall into Surface because it matched no class, killing
+     * compaction on models whose output cap is below the computed 8192.
+     */
+    private val MAX_TOKENS_VALUE_MARKERS = listOf(
+        "max_tokens must be", "max_tokens cannot", "max_tokens should be",
+        "max_tokens is greater", "max_tokens exceeds", "max_tokens: ",
+        "max_completion_tokens must be", "max_completion_tokens cannot",
+        "max_completion_tokens: ", "exceeds the maximum value",
+        "greater than the maximum",
+    )
+
+    fun isMaxTokensValueRejected(message: String): Boolean {
+        val m = message.lowercase()
+        return MAX_TOKENS_VALUE_MARKERS.any { m.contains(it) }
+    }
+
     fun isRateLimit(message: String): Boolean {
         val m = message.lowercase()
         return RATE_LIMIT_MARKERS.any { m.contains(it) }
@@ -151,15 +189,25 @@ object CompactRoute {
         val contentFiltered = com.openminis.app.provider.ContentFilterDetection
             .isContentFilterRejection(errorMessage)
         val authRejected = isAuthFailure(errorMessage)
-        if (!quota && !rateLimited && !contentFiltered && !authRejected) return Step.Surface(errorMessage)
-        // [T-compact-route-auth] Auth and content-filter rejections share a
-        // route: neither gets cheaper with a smaller request, so skip the
-        // shrink ladder and go straight to the next provider. Surface only
-        // when every provider has refused — the session stays intact and the
-        // user is told which failure stranded it.
-        if (contentFiltered || authRejected) {
+        val modelGone = isModelGone(errorMessage)
+        val maxTokensRejected = isMaxTokensValueRejected(errorMessage)
+        if (!quota && !rateLimited && !contentFiltered && !authRejected &&
+            !modelGone && !maxTokensRejected
+        ) return Step.Surface(errorMessage)
+        // [T-compact-route-auth] Auth, content-filter and dead-model
+        // rejections share a route: none gets cheaper with a smaller request,
+        // so skip the shrink ladder and go straight to the next provider.
+        // Surface only when every provider has refused — the session stays
+        // intact and the user is told which failure stranded it.
+        if (contentFiltered || authRejected || modelGone) {
             return nextProviderIndex?.let { Step.NextProvider(it) }
                 ?: Step.Surface(errorMessage)
+        }
+        // [T-compact-route-400] A rejected max_tokens VALUE is a quota-class
+        // failure: the affordable response is a smaller budget on the SAME
+        // model (shrink), then the next provider when the floor is hit.
+        if (maxTokensRejected && !rateLimited && shrinkStepsUsed < MAX_SHRINK_STEPS) {
+            shrink(currentMaxTokens)?.let { return Step.RetrySmaller(it) }
         }
 
         // Quota only: a smaller request may be affordable. Rate limit: it

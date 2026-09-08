@@ -805,10 +805,17 @@ class OpenAIProvider private constructor(
                         val tcLen = delta.optJSONArray("tool_calls")?.length() ?: 0
                         val role = delta.optString("role", "")
                         if (cLen + rcLen + rLen + tcLen > 0 || delta.has("role")) {
-                            com.openminis.app.logging.AppLogger.debug(
-                                "OpenAIProvider",
-                                "[T321] SSE delta: contentLen=$cLen rcLen=$rcLen rLen=$rLen toolCalls=$tcLen role='$role'"
-                            )
+                            // [T-sse-debug-hot-path] Per-token diagnostics: build
+                            // and emit ONLY when file logging is on. This loop
+                            // runs on the collecting (UI) thread at token rate —
+                            // the unconditional Log.d + string build was a real
+                            // source of streaming jank with logging off.
+                            if (com.openminis.app.logging.AppLogger.isDebugEnabled) {
+                                com.openminis.app.logging.AppLogger.debug(
+                                    "OpenAIProvider",
+                                    "[T321] SSE delta: contentLen=$cLen rcLen=$rcLen rLen=$rLen toolCalls=$tcLen role='$role'"
+                                )
+                            }
                         }
                         contentLen += cLen
                         reasoningLen += rcLen + rLen
@@ -817,10 +824,14 @@ class OpenAIProvider private constructor(
                         // Responses API event-typed diagnostics
                         val dLen = ev.optString("delta", "").length
                         if (type.contains("delta") || type == "response.completed" || type == "response.output_item.added" || type == "response.output_item.done") {
-                            com.openminis.app.logging.AppLogger.debug(
-                                "OpenAIProvider",
-                                "[T321] SSE responses type=$type deltaLen=$dLen"
-                            )
+                            // [T-sse-debug-hot-path] Same gate as the SSE delta
+                            // log above: per-event diagnostics, UI thread, token rate.
+                            if (com.openminis.app.logging.AppLogger.isDebugEnabled) {
+                                com.openminis.app.logging.AppLogger.debug(
+                                    "OpenAIProvider",
+                                    "[T321] SSE responses type=$type deltaLen=$dLen"
+                                )
+                            }
                         }
                         if (type == "response.output_text.delta") contentLen += dLen
                         if (type.startsWith("response.reasoning_")) reasoningLen += dLen

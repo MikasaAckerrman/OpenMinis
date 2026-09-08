@@ -195,4 +195,68 @@ class CompactRouteTest {
         assertFalse(CompactRoute.isAuthFailure(quotaCn))
         assertFalse(CompactRoute.isAuthFailure(rateLimited))
     }
+
+    // [T-compact-route-400] max_tokens VALUE rejections and dead model entries
+    // are the two 400 classes that used to kill compaction outright: neither
+    // matched quota/rate/filter/auth, so Surface was the only route.
+
+    @Test
+    fun `max_tokens value rejection shrinks on the same model`() {
+        // "max_tokens must be at most 4096" — the affordable response is a
+        // smaller budget, exactly what the quota shrink ladder does.
+        val step = CompactRoute.next(
+            "Provider error: [400] max_tokens must be at most 4096",
+            currentMaxTokens = 8192, shrinkStepsUsed = 0, nextProviderIndex = 0,
+        )
+        assertEquals(CompactRoute.Step.RetrySmaller(4096), step)
+    }
+
+    @Test
+    fun `max_tokens value rejection with no shrink left moves to next provider`() {
+        // Budget already at the 1024 floor: shrink returns null → next provider.
+        val step = CompactRoute.next(
+            "max_completion_tokens must be at most 1024",
+            currentMaxTokens = 1024, shrinkStepsUsed = 0, nextProviderIndex = 2,
+        )
+        assertEquals(CompactRoute.Step.NextProvider(2), step)
+    }
+
+    @Test
+    fun `max_tokens value rejection with no provider left surfaces`() {
+        val step = CompactRoute.next(
+            "max_tokens: 8192 > 4096",
+            currentMaxTokens = 8192, shrinkStepsUsed = 2, nextProviderIndex = null,
+        )
+        assertTrue(step is CompactRoute.Step.Surface)
+    }
+
+    @Test
+    fun `dead model routes to next provider without shrinking`() {
+        // Retrying the same dead model id (even with a smaller budget) cannot
+        // help — skip the shrink ladder entirely.
+        val step = CompactRoute.next(
+            "Provider error: [404] model not found: deepseek-v4-flash",
+            currentMaxTokens = 8192, shrinkStepsUsed = 0, nextProviderIndex = 1,
+        )
+        assertEquals(CompactRoute.Step.NextProvider(1), step)
+    }
+
+    @Test
+    fun `dead model with no provider left surfaces`() {
+        val step = CompactRoute.next(
+            "Provider error: [400] The model `x` does not exist",
+            currentMaxTokens = 8192, shrinkStepsUsed = 0, nextProviderIndex = null,
+        )
+        assertTrue(step is CompactRoute.Step.Surface)
+    }
+
+    @Test
+    fun `new marker sets do not swallow the classic unrelated 400`() {
+        // Regression guard: the pre-existing "invalid role" case must remain
+        // Surface under the new classes too.
+        assertFalse(CompactRoute.isModelGone("Provider error: [400] messages: invalid role"))
+        assertFalse(CompactRoute.isMaxTokensValueRejected("Provider error: [400] messages: invalid role"))
+        assertFalse(CompactRoute.isModelGone(quotaCn))
+        assertFalse(CompactRoute.isMaxTokensValueRejected(rateLimited))
+    }
 }

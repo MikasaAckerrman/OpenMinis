@@ -3474,8 +3474,17 @@ class ChatViewModel(
         val contextWindow = model?.contextWindow ?: 128_000
         val estimatedInput = userMessage.length / 4
         val startMaxOut = maxOf(1024, minOf(8192, contextWindow - estimatedInput))
+        // [T-compact-maxout-clamp] Providers pass maxTokens through to the
+        // request body UNCLAMPED, so a computed 8192 on a model whose output
+        // cap is 4096 is a guaranteed HTTP 400 ("max_tokens must be at most
+        // 4096") that no ladder could recover from (splitting halves the
+        // INPUT, not the budget). Clamp to the model's declared cap up front.
         val primary = currentProvider
             ?: throw IllegalStateException("No LLM provider available for compaction")
+        fun clampToModelCap(m: com.openminis.app.data.model.LLMModel?, desired: Int): Int {
+            val cap = m?.maxOutputTokens ?: return desired
+            return desired.coerceAtMost(cap).coerceAtLeast(256)
+        }
 
         // [T-compact-route] Compaction used to be a single call on the bound
         // model: a 429 or a 403-quota killed it, leaving the session too big to
@@ -3488,7 +3497,7 @@ class ChatViewModel(
         val fallbacks = runCatching { buildFallbackProviders(primary) }.getOrDefault(emptyList())
         var provider: LLMProvider = primary
         var providerIdx = -1  // -1 = primary, >=0 = index into fallbacks
-        var maxOut = startMaxOut
+        var maxOut = clampToModelCap(primary.model, startMaxOut)
         var shrinkSteps = 0
         var lastError: Exception? = null
 
@@ -3553,7 +3562,10 @@ class ChatViewModel(
                         providerIdx = step.index
                         provider = fallbacks[step.index]
                         shrinkSteps = 0
-                        maxOut = startMaxOut
+                        // [T-compact-maxout-clamp] Re-clamp for the fallback
+                        // model: its output cap can be lower than the primary's
+                        // (startMaxOut was computed for the primary's window).
+                        maxOut = clampToModelCap(provider.model, startMaxOut)
                         withContext(Dispatchers.Main) {
                             appendSystemInfo(
                                 text = context.getString(
@@ -3586,12 +3598,16 @@ class ChatViewModel(
             desc.contains("prompt is too long") ||
             desc.contains("token limit") ||
             desc.contains("context window") ||
-            // [T-recover-context-full-mid-loop] Observed live from a relay,
-            // Chinese first with an English parenthetical: "请精简对话历史或缩小
-            // 工具/文件输出后重试。(Context window is full — reduce conversation
-            // history, tool/file output, or system prompt.)" The English half
-            // matches "context window" above, but relays localise freely and
-            // some send only the Chinese, so match that independently.
+            // [T-compact-route-400] Relay spellings seen in the wild that the
+            // original set missed — each one previously fell through to
+            // Surface and killed /compact on a 400:
+            desc.contains("maximum context length") ||
+            desc.contains("input is too long") ||
+            desc.contains("input length and max_tokens exceed") ||
+            desc.contains("too many input tokens") ||
+            desc.contains("reduce the length") ||
+            desc.contains("reduce the input") ||
+            desc.contains("exceeds the context") ||
             desc.contains("请精简对话历史") ||
             desc.contains("对话历史") ||
             desc.contains("context is full") ||
