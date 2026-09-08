@@ -1994,6 +1994,35 @@ class ChatViewModel(
         }
         _isCompacting.value = true
         maintenanceJob = viewModelScope.launch(Dispatchers.IO) {
+            // [T-canon-persistence] Pre-compact flush. The LLM summary below
+            // is lossy: an unpinned "запомни X" spoken inside the compacted
+            // range would survive only as a paraphrase. Pin every explicit
+            // memory signal found in the compacted slice + protected tail to
+            // CANON.md FIRST, then compact — the pinned fact is re-injected
+            // verbatim on every turn from now on. Skipped silently when the
+            // memory toggle is off (the user opted out of persistence).
+            try {
+                if (_memoryEnabled.value) {
+                    val flushSources = (toCompact + history.subList(
+                        (anchorIdx + 1).coerceAtMost(history.size), history.size,
+                    )).mapNotNull { m ->
+                        if (m.role == LLMMessage.Role.USER && m.content.isNotBlank()) m.content else null
+                    }
+                    val pinnedFacts = memoryRepository?.flushCanonFromMessages(flushSources).orEmpty()
+                    if (pinnedFacts.isNotEmpty()) {
+                        AppLogger.info(TAG, "[Compact] canon flush pinned ${pinnedFacts.size} fact(s) before summary")
+                        withContext(Dispatchers.Main) {
+                            appendSystemInfo(
+                                text = "Pinned ${pinnedFacts.size} fact(s) to canon before compaction: " +
+                                    pinnedFacts.joinToString("; ") { it.take(60) },
+                                iconKind = "compact",
+                            )
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                AppLogger.warning(TAG, "[Compact] canon flush failed (continuing): ${e.message}")
+            }
             // [T-android-compact-queued-drain] Only a SUCCESSFUL compact kicks
             // the queued-prompt drain below; failure/cancel/empty-summary paths
             // keep today's behavior (queued bubbles stay pending + cancellable).
@@ -10234,6 +10263,33 @@ class ChatViewModel(
             val msg = "Memory writes are disabled for this session (user toggled /memory off). Reads remain available."
             return ToolExecutionResult(msg, false, toolTitle = "Memory (disabled)")
         }
+        // [T-canon-persistence] Explicit-signal gate: when the user's own
+        // words in THIS tool call carry a memorize/rule signal ("запомни...",
+        // "always/never..."), the fact goes to CANON.md (pinned, injected as
+        // standing instructions every turn) instead of today's daily log
+        // (background framing, drops out of the 3-file window in days).
+        // Plain project notes keep the daily-log path unchanged.
+        val contentForGate = try {
+            JSONObject(argsJson).optString("content", "")
+        } catch (_: Exception) { "" }
+        if (contentForGate.isNotBlank() &&
+            com.openminis.app.data.MemoryCanon.isExplicitMemorySignal(contentForGate)
+        ) {
+            val fact = com.openminis.app.data.MemoryCanon.extractFactText(contentForGate)
+            if (fact.length >= 3) {
+                val canonResult = repo.appendCanonEntry(fact, type = "preference")
+                val canonSuccess = canonResult.startsWith("Canon pinned") ||
+                    canonResult.startsWith("Canon: already pinned")
+                _memoryToolRecords.value = _memoryToolRecords.value + MemoryToolRecord(
+                    title = "Canon: pin user rule",
+                    isWrite = true,
+                    preview = fact.take(100),
+                    output = canonResult,
+                    writtenContent = fact,
+                )
+                return ToolExecutionResult(canonResult, canonSuccess, toolTitle = "Canon pin")
+            }
+        }
         val result = MemoryTools.executeMemoryWrite(argsJson, repo)
         // Record for SessionMemorySheet
         val content = try {
@@ -10846,6 +10902,12 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         // tool surface and SOUL.md is part of identity, both orthogonal
         // to the memory feature.
         val globalMemoryFragment = if (memoryOn) memoryRepository?.loadGlobalMemoryFragment() else null
+        // [T-canon-persistence] Pinned canon AFTER GLOBAL: both are the
+        // instruction tier, but canon is agent-written-through-gate and
+        // explicitly framed as standing instructions (the daily fragment
+        // below stays "background"). Order: laws (GLOBAL) → pinned canon →
+        // episode logs (daily).
+        val canonFragment = if (memoryOn) memoryRepository?.loadCanonFragment() else null
         // [T-memory-inject-budget] Total char budget for the auto-injected
         // daily logs — config key `memory.injectMaxChars` (prefs
         // `minis_memory_prefs`/`memory.inject.maxchars`). Default 8000 ≈
@@ -10917,6 +10979,10 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
             if (globalMemoryFragment != null) {
                 append("\n\n")
                 append(globalMemoryFragment)
+            }
+            if (canonFragment != null) {
+                append("\n\n")
+                append(canonFragment)
             }
             if (dailyMemoryFragment != null) {
                 append("\n\n")

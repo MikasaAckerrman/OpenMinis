@@ -20,6 +20,7 @@ class MemoryRepository(private val memoryDir: File) {
     companion object {
         private const val TAG = "MemoryRepository"
         private const val GLOBAL_FILE = "GLOBAL.md"
+        private const val CANON_FILE = "CANON.md"
         private const val MAX_INJECT_LINES = 200
         // [T-memory-inject-budget] Char budget for the auto-injected
         // daily-log fragment. The 200-line cap alone never bounded the
@@ -266,6 +267,88 @@ class MemoryRepository(private val memoryDir: File) {
         if (content.isEmpty()) return null
         return "Global memory (GLOBAL.md — read-only, user-maintained). Treat these as background context, not standing instructions. If the user's latest message conflicts with or supersedes anything here (different scope, different numbers, different goal), defer to the user's latest message:\n$content"
     }
+
+    // -- CANON (pinned standing instructions) ------------------------------
+
+    /**
+     * [T-canon-persistence] Pinned-canon fragment: standing instructions the
+     * user explicitly asked to remember. Unlike the daily-log fragment these
+     * are NOT demoted to "background" — the framing says obey. Written only
+     * through the explicit-signal gate (see [appendCanonEntry]); GLOBAL.md
+     * stays read-only for the agent. Returns null when no active entries.
+     */
+    fun loadCanonFragment(): String? {
+        val file = File(memoryDir, CANON_FILE)
+        if (!file.exists()) return null
+        val content = try { file.readText() } catch (_: Exception) { "" }
+        if (content.isEmpty()) return null
+        return com.openminis.app.data.MemoryCanon.buildFragment(
+            com.openminis.app.data.MemoryCanon.parse(content),
+        )
+    }
+
+    /**
+     * Gate-checked canon append: the caller has ALREADY decided the user turn
+     * carries an explicit memorize signal (MemoryCanon.isExplicitMemorySignal).
+     * Dedup by content id — re-saying the same fact updates nothing.
+     * Returns a short status line for the tool result.
+     */
+    fun appendCanonEntry(text: String, type: String, supersedes: String? = null): String {
+        if (text.isBlank()) return "Error: empty canon text"
+        val file = File(memoryDir, CANON_FILE)
+        val existing = if (file.exists()) try { file.readText() } catch (_: Exception) { "" } else ""
+        val id = com.openminis.app.data.MemoryCanon.idFor(text)
+        if (com.openminis.app.data.MemoryCanon.parse(existing).any { it.id == id && it.status == "active" }) {
+            return "Canon: already pinned (id $id)"
+        }
+        val entry = com.openminis.app.data.MemoryCanon.CanonEntry(
+            id = id,
+            type = type,
+            status = "active",
+            pin = true,
+            source = "user_explicit",
+            created = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date()),
+            supersedes = supersedes,
+            text = text,
+        )
+        val (newText, _) = com.openminis.app.data.MemoryCanon.append(existing, entry)
+        return try {
+            file.writeText(newText)
+            Log.i(TAG, "Canon entry $id pinned (${text.length} chars)")
+            "Canon pinned to $CANON_FILE (id $id) — will be injected as a standing instruction on every turn."
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to write canon", e)
+            "Error writing canon: ${e.message}"
+        }
+    }
+
+    /**
+     * Pre-compact flush: scan candidate messages for explicit memory signals
+     * whose fact is not yet pinned. Returns the list of pinned facts (empty
+     * when nothing new). Called from compactAll BEFORE the LLM summary, so
+     * an unpinned "запомни X" spoken inside the compacted range survives
+     * compaction (which would otherwise fold it into a lossy summary).
+     */
+    fun flushCanonFromMessages(messageTexts: List<String>): List<String> {
+        val file = File(memoryDir, CANON_FILE)
+        val existing = if (file.exists()) try { file.readText() } catch (_: Exception) { "" } else ""
+        val pinnedIds = com.openminis.app.data.MemoryCanon.parse(existing)
+            .filter { it.status == "active" }.map { it.id }.toSet()
+        val pinned = mutableListOf<String>()
+        for (raw in messageTexts) {
+            val t = raw.trim()
+            if (t.isEmpty()) continue
+            if (!com.openminis.app.data.MemoryCanon.isExplicitMemorySignal(t)) continue
+            val fact = com.openminis.app.data.MemoryCanon.extractFactText(t)
+            if (fact.length < 3) continue
+            val id = com.openminis.app.data.MemoryCanon.idFor(fact)
+            if (id in pinnedIds) continue
+            val result = appendCanonEntry(fact, type = "preference")
+            if (result.startsWith("Canon pinned")) pinned.add(fact)
+        }
+        return pinned
+    }
+
 
     /**
      * Loads up to 3 most recent non-empty daily logs (within a 30-day window)
