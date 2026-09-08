@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Accessibility
+import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenuItem
@@ -181,7 +182,7 @@ fun OffloadPermissionScreen(
             footer = stringResource(R.string.browser_camera_footer),
         ) {
             SettingsSwitchRow(
-                icon = androidx.compose.material.icons.Icons.Outlined.PhotoCamera,
+                icon = Icons.Outlined.PhotoCamera,
                 title = stringResource(R.string.browser_camera_toggle),
                 subtitle = stringResource(R.string.browser_camera_warning),
                 checked = cameraToggle,

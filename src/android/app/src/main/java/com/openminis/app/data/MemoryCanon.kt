@@ -156,7 +156,7 @@ object MemoryCanon {
             if (it.id == finalized.supersedes && it.status == "active") it.copy(status = "superseded")
             else it
         }
-        val newBody = serialize(finalized) + "\n" +
+        val newBody = serializeEntry(finalized) + "\n" +
             serialize(existing.filter { it.status != "revoked" })
         return newBody to finalized
     }
