@@ -512,6 +512,47 @@ class ChatViewModel(
         for (id in drop) streamFlushStates.remove(id)?.trailingJob?.cancel()
     }
 
+    // ─── [T-partial-turn-durability] loop → terminator export ────────────────
+    //
+    // A streamed reply used to exist ONLY in memory until the round completed
+    // (persistAssistantTurn runs at round end). Any mid-round termination —
+    // provider error, user Stop, OOM, process death — lost the whole text:
+    // a 5-minute reasoning phase followed by a 15k-line answer vanished on a
+    // single transport error because it fired before the round closed.
+    //
+    // Export points, all maintained by runAgentLoop:
+    //  - liveTurnTextSb  → the CURRENT round's StringBuilder (full fidelity;
+    //                      error finalize reads it from the SAME coroutine,
+    //                      so no torn reads; cancel falls back to snapshot)
+    //  - liveStreamTurnText → throttled String snapshot (cancel-race fallback)
+    //  - liveStreamId    → keys the crash journal file (StreamHeartbeat)
+    // Cleared at EVERY round-persist site, so "non-empty" always means
+    // "current round not yet persisted" — the exact text a terminator must
+    // commit. Earlier rounds are already their own rows; re-committing them
+    // duplicated content.
+    @Volatile private var liveTurnTextSb: StringBuilder? = null
+    @Volatile private var liveStreamTurnText: String = ""
+    @Volatile private var liveStreamId: String? = null
+
+    /** Latest current-round text for a terminator (error/cancel path). */
+    private fun currentLiveTurnText(): String =
+        runCatching { liveTurnTextSb?.toString() }.getOrNull()?.takeIf { it.isNotEmpty() }
+            ?: liveStreamTurnText
+
+    /** Crash-journal dir for the ACTIVE session (see StreamHeartbeat). */
+    private fun streamHeartbeatDir(): java.io.File = com.openminis.app.data.StreamHeartbeat.dirFor(
+        context.filesDir,
+        activeSessionId.ifEmpty { sessionId },
+    )
+
+    /** Marker appended to a turn persisted by a terminator (not round end). */
+    private val STREAM_INTERRUPTED_REMINDER =
+        "<system-reminder>The response was interrupted (error/stop). Content may be incomplete.</system-reminder>"
+
+    /** Marker for rows recovered from the crash journal after process death. */
+    private val STREAM_CRASH_RECOVERED_REMINDER =
+        "<system-reminder>The app was interrupted while this response was streaming; recovered partially from the durability journal. Content may be incomplete.</system-reminder>"
+
     // Dual-path flush thresholds — ported from iOS. Time tiers scale with total
     // length; the newline fast-path flushes immediately on a line break once
     // enough new chars have accumulated, gated to short docs so dense
@@ -4333,6 +4374,34 @@ class ChatViewModel(
             _sessionTitle.value = session.title ?: "New Chat"
             _sessionCategory.value = session.category
             _memoryEnabled.value = session.memoryEnabled != 0
+            // [T-partial-turn-durability] Recover streams that died with the
+            // process: append-only journals under minis-sessions/<sid>/
+            // stream-heartbeat hold round text that never reached a row.
+            // Materialize each as an assistant row (text + marker) BEFORE
+            // the message load so it lands in natural sort order; the normal
+            // load path then picks it up like any other row. The DB sees one
+            // INSERT per recovered stream — the journal itself never touched
+            // Room while streaming.
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    val orphans = com.openminis.app.data.StreamHeartbeat.recoverOrphans(
+                        com.openminis.app.data.StreamHeartbeat.dirFor(context.filesDir, sessionId),
+                    )
+                    for (o in orphans) {
+                        val parts = listOf(
+                            AgentContentPart.Text(o.text),
+                            AgentContentPart.Text(STREAM_CRASH_RECOVERED_REMINDER),
+                        )
+                        chatRepository.appendMessage(sessionId, "assistant", buildAssistantPartsJson(parts))
+                        AppLogger.info(
+                            TAG,
+                            "[StreamDurability] recovered ${o.text.length} chars from stream ${o.streamId.take(12)} after process death",
+                        )
+                    }
+                }.onFailure {
+                    AppLogger.warning(TAG, "[StreamDurability] recovery failed: ${it.message}")
+                }
+            }
             // T239: hydrate persisted thinking-mode override. null = unset
             // (use OFF as the legacy default); non-null = explicit user
             // choice persisted across cold-start. runCatching guards against
@@ -5377,6 +5446,13 @@ class ChatViewModel(
         runCatching {
             java.io.File(context.filesDir, "browser_tabs/$sid.json").delete()
         }
+        // [T-partial-turn-durability] the wipe clears in-flight journals too —
+        // their rows would never exist now.
+        runCatching {
+            com.openminis.app.data.StreamHeartbeat.deleteAll(
+                com.openminis.app.data.StreamHeartbeat.dirFor(context.filesDir, sid),
+            )
+        }
         // Persist: drop messages + compact markers. Files (workspace,
         // attachments, offloads) intentionally retained.
         viewModelScope.launch {
@@ -6001,6 +6077,13 @@ class ChatViewModel(
                 } catch (e: Exception) {
                     AppLogger.error(TAG_STREAM, "$label runAgentLoop EXCEPTION ${e.javaClass.simpleName}: ${e.message}")
                     Log.e(TAG, "Agent loop error ($label)", e)
+                    // [T-partial-turn-durability] Loop died mid-round: commit
+                    // the text it had already produced BEFORE the error banner
+                    // replaces the bubble — the streamed answer must survive a
+                    // transport failure. Same coroutine as the dead loop → the
+                    // exported StringBuilder is quiescent → full fidelity.
+                    runCatching { persistPartialStreamTurn() }
+                        .onFailure { Log.w(TAG, "partial-turn persist failed: ${it.message}") }
                     setInlineError(e.message ?: "Unknown error")
                     
                     // [T-auto-resume] Decide whether to resume automatically.
@@ -6087,6 +6170,10 @@ class ChatViewModel(
                                     TAG_STREAM,
                                     "$label auto-resume FAILED attempt=${decision.attempt}: ${resumeEx.message}",
                                 )
+                                // [T-partial-turn-durability] Same contract as the
+                                // primary catch: the resumed round's text survives.
+                                runCatching { persistPartialStreamTurn() }
+                                    .onFailure { Log.w(TAG, "partial-turn persist failed: ${it.message}") }
                                 setInlineError(resumeEx.message ?: "Unknown error")
                             }
                         }
@@ -8250,6 +8337,10 @@ class ChatViewModel(
         // creation so the renderer can hide Deep Thinking blocks for
         // turns the user explicitly asked not to surface, even when a
         // forced-reasoning model still streams reasoning_content.
+        // [T-partial-turn-durability] fresh run → no live round state.
+        liveTurnTextSb = null
+        liveStreamTurnText = ""
+        liveStreamId = assistantId
         val turnThinkingLevel = _thinkingLevel.value
         withContext(Dispatchers.Main) {
             _messages.value = _messages.value + ChatMessage(
@@ -8318,6 +8409,13 @@ class ChatViewModel(
             // interrupts the text run).
             val turnTextSb = StringBuilder()
             var currentTextBlockSb: StringBuilder? = null
+            // [T-partial-turn-durability] Export THIS round's accumulator so a
+            // mid-round terminator (error/cancel/crash) can commit it, and
+            // reset the crash-journal heartbeat counters for the new round.
+            liveTurnTextSb = turnTextSb
+            liveStreamTurnText = ""
+            var hbLastMs = 0L
+            var hbLastLen = 0
             // [T-android-tool-splits-reply-fix] Index (into allToolBlocks) of
             // THIS turn's single text block, used only when the provider's
             // streamed content is monolithic (streamTextIsMonolithic — OpenAI
@@ -8570,6 +8668,25 @@ class ChatViewModel(
                         // text lives in `pendingChunkSb` so the stream-end final
                         // flush at line ~3580 can drain it.
                         pendingChunkSb.append(chunk.text)
+                        // [T-partial-turn-durability] Crash journal: append the
+                        // text accumulated since the last accepted heartbeat.
+                        // FILE appends only — the DB is deliberately untouched
+                        // while streaming (a Room row rewritten per heartbeat
+                        // is O(n²) cumulative writes; see StreamHeartbeat KDoc).
+                        // Cadence is gated by StreamDurability, so this is a few
+                        // syscalls every 5-15s, amortised O(total text).
+                        val hbLen = turnTextSb.length
+                        val hbNow = System.currentTimeMillis()
+                        if (com.openminis.app.data.StreamDurability.shouldHeartbeat(hbNow, hbLastMs, hbLen, hbLastLen)) {
+                            hbLastMs = hbNow
+                            val hbFrom = hbLastLen
+                            hbLastLen = hbLen
+                            com.openminis.app.data.StreamHeartbeat.appendDelta(
+                                streamHeartbeatDir(),
+                                assistantId,
+                                turnTextSb.substring(hbFrom, hbLen),
+                            )
+                        }
                         val len = turnTextSb.length
                         val unflushed = len - lastFlushedLen
                         val throttle = textDeltaThrottleMs(len)
@@ -8586,6 +8703,7 @@ class ChatViewModel(
                             // (activeSb === currentTextBlockSb by construction.)
                             materializeActiveTextBlock()
                             val turnSnap = turnTextSb.toString()
+                            liveStreamTurnText = turnSnap
                             withContext(Dispatchers.Main) {
                                 updateAssistantMessage(assistantId, accumulatedText + turnSnap, true, allToolBlocks)
                             }
@@ -8631,6 +8749,7 @@ class ChatViewModel(
                                 currentTextBlockSb = null
                             }
                             val turnSnap = turnTextSb.toString()
+                            liveStreamTurnText = turnSnap
                             withContext(Dispatchers.Main) {
                                 updateAssistantMessage(assistantId, accumulatedText + turnSnap, true, allToolBlocks)
                             }
@@ -9357,6 +9476,10 @@ class ChatViewModel(
             // semantics — `turnText` participates in cross-turn accumulation
             // and gets persisted into agentHistory below.
             val turnText = turnTextSb.toString()
+            // [T-partial-turn-durability] Full-fidelity snapshot right before
+            // the tool-execution gap: a cancel/error during tool runs must
+            // commit exactly this round's complete text.
+            liveStreamTurnText = turnText
             // Accumulate text across turns
             accumulatedText += turnText
 
@@ -9409,6 +9532,11 @@ class ChatViewModel(
                 val turnParts = buildTurnParts(allToolBlocks, turnStartBlockIndex, toolInputMap)
                 val blockMeta = allToolBlocks.filter { it.kind == "tool_use" }.associateBy { it.id }
                 persistAssistantTurn(turnParts, lastUsage, turnReasoningContent, blockMeta)
+                // [T-partial-turn-durability] Round committed → the crash
+                // journal and the live-round export are obsolete.
+                liveTurnTextSb = null
+                liveStreamTurnText = ""
+                com.openminis.app.data.StreamHeartbeat.delete(streamHeartbeatDir(), assistantId)
                 // [T-error-persist-android] Empty-response hint: the model ended a
                 // turn (finish=stop/end_turn) with no visible text anywhere in the
                 // reply and no tool blocks — the user just sees a blank bubble.
@@ -9745,12 +9873,19 @@ class ChatViewModel(
             val turnParts = buildTurnParts(allToolBlocks, turnStartBlockIndex, toolInputMap)
             val blockMeta = allToolBlocks.filter { it.kind == "tool_use" }.associateBy { it.id }
             val assistantDbId = persistAssistantTurn(turnParts, lastUsage, turnReasoningContent, blockMeta)
+            // [T-partial-turn-durability] Round committed (this site runs after
+            // tool execution; the export stayed live through the tool gap so an
+            // error/cancel during execution could still commit the round text).
+            // Clear it now — a later terminator must NOT re-commit this round.
             if (assistantDbId != null) {
                 val lastIdx = agentHistory.indexOfLast { it.role == LLMMessage.Role.ASSISTANT && it.dbMessageId == null }
                 if (lastIdx >= 0) {
                     agentHistory[lastIdx] = agentHistory[lastIdx].copy(dbMessageId = assistantDbId)
                 }
             }
+            liveTurnTextSb = null
+            liveStreamTurnText = ""
+            com.openminis.app.data.StreamHeartbeat.delete(streamHeartbeatDir(), assistantId)
 
             // Persist tool results as user-role message (mirrors iOS)
             val toolResultDbId = persistToolResultMessage(resultParts)
@@ -9816,6 +9951,9 @@ class ChatViewModel(
                     // iteration top, so clearing means new turn's blocks
                     // span [0..size).
                     assistantId = handled.newAssistantId
+                    // [T-partial-turn-durability] journal key follows the new
+                    // bubble (old round's file was deleted at its persist).
+                    liveStreamId = handled.newAssistantId
                     accumulatedText = ""
                     allToolBlocks.clear()
                     allToolInputs.clear()
@@ -9881,6 +10019,12 @@ class ChatViewModel(
         if (_streamingById.value.containsKey(assistantId)) {
             _streamingById.value = _streamingById.value - assistantId
         }
+        // [T-partial-turn-durability] Loop ceiling hit: every completed round
+        // already persisted (and cleared the export), so this is defensive —
+        // no orphan journal may outlive the loop.
+        liveTurnTextSb = null
+        liveStreamTurnText = ""
+        com.openminis.app.data.StreamHeartbeat.delete(streamHeartbeatDir(), assistantId)
         setInlineError(
             "Stopped after $MAX_AGENT_TURNS agent turns to prevent runaway " +
             "tool use. The model kept calling tools without finishing — tap " +
@@ -10692,6 +10836,29 @@ class ChatViewModel(
 
     /** Drain ALL outstanding streaming deltas (called on global resets). */
     private fun flushAllStreamingDeltas() {
+        // [T-stream-flush-tail-loss] Publish any suppressed trailing delta
+        // BEFORE the state clear drops it. clearAllStreamFlushStates cancels
+        // the pending trailing job — and with it the pendingContent it was
+        // going to publish — so a delta caught inside the throttle window
+        // (up to 2s of text on long replies) silently vanished from every
+        // terminal drain: error banner, user cancel, turn limit. Publishing
+        // inline first makes the drain see the true latest content. The
+        // runCatching guards the pre-existing HashMap cross-thread access
+        // (Main writers vs IO error path) — a lost snapshot is exactly what
+        // the fallback in currentLiveTurnText() covers.
+        runCatching {
+            for ((flushId, st) in streamFlushStates.toList()) {
+                val pc = st.pendingContent ?: continue
+                _streamingById.value = _streamingById.value + (
+                    flushId to StreamingDelta(
+                        content = pc,
+                        toolBlocks = st.pendingBlocks,
+                        isAwaitingModelResponse = st.pendingAwaiting,
+                    )
+                )
+                st.pendingContent = null
+            }
+        }
         clearAllStreamFlushStates()
         val pending = _streamingById.value
         if (pending.isEmpty()) return
@@ -10812,6 +10979,49 @@ class ChatViewModel(
             reasoningContent = reasoningContent,
         )
         return entity.id
+    }
+
+    /**
+     * [T-partial-turn-durability] Commit the current round's streamed text
+     * when the agent loop died mid-round (provider error / auto-resume
+     * failure). The text lived only in memory before this existed — a
+     * transport error at 90% of a 15k-line answer destroyed all of it.
+     *
+     * Persists an assistant row (text + incompleteness marker) and appends it
+     * to agentHistory so retry/resume continues from it. Called INLINE
+     * (suspend, same coroutine as the dead loop) before [setInlineError], so
+     * the error sticker's "update last assistant row" lands on THIS row.
+     *
+     * No-op when the round was already committed (export cleared at both
+     * round-persist sites) or produced no text.
+     */
+    private suspend fun persistPartialStreamTurn(): Boolean {
+        val text = currentLiveTurnText()
+        val sid = realSessionId.ifEmpty { sessionId }
+        if (text.isEmpty() || sid.isEmpty()) return false
+        val parts = listOf(
+            AgentContentPart.Text(text),
+            AgentContentPart.Text(STREAM_INTERRUPTED_REMINDER),
+        )
+        agentHistory.add(
+            LLMMessage(
+                role = LLMMessage.Role.ASSISTANT,
+                content = text,
+                contentParts = parts,
+            )
+        )
+        withContext(Dispatchers.IO) {
+            runCatching {
+                chatRepository.appendMessage(sid, "assistant", buildAssistantPartsJson(parts))
+            }.onFailure {
+                Log.w(TAG, "[StreamDurability] partial-turn persist failed: ${it.message}")
+            }
+        }
+        liveTurnTextSb = null
+        liveStreamTurnText = ""
+        liveStreamId?.let { com.openminis.app.data.StreamHeartbeat.delete(streamHeartbeatDir(), it) }
+        AppLogger.info(TAG_STREAM, "[StreamDurability] committed partial round: ${text.length} chars after loop death")
+        return true
     }
 
     @Deprecated("Use persistAssistantTurn(parts, ...) for per-turn delta persistence")
@@ -12029,6 +12239,15 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         }
         handleUserCancelledCleanup()
 
+        // [T-partial-turn-durability] The cancel paths above committed the
+        // round text from memory (authoritative, full-fidelity) — the crash
+        // journal and the live-round export are obsolete. Clear AFTER
+        // handleUserCancelledCleanup, which reads them.
+        liveStreamId?.let { com.openminis.app.data.StreamHeartbeat.delete(streamHeartbeatDir(), it) }
+        liveTurnTextSb = null
+        liveStreamTurnText = ""
+        liveStreamId = null
+
         // T189: iOS parity (AIChatViewModel.swift L2592-2610). If the user
         // enqueued prompts during the cancelled stream, auto-resume the drain
         // instead of leaving them stuck as dashed bubbles waiting for a manual
@@ -12230,26 +12449,52 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                     isError = true,
                 )
             }
+            // [T-partial-turn-durability] The interrupted round's TEXT is
+            // still unpersisted — persistAssistantTurn runs only AFTER tool
+            // execution, which the cancel just cut short. Commit it before
+            // the cancelled tool results, in the SAME coroutine so the two
+            // rows cannot race on nextSortOrder. Text-only parts: tool_use
+            // inputs are not recoverable here (they live in the loop's
+            // allToolInputs) and the orphaned CANCELLED tool_results are
+            // already handled downstream by PayloadPairingGuard.
+            val roundText = currentLiveTurnText()
+            val textParts = roundText.takeIf { it.isNotEmpty() }?.let { rt ->
+                listOf(
+                    AgentContentPart.Text(rt),
+                    AgentContentPart.Text(STREAM_INTERRUPTED_REMINDER),
+                )
+            }
+            if (textParts != null) {
+                agentHistory.add(
+                    LLMMessage(
+                        role = LLMMessage.Role.ASSISTANT,
+                        content = roundText,
+                        contentParts = textParts,
+                    )
+                )
+            }
+            val sidNow = activeSessionId
             viewModelScope.launch(Dispatchers.IO) {
+                if (textParts != null) {
+                    runCatching {
+                        chatRepository.appendMessage(sidNow, "assistant", buildAssistantPartsJson(textParts))
+                    }
+                }
                 persistToolResultMessage(parts)
             }
             _canResume.value = true
             return
         }
 
-        // Case 2: cancel during text streaming. If partial assistant text
-        // exists and agentHistory does not already end with the assistant
-        // turn we're on, commit the partial text + truncation marker so the
-        // model sees an interrupted prior turn on the next call.
-        val partialText = buildString {
-            if (last.content.isNotEmpty()) append(last.content)
-            for (b in last.toolBlocks) {
-                if (b.kind == "text" && b.content.isNotEmpty()) {
-                    if (isNotEmpty()) append('\n')
-                    append(b.content)
-                }
-            }
-        }
+        // Case 2: cancel during text streaming. [T-partial-turn-durability]
+        // Commit the CURRENT ROUND's text (exported loop state), not the whole
+        // bubble: earlier rounds are already persisted as their own rows, and
+        // the old full-bubble persist DUPLICATED their text into a new row —
+        // the model then read the same text twice after a reload. Non-empty
+        // export always means "this round was never persisted" (cleared at
+        // both round-persist sites), so persisting it is duplicate-free in
+        // every ordering.
+        val partialText = currentLiveTurnText()
         val historyEndsWithAssistant =
             agentHistory.lastOrNull()?.role == LLMMessage.Role.ASSISTANT
 
@@ -12263,13 +12508,25 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         // a candidate WITH real text or any emitted tool_use is kept (handled
         // by Case 1 / Case 2 below); a thinking-only placeholder is not.
         val hasAnyToolUse = last.toolBlocks.any { it.kind == "tool_use" }
-        if (partialText.isEmpty() && !hasAnyToolUse && !historyEndsWithAssistant) {
+        // [T-partial-turn-durability] The drop test uses the BUBBLE's content
+        // (what the user saw), not the round-scoped export: after a completed
+        // round 1 the bubble carries real text even while the round-2 export
+        // is empty — dropping it would blank a turn whose rows are already
+        // in the DB. The export decides only what still needs PERSISTING
+        // (Case 2 below).
+        val bubbleHasContent = last.content.isNotBlank() || hasAnyToolUse ||
+            last.toolBlocks.any { it.kind == "text" && it.content.isNotBlank() }
+        if (!bubbleHasContent && !historyEndsWithAssistant) {
             msgs.removeAt(lastIdx)
             _messages.value = msgs
             return
         }
 
-        if (partialText.isNotEmpty() && !historyEndsWithAssistant) {
+        if (partialText.isNotEmpty()) {
+            // [T-partial-turn-durability] historyEndsWithAssistant no longer
+            // gates this: with round-scoped text there is no duplication
+            // either way, and the old skip lost the CURRENT round's text
+            // whenever an earlier round had already been persisted.
             val parts = listOf<AgentContentPart>(
                 AgentContentPart.Text(partialText),
                 AgentContentPart.Text(
