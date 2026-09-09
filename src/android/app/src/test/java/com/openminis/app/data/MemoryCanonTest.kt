@@ -96,7 +96,7 @@ class MemoryCanonTest {
             text: Старое решение.
         """.trimIndent()
         val entries = MemoryCanon.parse(text)
-        assertEquals(2, entries)  // broken block skipped, two valid parsed
+        assertEquals(2, entries.size)  // broken block skipped, two valid parsed
         val first = entries[0]
         assertEquals("c-abc123def0", first.id)
         assertEquals("preference", first.type)

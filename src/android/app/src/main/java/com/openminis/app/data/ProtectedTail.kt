@@ -71,14 +71,42 @@ object ProtectedTail {
     }
 
     /**
+     * [T-tail-token-budget] VERBATIM tail budget in TOKENS, proportional to
+     * the active model's window. This is the second half of "size the tail
+     * to the window": [protectedTurnsForWindow] bounds the tail by TURN COUNT,
+     * but a turn is not a fixed size — one tool-heavy agent turn can carry
+     * dozens of kilobytes of tool_result parts, and six of those outweigh a
+     * 32k window while six one-liners fit in a rounding error. Counting turns
+     * alone cannot see that; the tail also needs a byte/token ceiling.
+     *
+     * Formula: window / 4, clamped to [1024, 32768].
+     *   8k → 2048   16k → 4096   32k → 8192   131k+ → 32768 (cap)
+     * The other ~3/4 of the window stays for the system prompt, tools
+     * schema, the compact summary itself, and the model's output — a tail
+     * that eats half the window starves exactly those. Both limits apply
+     * TOGETHER: the tail is `min(count-limit, budget-limit)` turns, so a
+     * small window gets a short tail even when turns are fat, and a large
+     * window never gets more than 6 turns however cheap they are.
+     *
+     * Pure logic — unit-tested.
+     */
+    fun tailBudgetTokens(contextWindow: Int): Int =
+        (contextWindow / 4).coerceIn(TAIL_BUDGET_MIN_TOKENS, TAIL_BUDGET_MAX_TOKENS)
+    const val TAIL_BUDGET_MIN_TOKENS = 1_024
+    const val TAIL_BUDGET_MAX_TOKENS = 32_768
+
+    /**
      * One history entry reduced to what the anchor decision needs.
      *
      * @param isUser true for a user-role message (turn boundary).
      * @param hasDbId true when the entry is persisted (has a non-empty
      *        dbMessageId). An anchor MUST be persisted or the compact marker
      *        cannot be restored on reload.
+     * @param tokens approximate payload cost of this entry (text + parts).
+     *        Used by the token-budgeted anchor path; 0 by default so
+     *        count-only callers keep the legacy behaviour.
      */
-    data class Entry(val isUser: Boolean, val hasDbId: Boolean)
+    data class Entry(val isUser: Boolean, val hasDbId: Boolean, val tokens: Int = 0)
 
     /**
      * Index of the last entry that MAY be compacted. Everything with a greater
@@ -88,6 +116,15 @@ object ProtectedTail {
      *  - Walk back from the end counting user turns. The [protectedUserTurns]th
      *    user turn (from the end) opens the protected region; the anchor is the
      *    persisted entry just before it.
+     *  - [tokenBudget] [T-tail-token-budget]: the walk ALSO stops when the
+     *    verbatim tail has already consumed the budget and at least one full
+     *    user turn is protected — a fat tool-heavy tail must not outweigh the
+     *    model's window (see [tailBudgetTokens]). The FIRST user turn is
+     *    always included even if it alone exceeds the budget: a tail of zero
+     *    turns would blind the model to everything after the summary, and a
+     *    single oversized turn is handled downstream (preAnchor/postAnchor
+     *    tool_result prune, image budget, offload). Pass Int.MAX_VALUE (the
+     *    default) to disable the token limit and keep count-only behaviour.
      *  - Returns -1 when there is nothing safe to compact: the history is
      *    entirely within the protected tail (fewer than `protectedUserTurns`
      *    user turns exist, or the protected region reaches index 0), or no
@@ -106,6 +143,7 @@ object ProtectedTail {
         entries: List<Entry>,
         protectedUserTurns: Int = DEFAULT_PROTECTED_USER_TURNS,
         anchorCeiling: Int? = null,
+        tokenBudget: Int = Int.MAX_VALUE,
     ): Int {
         if (entries.isEmpty()) return -1
 
@@ -121,17 +159,36 @@ object ProtectedTail {
             return walkToPersisted(start)
         }
 
-        // Find where the protected tail begins: the Nth-from-last user turn.
+        // Find where the protected tail begins: the Nth-from-last user turn,
+        // with the token budget as a second, independent stop condition.
+        // Traced semantics: the count stop fires AFTER accepting the Nth user
+        // (that turn opens the tail), while the budget stop REFUSES the next
+        // turn and keeps the tail at the first turn accepted so far.
         var userSeen = 0
+        var tailTokens = 0
+        var firstAcceptedUserIdx = -1
         var protectStart = -1
         for (i in entries.indices.reversed()) {
             if (entries[i].isUser) {
+                if (firstAcceptedUserIdx != -1 && tokenBudget != Int.MAX_VALUE &&
+                    tailTokens + entries[i].tokens > tokenBudget
+                ) {
+                    // Budget gate: accepting THIS turn's messages on top of
+                    // what is already protected would exceed the budget. The
+                    // already-accepted turns stay protected (the first one is
+                    // accepted unconditionally — a tail of zero turns would
+                    // blind the model to everything after the summary).
+                    protectStart = firstAcceptedUserIdx
+                    break
+                }
                 userSeen += 1
+                if (firstAcceptedUserIdx == -1) firstAcceptedUserIdx = i
                 if (userSeen == protectedUserTurns) {
                     protectStart = i
                     break
                 }
             }
+            tailTokens += entries[i].tokens
         }
 
         // Not enough user turns, or protection starts at the very top → the

@@ -46,6 +46,41 @@ class MechanicalCompactTest {
         assertTrue(d.contains("user turn #100"))
     }
 
+    // [T-tail-token-budget] The digest budget must scale with the ACTIVE
+    // model's window — a flat digest can overflow the small-context model
+    // it is rescuing (the exact 400 it exists to escape).
+    @Test
+    fun `digest char budget scales with the model window`() {
+        assertEquals(2_000, MechanicalCompact.digestCharBudget(4_096))    // floor
+        assertEquals(3_000, MechanicalCompact.digestCharBudget(8_000))
+        assertEquals(6_000, MechanicalCompact.digestCharBudget(16_000))   // legacy default
+        assertEquals(12_000, MechanicalCompact.digestCharBudget(32_000))
+        assertEquals(24_000, MechanicalCompact.digestCharBudget(128_000)) // ceiling
+        assertEquals(24_000, MechanicalCompact.digestCharBudget(1_000_000))
+    }
+
+    @Test
+    fun `small window gets a proportionally smaller digest`() {
+        // Same input, two windows: an 8k window must produce a digest that
+        // fits ITS budget (3000 chars), while a 128k window may keep more.
+        val turns = (1..60).map { u("требование #$it ${"данные".repeat(40)}") }
+        val small = MechanicalCompact.buildDigest(turns, charBudget = MechanicalCompact.digestCharBudget(8_000))
+        val large = MechanicalCompact.buildDigest(turns, charBudget = MechanicalCompact.digestCharBudget(128_000))
+        assertTrue(small.length <= 3_000)
+        assertTrue(large.length > small.length)
+        // Budget integrity: the small digest dropped older turns visibly.
+        assertTrue(small.contains("опущено"))
+    }
+
+    @Test
+    fun `buildDigest default matches the legacy 6000-char cap`() {
+        // No-arg call keeps the historical behaviour (16k-tier budget) —
+        // existing callers that don't know the window are unaffected.
+        val turns = (1..100).map { u("user turn #$it ${"x".repeat(500)}") }
+        val d = MechanicalCompact.buildDigest(turns)
+        assertTrue(d.length < 6600)
+    }
+
     @Test
     fun `assistant-only range still digests`() {
         val d = MechanicalCompact.buildDigest(listOf(a("final state")))

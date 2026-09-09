@@ -137,4 +137,102 @@ class ProtectedTailTest {
         // here with the extreme pair.
         org.junit.Assert.assertTrue(smallWindowAnchor >= bigWindowAnchor)
     }
+
+    // [T-tail-token-budget] The tail must ALSO be bounded in tokens: turn
+    // counts cannot see a fat tool-heavy turn that outweighs the whole
+    // window by itself. Budget = window/4 clamped to [1024, 32768].
+    @Test
+    fun `tail budget scales proportionally with the window`() {
+        assertEquals(1_024, ProtectedTail.tailBudgetTokens(4_096))    // clamped up
+        assertEquals(2_000, ProtectedTail.tailBudgetTokens(8_000))
+        assertEquals(4_000, ProtectedTail.tailBudgetTokens(16_000))
+        assertEquals(8_000, ProtectedTail.tailBudgetTokens(32_000))
+        assertEquals(32_000, ProtectedTail.tailBudgetTokens(128_000))
+        assertEquals(32_768, ProtectedTail.tailBudgetTokens(131_072)) // cap kicks in
+        assertEquals(32_768, ProtectedTail.tailBudgetTokens(1_000_000))
+    }
+
+    @Test
+    fun `token budget stops the tail walk earlier than the turn count`() {
+        // 10 turns, each turn ~300 tokens (u+a at 150 each). Budget 500 lets
+        // only the LAST turn's slice fit: walking back, after accepting the
+        // newest turn (u@18, slice [18..19] = 300 tokens) the next candidate
+        // u@16 would push the slice to 600 > 500 → the tail stays at ONE
+        // turn and turn #8 opens the compactable region instead.
+        val entries = buildList {
+            repeat(10) {
+                add(ProtectedTail.Entry(isUser = true, hasDbId = true, tokens = 150))
+                add(ProtectedTail.Entry(isUser = false, hasDbId = true, tokens = 150))
+            }
+        }
+        val anchor = ProtectedTail.anchorIndex(
+            entries,
+            protectedUserTurns = 6,          // count would allow 6 turns
+            tokenBudget = 500,               // tokens allow only 1
+        )
+        // Tail = [18..19] (one turn); anchor = the entry just before it.
+        assertEquals(17, anchor)
+        val protectedUserCount = (anchor + 1 until entries.size).count { entries[it].isUser }
+        assertEquals(1, protectedUserCount)
+    }
+
+    @Test
+    fun `first user turn is protected even when it alone exceeds the budget`() {
+        // The newest turn is FAT (5_000 tokens) and the budget is tiny (1_024):
+        // the min-one-turn guarantee must keep it verbatim — an empty tail
+        // would blind the model to everything after the summary.
+        val entries = buildList {
+            repeat(4) {
+                add(ProtectedTail.Entry(isUser = true, hasDbId = true, tokens = 5_000))
+                add(ProtectedTail.Entry(isUser = false, hasDbId = true, tokens = 1_000))
+            }
+        }
+        val anchor = ProtectedTail.anchorIndex(
+            entries,
+            protectedUserTurns = 6,
+            tokenBudget = 1_024,
+        )
+        // protectStart = user of the LAST turn (index 6), anchor = 5.
+        assertEquals(5, anchor)
+        val protectedUserCount = (anchor + 1 until entries.size).count { entries[it].isUser }
+        assertEquals(1, protectedUserCount)
+    }
+
+    @Test
+    fun `token budget default keeps legacy count-only behaviour`() {
+        // Default Int.MAX_VALUE must reproduce the exact pre-budget anchor
+        // for the same entries — old sessions and count-only callers are
+        // unaffected.
+        val entries = buildList {
+            repeat(10) {
+                add(ProtectedTail.Entry(isUser = true, hasDbId = true, tokens = 99_999))
+                add(ProtectedTail.Entry(isUser = false, hasDbId = true, tokens = 99_999))
+            }
+        }
+        assertEquals(
+            ProtectedTail.anchorIndex(entries, protectedUserTurns = 6, tokenBudget = Int.MAX_VALUE),
+            ProtectedTail.anchorIndex(entries, protectedUserTurns = 6),
+        )
+        assertEquals(7, ProtectedTail.anchorIndex(entries, protectedUserTurns = 6))
+    }
+
+    @Test
+    fun `cheap turns still get the full count when budget is generous`() {
+        // 10 turns × 20 tokens; budget 32_768 (the ≥128k tier) — the count
+        // limit (6) must bind, not the token budget.
+        val entries = buildList {
+            repeat(10) {
+                add(ProtectedTail.Entry(isUser = true, hasDbId = true, tokens = 10))
+                add(ProtectedTail.Entry(isUser = false, hasDbId = true, tokens = 10))
+            }
+        }
+        val anchor = ProtectedTail.anchorIndex(
+            entries,
+            protectedUserTurns = 6,
+            tokenBudget = ProtectedTail.tailBudgetTokens(128_000),
+        )
+        assertEquals(7, anchor)
+        val protectedUserCount = (anchor + 1 until entries.size).count { entries[it].isUser }
+        assertEquals(6, protectedUserCount)
+    }
 }

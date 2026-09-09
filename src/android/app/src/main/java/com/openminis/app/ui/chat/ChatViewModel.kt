@@ -1928,10 +1928,17 @@ class ChatViewModel(
         val protectedTurns = com.openminis.app.data.ProtectedTail.protectedTurnsForWindow(
             effectiveContextWindowTokens() ?: 128_000,
         )
+        // [T-tail-token-budget] Second, token-based limit on the SAME tail:
+        // turn counts alone cannot see a fat tool-heavy turn that outweighs
+        // the whole window. Both limits apply together (min of the two).
+        val tailTokenBudget = com.openminis.app.data.ProtectedTail.tailBudgetTokens(
+            effectiveContextWindowTokens() ?: 128_000,
+        )
         val ptEntries = history.map { m ->
             com.openminis.app.data.ProtectedTail.Entry(
                 isUser = m.role == LLMMessage.Role.USER,
                 hasDbId = !m.dbMessageId.isNullOrEmpty(),
+                tokens = estimateMessageTokens(m),
             )
         }
         val anchorIdx: Int = if (anchorIdxOverride != null) {
@@ -1942,12 +1949,14 @@ class ChatViewModel(
                 entries = ptEntries,
                 protectedUserTurns = protectedTurns,
                 anchorCeiling = anchorIdxOverride.coerceIn(0, history.lastIndex),
+                tokenBudget = tailTokenBudget,
             )
         } else {
             // compactAll() — anchor just below the protected recent tail.
             com.openminis.app.data.ProtectedTail.anchorIndex(
                 entries = ptEntries,
                 protectedUserTurns = protectedTurns,
+                tokenBudget = tailTokenBudget,
             )
         }
         if (anchorIdx < 0) {
@@ -2075,6 +2084,12 @@ class ChatViewModel(
                                 text = m.content,
                             )
                         },
+                        // [T-tail-token-budget] Scale the mechanical digest to
+                        // the ACTIVE window — a flat 6000-char digest can
+                        // overflow the small-context model it rescues.
+                        charBudget = com.openminis.app.data.MechanicalCompact.digestCharBudget(
+                            effectiveContextWindowTokens() ?: 128_000,
+                        ),
                     )
                     if (digest.isBlank()) {
                         withContext(Dispatchers.Main) {
@@ -2963,6 +2978,15 @@ class ChatViewModel(
             val keepN = com.openminis.app.data.ProtectedTail.protectedTurnsForWindow(
                 effectiveContextWindowTokens() ?: 128_000,
             )
+            // [T-tail-token-budget] Read side mirrors the WRITE side's token
+            // gate: the verbatim pre-anchor tail must fit the CURRENT model's
+            // window in tokens, not just in turn count — a tool-heavy turn
+            // can outweigh a small window by itself. Same formula as the
+            // write side, so the tail a session SENDS never exceeds the tail
+            // the compaction reserved.
+            val tailTokenBudget = com.openminis.app.data.ProtectedTail.tailBudgetTokens(
+                effectiveContextWindowTokens() ?: 128_000,
+            )
             // Step 1: walk back from anchor collecting user-text turns. Stop
             // when EITHER we've collected N user-text turns OR including the
             // next turn would push preAnchor over 100 messages. Decisions
@@ -2976,6 +3000,7 @@ class ChatViewModel(
                 anchorIdx = anchorIdx,
                 maxUserTextTurns = keepN,
                 maxMessages = preAnchorCap,
+                tokenBudget = tailTokenBudget,
             )
             val priorIdxResolved: Int? = walkBack.priorIdx
             val priorIdx = walkBack.priorIdx ?: (anchorIdx + 1) // empty preAnchor sentinel
@@ -3249,6 +3274,7 @@ class ChatViewModel(
         anchorIdx: Int,
         maxUserTextTurns: Int,
         maxMessages: Int,
+        tokenBudget: Int = Int.MAX_VALUE,
     ): WalkBackResult {
         if (anchorIdx < 0 || anchorIdx >= agentHistory.size) {
             return WalkBackResult(null, 0, 0, "invalidAnchor")
@@ -3264,6 +3290,14 @@ class ChatViewModel(
         var acceptedPriorIdx: Int? = null
         var acceptedUserTextTurns = 0
         var acceptedMessageCount = 0
+        // [T-tail-token-budget] Tokens of the currently accepted verbatim
+        // slice [acceptedPriorIdx .. anchorIdx]. The budget is checked BEFORE
+        // accepting a further user turn: once one turn is protected and the
+        // next would push the slice over budget, we stop and keep what we
+        // have. The FIRST user turn is accepted unconditionally (a tail of
+        // zero turns blinds the model to everything after the summary);
+        // Int.MAX_VALUE (default) disables the gate for count-only callers.
+        var acceptedTokens = 0
 
         var i = anchorIdx
         while (i >= 0) {
@@ -3281,7 +3315,27 @@ class ChatViewModel(
                     stopReason = "messageCapWouldExceed",
                 )
             }
+            if (tokenBudget != Int.MAX_VALUE && acceptedUserTextTurns >= 1) {
+                // Tokens of messages (i .. acceptedPriorIdx-1) — the part of
+                // this turn the slice does not include yet.
+                var addTokens = 0
+                for (j in i until acceptedPriorIdx) addTokens += estimateMessageTokens(agentHistory[j])
+                if (acceptedTokens + addTokens > tokenBudget) {
+                    return WalkBackResult(
+                        priorIdx = acceptedPriorIdx,
+                        userTextTurnsFound = acceptedUserTextTurns,
+                        messageCount = acceptedMessageCount,
+                        stopReason = "tokenBudgetExhausted",
+                    )
+                }
+                acceptedTokens += addTokens
+            }
             // Accept this user as the new tentative priorIdx.
+            if (acceptedPriorIdx == null) {
+                var firstTurnTokens = 0
+                for (j in i..anchorIdx) firstTurnTokens += estimateMessageTokens(agentHistory[j])
+                acceptedTokens = firstTurnTokens
+            }
             acceptedPriorIdx = i
             acceptedMessageCount = candidateMessageCount
             val hasText = msg.content.isNotBlank() ||
@@ -7822,6 +7876,16 @@ class ChatViewModel(
         }
         is AgentContentPart.ImageData -> BPETokenizer.countImageTokens(part.data)
     }
+
+    /**
+     * [T-tail-token-budget] Approximate payload cost of a whole message —
+     * body text + all parts. Feeds ProtectedTail.Entry.tokens and the
+     * token-budgeted walk-back so the protected tail is sized in TOKENS
+     * proportional to the model's window, not in message/turn counts (a
+     * single tool-heavy turn can outweigh a 32k window on its own).
+     */
+    private fun estimateMessageTokens(msg: LLMMessage): Int =
+        BPETokenizer.countTokens(msg.content) + msg.contentParts.sumOf { countPartTokens(it) }
 
     /**
      * Offload candidate descriptor. `msgIdx` and `partIdx` index back into

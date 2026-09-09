@@ -96,6 +96,19 @@ object MemoryCanon {
             val textLines = mutableListOf<String>()
             for (line in lines) {
                 if (textStarted) { textLines.add(line); continue }
+                // [T-canon-parse-text] MUST run BEFORE the kv-`continue`:
+                // the kv regex deliberately excludes `text` from its group,
+                // so a "text: ..." line falls through `?: continue` and the
+                // startsWith branch below was unreachable — textStarted never
+                // rose, every entry came out empty and parse() returned []
+                // for perfectly serialized bodies (CANON.md silently wiped
+                // on reload). Caught by MemoryCanonTest once it entered CI.
+                if (line.startsWith("text:")) {
+                    textStarted = true
+                    val first = line.removePrefix("text:").trim()
+                    if (first.isNotEmpty()) textLines.add(first)
+                    continue
+                }
                 val kv = Regex("^(id|type|status|pin|source|created|supersedes):\\s*(.*)$").find(line)
                     ?: continue
                 val v = kv.groupValues[2].trim()
@@ -107,11 +120,6 @@ object MemoryCanon {
                     "source" -> source = v.ifEmpty { "user_explicit" }
                     "created" -> created = v
                     "supersedes" -> supersedes = v.ifEmpty { null }
-                }
-                if (line.startsWith("text:")) {
-                    textStarted = true
-                    val first = line.removePrefix("text:").trim()
-                    if (first.isNotEmpty()) textLines.add(first)
                 }
             }
             // Hand-edited block without a `text:` key: treat the whole body
