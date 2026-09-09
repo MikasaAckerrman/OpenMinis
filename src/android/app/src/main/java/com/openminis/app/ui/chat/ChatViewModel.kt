@@ -43,6 +43,7 @@ import com.openminis.app.provider.LLMProvider
 import com.openminis.app.provider.ProviderFactory
 import com.openminis.app.provider.catalogMaxThinkingLevel
 import com.openminis.app.provider.effectiveMaxThinkingLevel
+import com.openminis.app.provider.failOnSilentEmptyCompletion
 import com.openminis.app.agent.shell.BashismDetector
 import com.openminis.app.agent.shell.BashismReminder
 import com.openminis.app.agent.shell.OnDemandBash
@@ -1041,6 +1042,24 @@ class ChatViewModel(
     /** True when a compact-summary LLM call is in flight (UI disables further sends). */
     private val _isCompacting = MutableStateFlow(false)
     val isCompacting: StateFlow<Boolean> = _isCompacting.asStateFlow()
+
+    /**
+     * [T-compact-progress] Live state for the running/failed compact, shown
+     * as a minimal card above the composer: percent, elapsed timer, current
+     * model, route notes — and on failure the SPECIFIC error (which model
+     * answered what) with a retry button, instead of a silent wait followed
+     * by a generic "не удалось сжать". Null = no compact running and nothing
+     * failed; a failure stays until the user retries or dismisses it.
+     */
+    private val _compactProgress =
+        MutableStateFlow<com.openminis.app.data.CompactProgress?>(null)
+    val compactProgress: StateFlow<com.openminis.app.data.CompactProgress?> =
+        _compactProgress.asStateFlow()
+
+    /** Hide the compact card (dismiss a failure or a lingering state). */
+    fun dismissCompactCard() {
+        _compactProgress.value = null
+    }
 
     /** Current auto-retry attempt number (0 = not retrying, 1..MAX = nth retry in flight). */
     private val _autoRetryAttempt = MutableStateFlow(0)
@@ -2043,6 +2062,14 @@ class ChatViewModel(
             return
         }
         _isCompacting.value = true
+        // [T-compact-progress] Live card state for the whole run.
+        val compactStartedMs = System.currentTimeMillis()
+        val reporter = com.openminis.app.data.CompactRunReporter(compactStartedMs) { p ->
+            _compactProgress.value = p
+        }
+        _compactProgress.value = com.openminis.app.data.CompactProgress(
+            startMs = compactStartedMs,
+        )
         maintenanceJob = viewModelScope.launch(Dispatchers.IO) {
             // [T-canon-persistence] Pre-compact flush. The LLM summary below
             // is lossy: an unpinned "запомни X" spoken inside the compacted
@@ -2053,6 +2080,7 @@ class ChatViewModel(
             // memory toggle is off (the user opted out of persistence).
             try {
                 if (_memoryEnabled.value) {
+                    reporter.phase(com.openminis.app.data.CompactPhase.PINNING)
                     val flushSources = (toCompact + history.subList(
                         (anchorIdx + 1).coerceAtMost(history.size), history.size,
                     )).mapNotNull { m ->
@@ -2079,26 +2107,19 @@ class ChatViewModel(
             var compactSucceeded = false
             try {
                 val existing = _compactSummary.value
-                // Mirrors iOS `generateCompactSummaryWithSplitting` — when the
-                // joined transcript exceeds the model's context window, halve
-                // the message list and summarize each half independently, then
-                // merge. depth cap=3 prevents pathological recursion.
-                //
-                // [T-compact-mechanical-fallback] The model attempt is wrapped
-                // in its own try: ANY failure (quota / 400 / invalid key /
-                // exhausted route ladder) or empty output falls through to the
-                // deterministic MechanicalCompact digest below instead of
-                // leaving the user with an un-compactable session. The digest
-                // keeps user turns verbatim + the last assistant message, so
-                // "where we stopped" always survives a failed LLM route.
+                // [T-compact-progress] Route failure detail for the card/notice.
+                var routeFailure: CompactRouteFailure? = null
                 val modelSummary: String? = try {
+                    reporter.phase(com.openminis.app.data.CompactPhase.SUMMARIZING)
                     val rawSummary = generateCompactSummaryWithSplitting(
                         messages = toCompact,
                         previousSummary = existing,
                         depth = 0,
+                        reporter = reporter,
                     ).trim()
                     // [T-context-maintenance] Post-process before storing.
                     // (filler stripped, exact refs restored — never worse)
+                    reporter.phase(com.openminis.app.data.CompactPhase.POLISHING)
                     val polished = com.openminis.app.data.CompactQuality.polish(
                         transcript = buildConversationTextForSummary(toCompact),
                         summary = rawSummary,
@@ -2114,6 +2135,7 @@ class ChatViewModel(
                 } catch (ce: CancellationException) {
                     throw ce
                 } catch (e: Exception) {
+                    if (e is CompactRouteFailure) routeFailure = e
                     Log.w(TAG, "[Compact] model summary failed; using mechanical digest", e)
                     null
                 }
@@ -2133,6 +2155,15 @@ class ChatViewModel(
                         ),
                     )
                     if (digest.isBlank()) {
+                        // [T-compact-progress] Total failure — keep the card up
+                        // with the SPECIFIC reason every model route refused.
+                        _compactProgress.value = reporter.snapshot().copy(
+                            failure = com.openminis.app.data.CompactFailure(
+                                attempts = routeFailure?.attempts.orEmpty(),
+                                terminal = routeFailure?.message
+                                    ?: "локальный дайджест пуст — сжатие не выполнено",
+                            ),
+                        )
                         withContext(Dispatchers.Main) {
                             appendSystemInfo(
                                 "Compaction failed and nothing was preserved mechanically.",
@@ -2143,9 +2174,9 @@ class ChatViewModel(
                     }
                     withContext(Dispatchers.Main) {
                         appendSystemInfo(
-                            text = "Модель сжатия недоступна — сессия сжата механически: " +
-                                "требования пользователя сохранены дословно, детальный пересказ " +
-                                "пропущен. Откат — кнопкой отмены последнего сжатия.",
+                            text = "Сжато без ИИ (механически): ${routeFailure?.shortSummary ?: "модель недоступна"}. " +
+                                "Ваши сообщения сохранены дословно, детальный пересказ пропущен. " +
+                                "Откат — кнопкой отмены последнего сжатия.",
                             iconKind = "compact",
                         )
                     }
@@ -2186,6 +2217,12 @@ class ChatViewModel(
                 }
                 if (verifiedAnchorIdx < 0) {
                     Log.w(TAG, "[Compact] No agentHistory entry has a DB-persisted dbMessageId; aborting")
+                    _compactProgress.value = reporter.snapshot().copy(
+                        failure = com.openminis.app.data.CompactFailure(
+                            attempts = emptyList(),
+                            terminal = "нет якоря к сохранённому сообщению — сжатие отменено",
+                        ),
+                    )
                     withContext(Dispatchers.Main) {
                         appendSystemInfo("Compact failed: could not anchor to a persisted message.", "compact")
                     }
@@ -2201,11 +2238,18 @@ class ChatViewModel(
                 val lastCompactedDbId = history[verifiedAnchorIdx].dbMessageId
                     ?: run {
                         Log.w(TAG, "[Compact] verified anchor at idx=$verifiedAnchorIdx lost dbMessageId; aborting")
+                        _compactProgress.value = reporter.snapshot().copy(
+                            failure = com.openminis.app.data.CompactFailure(
+                                attempts = emptyList(),
+                                terminal = "якорь сжатия потерял id — сжатие отменено",
+                            ),
+                        )
                         withContext(Dispatchers.Main) {
                             appendSystemInfo("Compact failed: anchor message id unavailable.", "compact")
                         }
                         return@launch
                     }
+                reporter.phase(com.openminis.app.data.CompactPhase.WRITING)
                 val marker = CompactMarkerEntity(
                     id = java.util.UUID.randomUUID().toString(),
                     sessionId = sid,
@@ -2292,11 +2336,21 @@ class ChatViewModel(
                     }
                     _messages.value = cleaned
                     AppLogger.info(TAG, "[Compact] divider: $compactedUICount UI bubbles compacted (history entries: ${toCompact.size})")
+                    // [T-compact-progress] Rich but minimal divider text:
+                    // count, token reduction and elapsed time in one glance.
+                    val tokensBefore = toCompact.sumOf { estimateMessageTokens(it) }
+                    val tokensAfter = summary.length / 4
+                    val elapsedMs = System.currentTimeMillis() - compactStartedMs
                     appendSystemInfo(
-                        text = "$compactedUICount messages compacted",
+                        text = "$compactedUICount сжато · " +
+                            "${com.openminis.app.data.CompactMath.formatTokens(tokensBefore)}→" +
+                            "${com.openminis.app.data.CompactMath.formatTokens(tokensAfter)} ток · " +
+                            com.openminis.app.data.CompactMath.formatElapsed(elapsedMs),
                         iconKind = "compact",
                         payload = summary,
                     )
+                    // Success: the divider IS the result — hide the progress card.
+                    _compactProgress.value = null
                 }
                 compactSucceeded = true
             } catch (e: CancellationException) {
@@ -2310,6 +2364,15 @@ class ChatViewModel(
                 // is told why. They can add a working model / retry later —
                 // the app never silently degrades the history behind a refusal.
                 Log.w(TAG, "Compact failed", e)
+                // [T-compact-progress] Keep the card up with the SPECIFIC
+                // error (models tried + what each answered) and a retry
+                // button — the user must see WHY, not "не удалось сжать".
+                _compactProgress.value = reporter.snapshot().copy(
+                    failure = com.openminis.app.data.CompactFailure(
+                        attempts = (e as? CompactRouteFailure)?.attempts.orEmpty(),
+                        terminal = e.message ?: e.javaClass.simpleName,
+                    ),
+                )
                 withContext(Dispatchers.Main) {
                     appendSystemInfo(
                         text = "Compaction failed: ${e.message ?: e.javaClass.simpleName}",
@@ -3555,6 +3618,9 @@ class ChatViewModel(
         messages: List<LLMMessage>,
         previousSummary: String? = null,
         depth: Int = 0,
+        reporter: com.openminis.app.data.CompactRunReporter? = null,
+        chunkIndex: Int = 1,
+        chunkCount: Int = 1,
     ): String {
         val transcript = buildConversationTextForSummary(messages)
         val conversationText = if (previousSummary.isNullOrBlank()) {
@@ -3563,8 +3629,28 @@ class ChatViewModel(
             "Previous context summary:\n$previousSummary\n\n" +
                 "New conversation to merge:\n$transcript"
         }
+        // [T-compact-proactive-split] Split BEFORE the doomed call, not after.
+        // The old flow discovered oversize the slow way (full-size request →
+        // TTFB timeout / relay 400 → only then split and retry), which is the
+        // single biggest contributor to "сжатие очень долгое": the wasted call
+        // often cost 30-60s on its own. Estimating fit up front skips it —
+        // and the halves then run in parallel (see splitAndMerge).
+        val windowTokens = currentModel?.contextWindow ?: 128_000
+        if (
+            com.openminis.app.data.CompactChunking.shouldSplitProactively(
+                conversationText.length, windowTokens,
+            ) &&
+            messages.size >= 2 && depth < 3
+        ) {
+            AppLogger.info(
+                TAG,
+                "[Compact] proactive split: ${conversationText.length} chars ≈ ${conversationText.length / 4} tok " +
+                    "vs window $windowTokens (depth=$depth)",
+            )
+            return splitAndMerge(messages, depth, reporter, chunkIndex, chunkCount)
+        }
         return try {
-            generateCompactSummary(conversationText)
+            generateCompactSummary(conversationText, reporter, chunkIndex, chunkCount)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -3594,42 +3680,91 @@ class ChatViewModel(
                     "contentFilteredWhenSplittable=$contentFilteredWhenSplittable " +
                     "depth=$depth msg=${msg.take(120)}",
             )
-            val mid = messages.size / 2
-            val firstHalf = messages.subList(0, mid).toList()
-            val secondHalf = messages.subList(mid, messages.size).toList()
-            AppLogger.info(
-                TAG,
-                "[Compact] Splitting ${messages.size} messages into ${firstHalf.size} + ${secondHalf.size} (depth=$depth)",
-            )
-            val summary1 = generateCompactSummaryWithSplitting(firstHalf, null, depth + 1)
-            val summary2 = generateCompactSummaryWithSplitting(secondHalf, null, depth + 1)
-            val mergeInput = buildString {
-                append("Merge these partial summaries into a single cohesive context summary. ")
-                append("Frame everything as past events (what was asked, what was done) rather than as ")
-                append("ongoing goals or todos — the user's next message will set the current task.\n\n")
-                append("MUST PRESERVE:\n")
-                append("- What was done and what was tried, with outcomes (record as past events)\n")
-                append("- Concrete work products from BOTH parts: files created/edited (path + what changed), commits, tests run and results, artifacts built — never collapse real work into a vague phrase or drop it as \"nothing was done\"\n")
-                append("- The last thing the user requested in this conversation, and how it was handled\n")
-                append("- All file paths, identifiers, URLs — copy verbatim\n")
-                append("- Decisions made and their rationale\n")
-                append("- Constraints, rules, and user preferences mentioned\n\n")
-                append("Do NOT carry forward \"pending\" or \"todo\" lists that imply standing work — if the user ")
-                append("still wants those, they will say so in their next message.\n\n")
-                append("PRIORITIZE Part 2 (more recent) over Part 1 (older) when space is tight — but completed work from Part 1 is a fact that must survive the merge, not filler to trim.\n\n")
-                append("Part 1:\n").append(summary1).append("\n\n")
-                append("Part 2:\n").append(summary2)
-            }
-            generateCompactSummary(mergeInput)
+            splitAndMerge(messages, depth, reporter, chunkIndex, chunkCount)
         }
     }
 
     /**
-     * Single-shot LLM call that turns [conversationText] into a structured
-     * summary. Throws on provider error so the splitter above can detect
-     * context-too-large failures and retry with halved input.
+     * Split [messages] in half, summarize both sides, merge. The halves are
+     * independent until the merge, so they run CONCURRENTLY — roughly halving
+     * wall-clock time for the proactive/retry split path. The provider
+     * dispatch gate still paces same-host calls, so this adds no 429 pressure
+     * beyond what sequential calls would.
      */
-    private suspend fun generateCompactSummary(conversationText: String): String {
+    private suspend fun splitAndMerge(
+        messages: List<LLMMessage>,
+        depth: Int,
+        reporter: com.openminis.app.data.CompactRunReporter?,
+        chunkIndex: Int,
+        chunkCount: Int,
+    ): String {
+        val mid = messages.size / 2
+        val firstHalf = messages.subList(0, mid).toList()
+        val secondHalf = messages.subList(mid, messages.size).toList()
+        AppLogger.info(
+            TAG,
+            "[Compact] Splitting ${messages.size} messages into ${firstHalf.size} + ${secondHalf.size} (depth=$depth)",
+        )
+        reporter?.phase(com.openminis.app.data.CompactPhase.SUMMARIZING)
+        val (summary1, summary2) = kotlinx.coroutines.coroutineScope {
+            val d1 = kotlinx.coroutines.async {
+                generateCompactSummaryWithSplitting(firstHalf, null, depth + 1, reporter, chunkIndex * 2 - 1, chunkCount * 2)
+            }
+            val d2 = kotlinx.coroutines.async {
+                generateCompactSummaryWithSplitting(secondHalf, null, depth + 1, reporter, chunkIndex * 2, chunkCount * 2)
+            }
+            d1.await() to d2.await()
+        }
+        reporter?.phase(com.openminis.app.data.CompactPhase.MERGING)
+        val mergeInput = buildString {
+            append("Merge these partial summaries into a single cohesive context summary. ")
+            append("Frame everything as past events (what was asked, what was done) rather than as ")
+            append("ongoing goals or todos — the user's next message will set the current task.\n\n")
+            append("MUST PRESERVE:\n")
+            append("- What was done and what was tried, with outcomes (record as past events)\n")
+            append("- Concrete work products from BOTH parts: files created/edited (path + what changed), commits, tests run and results, artifacts built — never collapse real work into a vague phrase or drop it as \"nothing was done\"\n")
+            append("- The last thing the user requested in this conversation, and how it was handled\n")
+            append("- All file paths, identifiers, URLs — copy verbatim\n")
+            append("- Decisions made and their rationale\n")
+            append("- Constraints, rules, and user preferences mentioned\n\n")
+            append("Do NOT carry forward \"pending\" or \"todo\" lists that imply standing work — if the user ")
+            append("still wants those, they will say so in their next message.\n\n")
+            append("PRIORITIZE Part 2 (more recent) over Part 1 (older) when space is tight — but completed work from Part 1 is a fact that must survive the merge, not filler to trim.\n\n")
+            append("Part 1:\n").append(summary1).append("\n\n")
+            append("Part 2:\n").append(summary2)
+        }
+        return generateCompactSummary(mergeInput, reporter, chunkIndex, chunkCount)
+    }
+
+    /**
+     * Single-shot LLM call that turns [conversationText] into a structured
+     * summary. STREAMED (not a blocking sendMessage) so the progress card
+     * gets real token-by-token feedback — the user sees movement within the
+     * first second instead of a frozen UI for the whole call. Throws on
+     * provider error so the splitter above can detect context-too-large
+     * failures and retry with halved input.
+     *
+     * [T-compact-progress] Ladder failures are reported to [reporter] as
+     * route notes and accumulated into a [CompactRouteFailure] so the UI can
+     * name the exact culprit instead of a generic "не удалось сжать".
+     */
+    private class CompactRouteFailure(
+        val attempts: List<com.openminis.app.data.CompactRouteAttempt>,
+        cause: Exception,
+    ) : Exception(
+        attempts.joinToString(" · ") { "${it.modelId}: ${it.message.take(90)}" },
+        cause,
+    ) {
+        val shortSummary: String
+            get() = attempts.joinToString(" · ") { "${it.modelId}: ${it.message.take(60)}" }
+    }
+
+    private suspend fun generateCompactSummary(
+        conversationText: String,
+        reporter: com.openminis.app.data.CompactRunReporter? = null,
+        chunkIndex: Int = 1,
+        chunkCount: Int = 1,
+    ): String {
         // Wrap the transcript in explicit BEGIN/END framing so the model
         // treats it as material to summarize rather than as a chat turn to
         // continue. Mirrors iOS AIChatViewModel+Compaction.swift
@@ -3685,11 +3820,23 @@ class ChatViewModel(
         var providerIdx = -1  // -1 = primary, >=0 = index into fallbacks
         var maxOut = clampToModelCap(primary.model, budgetedStartMaxOut)
         var shrinkSteps = 0
-        var lastError: Exception? = null
+        // [T-compact-progress] Every refused attempt, for the failure card.
+        val attempts = mutableListOf<com.openminis.app.data.CompactRouteAttempt>()
 
         while (true) {
+            // Progress: chars target for THIS attempt (maxOut tokens ≈ 4
+            // chars each). Recomputed per iteration — the shrink ladder
+            // lowers maxOut, and the bar must track the CURRENT budget.
+            val targetChars = maxOut * 4
             try {
-                val response = provider.sendMessage(
+                val modelLabel = provider.model.displayName.ifBlank { provider.model.id }
+                reporter?.callStart(modelLabel, chunkIndex, chunkCount)
+                // [T-compact-stream] Stream instead of blocking: the card
+                // shows live token progress. Empty completions fail loudly
+                // via failOnSilentEmptyCompletion (reasoning-only output is
+                // NOT a usable summary).
+                val sb = StringBuilder()
+                provider.streamMessage(
                     messages = listOf(
                         LLMMessage(role = LLMMessage.Role.USER, content = userMessage)
                     ),
@@ -3704,7 +3851,12 @@ class ChatViewModel(
                     imageParts = emptyList(),
                     tools = emptyList(),
                     thinkingLevel = ThinkingLevel.OFF,
-                )
+                ).failOnSilentEmptyCompletion(provider.name).collect { chunk ->
+                    if (chunk is com.openminis.app.data.model.LLMStreamChunk.Text) {
+                        sb.append(chunk.text)
+                        reporter?.callChars(chunkIndex, sb.length, targetChars)
+                    }
+                }
                 if (providerIdx >= 0 || maxOut != budgetedStartMaxOut) {
                     AppLogger.info(
                         TAG,
@@ -3712,12 +3864,17 @@ class ChatViewModel(
                             "(after ${if (providerIdx >= 0) "fallback #$providerIdx" else "shrink"})",
                     )
                 }
-                return response.text
+                return sb.toString()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                lastError = e
                 val msg = e.message ?: e.toString()
+                attempts.add(
+                    com.openminis.app.data.CompactRouteAttempt(
+                        modelId = provider.model.id,
+                        message = msg.take(160),
+                    ),
+                )
                 val nextIdx = (providerIdx + 1).takeIf { it < fallbacks.size }
                 val step = com.openminis.app.data.CompactRoute.next(
                     errorMessage = msg,
@@ -3734,15 +3891,9 @@ class ChatViewModel(
                     is com.openminis.app.data.CompactRoute.Step.RetrySmaller -> {
                         shrinkSteps += 1
                         maxOut = step.maxTokens
-                        withContext(Dispatchers.Main) {
-                            appendSystemInfo(
-                                text = context.getString(
-                                    R.string.compact_retry_smaller,
-                                    step.maxTokens,
-                                ),
-                                iconKind = "compact",
-                            )
-                        }
+                        // [T-compact-progress] Route changes surface in the
+                        // progress card, not as extra chat rows.
+                        reporter?.note("Уменьшаю бюджет ответа до ${step.maxTokens} токенов")
                     }
                     is com.openminis.app.data.CompactRoute.Step.NextProvider -> {
                         providerIdx = step.index
@@ -3752,17 +3903,14 @@ class ChatViewModel(
                         // model: its output cap can be lower than the primary's
                         // (startMaxOut was computed for the primary's window).
                         maxOut = clampToModelCap(provider.model, budgetedStartMaxOut)
-                        withContext(Dispatchers.Main) {
-                            appendSystemInfo(
-                                text = context.getString(
-                                    R.string.compact_switching_model,
-                                    provider.model.displayName.ifBlank { provider.model.id },
-                                ),
-                                iconKind = "compact",
-                            )
-                        }
+                        reporter?.note(
+                            "Переключаюсь на ${provider.model.displayName.ifBlank { provider.model.id }}",
+                        )
                     }
-                    is com.openminis.app.data.CompactRoute.Step.Surface -> throw e
+                    is com.openminis.app.data.CompactRoute.Step.Surface ->
+                        // [T-compact-progress] Carry the FULL attempt list so
+                        // the failure card can name every culprit.
+                        throw CompactRouteFailure(attempts.toList(), e)
                 }
             }
         }
@@ -4374,6 +4522,9 @@ class ChatViewModel(
             _sessionTitle.value = session.title ?: "New Chat"
             _sessionCategory.value = session.category
             _memoryEnabled.value = session.memoryEnabled != 0
+            // [T-compact-progress] A compact card belongs to the session it
+            // ran in — never leak a failure/progress state across a switch.
+            _compactProgress.value = null
             // [T-partial-turn-durability] Recover streams that died with the
             // process: append-only journals under minis-sessions/<sid>/
             // stream-heartbeat hold round text that never reached a row.
@@ -5416,6 +5567,8 @@ class ChatViewModel(
     fun clearChat() {
         if (_isStreaming.value) cancelStream()
         val sid = activeSessionId
+        // [T-compact-progress] No compact state may survive a wipe.
+        _compactProgress.value = null
         // T-streaming-side-channel: ensure no stale stream delta survives a
         // session wipe; the messages list is about to be cleared, so any
         // pending key would be orphaned.

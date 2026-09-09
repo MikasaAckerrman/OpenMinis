@@ -520,6 +520,72 @@ private fun BorderedMarkdownTable(
 // Same treatment iOS uses for compact-summary dividers, slash-command
 // notices, and model-switch fallback notices — no card, no attribution.
 
+/**
+ * [T-compact-progress] The compact result row — a centered minimal pill
+ * replacing the old grey hairline divider. The new text already carries
+ * "N сжато · 12.3k→1.1k ток · 0:18" (count, token reduction, elapsed).
+ * Tap the info icon for the full summary sheet (with revert).
+ *
+ * Design tokens only (ChatColors) so the upcoming redesign restyles this by
+ * touching the palette, not this file.
+ */
+@Composable
+internal fun CompactDividerRow(block: AssistantBlock, onRevert: (() -> Unit)? = null) {
+    val fg = ChatColors.secondaryText
+    val hasDetail = block.toolArgs.isNotEmpty()
+    var showDetail by remember(block.id) { mutableStateOf(false) }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+            modifier = Modifier
+                .clip(RoundedCornerShape(50))
+                .background(ChatColors.toolCapsuleBg)
+                .padding(horizontal = 10.dp, vertical = 4.dp),
+        ) {
+            Icon(
+                imageVector = Icons.Default.CloseFullscreen,
+                contentDescription = null,
+                tint = fg,
+                modifier = Modifier.size(11.dp),
+            )
+            Text(
+                text = block.content,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Medium,
+                color = fg,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (hasDetail) {
+                Icon(
+                    imageVector = Icons.Default.Info,
+                    contentDescription = "Показать резюме",
+                    tint = fg,
+                    modifier = Modifier
+                        .size(13.dp)
+                        .clickable { showDetail = true },
+                )
+            }
+        }
+    }
+
+    if (showDetail && hasDetail) {
+        CompactSummarySheet(
+            summary = block.toolArgs,
+            onDismiss = { showDetail = false },
+            onRevert = onRevert,
+        )
+    }
+}
+
 @Composable
 internal fun FallbackInfoBlock(block: AssistantBlock, onRevert: (() -> Unit)? = null) {
     val divider = ChatColors.separator

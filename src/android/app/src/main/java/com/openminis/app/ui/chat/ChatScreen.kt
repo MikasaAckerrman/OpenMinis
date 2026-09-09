@@ -438,6 +438,9 @@ fun ChatScreen(
     val messages by viewModel.uiMessages.collectAsState()
     val hasOlderMessages by viewModel.hasOlderMessages.collectAsState()
     val isStreaming by viewModel.isStreaming.collectAsState()
+    // [T-compact-progress] Live compact card (progress/percent/timer, or the
+    // specific failure + retry). Hoisted beside isStreaming.
+    val compactProgress by viewModel.compactProgress.collectAsState()
     // [T-auto-resume] Hoisted here (same scope as isStreaming) so the banner
     // can read them inside LazyListScope (which is not a composable scope).
     val autoResumeCountdown by viewModel.autoResumeCountdown.collectAsState()
@@ -3697,17 +3700,19 @@ fun ChatScreen(
                                     ).show()
                                 },
                             )
-                            is FlatChatItem.AssistantInfo -> FallbackInfoBlock(
-                                block = item.block,
-                                // Only the compact-divider info block should
-                                // surface a "Revert Compact" button on its
-                                // detail sheet — other info rows (slash
-                                // notices, fallback notices) have nothing
-                                // to revert.
-                                onRevert = if (item.block.toolName == "compact") {
-                                    { viewModel.revertCompact() }
-                                } else null,
-                            )
+                            is FlatChatItem.AssistantInfo -> if (item.block.toolName == "compact") {
+                                // [T-compact-progress] Rich minimal pill with
+                                // count/token/time + summary sheet + revert.
+                                CompactDividerRow(
+                                    block = item.block,
+                                    onRevert = { viewModel.revertCompact() },
+                                )
+                            } else {
+                                FallbackInfoBlock(
+                                    block = item.block,
+                                    onRevert = null,
+                                )
+                            }
                             is FlatChatItem.AssistantTyping -> TypingIndicator()
                             is FlatChatItem.AgentRunCard -> {
                                 // Subscribed here, not in the flat list, so a node
@@ -4440,6 +4445,19 @@ fun ChatScreen(
                             }
                         }
                     }
+                }
+
+                // [T-compact-progress] Live compact card right above the
+                // composer: progress bar, percent, elapsed timer, route notes
+                // — or the specific failure with a retry button. Mounted
+                // OUTSIDE the swipe-to-send Box so the gesture doesn't fight
+                // the card's buttons.
+                compactProgress?.let { cp ->
+                    CompactProgressCard(
+                        progress = cp,
+                        onRetry = { viewModel.runCompactNow() },
+                        onDismiss = { viewModel.dismissCompactCard() },
+                    )
                 }
 
                 // Input box: iOS-style floating card — no visible border, separated

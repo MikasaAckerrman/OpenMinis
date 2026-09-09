@@ -102,6 +102,7 @@ jobs:
             --tests 'com.openminis.app.data.MechanicalCompactTest' \
             --tests 'com.openminis.app.data.MemoryCanonTest' \
             --tests 'com.openminis.app.data.SummaryBudgetTest' \
+            --tests 'com.openminis.app.data.CompactProgressTest' \
             --tests 'com.openminis.app.data.StreamDurabilityTest' \
             --tests 'com.openminis.app.data.StreamHeartbeatTest' \
             --tests 'com.openminis.app.data.CompactQualityTest' \
