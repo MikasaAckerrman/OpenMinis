@@ -175,4 +175,115 @@ class RequestBudgetTest {
         assertTrue("тело влезло под потолок", r.bytesAfter <= 300_000)
         assertTrue("заглушено не всё", r.elidedToolResultCount < 80)
     }
+
+    // ── [T-image-bytes-visible] history images at wire size ───────────────
+
+    /**
+     * The live failure (2026-09-09): three ~600 KB screenshots inline in the
+     * protected-adjacent history produced a 1.31 MB body while estimateBytes
+     * counted every image as ZERO («ImageBudget owns image bytes» — its cap
+     * is 25 MB, an order above the relay's ~1 MB). The gate must SEE the
+     * base64 wire cost.
+     */
+    @Test
+    fun `estimateBytes charges inline images at base64 wire size`() {
+        val png = ByteArray(600_000) { 'x'.code.toByte() }
+        val withImage = LLMMessage(
+            LLMMessage.Role.USER, "see this",
+            contentParts = listOf(AgentContentPart.ImageData(png, "image/png")),
+        )
+        val bare = LLMMessage(LLMMessage.Role.USER, "see this")
+        val diff = RequestBudget.estimateBytes(listOf(withImage)) -
+            RequestBudget.estimateBytes(listOf(bare))
+        assertEquals(
+            (600_000 * 4) / 3,
+            diff,
+        )
+    }
+
+    @Test
+    fun `toolResult imageData also charges wire bytes`() {
+        val png = ByteArray(300_000) { 'y'.code.toByte() }
+        val withImage = LLMMessage(
+            LLMMessage.Role.USER, "",
+            contentParts = listOf(
+                AgentContentPart.ToolResult("i1", "read_image", "done", imageData = png),
+            ),
+        )
+        assertTrue(
+            RequestBudget.estimateBytes(listOf(withImage)) > (300_000 * 4) / 3 - 100,
+        )
+    }
+
+    @Test
+    fun `oversize old images are elided to stubs, fresh images are not`() {
+        val bigPng = ByteArray(500_000) { 'z'.code.toByte() }
+        val msgs = ArrayList<LLMMessage>()
+        // OLD turn with a fat screenshot — outside the 3-turn image shield.
+        msgs.add(LLMMessage(LLMMessage.Role.USER, "look", contentParts =
+            listOf(AgentContentPart.ImageData(bigPng, "image/png", "/tmp/old.png"))))
+        // padding tool round so the body is clearly over the ceiling
+        msgs.add(user("pad")); msgs.add(asstToolUse("big")); msgs.add(userToolResult("big", 400_000))
+        // 3 fresh text turns (image shield = last 3 user turns; tool shield = 6)
+        for (n in 1..3) msgs.add(user("fresh $n"))
+        // CURRENT turn with a screenshot — inside the shield, never elided.
+        msgs.add(LLMMessage(LLMMessage.Role.USER, "and this one", contentParts =
+            listOf(AgentContentPart.ImageData(bigPng, "image/png"))))
+
+        val before = RequestBudget.estimateBytes(msgs)
+        val r = RequestBudget.plan(msgs, protectRecentUserTextTurns = 6, maxBodyBytes = 300_000)
+        assertTrue("fixture over ceiling", before > 300_000)
+        assertTrue("an image was elided", r.elidedImageCount > 0)
+        assertTrue("body fits after elision", r.bytesAfter <= 300_000)
+        // The current-turn image (inside the image shield) is untouched.
+        val currentImages = r.messages.last().contentParts
+            .filterIsInstance<AgentContentPart.ImageData>()
+        assertEquals("current-turn image kept verbatim", 1, currentImages.size)
+        // The old image became a Text stub mentioning the re-fetch path.
+        val stub = r.messages.first().contentParts
+            .filterIsInstance<AgentContentPart.Text>()
+            .firstOrNull { it.text.startsWith(RequestBudget.IMAGE_ELIDED_PREFIX) }
+        assertTrue("old image replaced with stub", stub != null)
+        assertTrue("stub names the path", stub?.text?.contains("/tmp/old.png") == true)
+    }
+
+    @Test
+    fun `toolResult image is stripped without losing its text content`() {
+        val png = ByteArray(500_000) { 'q'.code.toByte() }
+        val msgs = ArrayList<LLMMessage>()
+        msgs.add(user("old"))
+        msgs.add(LLMMessage(LLMMessage.Role.USER, "", contentParts = listOf(
+            AgentContentPart.ToolResult("img1", "read_image", "image captured OK",
+                imageData = png, imageLinuxPath = "/tmp/x.png"),
+        )))
+        msgs.add(asstToolUse("big")); msgs.add(userToolResult("big", 400_000))
+        // 4 fresh turns: the image tool_result falls outside the 3-turn shield.
+        for (n in 1..4) msgs.add(user("fresh $n"))
+
+        val r = RequestBudget.plan(msgs, protectRecentUserTextTurns = 6, maxBodyBytes = 300_000)
+        val stripped = r.messages.flatMap { it.contentParts }
+            .filterIsInstance<AgentContentPart.ToolResult>()
+            .first { it.id == "img1" }
+        assertTrue("text content preserved", stripped.content.contains("image captured OK"))
+        assertTrue("image bytes removed", stripped.imageData == null)
+    }
+
+    @Test
+    fun `image inside the freshest 3 turns is never elided even when huge`() {
+        val bigPng = ByteArray(800_000) { 'w'.code.toByte() }
+        val msgs = ArrayList<LLMMessage>()
+        for (n in 1..2) msgs.add(user("fresh $n"))
+        // current turn carries a fat image
+        msgs.add(LLMMessage(LLMMessage.Role.USER, "see", contentParts =
+            listOf(AgentContentPart.ImageData(bigPng, "image/png"))))
+        // old fat tool_result to force the gate open
+        msgs.add(0, user("q")); msgs.add(1, asstToolUse("t0")); msgs.add(2, userToolResult("t0", 400_000))
+
+        val r = RequestBudget.plan(msgs, protectRecentUserTextTurns = 6, maxBodyBytes = 300_000)
+        assertEquals("current image not elided", 0, r.elidedImageCount)
+        val kept = r.messages.last().contentParts
+            .filterIsInstance<AgentContentPart.ImageData>()
+        assertEquals("image bytes still inline", 1, kept.size)
+        assertTrue("old tool result was elided instead", r.elidedToolResultCount > 0)
+    }
 }

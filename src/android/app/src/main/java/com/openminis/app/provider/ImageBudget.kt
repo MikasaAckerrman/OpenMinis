@@ -308,6 +308,98 @@ object ImageBudget {
     }
 
     /**
+     * [T-image-bytes-visible] Compress the STILL-INLINE images of a request
+     * (the ones RequestBudget.plan could not elide because they sit inside
+     * the freshest turns — the current screenshots) until the serialized
+     * body fits [maxBodyBytes].
+     *
+     * This closes the live 2026-09-09 failure: a body of 1.31 MB (three
+     * ~600 KB screenshots inline near the tail) was rejected by nginx-fronted
+     * relays with the DISGUISED `sensitive_words_detected` error, and
+     * provider fallback could not help — every relay with a ~1 MB
+     * client_max_body_size rejects the same bytes. Elision is not an option
+     * for the current turn's images (the user just sent them and expects the
+     * model to see them), so the only correct move is to shrink them: walk
+     * the ImageBudget ladder (2000px q80 → 640px q45) targeting progressively
+     * smaller per-image byte caps until the body fits or the ladder ends.
+     *
+     * Returns the input unchanged when nothing can be reclaimed (decode
+     * failures keep originals — "send something" beats "fail the request").
+     * Pure JVM-safe no-op path when BitmapFactory is unavailable (unit
+     * tests): decode fails → bytes come back untouched.
+     */
+    fun compressHistoryImagesUnderBudget(
+        messages: List<com.openminis.app.data.model.LLMMessage>,
+        maxBodyBytes: Int = com.openminis.app.data.RequestBudget.DEFAULT_MAX_BODY_BYTES,
+    ): List<com.openminis.app.data.model.LLMMessage> {
+        if (messages.isEmpty()) return messages
+        var bytes = com.openminis.app.data.RequestBudget.estimateBytes(messages)
+        if (bytes <= maxBodyBytes) return messages
+
+        // Ladder of per-image byte targets: coarse → aggressive.
+        val targets = longArrayOf(
+            384L * 1024,
+            256L * 1024,
+            128L * 1024,
+            64L * 1024,
+            32L * 1024,
+        )
+        var current = messages
+        var compressed = 0
+        for (target in targets) {
+            var changed = false
+            val out = ArrayList<com.openminis.app.data.model.LLMMessage>(current.size)
+            for (msg in current) {
+                if (msg.contentParts.none { it.hasInlineImage() }) {
+                    out.add(msg)
+                    continue
+                }
+                val newParts = msg.contentParts.map { part ->
+                    when (part) {
+                        is com.openminis.app.data.model.AgentContentPart.ImageData ->
+                            if (part.data.size > target) {
+                                val c = compressUnderBudget(part.data, target)
+                                if (c.size < part.data.size) {
+                                    compressed += 1
+                                    changed = true
+                                    part.copy(data = c)
+                                } else part
+                            } else part
+                        is com.openminis.app.data.model.AgentContentPart.ToolResult ->
+                            if (part.imageData != null && part.imageData.size > target) {
+                                val c = compressUnderBudget(part.imageData, target)
+                                if (c.size < part.imageData.size) {
+                                    compressed += 1
+                                    changed = true
+                                    part.copy(imageData = c)
+                                } else part
+                            } else part
+                        else -> part
+                    }
+                }
+                out.add(msg.copy(contentParts = newParts))
+            }
+            current = out
+            bytes = com.openminis.app.data.RequestBudget.estimateBytes(current)
+            if (!changed || bytes <= maxBodyBytes) break
+        }
+        if (compressed > 0) {
+            AppLogger.info(
+                TAG,
+                "compressHistoryImagesUnderBudget: compressed $compressed image(s); " +
+                    "body now ${bytes}B (target ≤${maxBodyBytes}B)",
+            )
+        }
+        return current
+    }
+
+    private fun com.openminis.app.data.model.AgentContentPart.hasInlineImage(): Boolean = when (this) {
+        is com.openminis.app.data.model.AgentContentPart.ImageData -> true
+        is com.openminis.app.data.model.AgentContentPart.ToolResult -> imageData != null
+        else -> false
+    }
+
+    /**
      * Lazily persist [data] to a session-scoped spillover dir under
      * `attachments/spillover/<sha1>.<ext>` so an elided image without a
      * pre-existing linux path can still be referenced from the text

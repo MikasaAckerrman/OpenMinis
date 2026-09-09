@@ -1502,14 +1502,24 @@ class OpenAIProvider private constructor(
             messages = messages,
             protectRecentUserTextTurns = REQUEST_BUDGET_PROTECT_TURNS,
         )
-        if (budgeted.elidedToolResultCount > 0) {
+        if (budgeted.elidedToolResultCount > 0 || budgeted.elidedImageCount > 0) {
             com.openminis.app.logging.AppLogger.info(
                 "OpenAIProvider",
-                "[RequestBudget] elided ${budgeted.elidedToolResultCount} oversize tool_result(s): " +
+                "[RequestBudget] elided ${budgeted.elidedToolResultCount} oversize tool_result(s) + " +
+                    "${budgeted.elidedImageCount} old image(s): " +
                     "${budgeted.bytesBefore}B → ${budgeted.bytesAfter}B (ceiling ${com.openminis.app.data.RequestBudget.DEFAULT_MAX_BODY_BYTES}B)",
             )
         }
-        val budgetedMessages = budgeted.messages
+        // [T-image-bytes-visible] Still over after elision → the weight is in
+        // the FRESHEST images (current-turn screenshots), which elision must
+        // not touch. Compress them down the ImageBudget ladder instead — a
+        // 1.3 MB body of 3 screenshots becomes a few hundred KB without
+        // losing the model's ability to see them.
+        val budgetedMessages = if (budgeted.bytesAfter > com.openminis.app.data.RequestBudget.DEFAULT_MAX_BODY_BYTES) {
+            ImageBudget.compressHistoryImagesUnderBudget(budgeted.messages)
+        } else {
+            budgeted.messages
+        }
         // T264: cross-provider image sanitization, mirrors iOS
         // OpenAIAgentProvider.swift:744-768 / 900-918. When the target model
         // doesn't declare "image" in inputModalities (e.g. DeepSeek V4 after
@@ -2458,14 +2468,21 @@ class OpenAIProvider private constructor(
             messages = messages,
             protectRecentUserTextTurns = REQUEST_BUDGET_PROTECT_TURNS,
         )
-        if (budgeted.elidedToolResultCount > 0) {
+        if (budgeted.elidedToolResultCount > 0 || budgeted.elidedImageCount > 0) {
             com.openminis.app.logging.AppLogger.info(
                 "OpenAIProvider",
-                "[RequestBudget/responses] elided ${budgeted.elidedToolResultCount} oversize tool_result(s): " +
+                "[RequestBudget/responses] elided ${budgeted.elidedToolResultCount} oversize tool_result(s) + " +
+                    "${budgeted.elidedImageCount} old image(s): " +
                     "${budgeted.bytesBefore}B → ${budgeted.bytesAfter}B",
             )
         }
-        val messages = budgeted.messages
+        // [T-image-bytes-visible] Same as buildRequestBody: still-over body →
+        // compress the freshest images down the ladder instead of failing.
+        val messages = if (budgeted.bytesAfter > com.openminis.app.data.RequestBudget.DEFAULT_MAX_BODY_BYTES) {
+            ImageBudget.compressHistoryImagesUnderBudget(budgeted.messages)
+        } else {
+            budgeted.messages
+        }
         val body = JSONObject()
         body.put("model", model.id)
         body.put("stream", stream)

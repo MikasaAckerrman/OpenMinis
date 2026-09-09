@@ -474,16 +474,24 @@ class AnthropicProvider(
             messages = messages,
             protectRecentUserTextTurns = REQUEST_BUDGET_PROTECT_TURNS,
         )
-        if (budgeted.elidedToolResultCount > 0) {
+        if (budgeted.elidedToolResultCount > 0 || budgeted.elidedImageCount > 0) {
             com.openminis.app.logging.AppLogger.info(
                 "AnthropicProvider",
-                "[RequestBudget] elided ${budgeted.elidedToolResultCount} oversize tool_result(s): " +
+                "[RequestBudget] elided ${budgeted.elidedToolResultCount} oversize tool_result(s) + " +
+                    "${budgeted.elidedImageCount} old image(s): " +
                     "${budgeted.bytesBefore}B → ${budgeted.bytesAfter}B (ceiling ${com.openminis.app.data.RequestBudget.DEFAULT_MAX_BODY_BYTES}B)",
             )
         }
+        // [T-image-bytes-visible] Still over → compress the freshest inline
+        // images down the ladder (elision must not touch current-turn pics).
+        val budgetedMessages = if (budgeted.bytesAfter > com.openminis.app.data.RequestBudget.DEFAULT_MAX_BODY_BYTES) {
+            ImageBudget.compressHistoryImagesUnderBudget(budgeted.messages)
+        } else {
+            budgeted.messages
+        }
 
         // Build and merge messages
-        val rawMessages = buildMessages(budgeted.messages, imageParts)
+        val rawMessages = buildMessages(budgetedMessages, imageParts)
         val merged = mergeConsecutiveSameRole(rawMessages)
 
         // Inject cache_control on last 2 user messages

@@ -1081,6 +1081,30 @@ class ChatViewModel(
         )
     }
 
+    /**
+     * [T-tail-rescue] Does this slice actually threaten the request? Two
+     * independent gates, either is enough:
+     *  - BYTES: serialized body (b64 images at wire size) approaching the
+     *    relay ceiling — the «запрос отклонен шлюзом» case;
+     *  - TOKENS: payload-honest tokens approaching the model window — the
+     *    "context window exceeded" case.
+     * [windowTokenBudget] is the ACTIVE model's window; the caller passes a
+     * derate so a tail that alone eats most of the window counts as oversized
+     * even when it technically fits.
+     */
+    private fun isHistoryOversized(
+        slice: List<LLMMessage>,
+        windowTokenBudget: Int,
+    ): Boolean {
+        if (slice.isEmpty()) return false
+        val bytes = com.openminis.app.data.RequestBudget.estimateBytes(slice)
+        if (bytes > com.openminis.app.data.RequestBudget.DEFAULT_MAX_BODY_BYTES * 9 / 10) {
+            return true
+        }
+        val tokens = slice.sumOf { estimatePayloadTokens(it) }
+        return tokens > windowTokenBudget.coerceAtLeast(1)
+    }
+
     /** Current auto-retry attempt number (0 = not retrying, 1..MAX = nth retry in flight). */
     private val _autoRetryAttempt = MutableStateFlow(0)
     val autoRetryAttempt: StateFlow<Int> = _autoRetryAttempt.asStateFlow()
@@ -2025,10 +2049,13 @@ class ChatViewModel(
             com.openminis.app.data.ProtectedTail.Entry(
                 isUser = m.role == LLMMessage.Role.USER,
                 hasDbId = !m.dbMessageId.isNullOrEmpty(),
-                tokens = estimateMessageTokens(m),
+                // [T-image-bytes-visible] payload-honest tokens: inline b64
+                // images must weigh on the tail budget what they weigh on the
+                // wire, not their ~2k visual tokens.
+                tokens = estimatePayloadTokens(m),
             )
         }
-        val anchorIdx: Int = if (anchorIdxOverride != null) {
+        var anchorIdx: Int = if (anchorIdxOverride != null) {
             // compactBefore() supplied a specific anchor — respect it as an
             // upper bound but still never cross into the protected tail, so a
             // manual "compact before X" gesture can't sacrifice a fresh turn.
@@ -2051,11 +2078,40 @@ class ChatViewModel(
             // persisted below it). Nothing OLD enough to compact — that is
             // success, not an error: a small/fresh session keeps its verbatim
             // history intact, which is exactly the invariant we want.
-            appendSystemInfo(
-                "Nothing to compact yet — recent messages are kept in full.",
-                "compact",
-            )
-            return
+            // [T-tail-rescue] UNLESS the "small" history is actually OVERSIZED
+            // (a handful of turns carrying big inline images / tool dumps can
+            // outweigh the window and the relay body limit). Then compaction
+            // MUST shrink the tail itself: retry the anchor with the minimal
+            // protection (1 verbatim turn) so the older part of the tail
+            // becomes compactable. This is the "any model must be able to
+            // compact" contract — the button may never strand an oversize
+            // session behind a protection rule.
+            if (isHistoryOversized(history, windowTokenBudget = tailTokenBudget * 4)) {
+                val rescueAnchor = com.openminis.app.data.ProtectedTail.anchorIndex(
+                    entries = ptEntries,
+                    protectedUserTurns = 1,
+                    tokenBudget = (tailTokenBudget / 2)
+                        .coerceAtLeast(com.openminis.app.data.ProtectedTail.TAIL_BUDGET_MIN_TOKENS),
+                )
+                if (rescueAnchor >= 0) {
+                    AppLogger.info(
+                        TAG,
+                        "[Compact] tail rescue (all-fresh): history oversized, " +
+                            "re-anchoring with 1 protected turn (anchor=$rescueAnchor)",
+                    )
+                    anchorIdx = rescueAnchor
+                }
+            }
+            if (anchorIdx < 0) {
+                setCompactCardTerminal(
+                    "Сессия маленькая или свежая — сжимать нечего, переполнения нет.",
+                )
+                appendSystemInfo(
+                    "Nothing to compact yet — recent messages are kept in full.",
+                    "compact",
+                )
+                return
+            }
         }
 
         // Slice to compact = (prev marker's anchor + 1) … anchorIdx inclusive.
@@ -2085,13 +2141,49 @@ class ChatViewModel(
             // broken while a STALE gateway error stayed on the card. Explain
             // the actual mechanics: everything before the anchor is already
             // a summary, and the newest turns are deliberately protected.
-            setCompactCardTerminal(
-                "Нечего сжимать: всё до последнего маркера уже свёрнуто в резюме, " +
-                    "а последние ходы защищены от сжатия. Пиши дальше — новые сообщения " +
-                    "станут доступны для сжатия.",
-            )
-            appendSystemInfo("Already compacted up to this point.", "compact")
-            return
+            //
+            // [T-tail-rescue] But the contradiction the user hit live is
+            // REAL: "nothing to compact" AND "request rejected by the
+            // gateway" at the same time. When that happens, the oversized
+            // part is the PROTECTED TAIL itself (inline b64 screenshots, fat
+            // tool rounds) — and a protection rule must never strand an
+            // oversize session. So: when the post-marker tail is oversized,
+            // re-anchor with the minimal protection (1 verbatim turn) and
+            // compact the older part of the tail. The CURRENT turn always
+            // survives verbatim; the rest becomes a summary + verbatim tail.
+            val tailSlice = history.subList(effectiveStartIdx, history.size)
+            if (isHistoryOversized(tailSlice, windowTokenBudget = tailTokenBudget * 4)) {
+                val rescueAnchor = com.openminis.app.data.ProtectedTail.anchorIndex(
+                    entries = ptEntries,
+                    protectedUserTurns = 1,
+                    tokenBudget = (tailTokenBudget / 2)
+                        .coerceAtLeast(com.openminis.app.data.ProtectedTail.TAIL_BUDGET_MIN_TOKENS),
+                )
+                if (rescueAnchor >= effectiveStartIdx) {
+                    AppLogger.info(
+                        TAG,
+                        "[Compact] tail rescue (already-compacted): post-marker tail oversized, " +
+                            "re-anchoring into the tail (anchor=$rescueAnchor, was=$anchorIdx)",
+                    )
+                    anchorIdx = rescueAnchor
+                } else {
+                    setCompactCardTerminal(
+                        "Хвост сессии раздут (${tailSlice.size} сообщений), но сжимать внутри " +
+                            "него нечего: всё до последнего маркера уже резюме, а последний ход " +
+                            "защищён. Добавь сообщение или сжатие хвоста будет доступно позже.",
+                    )
+                    appendSystemInfo("Already compacted up to this point.", "compact")
+                    return
+                }
+            } else {
+                setCompactCardTerminal(
+                    "Нечего сжимать: всё до последнего маркера уже свёрнуто в резюме, " +
+                        "а последние ходы защищены от сжатия. Пиши дальше — новые сообщения " +
+                        "станут доступны для сжатия.",
+                )
+                appendSystemInfo("Already compacted up to this point.", "compact")
+                return
+            }
         }
         val toCompact = history.subList(effectiveStartIdx, anchorIdx + 1)
         if (toCompact.isEmpty()) {
@@ -3349,8 +3441,12 @@ class ChatViewModel(
                 chars += when (part) {
                     is AgentContentPart.Text -> part.text.length
                     is AgentContentPart.ToolUse -> part.input.toString().length
-                    is AgentContentPart.ToolResult -> part.content.length
-                    is AgentContentPart.ImageData -> 0
+                    is AgentContentPart.ToolResult ->
+                        part.content.length + (part.imageData?.size ?: 0) / 2
+                    // [T-image-bytes-visible] raw image bytes charge the
+                    // degraded-tail budget (they used to cost 0 — the exact
+                    // hole that let a screenshot tail blow the body to 1.3 MB).
+                    is AgentContentPart.ImageData -> part.data.size / 2
                 }
             }
             com.openminis.app.data.HistoryTailBudget.Candidate(
@@ -3480,7 +3576,10 @@ class ChatViewModel(
                 val priorIdx = acceptedPriorIdx
                 if (priorIdx != null) {
                     var addTokens = 0
-                    for (j in i until priorIdx) addTokens += estimateMessageTokens(agentHistory[j])
+                    // [T-image-bytes-visible] payload-honest estimate: the
+                    // tail budget must see inline images at their b64 wire
+                    // cost, or a screenshot tail slips through as "2k tokens".
+                    for (j in i until priorIdx) addTokens += estimatePayloadTokens(agentHistory[j])
                     if (acceptedTokens + addTokens > tokenBudget) {
                         return WalkBackResult(
                             priorIdx = acceptedPriorIdx,
@@ -3495,7 +3594,7 @@ class ChatViewModel(
             // Accept this user as the new tentative priorIdx.
             if (acceptedPriorIdx == null) {
                 var firstTurnTokens = 0
-                for (j in i..anchorIdx) firstTurnTokens += estimateMessageTokens(agentHistory[j])
+                for (j in i..anchorIdx) firstTurnTokens += estimatePayloadTokens(agentHistory[j])
                 acceptedTokens = firstTurnTokens
             }
             acceptedPriorIdx = i
@@ -8174,6 +8273,34 @@ class ChatViewModel(
      */
     private fun estimateMessageTokens(msg: LLMMessage): Int =
         BPETokenizer.countTokens(msg.content) + msg.contentParts.sumOf { countPartTokens(it) }
+
+    /**
+     * [T-image-bytes-visible] PAYLOAD-honest token estimate for TAIL BUDGETS.
+     * estimateMessageTokens charges images their VISUAL tokens (~1-4k), but
+     * on the wire an inline image costs its base64 size (~4/3 × bytes), which
+     * a 600 KB screenshot turns into ~200k payload-token equivalents — the
+     * live 2026-09-09 session sent a 1.31 MB body while every tail budget
+     * believed it was "32k, fits". Tail budgets (write-side anchor entries,
+     * read-side walk-back) must size the tail by what the relay will actually
+     * receive, or the protected tail alone can exceed the whole window.
+     */
+    private fun estimatePayloadTokens(msg: LLMMessage): Int {
+        var tokens = BPETokenizer.countTokens(msg.content)
+        for (part in msg.contentParts) {
+            tokens += when (part) {
+                is AgentContentPart.Text -> BPETokenizer.countTokens(part.text)
+                is AgentContentPart.ToolUse -> BPETokenizer.countTokens(part.input.toString())
+                is AgentContentPart.ToolResult ->
+                    BPETokenizer.countTokens(part.content) +
+                        (part.imageData?.let {
+                            com.openminis.app.data.RequestBudget.inlineImageBytes(it) / 4
+                        } ?: 0)
+                is AgentContentPart.ImageData ->
+                    com.openminis.app.data.RequestBudget.inlineImageBytes(part.data) / 4
+            }
+        }
+        return tokens
+    }
 
     /**
      * Offload candidate descriptor. `msgIdx` and `partIdx` index back into
