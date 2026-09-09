@@ -5563,14 +5563,33 @@ class ChatViewModel(
         val config = providerRepository.config.value
         val group = config.modelGroups.find { it.id == groupId } ?: return emptyList()
         val members = group.memberEntryIds
-        // Find current provider's position in the group
-        val currentIdx = members.indexOfFirst { entryId ->
-            config.modelEntries.find { it.id == entryId }?.model?.id == primaryProvider.model.id
+        // Route identity is (model id + endpoint host), NOT model id alone.
+        // A relay content filter is endpoint-specific: the same model through
+        // another provider instance is a valid fallback and must remain
+        // reachable. Model-only matching picked the first duplicate-model
+        // member, so a retry could start at the wrong position and silently
+        // skip the clean relay after `sensitive_words`.
+        val routes = members.map { entryId ->
+            val entry = config.modelEntries.find { it.id == entryId }
+            val instance = entry?.let { e -> config.instances.find { it.id == e.providerInstanceId } }
+            com.openminis.app.data.ProviderFallbackIdentity.Route(
+                modelId = entry?.model?.id.orEmpty(),
+                throttleKey = instance?.effectiveBaseURL?.let {
+                    com.openminis.app.provider.LlmDispatchGate.keyForUrl(it)
+                }.orEmpty(),
+            )
         }
+        val candidateIndices = com.openminis.app.data.ProviderFallbackIdentity
+            .orderedCandidateIndices(
+                routes = routes,
+                currentModelId = primaryProvider.model.id,
+                currentThrottleKey = primaryProvider.throttleKey,
+            )
         val result = mutableListOf<LLMProvider>()
-        // Iterate starting from the entry AFTER the primary, cycling around
-        for (offset in 1 until members.size) {
-            val idx = if (currentIdx >= 0) (currentIdx + offset) % members.size else offset
+        // Iterate starting from the entry AFTER the exact primary route,
+        // cycling around. Duplicate entries for the same model+endpoint are
+        // skipped; same-model DIFFERENT-endpoint entries are preserved.
+        for (idx in candidateIndices) {
             val entryId = members[idx]
             val entry = config.modelEntries.find { it.id == entryId } ?: continue
             val instance = config.instances.find { it.id == entry.providerInstanceId } ?: continue
@@ -5579,6 +5598,13 @@ class ChatViewModel(
             val p = try {
                 ProviderFactory.create(instance, apiKey, entry.model, context)
             } catch (_: Exception) { continue }
+            if (!com.openminis.app.data.ProviderFallbackIdentity.isUsableFallback(
+                    currentModelId = primaryProvider.model.id,
+                    currentThrottleKey = primaryProvider.throttleKey,
+                    nextModelId = p.model.id,
+                    nextThrottleKey = p.throttleKey,
+                )
+            ) continue
             result.add(p)
         }
         return result
