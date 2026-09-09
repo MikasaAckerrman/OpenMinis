@@ -122,7 +122,7 @@ class CompactRunReporter(
      * estimated [targetChars]. Fraction is clamped to 0.99 so the bar never
      * reads "full" before the phase actually completes.
      */
-    fun chunkChars(index: Int, chars: Int, targetChars: Int) {
+    fun callChars(index: Int, chars: Int, targetChars: Int) {
         val n = state.chunkCount.coerceAtLeast(1)
         val idx = index.coerceIn(1, n)
         val target = targetChars.coerceAtLeast(1)
