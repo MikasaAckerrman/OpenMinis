@@ -474,7 +474,7 @@ class AnthropicProvider(
         // share this body — they count against the ceiling too.
         val overhead = com.openminis.app.data.RequestBudget.estimateOverheadBytes(
             systemPrompt = systemPrompt,
-            toolsJsonBytes = tools.sumOf { tool.toAnthropicJson().toString().toByteArray().size },
+            toolsJsonBytes = tools.sumOf { it.toAnthropicJson().toString().toByteArray().size },
             legacyImageParts = imageParts,
         )
         val budgeted = com.openminis.app.data.RequestBudget.plan(
