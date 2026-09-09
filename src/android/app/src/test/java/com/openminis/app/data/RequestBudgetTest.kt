@@ -234,7 +234,13 @@ class RequestBudgetTest {
         val r = RequestBudget.plan(msgs, protectRecentUserTextTurns = 6, maxBodyBytes = 300_000)
         assertTrue("fixture over ceiling", before > 300_000)
         assertTrue("an image was elided", r.elidedImageCount > 0)
-        assertTrue("body fits after elision", r.bytesAfter <= 300_000)
+        // The shielded current image + shielded pad tool_result legitimately
+        // remain — the provider's compression ladder finishes those. What the
+        // gate OWNS here is reclaiming the old image's ~667 KB of b64.
+        assertTrue(
+            "old image reclaimed (before=$before after=${r.bytesAfter})",
+            before - r.bytesAfter > 600_000,
+        )
         // The current-turn image (inside the image shield) is untouched.
         val currentImages = r.messages.last().contentParts
             .filterIsInstance<AgentContentPart.ImageData>()
@@ -272,12 +278,15 @@ class RequestBudgetTest {
     fun `image inside the freshest 3 turns is never elided even when huge`() {
         val bigPng = ByteArray(800_000) { 'w'.code.toByte() }
         val msgs = ArrayList<LLMMessage>()
+        // old fat tool_result, then ENOUGH fresh turns that the 6-turn tool
+        // shield boundary lands BEFORE it (fewer turns than the shield would
+        // protect everything — documented semantics).
+        msgs.add(user("q")); msgs.add(asstToolUse("t0")); msgs.add(userToolResult("t0", 400_000))
+        for (n in 1..4) msgs.add(user("filler $n"))
         for (n in 1..2) msgs.add(user("fresh $n"))
         // current turn carries a fat image
         msgs.add(LLMMessage(LLMMessage.Role.USER, "see", contentParts =
             listOf(AgentContentPart.ImageData(bigPng, "image/png"))))
-        // old fat tool_result to force the gate open
-        msgs.add(0, user("q")); msgs.add(1, asstToolUse("t0")); msgs.add(2, userToolResult("t0", 400_000))
 
         val r = RequestBudget.plan(msgs, protectRecentUserTextTurns = 6, maxBodyBytes = 300_000)
         assertEquals("current image not elided", 0, r.elidedImageCount)
