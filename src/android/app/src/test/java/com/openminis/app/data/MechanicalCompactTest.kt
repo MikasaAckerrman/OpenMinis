@@ -82,6 +82,20 @@ class MechanicalCompactTest {
     }
 
     @Test
+    fun `whole digest provably fits its char budget`() {
+        // The header, skipped note and assistant anchor are all paid for
+        // out of the SAME budget — the digest must never exceed the cap it
+        // was given, on any window tier (pinned after the old version
+        // appended ~1.5k of trailing blocks on top of the cap).
+        val withAssistant = (1..200).map { u("task $it") } + listOf(a("x".repeat(5000)))
+        for (window in intArrayOf(4_096, 8_000, 16_000, 32_000, 128_000, 1_000_000)) {
+            val budget = MechanicalCompact.digestCharBudget(window)
+            val d = MechanicalCompact.buildDigest(withAssistant, charBudget = budget)
+            assertTrue("window=$window budget=$budget len=${d.length}", d.length <= budget)
+        }
+    }
+
+    @Test
     fun `assistant-only range still digests`() {
         val d = MechanicalCompact.buildDigest(listOf(a("final state")))
         assertTrue(d.contains("final state"))
