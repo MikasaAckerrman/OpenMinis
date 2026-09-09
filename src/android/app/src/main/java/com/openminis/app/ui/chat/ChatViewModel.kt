@@ -3317,18 +3317,23 @@ class ChatViewModel(
             }
             if (tokenBudget != Int.MAX_VALUE && acceptedUserTextTurns >= 1) {
                 // Tokens of messages (i .. acceptedPriorIdx-1) — the part of
-                // this turn the slice does not include yet.
-                var addTokens = 0
-                for (j in i until acceptedPriorIdx) addTokens += estimateMessageTokens(agentHistory[j])
-                if (acceptedTokens + addTokens > tokenBudget) {
-                    return WalkBackResult(
-                        priorIdx = acceptedPriorIdx,
-                        userTextTurnsFound = acceptedUserTextTurns,
-                        messageCount = acceptedMessageCount,
-                        stopReason = "tokenBudgetExhausted",
-                    )
+                // this turn the slice does not include yet. The gate above
+                // guarantees acceptedPriorIdx != null (a text turn was
+                // accepted); copy to a val for smart-cast.
+                val priorIdx = acceptedPriorIdx
+                if (priorIdx != null) {
+                    var addTokens = 0
+                    for (j in i until priorIdx) addTokens += estimateMessageTokens(agentHistory[j])
+                    if (acceptedTokens + addTokens > tokenBudget) {
+                        return WalkBackResult(
+                            priorIdx = acceptedPriorIdx,
+                            userTextTurnsFound = acceptedUserTextTurns,
+                            messageCount = acceptedMessageCount,
+                            stopReason = "tokenBudgetExhausted",
+                        )
+                    }
+                    acceptedTokens += addTokens
                 }
-                acceptedTokens += addTokens
             }
             // Accept this user as the new tentative priorIdx.
             if (acceptedPriorIdx == null) {
