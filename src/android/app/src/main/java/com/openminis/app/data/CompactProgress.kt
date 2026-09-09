@@ -16,7 +16,6 @@ enum class CompactPhase {
     PREPARING,
     PINNING,
     SUMMARIZING,
-    MERGING,
     POLISHING,
     WRITING,
     DONE,
@@ -161,27 +160,75 @@ object CompactMath {
 }
 
 /**
- * [T-compact-proactive-split] Decide BEFORE the first call whether the
- * transcript obviously cannot fit the compaction model's window.
+ * [T-compact-window-packing] Size-driven chunking for the compaction request.
  *
- * The old flow discovered oversize the slow way: fire a doomed full-size
- * request, wait for the transport to fail (often a 30-60s TTFB timeout on
- * relays that buffer oversized bodies), THEN split and retry — the single
- * biggest contributor to "сжатие очень долгое". Splitting proactively
- * skips the doomed call entirely: each half fits, and the halves run in
- * parallel, so a big session compacts in roughly the time of one half.
+ * Replaces the old "halve the message list + depth cap 3" strategy, which had
+ * two fatal flaws exposed by a live gateway rejection ("запрос отклонен
+ * шлюзом", surfaced verbatim in the failure card):
+ *
+ * 1. It only triggered on RECOGNIZED error text — English/Chinese markers.
+ *    A Russian-speaking relay matched nothing, so the very first rejection
+ *    surfaced raw, and every "Повторить" resent the identical doomed body.
+ * 2. Halving by MESSAGE COUNT cannot reduce a skewed transcript (few huge
+ *    messages) and the depth cap stranded oversized chunks.
+ *
+ * The new contract: control flow is driven by SIZE, never by error wording.
+ * The transcript is packed into windows that fit the per-call budget BEFORE
+ * the first request; wording only affects display and the bounded halving
+ * safety net.
  */
 object CompactChunking {
 
     /**
-     * True when the estimated transcript tokens would leave less than 40%
-     * of the window for the output budget (window/8) + prompt overhead.
-     * `chars/4` is the same crude token estimate the rest of the compaction
-     * pipeline uses — consistent beats precise here.
+     * Hard per-call input cap independent of the model window. JSON escaping
+     * of code/logs can inflate a body ×4+ (quotes, newlines, unicode); new-api
+     * relays fronted by nginx default to a 1MB client_max_body_size. 96k raw
+     * chars stay under that even at worst-case escaping.
      */
-    fun shouldSplitProactively(transcriptChars: Int, contextWindowTokens: Int): Boolean {
-        val window = contextWindowTokens.coerceAtLeast(1)
-        val estTokens = transcriptChars / 4
-        return estTokens > window * 6 / 10
+    const val MAX_RELAY_BODY_CHARS = 96_000
+
+    /** Below this a rejected window is not worth halving — the body is tiny. */
+    const val MIN_HALVABLE_CHARS = 4_000
+
+    /**
+     * Per-call input budget: 2 chars per window token (chars/4 token estimate
+     * → input ≤ 50% of the window, leaving room for the rolling summary, the
+     * system prompt and the output budget), clamped by the relay body cap.
+     */
+    fun perCallInputCapChars(contextWindowTokens: Int): Int =
+        minOf(contextWindowTokens.coerceAtLeast(1) * 2, MAX_RELAY_BODY_CHARS)
+
+    /**
+     * Pack [text] into windows of at most [capChars], preferring line
+     * boundaries. A single line longer than the cap is split by characters —
+     * no input, however skewed, can produce an oversized window. Blank
+     * windows are dropped. Returns an empty list only for blank input.
+     */
+    fun packWindows(text: String, capChars: Int): List<String> {
+        val cap = capChars.coerceAtLeast(1)
+        if (text.isBlank()) return emptyList()
+        val out = mutableListOf<String>()
+        val sb = StringBuilder()
+        for (line in text.split('\n')) {
+            var remaining = line
+            while (remaining.length > cap) {
+                // Flush the accumulated prefix first so the oversized line
+                // starts a fresh window at a clean boundary.
+                if (sb.isNotEmpty()) {
+                    out += sb.toString()
+                    sb.setLength(0)
+                }
+                out += remaining.substring(0, cap)
+                remaining = remaining.substring(cap)
+            }
+            if (sb.length + remaining.length + 1 > cap && sb.isNotEmpty()) {
+                out += sb.toString()
+                sb.setLength(0)
+            }
+            if (sb.isNotEmpty()) sb.append('\n')
+            sb.append(remaining)
+        }
+        if (sb.isNotEmpty()) out += sb.toString()
+        return out.filter { it.isNotBlank() }
     }
 }

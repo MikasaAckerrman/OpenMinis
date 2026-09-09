@@ -66,8 +66,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -1063,6 +1061,26 @@ class ChatViewModel(
         _compactProgress.value = null
     }
 
+    /**
+     * [T-compact-progress] Terminal card state for guard rejections. The
+     * live bug: every early-return guard in compactAll() ran BEFORE the
+     * progress card was reset, so a PREVIOUS failure ("запрос отклонен
+     * шлюзом") stayed on screen while "Повторить" silently did nothing — the
+     * user read the stale error as "retry failed again". Every guard now
+     * replaces the card with the actual reason instead of leaving a lie.
+     */
+    private fun setCompactCardTerminal(reason: String) {
+        _compactProgress.value = com.openminis.app.data.CompactProgress(
+            startMs = System.currentTimeMillis(),
+            phase = com.openminis.app.data.CompactPhase.DONE,
+            percent = 100,
+            failure = com.openminis.app.data.CompactFailure(
+                attempts = emptyList(),
+                terminal = reason,
+            ),
+        )
+    }
+
     /** Current auto-retry attempt number (0 = not retrying, 1..MAX = nth retry in flight). */
     private val _autoRetryAttempt = MutableStateFlow(0)
     val autoRetryAttempt: StateFlow<Int> = _autoRetryAttempt.asStateFlow()
@@ -1928,10 +1946,14 @@ class ChatViewModel(
             AppLogger.warning(TAG, "[Compact] blocked non-explicit launch origin=$origin")
             return
         }
-        if (!requireFullSessionHistory(com.openminis.app.data.SendGatePolicy.Operation.REWRITE_HISTORY)) return
+        if (!requireFullSessionHistory(com.openminis.app.data.SendGatePolicy.Operation.REWRITE_HISTORY)) {
+            setCompactCardTerminal("История сессии недоступна для перезаписи — попробуй ещё раз")
+            return
+        }
         AppLogger.info(TAG, "[Compact] compactAll() invoked origin=$origin streaming=${_isStreaming.value} compacting=${_isCompacting.value} historySize=${agentHistory.size} anchorOverride=$anchorIdxOverride")
         if (_isStreaming.value) {
             AppLogger.info(TAG, "[Compact] aborted: stream in progress")
+            setCompactCardTerminal("Идёт генерация ответа — останови её, затем сжимай сессию")
             appendSystemInfo(
                 text = "Cannot compact while a turn is in progress. Stop the current response first.",
                 iconKind = "compact",
@@ -1940,6 +1962,7 @@ class ChatViewModel(
         }
         if (_isCompacting.value) {
             AppLogger.info(TAG, "[Compact] aborted: another compact already in flight")
+            // Card legitimately shows the LIVE run — leave it alone.
             appendSystemInfo(
                 text = "A compact is already in progress. Please wait for it to finish.",
                 iconKind = "compact",
@@ -1947,11 +1970,13 @@ class ChatViewModel(
             return
         }
         val provider = currentProvider ?: run {
+            setCompactCardTerminal("Не настроен ни один провайдер — сжатие невозможно")
             appendSystemInfo("No provider configured. Cannot compact.", "compact")
             return
         }
         val history = agentHistory.toList()
         if (history.isEmpty()) {
+            setCompactCardTerminal("Сессия пуста — сжимать нечего")
             appendSystemInfo("Nothing to compact — the session is empty.", "compact")
             return
         }
@@ -2055,11 +2080,22 @@ class ChatViewModel(
             else prevIdx
         }
         if (effectiveStartIdx > anchorIdx) {
+            // [T-compact-progress] The old text ("Already compacted up to
+            // this point.") confused the user into thinking the button was
+            // broken while a STALE gateway error stayed on the card. Explain
+            // the actual mechanics: everything before the anchor is already
+            // a summary, and the newest turns are deliberately protected.
+            setCompactCardTerminal(
+                "Нечего сжимать: всё до последнего маркера уже свёрнуто в резюме, " +
+                    "а последние ходы защищены от сжатия. Пиши дальше — новые сообщения " +
+                    "станут доступны для сжатия.",
+            )
             appendSystemInfo("Already compacted up to this point.", "compact")
             return
         }
         val toCompact = history.subList(effectiveStartIdx, anchorIdx + 1)
         if (toCompact.isEmpty()) {
+            setCompactCardTerminal("Диапазон сжатия пуст — сжимать нечего")
             appendSystemInfo("Nothing to compact.", "compact")
             return
         }
@@ -2116,7 +2152,6 @@ class ChatViewModel(
                     val rawSummary = generateCompactSummaryWithSplitting(
                         messages = toCompact,
                         previousSummary = existing,
-                        depth = 0,
                         reporter = reporter,
                     ).trim()
                     // [T-context-maintenance] Post-process before storing.
@@ -3596,146 +3631,93 @@ class ChatViewModel(
     }
 
     /**
-     * Summarize [messages], recursively halving and merging when the input
-     * exceeds the model's context window. Mirrors iOS
-     * `generateCompactSummaryWithSplitting` (AIChatViewModel+Compaction.swift:820).
+     * Summarize [messages] with a GUARANTEED-FIT request size.
      *
-     * Depth cap = 3 (matches iOS) so a pathologically large conversation
-     * still terminates instead of fanning out indefinitely. At each split we
-     * halve by message count, summarize each half independently, then ask the
-     * LLM to merge the two partial summaries into one — prioritizing Part 2
-     * (more recent) when space is tight, again matching iOS behavior.
+     * [T-compact-window-packing] Replaces the iOS-mirrored "halve by message
+     * count, depth cap 3, merge halves" strategy. That strategy failed live
+     * (2026-09-09, "запрос отклонен шлюзом" loop): it triggered splitting
+     * only when the error text matched English/Chinese size markers — a
+     * Russian-speaking relay matched nothing, so the first rejection surfaced
+     * raw and every retry resent the identical oversized body. Halving by
+     * message count also cannot shrink a skewed transcript, and the depth
+     * cap stranded whatever still did not fit.
      *
-     * [T-session-rescue-refine] The split trigger also fires on a VAGUE
-     * transport failure, not just an explicit size error. An upstream that
-     * stops reading an oversized body produces a dropped connection or a TTFB
-     * timeout, never "context length exceeded" — and the old condition
-     * rethrew on exactly those, so `/compact` gave up without ever trying a
-     * smaller input. That is the failure the user hit as "no response from
-     * server". Split-and-retry is cheap and bounded (depth 3), so treating an
-     * ambiguous failure as "maybe too big" costs at most a couple of small
-     * calls, while the previous behaviour cost the whole session.
+     * The new contract: control flow is driven by SIZE, never by error
+     * wording. The transcript is packed into windows that fit the per-call
+     * budget (model window AND relay body cap) BEFORE any request is sent,
+     * then summarized by rolling reduce — each call sees the running summary
+     * plus ONE small window, so any session size compacts through any model,
+     * including a tiny-context one. Wordings still surface in the failure
+     * card (display) and gate the bounded halving safety net below, but
+     * nothing about the happy path depends on them.
      */
     private suspend fun generateCompactSummaryWithSplitting(
         messages: List<LLMMessage>,
         previousSummary: String? = null,
-        depth: Int = 0,
         reporter: com.openminis.app.data.CompactRunReporter? = null,
-        chunkIndex: Int = 1,
-        chunkCount: Int = 1,
     ): String {
         val transcript = buildConversationTextForSummary(messages)
-        val conversationText = if (previousSummary.isNullOrBlank()) {
-            transcript
-        } else {
-            "Previous context summary:\n$previousSummary\n\n" +
-                "New conversation to merge:\n$transcript"
-        }
-        // [T-compact-proactive-split] Split BEFORE the doomed call, not after.
-        // The old flow discovered oversize the slow way (full-size request →
-        // TTFB timeout / relay 400 → only then split and retry), which is the
-        // single biggest contributor to "сжатие очень долгое": the wasted call
-        // often cost 30-60s on its own. Estimating fit up front skips it —
-        // and the halves then run in parallel (see splitAndMerge).
         val windowTokens = currentModel?.contextWindow ?: 128_000
-        if (
-            com.openminis.app.data.CompactChunking.shouldSplitProactively(
-                conversationText.length, windowTokens,
-            ) &&
-            messages.size >= 2 && depth < 3
-        ) {
-            AppLogger.info(
-                TAG,
-                "[Compact] proactive split: ${conversationText.length} chars ≈ ${conversationText.length / 4} tok " +
-                    "vs window $windowTokens (depth=$depth)",
-            )
-            return splitAndMerge(messages, depth, reporter, chunkIndex, chunkCount)
-        }
-        return try {
-            generateCompactSummary(conversationText, reporter, chunkIndex, chunkCount)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            val msg = e.message ?: e.toString()
-            // [model-compaction] A gateway content-filter / "content-blocked"
-            // rejection on the compaction request itself is almost always a
-            // SIZE filter, not real moderation: the input is a transcript of an
-            // oversized history, and the relay rejects big bodies before the
-            // model. The screenshot report ("Compaction failed: the gateway's
-            // content filter rejected this request") is exactly this. So treat
-            // it like a too-large error — split smaller and retry — instead of
-            // giving up. Bounded by the same depth cap, so a genuine moderation
-            // hit (which survives every split) still terminates and surfaces.
-            val contentFilteredWhenSplittable =
-                com.openminis.app.provider.ContentFilterDetection.isContentFilterRejection(msg) &&
-                    messages.size >= 2
-            val worthSplitting = isContextTooLargeError(e) ||
-                com.openminis.app.data.TransportErrorClassifier.isVagueTransportFailure(msg) ||
-                contentFilteredWhenSplittable
-            if (!worthSplitting || messages.size < 2 || depth >= 3) {
-                throw e
-            }
-            AppLogger.info(
-                TAG,
-                "[Compact] split trigger: explicitSize=${isContextTooLargeError(e)} " +
-                    "vagueTransport=${com.openminis.app.data.TransportErrorClassifier.isVagueTransportFailure(msg)} " +
-                    "contentFilteredWhenSplittable=$contentFilteredWhenSplittable " +
-                    "depth=$depth msg=${msg.take(120)}",
-            )
-            splitAndMerge(messages, depth, reporter, chunkIndex, chunkCount)
-        }
-    }
-
-    /**
-     * Split [messages] in half, summarize both sides, merge. The halves are
-     * independent until the merge, so they run CONCURRENTLY — roughly halving
-     * wall-clock time for the proactive/retry split path. The provider
-     * dispatch gate still paces same-host calls, so this adds no 429 pressure
-     * beyond what sequential calls would.
-     */
-    private suspend fun splitAndMerge(
-        messages: List<LLMMessage>,
-        depth: Int,
-        reporter: com.openminis.app.data.CompactRunReporter?,
-        chunkIndex: Int,
-        chunkCount: Int,
-    ): String {
-        val mid = messages.size / 2
-        val firstHalf = messages.subList(0, mid).toList()
-        val secondHalf = messages.subList(mid, messages.size).toList()
+        val capChars = com.openminis.app.data.CompactChunking.perCallInputCapChars(windowTokens)
+        var windows = com.openminis.app.data.CompactChunking.packWindows(transcript, capChars)
+        if (windows.isEmpty()) return previousSummary.orEmpty().trim()
         AppLogger.info(
             TAG,
-            "[Compact] Splitting ${messages.size} messages into ${firstHalf.size} + ${secondHalf.size} (depth=$depth)",
+            "[Compact] rolling reduce: transcript ${transcript.length} chars → ${windows.size} window(s) " +
+                "of ≤$capChars chars (window=$windowTokens tok)${if (!previousSummary.isNullOrBlank()) ", seeded with previous summary" else ""}",
         )
-        reporter?.phase(com.openminis.app.data.CompactPhase.SUMMARIZING)
-        val (summary1, summary2) = coroutineScope {
-            val d1 = async {
-                generateCompactSummaryWithSplitting(firstHalf, null, depth + 1, reporter, chunkIndex * 2 - 1, chunkCount * 2)
+        var summary: String? = previousSummary?.takeIf { it.isNotBlank() }
+        var idx = 0
+        // [T-compact-window-packing] Adaptive cap: starts at the model/relay
+        // budget; ANY rejection whose wording is not clearly auth/quota
+        // halves it and RE-PACKS all pending material. This converges
+        // geometrically (≤ ~5 rejections from 96k to the 4k floor) and never
+        // burns a retry budget on a cascade — the first halving already
+        // applies to every pending window, not just the rejected one.
+        var capNow = capChars
+        while (idx < windows.size) {
+            val w = windows[idx]
+            val input = if (summary == null) {
+                w
+            } else {
+                "Previous context summary:\n$summary\n\n" +
+                    "Next portion of the conversation (older material is already summarized above):\n$w"
             }
-            val d2 = async {
-                generateCompactSummaryWithSplitting(secondHalf, null, depth + 1, reporter, chunkIndex * 2, chunkCount * 2)
+            try {
+                val out = generateCompactSummary(input, reporter, idx + 1, windows.size).trim()
+                if (out.isNotEmpty()) summary = out
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                val msg = e.message ?: e.toString()
+                // Auth/quota/billing: a smaller body cannot help — surface.
+                if (com.openminis.app.data.TransportErrorClassifier.isDefinitelyNotSizeRelated(msg)) throw e
+                val newCap = w.length / 2
+                // Below the floor a rejection is not about size — surface.
+                if (newCap < com.openminis.app.data.CompactChunking.MIN_HALVABLE_CHARS) throw e
+                AppLogger.info(
+                    TAG,
+                    "[Compact] window ${idx + 1}/${windows.size} rejected (${msg.take(120)}) — " +
+                        "adaptive cap $capNow → $newCap, repacking pending ${windows.size - idx} window(s)",
+                )
+                reporter?.note("Шлюз отклонил часть — режу мельче и продолжаю")
+                capNow = newCap
+                val repacked = com.openminis.app.data.CompactChunking.packWindows(
+                    windows.subList(idx, windows.size).joinToString("\n"),
+                    capNow,
+                )
+                if (repacked.isEmpty()) {
+                    // Whitespace-only pending — skip forward.
+                    idx += 1
+                    continue
+                }
+                windows = windows.subList(0, idx) + repacked
+                // idx stays: the first repacked window takes the rejected slot.
+                continue
             }
-            d1.await() to d2.await()
+            idx += 1
         }
-        reporter?.phase(com.openminis.app.data.CompactPhase.MERGING)
-        val mergeInput = buildString {
-            append("Merge these partial summaries into a single cohesive context summary. ")
-            append("Frame everything as past events (what was asked, what was done) rather than as ")
-            append("ongoing goals or todos — the user's next message will set the current task.\n\n")
-            append("MUST PRESERVE:\n")
-            append("- What was done and what was tried, with outcomes (record as past events)\n")
-            append("- Concrete work products from BOTH parts: files created/edited (path + what changed), commits, tests run and results, artifacts built — never collapse real work into a vague phrase or drop it as \"nothing was done\"\n")
-            append("- The last thing the user requested in this conversation, and how it was handled\n")
-            append("- All file paths, identifiers, URLs — copy verbatim\n")
-            append("- Decisions made and their rationale\n")
-            append("- Constraints, rules, and user preferences mentioned\n\n")
-            append("Do NOT carry forward \"pending\" or \"todo\" lists that imply standing work — if the user ")
-            append("still wants those, they will say so in their next message.\n\n")
-            append("PRIORITIZE Part 2 (more recent) over Part 1 (older) when space is tight — but completed work from Part 1 is a fact that must survive the merge, not filler to trim.\n\n")
-            append("Part 1:\n").append(summary1).append("\n\n")
-            append("Part 2:\n").append(summary2)
-        }
-        return generateCompactSummary(mergeInput, reporter, chunkIndex, chunkCount)
+        return summary.orEmpty()
     }
 
     /**
@@ -3947,7 +3929,14 @@ class ChatViewModel(
             desc.contains("请精简对话历史") ||
             desc.contains("对话历史") ||
             desc.contains("context is full") ||
-            desc.contains("context window is full")
+            desc.contains("context window is full") ||
+            // -- Russian relays (live case 2026-09-09: "запрос отклонен
+            //    шлюзом" on the compact request) --
+            desc.contains("превышен размер") ||
+            desc.contains("превышает размер") ||
+            desc.contains("размер запроса") ||
+            desc.contains("слишком больш") ||
+            desc.contains("лимит запроса")
     }
 
     /**

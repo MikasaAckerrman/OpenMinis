@@ -175,8 +175,7 @@ internal fun CompactProgressCard(
                             .background(ChatColors.sendButton),
                     )
                 }
-                val note = progress.routeNote ?: phaseLabel(progress)
-                if (note != null) {
+                val note = progress.routeNote ?: phaseLabel(progress)                if (note != null) {
                     Text(
                         text = note,
                         fontSize = 10.sp,
@@ -200,7 +199,6 @@ private fun phaseLabel(progress: CompactProgress): String? = when (progress.phas
         } else {
             "Модель пишет резюме" + (progress.modelLabel?.let { " · $it" } ?: "")
         }
-    CompactPhase.MERGING -> "Объединяю части"
     CompactPhase.POLISHING -> "Чищу резюме"
     CompactPhase.WRITING -> "Записываю в историю"
     CompactPhase.DONE -> null

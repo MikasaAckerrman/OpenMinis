@@ -1,14 +1,15 @@
 package com.openminis.app.data
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
  * [T-compact-progress] Pure logic of the compact progress card: reporter
- * aggregation, percent math, elapsed/token formatting, proactive-split
- * decision and failure summaries.
+ * aggregation, percent math, elapsed/token formatting, window-packing
+ * chunking, not-size error exemptions and failure summaries.
  */
 class CompactProgressTest {
 
@@ -96,13 +97,53 @@ class CompactProgressTest {
     // ── CompactChunking ────────────────────────────────────────────────────
 
     @Test
-    fun `proactive split fires when transcript cannot fit the window`() {
-        // 8k window: 60% = 4800 tokens = 19200 chars.
-        assertTrue(CompactChunking.shouldSplitProactively(20_000, 8_000))
-        assertEquals(false, CompactChunking.shouldSplitProactively(10_000, 8_000))
-        // 128k window needs a huge transcript.
-        assertTrue(CompactChunking.shouldSplitProactively(400_000, 128_000))
-        assertEquals(false, CompactChunking.shouldSplitProactively(50_000, 128_000))
+    fun `per-call cap is window-bound and relay-bound`() {
+        // Small window: 2 chars per token.
+        assertEquals(16_000, CompactChunking.perCallInputCapChars(8_000))
+        assertEquals(2_000, CompactChunking.perCallInputCapChars(1_000))
+        // Big window: relay body cap wins.
+        assertEquals(CompactChunking.MAX_RELAY_BODY_CHARS, CompactChunking.perCallInputCapChars(128_000))
+    }
+
+    @Test
+    fun `packWindows packs along line boundaries under the cap`() {
+        val text = (1..300).joinToString("\n") { "line $it with some padding text to add weight" }
+        val cap = 1_000
+        val windows = CompactChunking.packWindows(text, cap)
+        assertTrue(windows.size > 1)
+        windows.forEach { w -> assertTrue("window ${w.length} > cap", w.length <= cap) }
+        // No content lost: every non-empty line survives in some window.
+        val joined = windows.joinToString("\n")
+        assertTrue(joined.contains("line 1 "))
+        assertTrue(joined.contains("line 300 "))
+    }
+
+    @Test
+    fun `packWindows splits a single oversized line by characters`() {
+        // One 5k-char line with a 1k cap must still produce fitting windows.
+        val text = "x".repeat(5_000)
+        val windows = CompactChunking.packWindows(text, 1_000)
+        assertEquals(5, windows.size)
+        windows.forEach { w -> assertEquals(1_000, w.length) }
+    }
+
+    @Test
+    fun `packWindows drops blank input and blank windows`() {
+        assertTrue(CompactChunking.packWindows("", 1_000).isEmpty())
+        assertTrue(CompactChunking.packWindows("   \n  \n", 1_000).isEmpty())
+    }
+
+    // ── TransportErrorClassifier: not-size exemptions ──────────────────────
+
+    @Test
+    fun `auth and quota errors are definitely not size related`() {
+        assertTrue(TransportErrorClassifier.isDefinitelyNotSizeRelated("401 unauthorized"))
+        assertTrue(TransportErrorClassifier.isDefinitelyNotSizeRelated("429 rate limit exceeded"))
+        assertTrue(TransportErrorClassifier.isDefinitelyNotSizeRelated("insufficient quota"))
+        assertTrue(TransportErrorClassifier.isDefinitelyNotSizeRelated("Недостаточно средств на балансе"))
+        // Size-ish and gateway-worded errors stay halvable.
+        assertFalse(TransportErrorClassifier.isDefinitelyNotSizeRelated("запрос отклонен шлюзом"))
+        assertFalse(TransportErrorClassifier.isDefinitelyNotSizeRelated("context length exceeded"))
     }
 
     // ── CompactFailure ─────────────────────────────────────────────────────
