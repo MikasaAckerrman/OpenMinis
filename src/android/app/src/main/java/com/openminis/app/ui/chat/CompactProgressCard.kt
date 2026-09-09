@@ -175,7 +175,8 @@ internal fun CompactProgressCard(
                             .background(ChatColors.sendButton),
                     )
                 }
-                val note = progress.routeNote ?: phaseLabel(progress)                if (note != null) {
+                val note = progress.routeNote ?: phaseLabel(progress)
+                if (note != null) {
                     Text(
                         text = note,
                         fontSize = 10.sp,
