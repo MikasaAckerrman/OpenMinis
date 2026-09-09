@@ -2913,10 +2913,26 @@ class ChatViewModel(
      *   log volume itself becomes a cost.
      */
     private fun effectiveAgentHistory(verbose: Boolean): List<LLMMessage> {
-        val summary = _compactSummary.value
+        val rawSummary = _compactSummary.value
         val marker = _cachedLatestMarker
         // No compact in play → return full history untouched.
-        if (summary.isNullOrBlank() || marker == null) return agentHistory.toList()
+        if (rawSummary.isNullOrBlank() || marker == null) return agentHistory.toList()
+
+        // [T-summary-budget] Bound the stored summary to the CURRENT model's
+        // window before it is inlined. The summary was sized by the model that
+        // WROTE it (possibly a large fallback, or an older build before the
+        // write-side cap) — on a smaller reader it could alone outweigh the
+        // whole window with no guard. The full text stays in the session DB;
+        // only the wire copy is clamped. See SummaryBudget.
+        val summaryWindow = effectiveContextWindowTokens() ?: 128_000
+        val summary = com.openminis.app.data.SummaryBudget.clamp(rawSummary, summaryWindow)
+        if (summary.length != rawSummary.length && verbose) {
+            AppLogger.info(
+                TAG,
+                "[Compact] summary clamped to reader window: ${rawSummary.length} → " +
+                    "${summary.length} chars (window=$summaryWindow)",
+            )
+        }
 
         val summaryWrappedText = "<context-summary>\n" +
             "The following is a summary of the earlier conversation that was compacted to save context space.\n" +
@@ -3595,6 +3611,14 @@ class ChatViewModel(
         val contextWindow = model?.contextWindow ?: 128_000
         val estimatedInput = userMessage.length / 4
         val startMaxOut = maxOf(1024, minOf(8192, contextWindow - estimatedInput))
+        // [T-summary-budget] The summary is written ONCE but read on EVERY
+        // subsequent request — by the model the user is on when it is read,
+        // which is the CURRENT model, not necessarily the (possibly larger)
+        // fallback that ends up writing it. Size the output budget by the
+        // READER's window (window/8, floor 512) so the stored summary is born
+        // fitting the session's own model. See SummaryBudget.
+        val summaryBudgetCap = com.openminis.app.data.SummaryBudget.maxTokens(contextWindow)
+        val budgetedStartMaxOut = minOf(startMaxOut, summaryBudgetCap)
         // [T-compact-maxout-clamp] Providers pass maxTokens through to the
         // request body UNCLAMPED, so a computed 8192 on a model whose output
         // cap is 4096 is a guaranteed HTTP 400 ("max_tokens must be at most
@@ -3618,7 +3642,7 @@ class ChatViewModel(
         val fallbacks = runCatching { buildFallbackProviders(primary) }.getOrDefault(emptyList())
         var provider: LLMProvider = primary
         var providerIdx = -1  // -1 = primary, >=0 = index into fallbacks
-        var maxOut = clampToModelCap(primary.model, startMaxOut)
+        var maxOut = clampToModelCap(primary.model, budgetedStartMaxOut)
         var shrinkSteps = 0
         var lastError: Exception? = null
 
@@ -3640,7 +3664,7 @@ class ChatViewModel(
                     tools = emptyList(),
                     thinkingLevel = ThinkingLevel.OFF,
                 )
-                if (providerIdx >= 0 || maxOut != startMaxOut) {
+                if (providerIdx >= 0 || maxOut != budgetedStartMaxOut) {
                     AppLogger.info(
                         TAG,
                         "[Compact] summary produced by ${provider.model.id} maxTokens=$maxOut " +
@@ -3686,7 +3710,7 @@ class ChatViewModel(
                         // [T-compact-maxout-clamp] Re-clamp for the fallback
                         // model: its output cap can be lower than the primary's
                         // (startMaxOut was computed for the primary's window).
-                        maxOut = clampToModelCap(provider.model, startMaxOut)
+                        maxOut = clampToModelCap(provider.model, budgetedStartMaxOut)
                         withContext(Dispatchers.Main) {
                             appendSystemInfo(
                                 text = context.getString(
@@ -7701,8 +7725,21 @@ class ChatViewModel(
      *
      * @param provider The current LLM provider (carries defaultMaxTokens).
      * @param lastContextTokens API-reported input token count from the last call (0 = first call).
+     * @param systemPrompt the system prompt actually sent this turn. Its cost
+     *   is part of the request input but was never counted here — the history
+     *   estimate alone under-reported input, so the output budget was
+     *   over-allocated and input+max_tokens could exceed the window on small
+     *   models (the exact 400 this function exists to prevent). Char-based
+     *   estimate, same 3.5 ratio as [estimateContextTokens].
+     * @param tools the tool definitions sent this turn — schema bytes ride on
+     *   every request with tools enabled and are similarly uncounted.
      */
-    private fun dynamicMaxTokens(provider: LLMProvider, lastContextTokens: Int = 0): Int {
+    private fun dynamicMaxTokens(
+        provider: LLMProvider,
+        lastContextTokens: Int = 0,
+        systemPrompt: String? = null,
+        tools: List<com.openminis.app.data.model.AgentToolDefinition> = emptyList(),
+    ): Int {
         val sessionCap = com.openminis.app.tools.AgentRuntimePolicyStore
             .maxOutputTokensFor(realSessionId.ifEmpty { sessionId })
         val model = provider.model
@@ -7733,11 +7770,26 @@ class ChatViewModel(
             usageTokens = lastContextTokens,
             estimatedTokens = estimateContextTokens(),
         )
-        val remaining = contextWindow - inputTokens
+        // [T-request-overhead-counted] The system prompt and tool schemas are
+        // request input the history estimate never saw. On a small window
+        // (8-32k) a few thousand tokens of overhead is the difference between
+        // a request that lands and input+max_tokens > window → 400. When the
+        // API has already reported usage, the reported number ALREADY includes
+        // them — only add the overhead to the local-estimate branch, or we
+        // would double-count on every healthy turn.
+        val overheadChars = (systemPrompt?.length ?: 0) + tools.sumOf { t ->
+            t.name.length + t.description.length + t.parameters.size * 48 + t.required.size * 16
+        }
+        val countedInput = if (lastContextTokens > 0) {
+            inputTokens
+        } else {
+            inputTokens + (overheadChars / 3.5).toInt()
+        }
+        val remaining = contextWindow - countedInput
         val clamped = maxOf(remaining, MIN_MAX_TOKENS)
         val result = minOf(maxOutputCeiling, clamped)
         if (result < maxOutputCeiling) {
-            android.util.Log.i(TAG, "dynamicMaxTokens: $result (remaining=$remaining, ceiling=$maxOutputCeiling, window=$contextWindow, input=$inputTokens, model=${model.id})")
+            android.util.Log.i(TAG, "dynamicMaxTokens: $result (remaining=$remaining, ceiling=$maxOutputCeiling, window=$contextWindow, input=$countedInput, model=${model.id})")
         }
         return result
     }
@@ -8305,7 +8357,12 @@ class ChatViewModel(
                 modelId = currentProvider.model.id,
                 effectiveWindow = effectiveContextWindowFor(currentProvider.model),
             )
-            val maxTokens = dynamicMaxTokens(currentProvider, currentUsageTokens)
+            val maxTokens = dynamicMaxTokens(
+                currentProvider,
+                currentUsageTokens,
+                systemPrompt = systemPrompt,
+                tools = agentTools,
+            )
             val toolCalls = mutableListOf<Triple<String, String, JSONObject>>() // id, name, args
 
             // [T-dedupe-toolcallid 03fbcbfd] Per-turn dedupe of tool_call_id.
@@ -8401,6 +8458,8 @@ class ChatViewModel(
                                 modelId = currentProvider.model.id,
                                 effectiveWindow = effectiveContextWindowFor(currentProvider.model),
                             ),
+                            systemPrompt = systemPrompt,
+                            tools = agentTools,
                         ),
                         tools = agentTools,
                         thinkingLevel = if (currentModelSupportsReasoning) _thinkingLevel.value else ThinkingLevel.OFF,

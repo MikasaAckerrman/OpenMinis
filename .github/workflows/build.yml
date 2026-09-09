@@ -101,6 +101,7 @@ jobs:
             --tests 'com.openminis.app.data.CompactRouteTest' \
             --tests 'com.openminis.app.data.MechanicalCompactTest' \
             --tests 'com.openminis.app.data.MemoryCanonTest' \
+            --tests 'com.openminis.app.data.SummaryBudgetTest' \
             --tests 'com.openminis.app.data.CompactQualityTest' \
             --tests 'com.openminis.app.data.TransportErrorClassifierTest' \
             --tests 'com.openminis.app.data.ContextPressureTest' \
