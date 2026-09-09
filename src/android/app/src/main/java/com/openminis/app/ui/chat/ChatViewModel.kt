@@ -66,6 +66,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -3706,11 +3708,11 @@ class ChatViewModel(
             "[Compact] Splitting ${messages.size} messages into ${firstHalf.size} + ${secondHalf.size} (depth=$depth)",
         )
         reporter?.phase(com.openminis.app.data.CompactPhase.SUMMARIZING)
-        val (summary1, summary2) = kotlinx.coroutines.coroutineScope {
-            val d1 = kotlinx.coroutines.async {
+        val (summary1, summary2) = coroutineScope {
+            val d1 = async {
                 generateCompactSummaryWithSplitting(firstHalf, null, depth + 1, reporter, chunkIndex * 2 - 1, chunkCount * 2)
             }
-            val d2 = kotlinx.coroutines.async {
+            val d2 = async {
                 generateCompactSummaryWithSplitting(secondHalf, null, depth + 1, reporter, chunkIndex * 2, chunkCount * 2)
             }
             d1.await() to d2.await()
