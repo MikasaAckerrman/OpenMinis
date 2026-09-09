@@ -69,6 +69,13 @@ object RequestBudget {
     const val DEFAULT_MAX_BODY_BYTES = 900_000
 
     /**
+     * Floor for the parts budget inside [plan] once [overheadBytes] is
+     * subtracted — if overhead alone eats the ceiling, elision still targets
+     * this floor instead of arithmetic nonsense (negative target).
+     */
+    const val MIN_EFFECTIVE_BODY_BYTES = 64_000
+
+    /**
      * Tool results at or below this many chars are never worth eliding.
      *
      * [T-postanchor-preserve-live-context] Raised 1000 → 8000. At 1000 the gate
@@ -87,13 +94,25 @@ object RequestBudget {
         val elidedImageCount: Int,
         val bytesBefore: Int,
         val bytesAfter: Int,
-    )
+        /** overheadBytes echoed back so callers compare ONE number. */
+        val overheadBytes: Int = 0,
+    ) {
+        /** The honest "does the whole body fit" number: parts + overhead. */
+        val totalAfter: Int get() = bytesAfter + overheadBytes
+    }
 
     /**
      * @param messages the full message list about to be serialized (system
      *   prompt excluded — it is a separate field and never elided).
      * @param protectRecentUserTextTurns trailing user-text turns whose
      *   tool_results are never elided (the live working context).
+     * @param overheadBytes serialized size of EVERYTHING that rides in the
+     *   same request body but is not a message part: the system prompt,
+     *   tool JSON schemas, legacy top-level imageParts. Until this parameter
+     *   existed the ceiling silently applied to parts only — a 60 KB system
+     *   prompt plus tool schemas meant the real body could exceed the relay
+     *   limit while the gate reported "fits".
+     */
      * @param maxBodyBytes ceiling on the estimated serialized body.
      * @param imageProtectRecentUserTextTurns trailing user-text turns whose
      *   IMAGES are never elided (smaller than the tool shield — old
@@ -105,10 +124,17 @@ object RequestBudget {
         protectRecentUserTextTurns: Int,
         maxBodyBytes: Int = DEFAULT_MAX_BODY_BYTES,
         imageProtectRecentUserTextTurns: Int = DEFAULT_IMAGE_PROTECT_TURNS,
+        overheadBytes: Int = 0,
     ): Report {
         val bytesBefore = estimateBytes(messages)
-        if (messages.isEmpty() || bytesBefore <= maxBodyBytes) {
-            return Report(messages, 0, 0, bytesBefore, bytesBefore)
+        val totalBefore = bytesBefore + overheadBytes
+        // Elision target: the PARTS must fit into (ceiling - overhead). A
+        // caller whose overhead alone exceeds the ceiling gets effectiveMax
+        // clamped to a small floor, so elision still reclaims everything it
+        // can instead of no-op'ing (messages can never fully "fit" then).
+        val effectiveMax = (maxBodyBytes - overheadBytes).coerceAtLeast(MIN_EFFECTIVE_BODY_BYTES)
+        if (messages.isEmpty() || totalBefore <= maxBodyBytes) {
+            return Report(messages, 0, 0, bytesBefore, bytesBefore, overheadBytes)
         }
 
         val protectedFromIdx = protectedBoundary(messages, protectRecentUserTextTurns)
@@ -172,7 +198,7 @@ object RequestBudget {
             }
         }
         if (imageCandidates.isEmpty() && big.isEmpty() && small.isEmpty()) {
-            return Report(messages, 0, 0, bytesBefore, bytesBefore)
+            return Report(messages, 0, 0, bytesBefore, bytesBefore, overheadBytes)
         }
 
         // Largest first within each tier — reclaim the most bytes per elision so
@@ -189,7 +215,7 @@ object RequestBudget {
 
         // Images first (biggest reclaim per edit).
         for (c in imageCandidates) {
-            if (running <= maxBodyBytes) break
+            if (running <= effectiveMax) break
             val partsList = editedParts.getOrPut(c.msgIdx) {
                 messages[c.msgIdx].contentParts.toMutableList()
             }
@@ -212,7 +238,7 @@ object RequestBudget {
 
         // Then oversize tool_results.
         for (c in candidates) {
-            if (running <= maxBodyBytes) break
+            if (running <= effectiveMax) break
             val partsList = editedParts.getOrPut(c.msgIdx) {
                 messages[c.msgIdx].contentParts.toMutableList()
             }
@@ -225,7 +251,7 @@ object RequestBudget {
         }
 
         if (elided == 0 && elidedImages == 0) {
-            return Report(messages, 0, 0, bytesBefore, bytesBefore)
+            return Report(messages, 0, 0, bytesBefore, bytesBefore, overheadBytes)
         }
 
         val out = ArrayList<LLMMessage>(messages.size)
@@ -234,7 +260,27 @@ object RequestBudget {
             if (edited == null) out.add(messages[i])
             else out.add(messages[i].copy(contentParts = edited))
         }
-        return Report(out, elided, elidedImages, bytesBefore, estimateBytes(out))
+        return Report(out, elided, elidedImages, bytesBefore, estimateBytes(out), overheadBytes)
+    }
+
+    /**
+     * [T-overhead-visible] Serialized size of everything that shares the
+     * request body with [plan]'s message parts: the system prompt, tool JSON
+     * schemas (already serialized by the caller — each provider has its own
+     * JSON dialect), and legacy top-level image attachments. Providers pass
+     * this in as [plan]'s overheadBytes so the ceiling covers the WHOLE body,
+     * not just the parts. Image bytes count at their base64 wire size (~4/3),
+     * matching [inlineImageBytes].
+     */
+    fun estimateOverheadBytes(
+        systemPrompt: String?,
+        toolsJsonBytes: Int = 0,
+        legacyImageParts: List<com.openminis.app.data.model.LLMMessage.ImagePart> = emptyList(),
+    ): Int {
+        var total = systemPrompt?.let { utf8(it) } ?: 0
+        total += toolsJsonBytes
+        for (p in legacyImageParts) total += inlineImageBytes(p.data)
+        return total
     }
 
     /**

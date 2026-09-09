@@ -1499,16 +1499,27 @@ class OpenAIProvider private constructor(
         // fits, while the freshest working turns are always sent verbatim. The
         // full output stays in agentHistory (and on disk when offloaded), so
         // nothing is lost — the model can file_read it back.
+        // [T-overhead-visible] Everything riding in the SAME body but outside
+        // message parts must count against the ceiling: system prompt, tool
+        // schemas, legacy top-level imageParts. A 60 KB system prompt made the
+        // "fits" verdict a lie before this existed.
+        val overhead = com.openminis.app.data.RequestBudget.estimateOverheadBytes(
+            systemPrompt = systemPrompt,
+            toolsJsonBytes = tools.sumOf { it.toOpenAIJson().toString().toByteArray().size },
+            legacyImageParts = imageParts,
+        )
         val budgeted = com.openminis.app.data.RequestBudget.plan(
             messages = messages,
             protectRecentUserTextTurns = REQUEST_BUDGET_PROTECT_TURNS,
+            overheadBytes = overhead,
         )
         if (budgeted.elidedToolResultCount > 0 || budgeted.elidedImageCount > 0) {
             com.openminis.app.logging.AppLogger.info(
                 "OpenAIProvider",
                 "[RequestBudget] elided ${budgeted.elidedToolResultCount} oversize tool_result(s) + " +
                     "${budgeted.elidedImageCount} old image(s): " +
-                    "${budgeted.bytesBefore}B → ${budgeted.bytesAfter}B (ceiling ${com.openminis.app.data.RequestBudget.DEFAULT_MAX_BODY_BYTES}B)",
+                    "${budgeted.bytesBefore}B + ${overhead}B overhead → ${budgeted.bytesAfter}B + overhead " +
+                    "(ceiling ${com.openminis.app.data.RequestBudget.DEFAULT_MAX_BODY_BYTES}B)",
             )
         }
         // [T-image-bytes-visible] Still over after elision → the weight is in
@@ -1516,7 +1527,7 @@ class OpenAIProvider private constructor(
         // not touch. Compress them down the ImageBudget ladder instead — a
         // 1.3 MB body of 3 screenshots becomes a few hundred KB without
         // losing the model's ability to see them.
-        val budgetedMessages = if (budgeted.bytesAfter > com.openminis.app.data.RequestBudget.DEFAULT_MAX_BODY_BYTES) {
+        val budgetedMessages = if (budgeted.totalAfter > com.openminis.app.data.RequestBudget.DEFAULT_MAX_BODY_BYTES) {
             ImageBudget.compressHistoryImagesUnderBudget(budgeted.messages)
         } else {
             budgeted.messages
@@ -2465,21 +2476,29 @@ class OpenAIProvider private constructor(
         // [T-request-byte-budget] Same provider-boundary byte gate as
         // buildRequestBody — the Responses API path serializes the same history
         // and is just as exposed to oversize tool_result bloat.
+        // [T-overhead-visible] system prompt + tool schemas + legacy imageParts
+        // share this body — they count against the ceiling too.
+        val overhead = com.openminis.app.data.RequestBudget.estimateOverheadBytes(
+            systemPrompt = systemPrompt,
+            toolsJsonBytes = tools.sumOf { it.toOpenAIJson().toString().toByteArray().size },
+            legacyImageParts = imageParts,
+        )
         val budgeted = com.openminis.app.data.RequestBudget.plan(
             messages = messages,
             protectRecentUserTextTurns = REQUEST_BUDGET_PROTECT_TURNS,
+            overheadBytes = overhead,
         )
         if (budgeted.elidedToolResultCount > 0 || budgeted.elidedImageCount > 0) {
             com.openminis.app.logging.AppLogger.info(
                 "OpenAIProvider",
                 "[RequestBudget/responses] elided ${budgeted.elidedToolResultCount} oversize tool_result(s) + " +
                     "${budgeted.elidedImageCount} old image(s): " +
-                    "${budgeted.bytesBefore}B → ${budgeted.bytesAfter}B",
+                    "${budgeted.bytesBefore}B + ${overhead}B overhead → ${budgeted.bytesAfter}B + overhead",
             )
         }
         // [T-image-bytes-visible] Same as buildRequestBody: still-over body →
         // compress the freshest images down the ladder instead of failing.
-        val messages = if (budgeted.bytesAfter > com.openminis.app.data.RequestBudget.DEFAULT_MAX_BODY_BYTES) {
+        val messages = if (budgeted.totalAfter > com.openminis.app.data.RequestBudget.DEFAULT_MAX_BODY_BYTES) {
             ImageBudget.compressHistoryImagesUnderBudget(budgeted.messages)
         } else {
             budgeted.messages

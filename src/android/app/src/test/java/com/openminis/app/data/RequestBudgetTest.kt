@@ -295,4 +295,66 @@ class RequestBudgetTest {
         assertEquals("image bytes still inline", 1, kept.size)
         assertTrue("old tool result was elided instead", r.elidedToolResultCount > 0)
     }
+
+    // ── [T-overhead-visible] system prompt + tools + legacy parts count ────
+
+    /**
+     * A 60 KB system prompt made the old "fits" verdict a lie: parts could
+     * pass 900 KB alone while the REAL body (parts + systemInstruction +
+     * tool schemas) blew the relay limit. The ceiling must cover the whole
+     * body.
+     */
+    @Test
+    fun `overhead pushes an otherwise-fitting body over and forces elision`() {
+        val msgs = ArrayList<LLMMessage>()
+        msgs.add(user("q")); msgs.add(asstToolUse("t0"))
+        msgs.add(userToolResult("t0", 800_000)) // 800 KB parts — fits alone
+        for (n in 1..7) msgs.add(user("fresh $n"))
+
+        val alone = RequestBudget.plan(msgs, protectRecentUserTextTurns = 6, maxBodyBytes = 900_000)
+        assertEquals("parts alone fit: no elision", 0, alone.elidedToolResultCount)
+
+        val withOverhead = RequestBudget.plan(
+            msgs, protectRecentUserTextTurns = 6, maxBodyBytes = 900_000,
+            overheadBytes = 200_000, // system prompt + schemas
+        )
+        assertTrue("overhead forces elision", withOverhead.elidedToolResultCount > 0)
+        assertTrue(
+            "parts now fit under ceiling-minus-overhead",
+            withOverhead.bytesAfter + 200_000 <= 900_000,
+        )
+        assertEquals("totalAfter = parts + overhead", withOverhead.bytesAfter + 200_000, withOverhead.totalAfter)
+    }
+
+    @Test
+    fun `overhead larger than ceiling floors the target instead of no-op`() {
+        val msgs = ArrayList<LLMMessage>()
+        msgs.add(user("q")); msgs.add(asstToolUse("t0"))
+        msgs.add(userToolResult("t0", 400_000))
+        for (n in 1..7) msgs.add(user("fresh $n"))
+
+        val r = RequestBudget.plan(
+            msgs, protectRecentUserTextTurns = 6, maxBodyBytes = 900_000,
+            overheadBytes = 950_000, // system prompt ALONE exceeds the ceiling
+        )
+        // Elision still ran toward the 64 KB floor — it must not silently
+        // give up because (ceiling - overhead) went negative.
+        assertTrue("elision still reclaims", r.elidedToolResultCount > 0)
+        assertTrue(
+            "parts squeezed to the floor",
+            r.bytesAfter <= RequestBudget.MIN_EFFECTIVE_BODY_BYTES + 10_000,
+        )
+    }
+
+    @Test
+    fun `small overhead does not disturb a fitting body`() {
+        val msgs = ArrayList<LLMMessage>()
+        msgs.add(user("q")); msgs.add(userToolResult("t0", 5_000)); msgs.add(user("fresh"))
+        val r = RequestBudget.plan(
+            msgs, protectRecentUserTextTurns = 6, maxBodyBytes = 900_000,
+            overheadBytes = 20_000,
+        )
+        assertEquals("no elision needed", 0, r.elidedToolResultCount)
+        assertEquals("bytes echoed", r.bytesAfter + 20_000, r.totalAfter)
+    }
 }

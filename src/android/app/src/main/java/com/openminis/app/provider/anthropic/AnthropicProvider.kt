@@ -470,21 +470,29 @@ class AnthropicProvider(
         // placeholder) until the serialized body fits, keeping the freshest
         // working turns verbatim. ImageBudget caps image bytes; this caps text.
         // Full output stays in agentHistory / on disk, so nothing is lost.
+        // [T-overhead-visible] The Anthropic `system` field and tool schemas
+        // share this body — they count against the ceiling too.
+        val overhead = com.openminis.app.data.RequestBudget.estimateOverheadBytes(
+            systemPrompt = systemPrompt,
+            toolsJsonBytes = tools.sumOf { tool.toAnthropicJson().toString().toByteArray().size },
+            legacyImageParts = imageParts,
+        )
         val budgeted = com.openminis.app.data.RequestBudget.plan(
             messages = messages,
             protectRecentUserTextTurns = REQUEST_BUDGET_PROTECT_TURNS,
+            overheadBytes = overhead,
         )
         if (budgeted.elidedToolResultCount > 0 || budgeted.elidedImageCount > 0) {
             com.openminis.app.logging.AppLogger.info(
                 "AnthropicProvider",
                 "[RequestBudget] elided ${budgeted.elidedToolResultCount} oversize tool_result(s) + " +
                     "${budgeted.elidedImageCount} old image(s): " +
-                    "${budgeted.bytesBefore}B → ${budgeted.bytesAfter}B (ceiling ${com.openminis.app.data.RequestBudget.DEFAULT_MAX_BODY_BYTES}B)",
+                    "${budgeted.bytesBefore}B + ${overhead}B overhead → ${budgeted.bytesAfter}B + overhead (ceiling ${com.openminis.app.data.RequestBudget.DEFAULT_MAX_BODY_BYTES}B)",
             )
         }
         // [T-image-bytes-visible] Still over → compress the freshest inline
         // images down the ladder (elision must not touch current-turn pics).
-        val budgetedMessages = if (budgeted.bytesAfter > com.openminis.app.data.RequestBudget.DEFAULT_MAX_BODY_BYTES) {
+        val budgetedMessages = if (budgeted.totalAfter > com.openminis.app.data.RequestBudget.DEFAULT_MAX_BODY_BYTES) {
             ImageBudget.compressHistoryImagesUnderBudget(budgeted.messages)
         } else {
             budgeted.messages
