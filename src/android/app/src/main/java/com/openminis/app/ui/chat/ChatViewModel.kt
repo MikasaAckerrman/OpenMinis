@@ -1234,6 +1234,11 @@ class ChatViewModel(
     private val _clearChatConfirmRequested = MutableStateFlow(false)
     val clearChatConfirmRequested: StateFlow<Boolean> = _clearChatConfirmRequested.asStateFlow()
 
+    /** [T-guard-popup] Deletion guard monitor — watches for guard_pending.json
+     *  from minis-guard and exposes pending deletion requests for the UI to
+     *  show a confirmation popup. */
+    val deletionGuard = com.openminis.app.data.DeletionGuardMonitor(context)
+
     fun ackClearChatConfirmRequest() {
         _clearChatConfirmRequested.value = false
     }
@@ -4163,6 +4168,7 @@ class ChatViewModel(
 
     init {
         loadSession()
+        deletionGuard.start()
         // [T-session-paused-badge-active-false-positive] Drive the session-list
         // PAUSED badge directly off canResume — the authoritative "this session
         // is interrupted (tap Resume)" flag. This is the single chokepoint over
@@ -13065,6 +13071,7 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
 
     override fun onCleared() {
         super.onCleared()
+        deletionGuard.stop()
         // [T-background-diag] The single most important line for diagnosing
         // background kills: streamJob lives in viewModelScope, so onCleared
         // means any in-flight agent work is ALREADY cancelled. If this appears

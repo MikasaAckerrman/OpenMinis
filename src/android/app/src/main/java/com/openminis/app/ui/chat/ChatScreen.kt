@@ -751,6 +751,22 @@ fun ChatScreen(
         }
     }
 
+    // [T-guard-popup] Deletion guard — show popup when agent tries to delete files.
+    // minis-guard writes guard_pending.json → DeletionGuardMonitor detects it
+    // → this dialog appears → user approves/denies → response written back.
+    val guardRequest by viewModel.deletionGuard.pendingRequest.collectAsState()
+    if (guardRequest != null) {
+        MinisAlertDialog(
+            onDismissRequest = { viewModel.deletionGuard.respond(false) },
+            title = "Agent wants to delete",
+            text = "Command: ${guardRequest!!.command}\nTarget: ${guardRequest!!.displayPath}\n\nApprove this deletion?",
+            confirmText = "Allow",
+            onConfirm = { viewModel.deletionGuard.respond(true) },
+            dismissText = "Deny",
+            isDestructive = true,
+        )
+    }
+
     // "Choose Photos & Videos" — uses the Photo Picker on Android 13+ via the
     // PickMultipleVisualMedia contract; AndroidX falls back to
     // ACTION_OPEN_DOCUMENT on older versions. Mirrors iOS PHPicker

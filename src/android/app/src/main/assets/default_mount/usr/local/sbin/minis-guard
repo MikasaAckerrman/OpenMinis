@@ -58,6 +58,52 @@ REAL = {
 
 LOG = '/var/minis/workspace/guard.log'
 
+# --- Popup approval protocol --------------------------------
+# Guard writes a pending request → app shows popup → user responds
+# → guard reads response. Files in /var/minis/workspace/ which is
+# bind-mounted to filesDir/minis-global/workspace/ in the app.
+PENDING_FILE = '/var/minis/workspace/guard_pending.json'
+RESPONSE_FILE = '/var/minis/workspace/guard_response.json'
+APPROVE_TIMEOUT = 30  # seconds — deny on timeout (safe default)
+
+def request_user_approval(argv):
+    """Write a pending deletion request and wait for user approval.
+    Returns True if approved, False if denied or timeout."""
+    import json as _json
+    import time as _time
+    
+    request = {
+        'command': os.path.basename(argv[0]) if argv else 'unknown',
+        'args': list(argv[1:]) if len(argv) > 1 else [],
+        'timestamp': _time.time(),
+        'session': os.environ.get('MINIS_CHAT_SESSION_ID', ''),
+    }
+    try:
+        with open(PENDING_FILE, 'w') as f:
+            _json.dump(request, f)
+    except Exception:
+        return True  # If we can't write the request, allow (don't block all work)
+    
+    deadline = _time.time() + APPROVE_TIMEOUT
+    while _time.time() < deadline:
+        if os.path.exists(RESPONSE_FILE):
+            try:
+                with open(RESPONSE_FILE) as f:
+                    response = _json.load(f)
+                os.remove(RESPONSE_FILE)
+                return response.get('allow', False)
+            except Exception:
+                pass
+        _time.sleep(0.3)
+    
+    # Timeout — deny by default (safe)
+    try:
+        if os.path.exists(PENDING_FILE):
+            os.remove(PENDING_FILE)
+    except Exception:
+        pass
+    return False
+
 # --- 1. Пути, которые нельзя удалять никогда -----------------
 FORBIDDEN = [
     '/', '/bin', '/sbin', '/lib', '/usr', '/etc', '/var', '/root', '/home',
@@ -307,7 +353,15 @@ def main():
                      'Внутри может быть незакоммиченная работа,\n'
                      'которую не вернуть. Удаляет только человек.')
 
-    # --- Правило 4: разрешено, но записано ------------------
+    # --- Правило 4: запросить разрешение пользователя ----------
+    # [T-guard-popup] Instead of silently allowing, write a pending request
+    # and wait for the user to approve via a popup in the app.
+    # Timeout: 30s. Default on timeout: deny (safe).
+    if not request_user_approval(sys.argv):
+        deny('пользователь не одобрил удаление (или таймаут 30с)',
+             'guard_pending.json → popup → guard_response.json\n'
+             'Если приложение закрыто — одобрение невозможно.\n'
+             'Откройте Minis и повторите.')
     log('ok', sys.argv)
     os.execv('/bin/busybox', ['busybox', tool] + args)
 
