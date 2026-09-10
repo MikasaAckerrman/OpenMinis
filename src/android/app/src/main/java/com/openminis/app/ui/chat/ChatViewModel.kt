@@ -8273,24 +8273,57 @@ class ChatViewModel(
     }
 
     /**
-     * [model-compaction] True when the raw history is large enough that a
-     * gateway "content-blocked" rejection is plausibly a SIZE filter rather
-     * than a genuine moderation hit. Used to decide whether a mid-loop
-     * content-filter rejection is worth a shrink-and-retry (big payload) or
-     * should surface / fall back immediately (small payload → really moderation,
-     * shrinking won't help). The threshold is a fraction of the model's context
-     * window so it scales with the model; falls back to a conservative absolute
-     * floor when the window is unknown.
+     * [T-effective-size-honesty] Token estimate of the EFFECTIVE payload —
+     * the messages that will actually be serialized into the next request
+     * (summary + live tail), not the raw DB history.
+     *
+     * estimateRawHistoryTokens() counts the whole in-memory history, which
+     * stays huge after /compact (compaction adds a marker; it does not delete
+     * rows). Sizing the "is the payload big" decision on raw made an
+     * already-compacted session (339k raw → 1.2k effective) look "too big"
+     * to the content-filter diagnostic, so the app advised the user to run
+     * /compact on a session they had JUST compacted — masking the real
+     * cause (a relay-side filter rejecting even small bodies).
+     *
+     * Wire-honest image costing mirrors [estimateMessageTokensWire]: an
+     * inline b64 image costs its encoded size (~4/3 × bytes) on the wire,
+     * which is what a relay body filter actually sees.
      */
-    private fun isRawHistoryLarge(): Boolean {
-        val tokens = estimateRawHistoryTokens()
-        val window = effectiveContextWindowTokens()?.takeIf { it > 0 }
-        // Half the window is "large enough that size is a credible cause".
-        // Absolute floor 24k covers unknown-window relays where a big payload
-        // still trips a size filter well before any real context limit.
-        val threshold = window?.let { it / 2 } ?: 24_000
-        return tokens >= minOf(threshold, 24_000).coerceAtLeast(8_000)
+    private fun estimateEffectiveHistoryTokens(): Int {
+        var totalChars = 0
+        var imageBytes = 0
+        for (msg in effectiveAgentHistory(verbose = false)) {
+            totalChars += msg.reasoningContent?.length ?: 0
+            totalChars += msg.content.length
+            for (part in msg.contentParts) {
+                when (part) {
+                    is AgentContentPart.Text -> totalChars += part.text.length
+                    is AgentContentPart.ToolUse -> totalChars += part.input.toString().length
+                    is AgentContentPart.ToolResult -> {
+                        totalChars += part.content.length
+                        part.imageData?.let { imageBytes += it.size }
+                    }
+                    is AgentContentPart.ImageData -> imageBytes += part.data.size
+                }
+            }
+        }
+        // 4/3 b64 inflation ≈ tokens at ~3.5 chars per token for the wire.
+        val imageWireTokens = (imageBytes * 4 / 3) / 3_500
+        return (totalChars / 3.5).toInt() + imageWireTokens
     }
+
+    /**
+     * [model-compaction] True when the EFFECTIVE payload is large enough that
+     * a gateway "content-blocked" rejection is plausibly a SIZE filter rather
+     * than a genuine moderation hit. Decision logic lives in
+     * [com.openminis.app.data.HistorySizeGate] (unit-tested there); this
+     * supplies the effective token count and the model's window.
+     */
+    private fun isEffectiveHistoryLarge(): Boolean =
+        com.openminis.app.data.HistorySizeGate.isLarge(
+            effectiveTokens = estimateEffectiveHistoryTokens(),
+            contextWindowTokens = effectiveContextWindowTokens(),
+        )
 
     /**
      * Approximate token count for a single agent content part. Used to rank
@@ -9546,7 +9579,7 @@ class ChatViewModel(
                     // handling below intact, but surface the explicit recovery
                     // commands once per loop.
                     val isOversize = isContextTooLargeError(actual) ||
-                        (isContentFilter && isRawHistoryLarge())
+                        (isContentFilter && isEffectiveHistoryLarge())
                     if (isOversize && !didReportOversize) {
                         didReportOversize = true
                         AppLogger.warning(
