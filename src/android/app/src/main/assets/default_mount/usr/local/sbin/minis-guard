@@ -68,19 +68,31 @@ APPROVE_TIMEOUT = 30  # seconds — deny on timeout (safe default)
 
 def request_user_approval(argv):
     """Write a pending deletion request and wait for user approval.
-    Returns True if approved, False if denied or timeout."""
+    Returns True if approved, False if denied or timeout.
+    
+    Reads MINIS_INTENT (agent's description of what/why) and MINIS_BACKUP
+    (path to backup copy if created) from environment to include in the popup.
+    If MINIS_INTENT is missing — popup shows a warning (agent didn't describe intent).
+    """
     import json as _json
     import time as _time
+    
+    intent = os.environ.get('MINIS_INTENT', '').strip()
+    backup = os.environ.get('MINIS_BACKUP', '').strip()
     
     request = {
         'command': os.path.basename(argv[0]) if argv else 'unknown',
         'args': list(argv[1:]) if len(argv) > 1 else [],
         'timestamp': _time.time(),
         'session': os.environ.get('MINIS_CHAT_SESSION_ID', ''),
+        'intent': intent,       # AI description: what + why
+        'backup': backup,       # path to backup copy if created
+        'has_intent': bool(intent),
+        'has_backup': bool(backup),
     }
     try:
         with open(PENDING_FILE, 'w') as f:
-            _json.dump(request, f)
+            _json.dump(request, f, ensure_ascii=False)
     except Exception:
         return True  # If we can't write the request, allow (don't block all work)
     

@@ -759,7 +759,7 @@ fun ChatScreen(
         MinisAlertDialog(
             onDismissRequest = { viewModel.deletionGuard.respond(false) },
             title = "Agent wants to delete",
-            text = "Command: ${guardRequest!!.command}\nTarget: ${guardRequest!!.displayPath}\n\nApprove this deletion?",
+            text = guardRequest!!.popupText,
             confirmText = "Allow",
             onConfirm = { viewModel.deletionGuard.respond(true) },
             dismissText = "Deny",

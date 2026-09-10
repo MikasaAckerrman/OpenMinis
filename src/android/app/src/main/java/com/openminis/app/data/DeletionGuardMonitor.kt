@@ -37,11 +37,33 @@ class DeletionGuardMonitor(private val context: Context) {
         val command: String,
         val args: List<String>,
         val timestamp: Long,
+        val intent: String = "",
+        val backup: String = "",
+        val hasIntent: Boolean = false,
+        val hasBackup: Boolean = false,
     ) {
         val displayPath: String
             get() = args.firstOrNull { it.startsWith("/") || it.startsWith("-") == false }
                 ?.let { if (it.startsWith("-")) args.firstOrNull { !it.startsWith("-") } ?: it else it }
                 ?: args.joinToString(" ")
+
+        /** Full description for the popup: intent + backup + warnings. */
+        val popupText: String
+            get() {
+                val sb = StringBuilder()
+                sb.append("Command: $command\n")
+                sb.append("Target: $displayPath\n")
+                if (hasIntent) {
+                    sb.append("\nИИ-описание:\n$intent\n")
+                } else {
+                    sb.append("\n⚠️ Агент не описал намерения — будьте осторожны.\n")
+                }
+                if (hasBackup) {
+                    sb.append("\n📋 Копия создана: $backup\n")
+                }
+                sb.append("\nРазрешить удаление?")
+                return sb.toString()
+            }
     }
 
     private val _pendingRequest = MutableStateFlow<GuardRequest?>(null)
@@ -89,9 +111,13 @@ class DeletionGuardMonitor(private val context: Context) {
                     List(arr.length()) { arr.optString(it) }
                 } ?: emptyList(),
                 timestamp = json.optLong("timestamp", 0),
+                intent = json.optString("intent", ""),
+                backup = json.optString("backup", ""),
+                hasIntent = json.optBoolean("has_intent", false),
+                hasBackup = json.optBoolean("has_backup", false),
             )
             _pendingRequest.value = request
-            Log.i(TAG, "Pending deletion request: ${request.command} ${request.displayPath}")
+            Log.i(TAG, "Pending deletion: ${request.command} ${request.displayPath} (intent: ${request.hasIntent}, backup: ${request.hasBackup})")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to read guard_pending.json: ${e.message}")
         }
