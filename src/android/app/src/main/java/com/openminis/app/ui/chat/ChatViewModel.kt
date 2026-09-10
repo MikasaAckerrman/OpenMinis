@@ -5651,7 +5651,7 @@ class ChatViewModel(
                     it.model.id == primaryProvider.model.id
                 } ?: entries.firstOrNull() ?: continue
                 add(
-                    com.openminis.app.data.CrossInstanceFallback.Candidate(
+                    com.openminis.app.data.CrossInstanceFallback.Route(
                         instanceId = instance.id,
                         entryId = entry.id,
                         modelId = entry.model.id,
