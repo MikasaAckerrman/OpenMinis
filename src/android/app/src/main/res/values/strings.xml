@@ -161,6 +161,15 @@
     <string name="mcp_empty_action">Add a server with the + button.</string>
     <string name="mcp_transport_http">HTTP</string>
     <string name="mcp_transport_sse">SSE</string>
+    <string name="tg_whitelist_title">Telegram: управление доступом</string>
+    <string name="tg_whitelist_mode">Режим</string>
+    <string name="tg_whitelist_mode_whitelist">Whitelist</string>
+    <string name="tg_whitelist_mode_blacklist">Blacklist</string>
+    <string name="tg_whitelist_whitelist_desc">Только разрешённые чаты доступны</string>
+    <string name="tg_whitelist_blacklist_desc">Все чаты доступны кроме заблокированных</string>
+    <string name="tg_whitelist_search">Поиск чатов</string>
+    <string name="tg_whitelist_hint">Скажите агенту «обновить список чатов» чтобы обновить кэш</string>
+    <string name="tg_whitelist_access_control">Управление доступом</string>
     <string name="mcp_transport_stdio">STDIO</string>
     <string name="mcp_tab_form">Form</string>
     <string name="mcp_tab_import">Import JSON</string>

@@ -439,6 +439,7 @@ class MainActivity : ComponentActivity() {
                     envVarRepository = app.envVarRepository,
                     skillRepository = app.skillRepository,
                     mcpRepository = app.mcpRepository,
+                    telegramWhitelistRepository = app.telegramWhitelistRepository,
                     memoryRepository = app.memoryRepository,
                     navController = navController,
                     initialDeepLink = launchDeepLink,

@@ -70,6 +70,9 @@ fun MCPIntegrationsScreen(
     // "insert app var" picker ($$VAR references resolve at runtime in PRoot).
     // Null when the caller hasn't wired it — the picker affordance hides.
     envVarRepository: com.openminis.app.data.repository.EnvVarRepository? = null,
+    // [T-tg-whitelist] Navigation to Telegram access-control screen.
+    // Shown only when editing a server with id == "telegram".
+    onTelegramAccessControl: (() -> Unit)? = null,
 ) {
     val servers by mcpRepository.servers.collectAsState()
 
@@ -180,6 +183,7 @@ fun MCPIntegrationsScreen(
                 editServer = null
                 deleteId = server.id
             },
+            onTelegramAccessControl = onTelegramAccessControl,
         )
     }
 
@@ -217,6 +221,7 @@ private fun MCPAddSheet(
     editServer: MCPRepository.MCPServerConfig?,
     onDismiss: () -> Unit,
     onRequestDelete: () -> Unit,
+    onTelegramAccessControl: (() -> Unit)? = null,
 ) {
     // [T-android-mcp-sheet-ime-occlusion] GH#44: skipPartiallyExpanded so the
     // sheet opens full-height — at half-height the soft keyboard left no room
@@ -254,6 +259,20 @@ private fun MCPAddSheet(
                         Text(stringResource(R.string.mcp_tab_import), modifier = Modifier.padding(12.dp))
                     }
                 }
+            }
+
+            // [T-tg-whitelist] Telegram access-control entry point.
+            if (isEdit && editServer?.id == "telegram" && onTelegramAccessControl != null) {
+                TextButton(
+                    onClick = {
+                        onDismiss()
+                        onTelegramAccessControl()
+                    },
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                ) {
+                    Text(stringResource(R.string.tg_whitelist_access_control))
+                }
+                HorizontalDivider()
             }
 
             if (isEdit || selectedTab == 0) {

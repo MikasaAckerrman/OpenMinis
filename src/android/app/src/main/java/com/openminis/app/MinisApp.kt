@@ -24,6 +24,7 @@ import com.openminis.app.data.repository.MemoryRepository
 import com.openminis.app.data.repository.ProviderRepository
 import com.openminis.app.data.repository.WebAppShortcutRepository
 import com.openminis.app.data.repository.MCPRepository
+import com.openminis.app.data.repository.TelegramWhitelistRepository
 import com.openminis.app.data.repository.SkillRepository
 import com.openminis.app.notification.BackgroundTaskNotifier
 import com.openminis.app.logging.AppLogger
@@ -69,6 +70,7 @@ class MinisApp : Application(), ImageLoaderFactory {
     lateinit var skillRepository: SkillRepository
         private set
     lateinit var mcpRepository: MCPRepository
+    lateinit var telegramWhitelistRepository: TelegramWhitelistRepository
         private set
     lateinit var memoryRepository: MemoryRepository
         private set
@@ -310,6 +312,7 @@ class MinisApp : Application(), ImageLoaderFactory {
         providerRepository.setEnvVarRepository(envVarRepository)
         skillRepository = SkillRepository(this)
         mcpRepository = MCPRepository(this)
+        telegramWhitelistRepository = TelegramWhitelistRepository(this)
         memoryRepository = MemoryRepository(java.io.File(filesDir, "minis-global/memory"))
         webAppShortcutRepository = WebAppShortcutRepository(database.webAppShortcutDao())
 

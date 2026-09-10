@@ -147,6 +147,7 @@ object Routes {
     const val MEMORY = "memory"
     /** [T-mcp-integration-android] MCP Integrations management screen. */
     const val MCP = "mcp"
+    const val TG_WHITELIST = "tg_whitelist"
     /** [T-soul-md] SOUL.md editor. */
     const val SOUL = "soul"
     const val MEMORY_FILE_EDIT = "memory_file/{fileName}/{isGlobal}"
@@ -217,6 +218,7 @@ fun AppNavigation(
     envVarRepository: EnvVarRepository? = null,
     skillRepository: SkillRepository? = null,
     mcpRepository: com.openminis.app.data.repository.MCPRepository? = null,
+    telegramWhitelistRepository: com.openminis.app.data.repository.TelegramWhitelistRepository? = null,
     memoryRepository: MemoryRepository? = null,
     navController: NavHostController = rememberNavController(),
     initialDeepLink: DeepLinkAction? = null,
@@ -1106,6 +1108,16 @@ fun AppNavigation(
                     mcpRepository = mcpRepository,
                     onBack = { navController.safePopBackStack() },
                     envVarRepository = envVarRepository,
+                    onTelegramAccessControl = { navController.safeNavigate(Routes.TG_WHITELIST) },
+                )
+            }
+        }
+
+        composable(Routes.TG_WHITELIST) {
+            if (telegramWhitelistRepository != null) {
+                com.openminis.app.ui.settings.TelegramWhitelistScreen(
+                    repository = telegramWhitelistRepository,
+                    onBack = { navController.safePopBackStack() },
                 )
             }
         }
