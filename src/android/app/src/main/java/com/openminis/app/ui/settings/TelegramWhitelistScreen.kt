@@ -91,6 +91,60 @@ fun TelegramWhitelistScreen(
             )
         }
 
+        // Блокировка по типу (только в blacklist режиме)
+        if (config.mode == "blacklist") {
+            SettingsSection(header = "Блокировка по типу") {
+                val privateBlocked = repository.isTypeBlocked("PRIVATE")
+                val botBlocked = repository.isTypeBlocked("BOT")
+                val privateCount = repository.countChatsByType("PRIVATE")
+                val botCount = repository.countChatsByType("BOT")
+
+                ListItem(
+                    headlineContent = { Text("Блокировать все ЛС") },
+                    supportingContent = {
+                        Text(
+                            if (privateBlocked && privateCount > 0)
+                                "Включено · $privateCount ЛС заблокировано"
+                            else if (privateBlocked)
+                                "Включено"
+                            else
+                                "Все личные чаты доступны",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    },
+                    trailingContent = {
+                        Switch(
+                            checked = privateBlocked,
+                            onCheckedChange = { repository.toggleBlockedType("PRIVATE", it) },
+                        )
+                    },
+                )
+                HorizontalDivider()
+                ListItem(
+                    headlineContent = { Text("Блокировать всех ботов") },
+                    supportingContent = {
+                        Text(
+                            if (botBlocked && botCount > 0)
+                                "Включено · $botCount ботов заблокировано"
+                            else if (botBlocked)
+                                "Включено"
+                            else
+                                "Все боты доступны",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    },
+                    trailingContent = {
+                        Switch(
+                            checked = botBlocked,
+                            onCheckedChange = { repository.toggleBlockedType("BOT", it) },
+                        )
+                    },
+                )
+            }
+        }
+
         // Setup mode hint
         if (config.mode == "whitelist" && config.allowed.isEmpty()) {
             SettingsSection {

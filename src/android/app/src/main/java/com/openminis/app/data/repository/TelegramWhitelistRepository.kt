@@ -23,6 +23,7 @@ class TelegramWhitelistRepository(context: Context) {
         val mode: String = "whitelist",
         val allowed: List<Long> = emptyList(),
         val blocked: List<Long> = emptyList(),
+        val blocked_types: List<String> = emptyList(),
     )
 
     data class ChatInfo(
@@ -63,7 +64,8 @@ class TelegramWhitelistRepository(context: Context) {
             val mode = json.optString("mode", "whitelist")
             val allowed = json.optJSONArray("allowed")?.toLongList() ?: emptyList()
             val blocked = json.optJSONArray("blocked")?.toLongList() ?: emptyList()
-            _config.value = WhitelistConfig(mode, allowed, blocked)
+            val blockedTypes = json.optJSONArray("blocked_types")?.toStringList() ?: emptyList()
+            _config.value = WhitelistConfig(mode, allowed, blocked, blockedTypes)
         } catch (e: Exception) {
             _config.value = WhitelistConfig()
         }
@@ -127,6 +129,24 @@ class TelegramWhitelistRepository(context: Context) {
         return if (c.mode == "whitelist") chatId in c.allowed else chatId in c.blocked
     }
 
+    /** Проверить, заблокирован ли тип чата (PRIVATE, BOT, etc). */
+    fun isTypeBlocked(type: String): Boolean = type in _config.value.blocked_types
+
+    /** Включить/выключить блокировку по типу чата. */
+    fun toggleBlockedType(type: String, enabled: Boolean) {
+        val current = _config.value
+        val newTypes = if (enabled) {
+            current.blocked_types + type
+        } else {
+            current.blocked_types - type
+        }.distinct()
+        _config.value = current.copy(blocked_types = newTypes)
+        saveConfig()
+    }
+
+    /** Подсчитать чаты заданного типа в кэше. */
+    fun countChatsByType(type: String): Int = _chats.value.count { it.type == type }
+
     private fun saveConfig() {
         try {
             srvDir.mkdirs()
@@ -134,6 +154,7 @@ class TelegramWhitelistRepository(context: Context) {
             json.put("mode", _config.value.mode)
             json.put("allowed", JSONArray(_config.value.allowed))
             json.put("blocked", JSONArray(_config.value.blocked))
+            json.put("blocked_types", JSONArray(_config.value.blocked_types))
             val tmp = File(srvDir, "tg_whitelist.json.tmp")
             tmp.writeText(json.toString(2))
             tmp.renameTo(whitelistFile)
@@ -145,6 +166,12 @@ class TelegramWhitelistRepository(context: Context) {
     private fun JSONArray.toLongList(): List<Long> {
         val out = mutableListOf<Long>()
         for (i in 0 until length()) out.add(getLong(i))
+        return out
+    }
+
+    private fun JSONArray.toStringList(): List<String> {
+        val out = mutableListOf<String>()
+        for (i in 0 until length()) out.add(getString(i))
         return out
     }
 }
