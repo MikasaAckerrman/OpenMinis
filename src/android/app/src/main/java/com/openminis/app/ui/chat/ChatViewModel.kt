@@ -2578,7 +2578,10 @@ class ChatViewModel(
             return
         }
         val sid = realSessionId.ifEmpty { sessionId }
-        if (sid.isEmpty()) return
+        if (sid.isEmpty()) {
+            appendSystemInfo(context.getString(R.string.msg_no_session_generic), "compact")
+            return
+        }
 
         viewModelScope.launch(Dispatchers.IO) {
             AppLogger.info(TAG, "[Compact] ━━━ REVERT ━━━ session=${sid.take(8)} markerId=${current.id.take(8)} v=${current.version}")
@@ -2663,7 +2666,13 @@ class ChatViewModel(
             return
         }
         val sid = realSessionId.ifEmpty { sessionId }
-        if (sid.isEmpty()) return
+        if (sid.isEmpty()) {
+            appendSystemInfo(
+                text = context.getString(R.string.msg_delete_no_session),
+                iconKind = "compact",
+            )
+            return
+        }
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -2834,7 +2843,10 @@ class ChatViewModel(
             return
         }
         val sid = realSessionId.ifEmpty { sessionId }
-        if (sid.isEmpty()) return
+        if (sid.isEmpty()) {
+            appendSystemInfo(context.getString(R.string.msg_no_session_generic), "compact")
+            return
+        }
 
         viewModelScope.launch(Dispatchers.IO) {
             try {

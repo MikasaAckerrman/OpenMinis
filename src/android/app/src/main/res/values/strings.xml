@@ -1307,6 +1307,8 @@
     <string name="msg_delete_busy_streaming">Stop the current response before editing the history.</string>
     <string name="msg_delete_busy_compacting">Wait for compaction to finish before editing the history.</string>
     <string name="msg_delete_not_found">That message is no longer in this session.</string>
+    <string name="msg_delete_no_session">Cannot delete: the session is not loaded yet. Try again in a moment.</string>
+    <string name="msg_no_session_generic">The session is not loaded yet. Try again in a moment.</string>
     <string name="msg_delete_done">Deleted %1$d message(s) from the session and from the model\'s history.</string>
     <string name="msg_delete_done_with_notes">Deleted %1$d message(s). To keep the history valid: %2$s.</string>
     <string name="msg_delete_failed">Could not delete: %1$s</string>
