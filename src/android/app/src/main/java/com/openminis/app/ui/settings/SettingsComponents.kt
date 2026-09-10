@@ -177,7 +177,7 @@ fun SettingsSection(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp)
-                .clip(RoundedCornerShape(14.dp))
+                .clip(RoundedCornerShape(16.dp))
                 .background(MaterialTheme.colorScheme.surfaceContainerLow)
                 // [T-android-settings-ui-md3] #2 give the card a bottom breathing
                 // space so the LAST row isn't flush against the rounded edge.

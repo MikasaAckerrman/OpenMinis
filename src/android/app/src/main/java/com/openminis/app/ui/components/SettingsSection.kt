@@ -41,7 +41,6 @@ fun SettingsSection(
         Surface(
             shape = RoundedCornerShape(16.dp),
             color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 0.dp,
             modifier = Modifier.fillMaxWidth(),
         ) {
             Column(content = content)

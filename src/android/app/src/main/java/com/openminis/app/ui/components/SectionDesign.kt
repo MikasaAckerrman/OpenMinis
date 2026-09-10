@@ -30,8 +30,8 @@ object SectionDesign {
     /** Outer column padding from screen edge. iOS UIKit insets.left/.right = 16. */
     val ScreenHorizontalPadding = 16.dp
 
-    /** Card corner radius. iOS UITableViewCell rounded section uses ~10pt. */
-    val CardShape = RoundedCornerShape(12.dp)
+    /** Card corner radius. Grok-style 16dp rounded. */
+    val CardShape = RoundedCornerShape(16.dp)
 
     /** Distance from screen top → first section header. */
     val FirstSectionTopGap = 16.dp

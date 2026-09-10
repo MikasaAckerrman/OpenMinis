@@ -35,21 +35,24 @@ private val TealSurfaceVariant = Color(0xFFDAE5E2)
 private val TealOnSurfaceVariant = Color(0xFF3F4947)
 private val TealOutline = Color(0xFF6F7977)
 
-private val TealDarkPrimary = Color(0xFF4DD9D9)
-private val TealDarkOnPrimary = Color(0xFF003737)
-private val TealDarkPrimaryContainer = Color(0xFF1A6B6B)
-private val TealDarkOnPrimaryContainer = Color(0xFFB2DFDB)
-private val TealDarkSecondary = Color(0xFFB1CCC8)
-private val TealDarkOnSecondary = Color(0xFF1C3532)
-private val TealDarkSecondaryContainer = Color(0xFF334B48)
-private val TealDarkOnSecondaryContainer = Color(0xFFCCE8E4)
-private val TealDarkBackground = Color(0xFF0E1514)
-private val TealDarkOnBackground = Color(0xFFDEE4E2)
-private val TealDarkSurface = Color(0xFF0E1514)
-private val TealDarkOnSurface = Color(0xFFDEE4E2)
-private val TealDarkSurfaceVariant = Color(0xFF3F4947)
-private val TealDarkOnSurfaceVariant = Color(0xFFBEC9C6)
-private val TealDarkOutline = Color(0xFF899390)
+// Grok-style OLED-black dark scheme. Accent is neutral white (no teal);
+// surfaces sit in a light ramp above pure #000 so layers separate cleanly
+// on AMOLED. Tested on iQOO Neo 10 AMOLED at 500 nits.
+private val DarkPrimary = Color(0xFFFFFFFF)
+private val DarkOnPrimary = Color(0xFF000000)
+private val DarkPrimaryContainer = Color(0xFF2A2A2A)
+private val DarkOnPrimaryContainer = Color(0xFFE0E0E0)
+private val DarkSecondary = Color(0xFF8E8E93)
+private val DarkOnSecondary = Color(0xFF000000)
+private val DarkSecondaryContainer = Color(0xFF2A2A2A)
+private val DarkOnSecondaryContainer = Color(0xFFE0E0E0)
+private val DarkBackground = Color(0xFF000000)
+private val DarkOnBackground = Color(0xFFE8E8E8)
+private val DarkSurface = Color(0xFF000000)
+private val DarkOnSurface = Color(0xFFE8E8E8)
+private val DarkSurfaceVariant = Color(0xFF1C1C1E)
+private val DarkOnSurfaceVariant = Color(0xFF8E8E93)
+private val DarkOutline = Color(0xFF38383A)
 
 // Neutral grouped-card surfaces (iOS-style system-grouped background).
 // Override Material3's tonal `surfaceContainer*` so cards don't pick up the
@@ -61,13 +64,6 @@ private val NeutralGroupedCard = Color(0xFFFFFFFF)
 private val NeutralGroupedCardElevated = Color(0xFFF7F7FA)
 private val NeutralOutline = Color(0xFFD1D1D6)
 
-// Soft-dark rebuild: page floor lifted from #000 to the measured #121212;
-// grouped cards ride above it (#1E1E1E / #2A2A2A). Matches DarkChatPalette
-// so Settings / Providers / Chats share the same layered dark as the chat.
-private val NeutralDarkGroupedBg = Color(0xFF121212)
-private val NeutralDarkGroupedCard = Color(0xFF1E1E1E)
-private val NeutralDarkGroupedCardElevated = Color(0xFF2A2A2A)
-private val NeutralDarkOutline = Color(0xFF38383A)
 
 private val LightColorScheme = lightColorScheme(
     primary = TealPrimary,
@@ -98,27 +94,27 @@ private val LightColorScheme = lightColorScheme(
 )
 
 private val DarkColorScheme = darkColorScheme(
-    primary = TealDarkPrimary,
-    onPrimary = TealDarkOnPrimary,
-    primaryContainer = TealDarkPrimaryContainer,
-    onPrimaryContainer = TealDarkOnPrimaryContainer,
-    secondary = TealDarkSecondary,
-    onSecondary = TealDarkOnSecondary,
-    secondaryContainer = TealDarkSecondaryContainer,
-    onSecondaryContainer = TealDarkOnSecondaryContainer,
-    background = NeutralDarkGroupedBg,
-    onBackground = TealDarkOnBackground,
-    surface = NeutralDarkGroupedBg,
-    onSurface = TealDarkOnSurface,
-    surfaceVariant = NeutralDarkGroupedCard,
-    onSurfaceVariant = TealDarkOnSurfaceVariant,
-    surfaceContainerLowest = NeutralDarkGroupedBg,
-    surfaceContainerLow = NeutralDarkGroupedCard,
-    surfaceContainer = NeutralDarkGroupedCard,
-    surfaceContainerHigh = NeutralDarkGroupedCardElevated,
-    surfaceContainerHighest = NeutralDarkGroupedCardElevated,
-    outline = NeutralDarkOutline,
-    outlineVariant = NeutralDarkOutline,
+    primary = DarkPrimary,
+    onPrimary = DarkOnPrimary,
+    primaryContainer = DarkPrimaryContainer,
+    onPrimaryContainer = DarkOnPrimaryContainer,
+    secondary = DarkSecondary,
+    onSecondary = DarkOnSecondary,
+    secondaryContainer = DarkSecondaryContainer,
+    onSecondaryContainer = DarkOnSecondaryContainer,
+    background = DarkBackground,
+    onBackground = DarkOnBackground,
+    surface = DarkSurface,
+    onSurface = DarkOnSurface,
+    surfaceVariant = DarkSurfaceVariant,
+    onSurfaceVariant = DarkOnSurfaceVariant,
+    surfaceContainerLowest = DarkBackground,
+    surfaceContainerLow = Color(0xFF1C1C1E),
+    surfaceContainer = Color(0xFF1C1C1E),
+    surfaceContainerHigh = Color(0xFF2A2A2A),
+    surfaceContainerHighest = Color(0xFF2A2A2A),
+    outline = DarkOutline,
+    outlineVariant = Color(0xFF2C2C2E),
 )
 
 // App-wide FAB accent color (warm beige, matching iOS New Chat button).
@@ -127,14 +123,13 @@ private val DarkColorScheme = darkColorScheme(
 @Composable
 fun minisFabColor(): Color = LocalChatPalette.current.fabAccent
 
-// App-wide shape system — larger corners for a modern, friendly feel
-// DropdownMenu uses extraSmall, Dialog uses extraLarge, BottomSheet uses extraLarge
+// App-wide shape system — Grok-style large rounded corners
 private val MinisShapes = Shapes(
-    extraSmall = RoundedCornerShape(12.dp),   // DropdownMenu, Tooltip, OutlinedTextField default
-    small = RoundedCornerShape(12.dp),        // Chip, TextField
-    medium = RoundedCornerShape(20.dp),       // Card, Snackbar
-    large = RoundedCornerShape(24.dp),        // NavigationDrawer
-    extraLarge = RoundedCornerShape(28.dp),   // Dialog, BottomSheet
+    extraSmall = RoundedCornerShape(14.dp),   // DropdownMenu, Tooltip, OutlinedTextField default
+    small = RoundedCornerShape(16.dp),        // Chip, TextField
+    medium = RoundedCornerShape(24.dp),       // Card, Snackbar, message bubbles
+    large = RoundedCornerShape(28.dp),        // NavigationDrawer
+    extraLarge = RoundedCornerShape(32.dp),   // Dialog, BottomSheet
 )
 
 @Composable

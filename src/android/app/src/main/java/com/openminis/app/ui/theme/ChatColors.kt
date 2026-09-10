@@ -95,18 +95,14 @@ val LightChatPalette = ChatPalette(
     fabAccent = Color(0xFFB7AF96),
 )
 
-// T153 / soft-dark rebuild: measured from the reference screenshots the
-// app background is NOT pure black — it is a soft #121212 with a lifted
-// surface ramp (#1C1C1E section, #242424 icon well, #2A2A2A tool card,
-// #2C2C2C composer). Pure #000 crushed the layers together on ~500-nit
-// Android panels; #121212 keeps the same "layered dark grey" the iOS
-// system palette gives on OLED, while every non-background layer still
-// sits ABOVE the floor so contrast survives the brightness gap.
+// Grok-style OLED-black dark palette. Background is pure #000 (AMOLED),
+// surfaces sit in a light ramp (#1C1C1E → #2C2C2C) so layers separate on
+// black. Text is pure white, accent/link is a soft blue.
 val DarkChatPalette = ChatPalette(
     isDark = true,
-    background = Color(0xFF121212),
+    background = Color(0xFF000000),
     secondaryBg = Color(0xFF1C1C1E),
-    inputBg = Color(0xFF2C2C2C),
+    inputBg = Color(0xFF1C1C1E),
     inputIconBg = Color(0xFF242424),
     inputIconBorder = Color(0xFF3A3A3A),
     inputBorder = Color(0x40545458),
@@ -114,34 +110,29 @@ val DarkChatPalette = ChatPalette(
     secondaryText = Color(0x99EBEBF5),
     tertiaryText = Color(0x4DEBEBF5),
     disabledText = Color(0x2EEBEBF5),
-    // Measured user bubble on the reference is an OPAQUE mid-grey (#494949),
-    // right-aligned. Opaque (not the old translucent 0x24… that washed out)
-    // so it stays legible on the #121212 floor while matching the screenshot.
-    userBubble = Color(0xFF494949),
-    toolBg = Color(0xFF2A2A2A),
+    userBubble = Color(0xFF1C1C1E),
+    toolBg = Color(0xFF1C1C1E),
     toolBorder = Color(0x40545458),
     toolCapsuleBg = Color(0xFF242424),
-    separator = Color(0x99545458),
+    separator = Color(0x66545458),
     sendButton = Color(0xFFFFFFFF),
     sendButtonDisabled = Color(0x2EEBEBF5),
-    codeBlockBg = Color(0xFF1E1E1E),
+    codeBlockBg = Color(0xFF0A0A0A),
     codeBlockText = Color(0xFF8CF38C),
-    // Inline code chip sits between inputBg (#2C2C2C) and toolBg (#2A2A2A),
-    // clearly above codeBlockBg (#1E1E1E) and the #121212 floor.
-    inlineCodeBg = Color(0xFF343434),
+    inlineCodeBg = Color(0xFF1C1C1E),
     inlineCodeText = Color(0xFFFF9F0A),
-    link = Color(0xFF0A84FF),
+    link = Color(0xFF6EA8FE),
     blockquoteBar = Color(0x80FF9F0A),
-    thinking = Color(0xFF0A84FF),
+    thinking = Color(0xFF6EA8FE),
     warningBg = Color(0x14FF9F0A),
     warningText = Color(0x73FFFFFF),
-    tableBorder = Color(0xFF38383A),
+    tableBorder = Color(0xFF2C2C2E),
     inputShadow = Color(0x80000000),
-    toastBg = Color(0x2E0A84FF),
+    toastBg = Color(0x2E6EA8FE),
     thumbnailBorder = Color(0x20545458),
-    sheetHeaderBg = Color(0xFF1F1F1F),
+    sheetHeaderBg = Color(0xFF1C1C1E),
     sheetHeaderBorder = Color(0x33FFFFFF),
-    fabAccent = Color(0xFF504C42),
+    fabAccent = Color(0xFFE8E8E8),
 )
 
 val LocalChatPalette = compositionLocalOf { LightChatPalette }
