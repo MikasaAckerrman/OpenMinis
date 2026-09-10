@@ -75,4 +75,85 @@ class ProviderFallbackIdentityTest {
             ) == listOf(2),
         )
     }
+
+    @Test
+    fun `ordered candidates preserve exact entry ids`() {
+        val routes = listOf(
+            ProviderFallbackIdentity.Route("gpt-test", "relay-a.example"),
+            ProviderFallbackIdentity.Route("gpt-test", "relay-b.example"),
+            ProviderFallbackIdentity.Route("model-c", "relay-c.example"),
+        )
+        val entryIds = listOf("entry-a", "entry-b", "entry-c")
+
+        assertTrue(
+            ProviderFallbackIdentity.orderedCandidates(
+                routes = routes,
+                values = entryIds,
+                currentModelId = "gpt-test",
+                currentThrottleKey = "relay-a.example",
+            ).map { it.value } == listOf("entry-b", "entry-c"),
+        )
+    }
+
+    @Test
+    fun `unmatched current route does not skip first group member`() {
+        val routes = listOf(
+            ProviderFallbackIdentity.Route("model-a", "relay-a.example"),
+            ProviderFallbackIdentity.Route("model-b", "relay-b.example"),
+        )
+
+        assertTrue(
+            ProviderFallbackIdentity.orderedCandidateIndices(
+                routes = routes,
+                currentModelId = "outside-model",
+                currentThrottleKey = "outside-relay.example",
+            ) == listOf(0, 1),
+        )
+    }
+
+    @Test
+    fun `unmatched route can fall back to a one-member group`() {
+        assertTrue(
+            ProviderFallbackIdentity.orderedCandidateIndices(
+                routes = listOf(
+                    ProviderFallbackIdentity.Route("model-a", "relay-a.example"),
+                ),
+                currentModelId = "outside-model",
+                currentThrottleKey = "outside-relay.example",
+            ) == listOf(0),
+        )
+    }
+
+    @Test
+    fun `cross-instance candidates skip the broken host and keep healthy ones`() {
+        val routes = listOf(
+            ProviderFallbackIdentity.Route("model-x", "broken.example"),
+            ProviderFallbackIdentity.Route("model-x", "clean-a.example"),
+            ProviderFallbackIdentity.Route("model-x", "clean-b.example"),
+        )
+
+        assertTrue(
+            ProviderFallbackIdentity.orderedCandidateIndices(
+                routes = routes,
+                currentModelId = "model-x",
+                currentThrottleKey = "broken.example",
+            ) == listOf(1, 2),
+        )
+    }
+
+    @Test
+    fun `cross-instance candidates rotate to first member when current host is unknown`() {
+        val routes = listOf(
+            ProviderFallbackIdentity.Route("model-x", "clean-a.example"),
+            ProviderFallbackIdentity.Route("model-x", "clean-b.example"),
+        )
+
+        assertTrue(
+            ProviderFallbackIdentity.orderedCandidateIndices(
+                routes = routes,
+                currentModelId = "model-x",
+                currentThrottleKey = "outside-relay.example",
+            ) == listOf(0, 1),
+        )
+    }
 }

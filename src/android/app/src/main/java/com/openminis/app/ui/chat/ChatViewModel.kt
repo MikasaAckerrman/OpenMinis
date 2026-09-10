@@ -864,6 +864,20 @@ class ChatViewModel(
     val fallbackTrigger: StateFlow<Int> = _fallbackTrigger.asStateFlow()
 
     private val _activeEntryId = MutableStateFlow<String?>(null)
+
+    /**
+     * The provider instance id backing the currently-active model entry, used
+     * by [buildFallbackProviders] to skip the same instance when crossing the
+     * configured list (single-entry sessions without a fallback group).
+     */
+    private val primaryProviderInstanceId: String?
+        get() = _activeEntryId.value?.let { entryId ->
+            providerRepository.config.value.modelEntries
+                .find { it.id == entryId }?.providerInstanceId
+        }
+
+    /** Caps the cross-instance fallback list to keep latency and token cost bounded. */
+    private val CROSS_INSTANCE_FALLBACK_LIMIT = 5
     val activeEntryId: StateFlow<String?> = _activeEntryId.asStateFlow()
 
     /** Prompts enqueued while the agent loop is running. Drained after the loop finishes. */
@@ -3980,7 +3994,7 @@ class ChatViewModel(
                     }
                     is com.openminis.app.data.CompactRoute.Step.NextProvider -> {
                         providerIdx = step.index
-                        provider = fallbacks[step.index]
+                        provider = fallbacks[step.index].provider
                         shrinkSteps = 0
                         // [T-compact-maxout-clamp] Re-clamp for the fallback
                         // model: its output cap can be lower than the primary's
@@ -5558,56 +5572,112 @@ class ChatViewModel(
      * This ensures that models already tried (before the primary) are at the end,
      * not the beginning — so retry doesn't re-trigger the same fallback chain.
      */
-    private fun buildFallbackProviders(primaryProvider: LLMProvider): List<LLMProvider> {
-        val groupId = _selectedGroupId.value ?: return emptyList()
+    private data class FallbackCandidate(
+        val entryId: String,
+        val provider: LLMProvider,
+    )
+
+    private fun buildFallbackProviders(primaryProvider: LLMProvider): List<FallbackCandidate> {
+        val groupId = _selectedGroupId.value
         val config = providerRepository.config.value
-        val group = config.modelGroups.find { it.id == groupId } ?: return emptyList()
-        val members = group.memberEntryIds
-        // Route identity is (model id + endpoint host), NOT model id alone.
-        // A relay content filter is endpoint-specific: the same model through
-        // another provider instance is a valid fallback and must remain
-        // reachable. Model-only matching picked the first duplicate-model
-        // member, so a retry could start at the wrong position and silently
-        // skip the clean relay after `sensitive_words`.
-        val routes = members.map { entryId ->
-            val entry = config.modelEntries.find { it.id == entryId }
-            val instance = entry?.let { e -> config.instances.find { it.id == e.providerInstanceId } }
-            com.openminis.app.data.ProviderFallbackIdentity.Route(
-                modelId = entry?.model?.id.orEmpty(),
-                throttleKey = instance?.effectiveBaseURL?.let {
-                    com.openminis.app.provider.LlmDispatchGate.keyForUrl(it)
-                }.orEmpty(),
-            )
+        if (groupId != null) {
+            val group = config.modelGroups.find { it.id == groupId }
+            if (group != null) {
+                val members = group.memberEntryIds
+                // Route identity is (model id + endpoint host), NOT model id alone.
+                // A relay content filter is endpoint-specific: the same model through
+                // another provider instance is a valid fallback and must remain
+                // reachable. Preserve the exact entry id together with the provider:
+                // after a same-model endpoint switch there is no safe way to recover
+                // it by model id alone (and two instances can normalize to one host).
+                val routes = members.map { entryId ->
+                    val entry = config.modelEntries.find { it.id == entryId }
+                    val instance = entry?.let { e -> config.instances.find { it.id == e.providerInstanceId } }
+                    com.openminis.app.data.ProviderFallbackIdentity.Route(
+                        modelId = entry?.model?.id.orEmpty(),
+                        throttleKey = instance?.effectiveBaseURL?.let {
+                            com.openminis.app.provider.LlmDispatchGate.keyForUrl(it)
+                        }.orEmpty(),
+                    )
+                }
+                val candidateIndices = com.openminis.app.data.ProviderFallbackIdentity
+                    .orderedCandidates(
+                        routes = routes,
+                        values = members,
+                        currentModelId = primaryProvider.model.id,
+                        currentThrottleKey = primaryProvider.throttleKey,
+                    )
+                val result = mutableListOf<FallbackCandidate>()
+                // Iterate starting from the entry AFTER the exact primary route,
+                // cycling around. Duplicate entries for the same model+endpoint are
+                // skipped; same-model DIFFERENT-endpoint entries are preserved.
+                for (candidate in candidateIndices) {
+                    val entryId = candidate.value
+                    val entry = config.modelEntries.find { it.id == entryId } ?: continue
+                    val instance = config.instances.find { it.id == entry.providerInstanceId } ?: continue
+                    if (!instance.isEnabled) continue
+                    val apiKey = providerRepository.loadApiKey(instance.id) ?: continue
+                    val p = try {
+                        ProviderFactory.create(instance, apiKey, entry.model, context)
+                    } catch (_: Exception) { continue }
+                    if (!com.openminis.app.data.ProviderFallbackIdentity.isUsableFallback(
+                            currentModelId = primaryProvider.model.id,
+                            currentThrottleKey = primaryProvider.throttleKey,
+                            nextModelId = p.model.id,
+                            nextThrottleKey = p.throttleKey,
+                        )
+                    ) continue
+                    result.add(FallbackCandidate(entryId = entry.id, provider = p))
+                }
+                return result
+            }
         }
-        val candidateIndices = com.openminis.app.data.ProviderFallbackIdentity
-            .orderedCandidateIndices(
-                routes = routes,
-                currentModelId = primaryProvider.model.id,
-                currentThrottleKey = primaryProvider.throttleKey,
-            )
-        val result = mutableListOf<LLMProvider>()
-        // Iterate starting from the entry AFTER the exact primary route,
-        // cycling around. Duplicate entries for the same model+endpoint are
-        // skipped; same-model DIFFERENT-endpoint entries are preserved.
-        for (idx in candidateIndices) {
-            val entryId = members[idx]
-            val entry = config.modelEntries.find { it.id == entryId } ?: continue
-            val instance = config.instances.find { it.id == entry.providerInstanceId } ?: continue
-            if (!instance.isEnabled) continue
+        // No group selected — single-entry session. Previously this returned an
+        // empty list, so any non-transient error on the bound provider (a relay
+        // WAF like agentrouter's `sensitive_words`, which the user reports
+        // happens frequently across all that relay's models) had no automatic
+        // recovery even when the user has tens of other healthy instances
+        // configured. Now we cross the configured instances list: every other
+        // enabled instance that exposes at least one model entry becomes a
+        // candidate, ordered by route identity so a sibling that shares the
+        // same broken relay host is not tried first. Capped to keep latency
+        // and token cost bounded.
+        val crossInstanceCandidates = buildList {
+            for (instance in config.instances) {
+                if (!instance.isEnabled) continue
+                if (instance.id == primaryProviderInstanceId) continue
+                val entries = config.modelEntries.filter { it.providerInstanceId == instance.id }
+                val entry = entries.firstOrNull {
+                    it.model.id == primaryProvider.model.id
+                } ?: entries.firstOrNull() ?: continue
+                add(
+                    com.openminis.app.data.CrossInstanceFallback.Candidate(
+                        instanceId = instance.id,
+                        entryId = entry.id,
+                        modelId = entry.model.id,
+                        host = instance.effectiveBaseURL,
+                    ),
+                )
+            }
+        }
+        val selected = com.openminis.app.data.CrossInstanceFallback.select(
+            primaryInstanceId = primaryProviderInstanceId.orEmpty(),
+            primaryHost = primaryProvider.throttleKey,
+            primaryModelId = primaryProvider.model.id,
+            candidates = crossInstanceCandidates,
+        )
+        val crossResult = mutableListOf<FallbackCandidate>()
+        for (candidate in selected) {
+            val entry = config.modelEntries.find { it.id == candidate.entryId } ?: continue
+            val instance = config.instances.find { it.id == candidate.instanceId } ?: continue
             val apiKey = providerRepository.loadApiKey(instance.id) ?: continue
             val p = try {
                 ProviderFactory.create(instance, apiKey, entry.model, context)
             } catch (_: Exception) { continue }
-            if (!com.openminis.app.data.ProviderFallbackIdentity.isUsableFallback(
-                    currentModelId = primaryProvider.model.id,
-                    currentThrottleKey = primaryProvider.throttleKey,
-                    nextModelId = p.model.id,
-                    nextThrottleKey = p.throttleKey,
-                )
-            ) continue
-            result.add(p)
+            crossResult.add(FallbackCandidate(entryId = entry.id, provider = p))
+            if (crossResult.size >= CROSS_INSTANCE_FALLBACK_LIMIT) break
         }
-        return result
+        return crossResult
     }
 
     /**
@@ -6871,7 +6941,7 @@ class ChatViewModel(
     private suspend fun drainQueuedPrompts(
         provider: LLMProvider,
         systemPrompt: String?,
-        fallbackProviders: List<LLMProvider>,
+        fallbackProviders: List<FallbackCandidate>,
         fallbackStrategy: com.openminis.app.data.model.FallbackStrategy,
     ) {
         while (_promptQueue.value.isNotEmpty()) {
@@ -8549,7 +8619,7 @@ class ChatViewModel(
     private suspend fun runAgentLoop(
         provider: LLMProvider,
         systemPrompt: String?,
-        fallbackProviders: List<LLMProvider> = emptyList(),
+        fallbackProviders: List<FallbackCandidate> = emptyList(),
         fallbackStrategy: com.openminis.app.data.model.FallbackStrategy = com.openminis.app.data.model.FallbackStrategy.default,
     ) {
         AppLogger.info(TAG_STREAM, "runAgentLoop ENTER provider=${provider.javaClass.simpleName} historySize=${agentHistory.size}")
@@ -9641,8 +9711,9 @@ class ChatViewModel(
                         strategyIsAlways = fallbackStrategy ==
                             com.openminis.app.data.model.FallbackStrategy.always,
                     )
-                    val next = if (shouldFallback) remainingFallbacks.removeFirstOrNull() else null
-                    if (next != null) {
+                    val nextCandidate = if (shouldFallback) remainingFallbacks.removeFirstOrNull() else null
+                    if (nextCandidate != null) {
+                        val next = nextCandidate.provider
                         val reason = when {
                             isRateLimit -> "Rate limited"
                             actual is com.openminis.app.data.model.LLMError.ProviderError -> actual.detail
@@ -9689,15 +9760,17 @@ class ChatViewModel(
                         // named an arbitrary instance rather than the one actually
                         // in use, mislabelling the provider in the top bar and the
                         // picker.
-                        val newEntry = providerRepository.config.value.modelEntries.firstOrNull { e ->
-                            e.model.id == currentProvider.model.id &&
-                                providerRepository.instance(e.providerInstanceId)
-                                    ?.effectiveBaseURL
-                                    ?.let {
-                                        com.openminis.app.provider.LlmDispatchGate.keyForUrl(it)
-                                    }
-                                    ?.equals(currentProvider.throttleKey, ignoreCase = true) == true
-                        } ?: providerRepository.config.value.modelEntries.find {
+                        val newEntry = providerRepository.config.value.modelEntries
+                            .firstOrNull { it.id == nextCandidate.entryId }
+                            ?: providerRepository.config.value.modelEntries.firstOrNull { e ->
+                                e.model.id == currentProvider.model.id &&
+                                    providerRepository.instance(e.providerInstanceId)
+                                        ?.effectiveBaseURL
+                                        ?.let {
+                                            com.openminis.app.provider.LlmDispatchGate.keyForUrl(it)
+                                        }
+                                        ?.equals(currentProvider.throttleKey, ignoreCase = true) == true
+                            } ?: providerRepository.config.value.modelEntries.find {
                             // Fallback to model-only matching: a built-in provider
                             // has no customBaseURL, so host matching cannot apply
                             // and the old behaviour is still correct there.

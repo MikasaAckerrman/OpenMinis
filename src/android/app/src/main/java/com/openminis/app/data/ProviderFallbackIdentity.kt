@@ -32,6 +32,23 @@ object ProviderFallbackIdentity {
         nextThrottleKey = nextThrottleKey,
     )
 
+    data class Candidate<T>(val index: Int, val value: T)
+
+    /**
+     * Same route ordering as [orderedCandidateIndices], while preserving an
+     * opaque caller-owned value (the exact model-entry id/provider wrapper).
+     */
+    fun <T> orderedCandidates(
+        routes: List<Route>,
+        values: List<T>,
+        currentModelId: String,
+        currentThrottleKey: String,
+    ): List<Candidate<T>> {
+        require(routes.size == values.size)
+        return orderedCandidateIndices(routes, currentModelId, currentThrottleKey)
+            .map { idx -> Candidate(idx, values[idx]) }
+    }
+
     /**
      * Group member indices in fallback order after the exact current route.
      * Duplicate model+endpoint routes are returned once; same-model entries on
@@ -43,7 +60,7 @@ object ProviderFallbackIdentity {
         currentModelId: String,
         currentThrottleKey: String,
     ): List<Int> {
-        if (routes.size < 2) return emptyList()
+        if (routes.isEmpty()) return emptyList()
         val currentIdx = routes.indexOfFirst {
             isSameRoute(
                 currentModelId,
@@ -53,8 +70,13 @@ object ProviderFallbackIdentity {
             )
         }
         val seen = mutableSetOf(routeKey(currentModelId, currentThrottleKey))
-        val out = ArrayList<Int>(routes.size - 1)
-        for (offset in 1 until routes.size) {
+        val out = ArrayList<Int>(routes.size - if (currentIdx >= 0) 1 else 0)
+        val offsets: IntProgression = if (currentIdx >= 0) {
+            1 until routes.size
+        } else {
+            routes.indices
+        }
+        for (offset in offsets) {
             val idx = if (currentIdx >= 0) (currentIdx + offset) % routes.size else offset
             val route = routes[idx]
             if (seen.add(routeKey(route.modelId, route.throttleKey))) out.add(idx)
