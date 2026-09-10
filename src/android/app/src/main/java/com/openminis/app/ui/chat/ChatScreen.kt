@@ -4893,6 +4893,10 @@ fun ChatScreen(
                         BasicTextField(
                             value = inputFieldValue,
                             onValueChange = { tfv ->
+                                // [T-keyboard-dim-fix] Reset dim idle timer on every keystroke.
+                                // onUserInteraction() may not fire for IME key events, so the
+                                // dim overlay would black out the screen mid-typing without this.
+                                com.openminis.app.ui.ScreenInteractionTracker.touch()
                                 // T217-2: drop IME residue commits in 300ms post-send window.
                                 // finishComposingText (fired by clearFocus on send) makes
                                 // voice/Pinyin IMEs replay their pending candidate through
