@@ -127,10 +127,15 @@ fun EnvironmentVariablesScreen(
             }
         }
 
-        // Group by category — each category gets its own labeled section
+        // Group by category — show ALL categories (predefined + custom)
         if (entries.isNotEmpty()) {
             val grouped = entries.groupBy { it.category }
-            EnvVarRepository.CATEGORIES.forEach { category ->
+            // Show predefined categories first (in order), then any custom ones
+            val allCategories = EnvVarRepository.CATEGORIES.toMutableList()
+            grouped.keys.forEach { cat ->
+                if (cat !in allCategories) allCategories.add(cat)
+            }
+            allCategories.forEach { category ->
                 val categoryEntries = grouped[category]
                 if (categoryEntries.isNullOrEmpty()) return@forEach
 
@@ -257,6 +262,7 @@ private fun EnvVarFormSheet(
         mutableStateOf(editEntry?.let { envVarRepository.getValue(it.key) } ?: prefillValue)
     }
     var noteText by remember { mutableStateOf(editEntry?.note ?: prefillNote) }
+    var categoryText by remember { mutableStateOf(editEntry?.category ?: EnvVarRepository.DEFAULT_CATEGORY) }
 
     val isEditing = editEntry != null
     val normalizedKey = keyText.trim().uppercase()
@@ -338,6 +344,33 @@ private fun EnvVarFormSheet(
                 singleLine = true,
             )
 
+            // Category — free text with predefined suggestions
+            Text(
+                text = "Category",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(6.dp))
+            DialogTextField(
+                value = categoryText,
+                onValueChange = { categoryText = it },
+                placeholder = "Type any category name…",
+                singleLine = true,
+            )
+            // Suggestion chips — tap to fill the text field
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                EnvVarRepository.CATEGORIES.forEach { cat ->
+                    if (cat != categoryText) {
+                        MinisTextButton(onClick = { categoryText = cat }) {
+                            Text(cat, style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
+            }
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End,
@@ -348,9 +381,9 @@ private fun EnvVarFormSheet(
                 MinisTextButton(
                     onClick = {
                         val success = if (isEditing) {
-                            envVarRepository.update(editEntry!!.id, keyText, valueText, noteText)
+                            envVarRepository.update(editEntry!!.id, keyText, valueText, noteText, categoryText.ifBlank { EnvVarRepository.DEFAULT_CATEGORY })
                         } else {
-                            envVarRepository.add(keyText, valueText, noteText)
+                            envVarRepository.add(keyText, valueText, noteText, categoryText.ifBlank { EnvVarRepository.DEFAULT_CATEGORY })
                         }
                         if (success) onDismiss()
                     },

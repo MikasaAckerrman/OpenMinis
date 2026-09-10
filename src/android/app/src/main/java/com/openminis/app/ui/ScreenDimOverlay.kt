@@ -83,6 +83,11 @@ fun ScreenDimOverlay() {
     val hasActiveTask = activeSessions.isNotEmpty()
     val lastTouchAt by ScreenInteractionTracker.lastInteractionAtMs.collectAsState()
 
+    // [T-keyboard-dim-fix] Don't dim while the keyboard (IME) is visible.
+    // onUserInteraction() may not fire for IME key events, so the idle timer
+    // keeps running while the user types → screen blacks out mid-typing.
+    val imeVisible = androidx.compose.foundation.layout.WindowInsets.isImeVisible
+
     var dimmed by remember { mutableStateOf(false) }
 
     // [T-black-screen-popup] Expose dim state so DeletionGuardMonitor
@@ -94,8 +99,8 @@ fun ScreenDimOverlay() {
     // Inert unless enabled AND a task is running, so the ticker costs nothing in
     // the common case. Restarts on every interaction (lastTouchAt changes).
     val enabled = keepAwake && delaySec > 0 && hasActiveTask
-    LaunchedEffect(enabled, delaySec, lastTouchAt) {
-        if (!enabled) {
+    LaunchedEffect(enabled, delaySec, lastTouchAt, imeVisible) {
+        if (!enabled || imeVisible) {
             dimmed = false
             return@LaunchedEffect
         }
