@@ -5655,7 +5655,7 @@ class ChatViewModel(
                         instanceId = instance.id,
                         entryId = entry.id,
                         modelId = entry.model.id,
-                        host = instance.effectiveBaseURL,
+                        host = instance.effectiveBaseURL.orEmpty(),
                     ),
                 )
             }
