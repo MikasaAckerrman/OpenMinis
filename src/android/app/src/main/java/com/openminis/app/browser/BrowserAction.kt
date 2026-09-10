@@ -25,7 +25,8 @@ enum class BrowserAction(val value: String) {
     GET_COOKIES("get_cookies"),
     SET_COOKIES("set_cookies"),
     SCROLL_AND_COLLECT("scroll_and_collect"),
-    WAIT_FOR_DOM_STABLE("wait_for_dom_stable");
+    WAIT_FOR_DOM_STABLE("wait_for_dom_stable"),
+    PRESENT("present");
 
     /**
      * [T-browser-readaction-follow-tab-and-yolo-android] True when this action

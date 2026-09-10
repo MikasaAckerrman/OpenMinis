@@ -377,6 +377,7 @@ class BrowserUseOffloadHandler(private val app: MinisApp) : NativeOffloadHandler
             "set_viewport"       -> "browser: set viewport"
             "get_cookies"        -> "browser: read cookies"
             "set_cookies"        -> "browser: write cookies"
+            "present"            -> "browser: show to user (CAPTCHA)"
             "go_back", "back"    -> "browser: go back"
             "reload"             -> "browser: reload"
             "find"               -> "browser: find ${txt ?: sel ?: ""}".trim()

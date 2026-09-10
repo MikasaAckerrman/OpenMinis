@@ -138,6 +138,19 @@ class BrowserTabPool(private val context: Context) {
     private val _selectedTabId = MutableStateFlow(0)
     val selectedTabId: StateFlow<Int> = _selectedTabId.asStateFlow()
 
+    /**
+     * [T-browser-present] Agent-requested "show browser to user" signal.
+     * When the agent calls browser_use(action=present), this flow emits true.
+     * ChatViewModel observes this and shows the BrowserSheet so the user can
+     * solve CAPTCHA / interact with the page. The agent can then poll the DOM
+     * (execute_js, wait_for_dom_stable) to detect the CAPTCHA was solved.
+     */
+    private val _presentRequest = MutableStateFlow(false)
+    val presentRequest: StateFlow<Boolean> = _presentRequest.asStateFlow()
+
+    /** Reset the present-request signal after the UI has shown the browser sheet. */
+    fun resetPresentRequest() { _presentRequest.value = false }
+
     /** Whether any tab is currently executing an agent action. */
     val isAgentBusy: Boolean get() = _tabs.value.any { it.inUse }
 
@@ -529,6 +542,17 @@ class BrowserTabPool(private val context: Context) {
             BrowserAction.CLOSE_TAB -> closeTab(input.tabId)
             BrowserAction.LIST_TABS -> listTabs()
             BrowserAction.SET_VIEWPORT -> handleSetViewport(input)
+            BrowserAction.PRESENT -> {
+                // [T-browser-present] Show the browser sheet to the user for
+                // human interaction (CAPTCHA solving, manual form completion).
+                // The WebView is already loaded with the current page — the
+                // user sees and interacts with it. Cookies are shared via
+                // CookieManager.getInstance(), so any CAPTCHA token the user
+                // solves is immediately visible to the agent's subsequent
+                // execute_js / DOM checks.
+                _presentRequest.value = true
+                BrowserActionResult(success = true, text = "Browser presented to user. The user can now interact with the page (solve CAPTCHA, click elements). Use execute_js or wait_for_dom_stable to detect changes after the user finishes.")
+            }
             else -> {
                 // [T-browser-use-per-tab-serial-android] Serialize per explicit
                 // tab id. Only an explicit tab_id that names an EXISTING tab can

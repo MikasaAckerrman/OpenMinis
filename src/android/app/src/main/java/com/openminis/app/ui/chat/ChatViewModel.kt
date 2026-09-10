@@ -1198,6 +1198,20 @@ class ChatViewModel(
                     appendSystemInfo(text, "info")
                 }
             }
+            // [T-browser-present] When the agent calls browser_use(action=present),
+            // show the BrowserSheet so the user can solve CAPTCHA or interact
+            // with the page. The WebView is already loaded — the user sees the
+            // current page and can tap/click/type. Cookies are shared via
+            // CookieManager.getInstance(), so CAPTCHA tokens propagate back to
+            // the agent's subsequent DOM checks automatically.
+            viewModelScope.launch {
+                it.presentRequest.collect { requested ->
+                    if (requested) {
+                        _showBrowserSheet.value = true
+                        it.resetPresentRequest()
+                    }
+                }
+            }
             _browserTabPoolRef = it
         }
     }
