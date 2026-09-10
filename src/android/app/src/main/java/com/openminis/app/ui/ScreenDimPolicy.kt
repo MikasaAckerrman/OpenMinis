@@ -143,7 +143,7 @@ class ScreenDimWakeGesture {
          * Sized so a reversal cannot be satisfied by two adjacent jitter runs:
          * roughly a third of a phone's width out and back.
          */
-        const val MIN_TRAVEL_DP = 200f
+        const val MIN_TRAVEL_DP = 80f
 
         /**
          * Reversals required. One means "out and back", which no single brush

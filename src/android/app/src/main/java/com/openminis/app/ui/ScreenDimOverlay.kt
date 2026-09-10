@@ -85,6 +85,12 @@ fun ScreenDimOverlay() {
 
     var dimmed by remember { mutableStateOf(false) }
 
+    // [T-black-screen-popup] Expose dim state so DeletionGuardMonitor
+    // (and other dialog hosts) can skip popups while the overlay is up.
+    LaunchedEffect(dimmed) {
+        ScreenDimState.setDimmed(dimmed)
+    }
+
     // Inert unless enabled AND a task is running, so the ticker costs nothing in
     // the common case. Restarts on every interaction (lastTouchAt changes).
     val enabled = keepAwake && delaySec > 0 && hasActiveTask

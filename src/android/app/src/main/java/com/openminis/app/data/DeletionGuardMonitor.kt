@@ -103,14 +103,13 @@ class DeletionGuardMonitor(private val context: Context) {
         val pendingFile = File(watchDir, PENDING_FILE)
         if (!pendingFile.exists()) return
 
-        // [T-black-screen-popup] Don't show popup when screen is off/dimmed.
-        // If the screen is off (system timeout, keepScreenAwake disabled),
-        // popups would render on the black background — which looks broken
-        // and the user can't interact anyway. The guard will timeout (30s)
-        // and deny the deletion (safe default).
-        val pm = context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
-        if (pm != null && !pm.isInteractive) {
-            Log.i(TAG, "Screen is off — skipping deletion popup (guard will timeout → deny)")
+        // [T-black-screen-popup] Don't show popup when the screen-dim overlay
+        // is active. The dim overlay is a full-screen black Box (ScreenDimOverlay)
+        // that covers the UI while the agent works. A dialog on top of it looks
+        // broken and the user has no context. The guard will timeout (30s) and
+        // deny the deletion (safe default).
+        if (com.openminis.app.ui.ScreenDimState.isDimmed.value) {
+            Log.i(TAG, "Screen dimmed — skipping deletion popup (guard will timeout → deny)")
             return
         }
 
