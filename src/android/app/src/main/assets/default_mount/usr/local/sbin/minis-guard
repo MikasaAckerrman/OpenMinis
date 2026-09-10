@@ -91,6 +91,9 @@ def request_user_approval(argv):
         'has_backup': bool(backup),
     }
     try:
+        # Clean up any stale response file from a previous request
+        if os.path.exists(RESPONSE_FILE):
+            os.remove(RESPONSE_FILE)
         with open(PENDING_FILE, 'w') as f:
             _json.dump(request, f, ensure_ascii=False)
     except Exception:

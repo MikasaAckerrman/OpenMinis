@@ -98,11 +98,12 @@ fun EnvironmentVariablesScreen(
             )
         }
 
+        // Empty state — only shown when no entries exist
+        if (entries.isEmpty()) {
         SettingsSection(
             header = stringResource(R.string.env_var_section_header),
             footer = stringResource(R.string.env_var_section_footer),
         ) {
-            if (entries.isEmpty()) {
                 // Centred empty-state message inside the same card so the
                 // section visually owns it (instead of an empty card +
                 // separately-positioned text block).
