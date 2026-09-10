@@ -103,6 +103,17 @@ class DeletionGuardMonitor(private val context: Context) {
         val pendingFile = File(watchDir, PENDING_FILE)
         if (!pendingFile.exists()) return
 
+        // [T-black-screen-popup] Don't show popup when screen is off/dimmed.
+        // If the screen is off (system timeout, keepScreenAwake disabled),
+        // popups would render on the black background — which looks broken
+        // and the user can't interact anyway. The guard will timeout (30s)
+        // and deny the deletion (safe default).
+        val pm = context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+        if (pm != null && !pm.isInteractive) {
+            Log.i(TAG, "Screen is off — skipping deletion popup (guard will timeout → deny)")
+            return
+        }
+
         try {
             val json = JSONObject(pendingFile.readText())
             val request = GuardRequest(
