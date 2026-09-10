@@ -33,9 +33,9 @@ fun SettingsSection(
 ) {
     Column(modifier = modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
         Text(
-            text = title.uppercase(),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.primary,
+            text = title,
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp),
         )
         Surface(

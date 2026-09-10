@@ -87,7 +87,8 @@ fun SettingsScaffold(
             val titleSlot: @Composable () -> Unit = {
                 Text(
                     title,
-                    fontWeight = FontWeight.SemiBold,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
                 )
             }
             val navigationSlot: @Composable () -> Unit = {
@@ -141,8 +142,11 @@ fun SettingsScaffold(
 // ─── Section ───────────────────────────────────────────────────────────────────
 
 /**
- * A grouped section — optional small-caps header + rounded card + optional footer caption.
+ * A grouped section — optional header + rounded card + optional footer caption.
  * Children (SettingsRow / SettingsSwitchRow / …) appear inside the card; dividers auto-inset.
+ *
+ * Grok-style: sentence-case header (not ALL CAPS), more air between sections,
+ * 20dp horizontal card padding for a wider feel.
  */
 @Composable
 fun SettingsSection(
@@ -151,32 +155,25 @@ fun SettingsSection(
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    // [T-android-settings-ui-md3] Section vertical rhythm normalized to the 4dp
-    // grid (fix_android_settings_ui.md #13): 24dp between sections instead of the
-    // off-grid 20dp. Applied as top padding so the first section under a TopAppBar
-    // keeps a consistent gap too.
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .padding(top = 24.dp),
+            .padding(top = 28.dp),
     ) {
         if (header != null) {
             Text(
-                text = header.uppercase(),
-                style = MaterialTheme.typography.labelSmall,
+                text = header,
+                style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontWeight = FontWeight.Medium,
-                letterSpacing = 0.5.sp,
-                // [T-android-settings-ui-md3] #5 header→card gap = 8dp (was 6dp,
-                // off-grid). Horizontal stays 32dp to align the header text with
-                // the inset card's content.
-                modifier = Modifier.padding(start = 32.dp, end = 32.dp, bottom = 8.dp),
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 0.sp,
+                modifier = Modifier.padding(start = 24.dp, end = 24.dp, bottom = 10.dp),
             )
         }
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp)
+                .padding(horizontal = 20.dp)
                 .clip(RoundedCornerShape(16.dp))
                 .background(MaterialTheme.colorScheme.surfaceContainerLow)
                 // [T-android-settings-ui-md3] #2 give the card a bottom breathing
@@ -191,11 +188,7 @@ fun SettingsSection(
                 text = footer,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                // [T-android-settings-ui-md3] #6 explanatory footer: 8dp below the
-                // card, 4dp before the next section (the parent's 24dp top padding
-                // already provides separation, so keep the footer's own bottom
-                // tight at 4dp).
-                modifier = Modifier.padding(start = 32.dp, end = 32.dp, top = 8.dp, bottom = 4.dp),
+                modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 10.dp, bottom = 4.dp),
                 lineHeight = 16.sp,
             )
         }
@@ -228,39 +221,31 @@ fun SettingsRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                // [T-android-settings-ui-md3] #1/#8 fixed List Item height so every
-                // toggle/value/nav row in a section is uniform (was content-driven
-                // → 24/54/72dp mix). heightIn(min) not height() so an unexpectedly
-                // tall row can still grow; the symmetric 12dp vertical padding (was
-                // effectively asymmetric once the 0.5dp divider was added/removed)
-                // is what made a no-subtitle last row read ~50px shorter.
                 .heightIn(min = minHeight)
                 .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
-                .padding(horizontal = 14.dp, vertical = 12.dp),
-            // #10 keep the trailing control (Switch/value) vertically centered
-            // against the title — already centered, kept explicit.
+                .padding(horizontal = 18.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (icon != null) {
                 Box(
                     modifier = Modifier
-                        .size(30.dp)
-                        .background(iconColor, RoundedCornerShape(8.dp)),
+                        .size(34.dp)
+                        .background(iconColor, RoundedCornerShape(10.dp)),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
                         imageVector = icon,
                         contentDescription = null,
                         tint = Color.White,
-                        modifier = Modifier.size(18.dp),
+                        modifier = Modifier.size(19.dp),
                     )
                 }
-                Spacer(Modifier.width(14.dp))
+                Spacer(Modifier.width(16.dp))
             }
 
             Column(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(1.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
                 Text(
                     text = title,
@@ -281,7 +266,7 @@ fun SettingsRow(
             }
 
             if (trailing != null) {
-                Spacer(Modifier.width(8.dp))
+                Spacer(Modifier.width(10.dp))
                 trailing()
             }
 
@@ -290,20 +275,20 @@ fun SettingsRow(
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
                     contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
                     modifier = Modifier.size(20.dp),
                 )
             }
         }
 
         if (showDivider) {
-            val insetStart = if (icon != null) 58.dp else 14.dp
+            val insetStart = if (icon != null) 68.dp else 18.dp
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = insetStart, end = 14.dp)
+                    .padding(start = insetStart, end = 18.dp)
                     .height(0.5.dp)
-                    .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+                    .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
             )
         }
     }

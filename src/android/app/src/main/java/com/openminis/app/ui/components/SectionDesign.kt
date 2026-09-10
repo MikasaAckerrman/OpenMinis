@@ -27,20 +27,20 @@ import androidx.compose.ui.unit.dp
  * here every screen updates atomically.
  */
 object SectionDesign {
-    /** Outer column padding from screen edge. iOS UIKit insets.left/.right = 16. */
-    val ScreenHorizontalPadding = 16.dp
+    /** Outer column padding from screen edge. Grok-style 20dp. */
+    val ScreenHorizontalPadding = 20.dp
 
     /** Card corner radius. Grok-style 16dp rounded. */
     val CardShape = RoundedCornerShape(16.dp)
 
     /** Distance from screen top → first section header. */
-    val FirstSectionTopGap = 16.dp
+    val FirstSectionTopGap = 20.dp
 
     /** Distance from previous section's footer → next section header. */
-    val SectionTopGap = 24.dp
+    val SectionTopGap = 28.dp
 
     /** Distance from a section header → its card. */
-    val HeaderToCardGap = 8.dp
+    val HeaderToCardGap = 10.dp
 
     /** Distance from card → its footer caption. */
     val CardToFooterGap = 8.dp
@@ -119,9 +119,9 @@ fun SectionHeader(
 ) {
     Text(
         text = text,
-        style = MaterialTheme.typography.titleMedium,
+        style = MaterialTheme.typography.labelLarge,
         fontWeight = FontWeight.SemiBold,
-        color = MaterialTheme.colorScheme.onSurface,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = modifier.padding(
             start = SectionDesign.ScreenHorizontalPadding,
             end = SectionDesign.ScreenHorizontalPadding,

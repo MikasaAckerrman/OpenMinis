@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -492,24 +491,24 @@ private fun SettingsSection(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(top = 20.dp),
+            .padding(top = 28.dp),
     ) {
-        // Section header
+        // Section header — Grok sentence case
         Text(
-            text = title.uppercase(),
-            style = MaterialTheme.typography.labelSmall,
+            text = title,
+            style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            fontWeight = FontWeight.Medium,
-            letterSpacing = 0.5.sp,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 0.sp,
+            modifier = Modifier.padding(horizontal = 24.dp, vertical = 6.dp),
         )
 
         // Section card
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp)
-                .clip(RoundedCornerShape(12.dp))
+                .padding(horizontal = 20.dp)
+                .clip(RoundedCornerShape(16.dp))
                 .background(color = MaterialTheme.colorScheme.surfaceContainerLow),
         ) {
             content()
@@ -521,7 +520,7 @@ private fun SettingsSection(
                 text = footer,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp),
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 6.dp),
                 lineHeight = 16.sp,
             )
         }
@@ -546,16 +545,16 @@ private fun SettingsItem(
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable(onClick = onClick)
-                .padding(horizontal = 14.dp, vertical = 12.dp),
+                .padding(horizontal = 18.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // Colored circle icon (matching iOS settings style)
+            // Squircle icon well — Grok-style rounded square
             Box(
                 modifier = Modifier
-                    .size(30.dp)
+                    .size(34.dp)
                     .background(
                         color = iconColor,
-                        shape = CircleShape,
+                        shape = RoundedCornerShape(10.dp),
                     ),
                 contentAlignment = Alignment.Center,
             ) {
@@ -563,16 +562,16 @@ private fun SettingsItem(
                     imageVector = icon,
                     contentDescription = null,
                     tint = Color.White,
-                    modifier = Modifier.size(16.dp),
+                    modifier = Modifier.size(19.dp),
                 )
             }
 
-            Spacer(Modifier.width(14.dp))
+            Spacer(Modifier.width(16.dp))
 
             // Title + subtitle
             Column(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(1.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
                 Text(
                     text = title,
@@ -592,7 +591,7 @@ private fun SettingsItem(
             Icon(
                 imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
                 modifier = Modifier.size(20.dp),
             )
         }
@@ -602,9 +601,9 @@ private fun SettingsItem(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = 58.dp, end = 14.dp)
+                    .padding(start = 68.dp, end = 18.dp)
                     .height(0.5.dp)
-                    .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+                    .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
             )
         }
     }
