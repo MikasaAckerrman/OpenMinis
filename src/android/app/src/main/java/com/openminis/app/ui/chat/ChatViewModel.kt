@@ -864,20 +864,6 @@ class ChatViewModel(
     val fallbackTrigger: StateFlow<Int> = _fallbackTrigger.asStateFlow()
 
     private val _activeEntryId = MutableStateFlow<String?>(null)
-
-    /**
-     * The provider instance id backing the currently-active model entry, used
-     * by [buildFallbackProviders] to skip the same instance when crossing the
-     * configured list (single-entry sessions without a fallback group).
-     */
-    private val primaryProviderInstanceId: String?
-        get() = _activeEntryId.value?.let { entryId ->
-            providerRepository.config.value.modelEntries
-                .find { it.id == entryId }?.providerInstanceId
-        }
-
-    /** Caps the cross-instance fallback list to keep latency and token cost bounded. */
-    private val CROSS_INSTANCE_FALLBACK_LIMIT = 5
     val activeEntryId: StateFlow<String?> = _activeEntryId.asStateFlow()
 
     /** Prompts enqueued while the agent loop is running. Drained after the loop finishes. */
@@ -5632,52 +5618,13 @@ class ChatViewModel(
                 return result
             }
         }
-        // No group selected — single-entry session. Previously this returned an
-        // empty list, so any non-transient error on the bound provider (a relay
-        // WAF like agentrouter's `sensitive_words`, which the user reports
-        // happens frequently across all that relay's models) had no automatic
-        // recovery even when the user has tens of other healthy instances
-        // configured. Now we cross the configured instances list: every other
-        // enabled instance that exposes at least one model entry becomes a
-        // candidate, ordered by route identity so a sibling that shares the
-        // same broken relay host is not tried first. Capped to keep latency
-        // and token cost bounded.
-        val crossInstanceCandidates = buildList {
-            for (instance in config.instances) {
-                if (!instance.isEnabled) continue
-                if (instance.id == primaryProviderInstanceId) continue
-                val entries = config.modelEntries.filter { it.providerInstanceId == instance.id }
-                val entry = entries.firstOrNull {
-                    it.model.id == primaryProvider.model.id
-                } ?: entries.firstOrNull() ?: continue
-                add(
-                    com.openminis.app.data.CrossInstanceFallback.Route(
-                        instanceId = instance.id,
-                        entryId = entry.id,
-                        modelId = entry.model.id,
-                        host = instance.effectiveBaseURL.orEmpty(),
-                    ),
-                )
-            }
-        }
-        val selected = com.openminis.app.data.CrossInstanceFallback.select(
-            primaryInstanceId = primaryProviderInstanceId.orEmpty(),
-            primaryHost = primaryProvider.throttleKey,
-            primaryModelId = primaryProvider.model.id,
-            candidates = crossInstanceCandidates,
-        )
-        val crossResult = mutableListOf<FallbackCandidate>()
-        for (candidate in selected) {
-            val entry = config.modelEntries.find { it.id == candidate.entryId } ?: continue
-            val instance = config.instances.find { it.id == candidate.instanceId } ?: continue
-            val apiKey = providerRepository.loadApiKey(instance.id) ?: continue
-            val p = try {
-                ProviderFactory.create(instance, apiKey, entry.model, context)
-            } catch (_: Exception) { continue }
-            crossResult.add(FallbackCandidate(entryId = entry.id, provider = p))
-            if (crossResult.size >= CROSS_INSTANCE_FALLBACK_LIMIT) break
-        }
-        return crossResult
+        // No group selected — single-entry session. Silent cross-instance
+        // fallback was tried here before and caused the chat to jump to a
+        // different provider on content-filter / quota errors, which the user
+        // did not request. The chat stays bound to the model the user picked;
+        // payload size is governed by ProtectedTail + RequestBudget +
+        // walkBackUserTurnsBounded.
+        return emptyList<FallbackCandidate>()
     }
 
     /**
