@@ -543,15 +543,9 @@ class BrowserTabPool(private val context: Context) {
             BrowserAction.LIST_TABS -> listTabs()
             BrowserAction.SET_VIEWPORT -> handleSetViewport(input)
             BrowserAction.PRESENT -> {
-                // [T-browser-present] Show the browser sheet to the user for
-                // human interaction (CAPTCHA solving, manual form completion).
-                // The WebView is already loaded with the current page — the
-                // user sees and interacts with it. Cookies are shared via
-                // CookieManager.getInstance(), so any CAPTCHA token the user
-                // solves is immediately visible to the agent's subsequent
-                // execute_js / DOM checks.
                 _presentRequest.value = true
-                BrowserActionResult(success = true, text = "Browser presented to user. The user can now interact with the page (solve CAPTCHA, click elements). Use execute_js or wait_for_dom_stable to detect changes after the user finishes.")
+                val url = activeManager?.currentURL?.value ?: "unknown"
+                BrowserActionResult(success = true, text = "Browser shown to user at: $url\n\nThe user can now interact with the page (solve CAPTCHA, click elements, fill forms). After the user finishes, use execute_js to check if the CAPTCHA was solved (e.g. check if the submit button is no longer disabled, or if a captcha token field has a value), or use wait_for_dom_stable to wait for DOM changes.")
             }
             else -> {
                 // [T-browser-use-per-tab-serial-android] Serialize per explicit

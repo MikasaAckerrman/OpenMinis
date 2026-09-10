@@ -124,8 +124,18 @@ fun EnvironmentVariablesScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-            } else {
-                entries.forEachIndexed { index, entry ->
+            }
+        }
+
+        // Group by category — each category gets its own labeled section
+        if (entries.isNotEmpty()) {
+            val grouped = entries.groupBy { it.category }
+            EnvVarRepository.CATEGORIES.forEach { category ->
+                val categoryEntries = grouped[category]
+                if (categoryEntries.isNullOrEmpty()) return@forEach
+
+                SettingsSection(header = "$category (${categoryEntries.size})") {
+                    categoryEntries.forEachIndexed { index, entry ->
                     val isVisible = entry.key in visibleKeys.value
                     val displayValue = if (isVisible) {
                         envVarRepository.getValue(entry.key) ?: ""
@@ -145,7 +155,7 @@ fun EnvironmentVariablesScreen(
                         title = entry.key,
                         subtitle = subtitleText,
                         showChevron = false,
-                        showDivider = index < entries.size - 1,
+                        showDivider = index < categoryEntries.size - 1,
                         onClick = { editEntryId = entry.id },
                         trailing = {
                             Row {
@@ -184,6 +194,7 @@ fun EnvironmentVariablesScreen(
                     )
                 }
             }
+        }
         }
 
         Spacer(Modifier.height(24.dp))

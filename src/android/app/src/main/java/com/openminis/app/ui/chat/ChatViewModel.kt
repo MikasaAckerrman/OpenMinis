@@ -1209,6 +1209,8 @@ class ChatViewModel(
                     if (requested) {
                         _showBrowserSheet.value = true
                         it.resetPresentRequest()
+                        val url = it.activeManager?.currentURL?.value ?: ""
+                        appendSystemInfo("🌐 Browser shown to user for interaction (CAPTCHA/form) — $url", "info")
                     }
                 }
             }
