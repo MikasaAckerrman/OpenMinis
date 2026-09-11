@@ -549,6 +549,7 @@ fun AppNavigation(
                 onScheduledTasksClick = {
                     navController.safeNavigate(Routes.SCHEDULED_TASKS)
                 },
+                onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
             )
         }
 
