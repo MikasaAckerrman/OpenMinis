@@ -78,6 +78,16 @@ class WebViewHolder(
         // implicitly via WebViewAssetLoader's defaults.
         settings.useWideViewPort = true
         settings.loadWithOverviewMode = true
+        // T-preview-pinch-zoom: many production sites (Avito, VK) ship
+        // `user-scalable=no` viewport metas, and WebView honors them while
+        // Chrome ignores them for accessibility — so pages looked "static
+        // in a frame". Enable the zoom machinery unconditionally in mobile
+        // mode (it was previously only set inside toggleDesktopMode) and
+        // pair it with the onPageFinished viewport-meta rewrite below that
+        // flips `user-scalable=no` / `maximum-scale=1` back to scalable.
+        settings.setSupportZoom(true)
+        settings.builtInZoomControls = true
+        settings.displayZoomControls = false
         mobileUserAgent = settings.userAgentString
         // T-android-webview-v3-port: enable first- + third-party cookies so
         // the in-chat preview matches Chrome cookie semantics. Without
@@ -126,6 +136,21 @@ class WebViewHolder(
                 isLoading = false
                 pageTitle = view.title.orEmpty()
                 AppLogger.debug(TAG, "onPageFinished title=${pageTitle.take(60)}")
+                // T-preview-pinch-zoom: rewrite the page's viewport meta so
+                // pinch-zoom works even when the site demands `user-scalable=no`
+                // (Avito, VK, many shops). Runs after commit, before first
+                // interaction; harmless on pages without a viewport meta —
+                // the JS then only appends one.
+                view.evaluateJavascript(
+                    "(function(){" +
+                        "var m=document.querySelector('meta[name=viewport]');" +
+                        "if(!m){m=document.createElement('meta');m.name='viewport';" +
+                        "document.head.appendChild(m);}" +
+                        "m.setAttribute('content','width=device-width, initial-scale=1, " +
+                        "maximum-scale=10, user-scalable=yes');" +
+                        "})()",
+                    null,
+                )
                 // T-htmlpreview-resize: WebView commits its first layout
                 // against whatever viewport height the container had at
                 // loadUrl-time. If that height was a transient pre-animation
@@ -262,8 +287,16 @@ class WebViewHolder(
             applyShrinkToFit(DESKTOP_VIEWPORT_CSS_WIDTH)
         } else {
             webView.settings.userAgentString = mobileUserAgent
-            webView.settings.useWideViewPort = false
-            webView.settings.loadWithOverviewMode = false
+            // T-preview-viewport-regression: keep wide-viewport + overview ON
+            // in mobile mode (same as creation defaults). The previous code
+            // disabled both here, which desynced mobile re-entry from the
+            // creation path — meta-less pages rendered at the 980px fallback
+            // with no shrink-to-fit, pushing buttons off-screen right.
+            webView.settings.useWideViewPort = true
+            webView.settings.loadWithOverviewMode = true
+            webView.settings.setSupportZoom(true)
+            webView.settings.builtInZoomControls = true
+            webView.settings.displayZoomControls = false
             webView.setInitialScale(0)
         }
         AppLogger.info(TAG, "toggleDesktopMode → $desktopMode")
