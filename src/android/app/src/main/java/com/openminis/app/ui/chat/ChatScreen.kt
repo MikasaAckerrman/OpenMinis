@@ -92,6 +92,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.automirrored.filled.Send
@@ -386,6 +387,8 @@ fun ChatScreen(
     skillRepository: com.openminis.app.data.repository.SkillRepository? = null,
     mcpRepository: com.openminis.app.data.repository.MCPRepository? = null,
     onBack: () -> Unit,
+    /** Grok-style drawer: opens the navigation drawer from the chat screen. */
+    onOpenDrawer: () -> Unit = {},
     /** [T-new-chat-menu-entry] "New Chat" from the chat "..." menu: caller
      *  navigates to a fresh draft chat (same funnel as the session list's
      *  new-chat button), replacing this chat on the back stack. */
@@ -2261,8 +2264,8 @@ fun ChatScreen(
                     }
                 },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    IconButton(onClick = onOpenDrawer) {
+                        Icon(Icons.Outlined.Menu, contentDescription = "Menu")
                     }
                 },
                 actions = {

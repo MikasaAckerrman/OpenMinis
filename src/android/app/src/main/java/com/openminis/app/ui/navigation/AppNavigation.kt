@@ -7,7 +7,12 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.rememberDrawerState
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -434,6 +439,31 @@ fun AppNavigation(
         quickActionStart != null -> quickActionStart
         else -> Routes.SESSION_LIST
     }
+    // Grok-style drawer: swipe-from-left-edge or hamburger button opens
+    // session list + settings + new chat.
+    val drawerState = rememberDrawerState(DrawerValue.Closed)
+    val coroutineScope = rememberCoroutineScope()
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            GrokDrawer(
+                drawerState = drawerState,
+                chatRepository = chatRepository,
+                onSessionClick = { sessionId ->
+                    navController.safeNavigate(Routes.chat(sessionId))
+                },
+                onNewChat = {
+                    navController.safeNavigate(Routes.chat("__new__${java.util.UUID.randomUUID()}")) {
+                        popUpTo(Routes.SESSION_LIST) { inclusive = false }
+                        launchSingleTop = true
+                    }
+                },
+                onSettingsClick = {
+                    navController.safeNavigate(Routes.SETTINGS)
+                },
+            )
+        },
+    ) {
     NavHost(
         navController = navController,
         startDestination = startDestination,
@@ -535,6 +565,7 @@ fun AppNavigation(
                 skillRepository = skillRepository,
                 mcpRepository = mcpRepository,
                 onBack = { navController.safePopBackStack() },
+                onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
                 // [T-new-chat-menu-entry] Chat-menu "New Chat": same draft-id
                 // funnel as the session list / NewChat deep link — a fresh
                 // "__new__" route whose DB record is only created on first
@@ -1272,4 +1303,5 @@ fun AppNavigation(
             )
         }
     }
+    } // ModalNavigationDrawer
 }
