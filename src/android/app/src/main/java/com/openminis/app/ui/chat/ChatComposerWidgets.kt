@@ -418,6 +418,7 @@ internal fun InputCircleButton(
     onClick: () -> Unit,
     content: @Composable () -> Unit,
 ) {
+    Box(
         // GROK: composer row buttons scale to 42dp (send/stop measured
         // 42×42dp at [1078,2562][1204,2688] in grok_ui_chat_final).
         modifier = Modifier
