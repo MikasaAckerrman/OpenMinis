@@ -1,5 +1,6 @@
 package com.openminis.app.ui.navigation
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.Arrangement
@@ -70,6 +71,7 @@ fun GrokDrawer(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .background(MaterialTheme.colorScheme.surfaceContainerLow)
             .padding(horizontal = 20.dp),
     ) {
         Spacer(Modifier.height(48.dp))

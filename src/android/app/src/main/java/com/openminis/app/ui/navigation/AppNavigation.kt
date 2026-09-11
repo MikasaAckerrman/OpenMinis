@@ -610,7 +610,7 @@ fun AppNavigation(
         }
 
         composable(Routes.SETTINGS) {
-            SettingsScreen(
+            com.openminis.app.ui.settings.GrokSettingsScreen(
                 onBack = { navController.safePopBackStack() },
                 onProvidersClick = { navController.safeNavigate(Routes.PROVIDER_LIST) },
                 onModelGroupsClick = { navController.safeNavigate(Routes.MODEL_GROUPS) },
@@ -624,12 +624,6 @@ fun AppNavigation(
                 onSoulClick = { navController.safeNavigate(Routes.SOUL) },
                 onPermissionsClick = { navController.safeNavigate(Routes.PERMISSIONS) },
                 onUsageClick = { navController.safeNavigate(Routes.USAGE_STATS) },
-                onAppearanceClick = { navController.safeNavigate(Routes.APPEARANCE) },
-                onBackgroundClick = { navController.safeNavigate(Routes.BACKGROUND) },
-                onLogsClick = { navController.safeNavigate(Routes.LOGS) },
-                onAboutClick = { navController.safeNavigate(Routes.ABOUT) },
-                onMountedFoldersClick = { navController.safeNavigate(Routes.MOUNTED_FOLDERS) },
-                onSharedFoldersClick = { navController.safeNavigate(Routes.SHARED_FOLDERS) },
             )
         }
 
