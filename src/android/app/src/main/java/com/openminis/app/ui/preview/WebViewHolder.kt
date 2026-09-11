@@ -136,18 +136,41 @@ class WebViewHolder(
                 isLoading = false
                 pageTitle = view.title.orEmpty()
                 AppLogger.debug(TAG, "onPageFinished title=${pageTitle.take(60)}")
-                // T-preview-pinch-zoom: rewrite the page's viewport meta so
-                // pinch-zoom works even when the site demands `user-scalable=no`
-                // (Avito, VK, many shops). Runs after commit, before first
-                // interaction; harmless on pages without a viewport meta —
-                // the JS then only appends one.
+                // T-preview-pinch-zoom-2 (D1/D4): a ONE-SHOT meta rewrite on
+                // onPageFinished is not durable — production SPAs (Avito, VK)
+                // re-write the viewport meta at runtime, e.g. flipping to
+                // `user-scalable=no` when an input gains focus to suppress
+                // zoom. After that the WebView honors the NEW meta and pinch
+                // is dead until the next full navigation ("zoom stops working
+                // after the keyboard hides"). Fix: inject a persistent
+                // MutationObserver that patches the meta back at EVERY
+                // change point, including full node replacement. It patches
+                // user-scalable / maximum-scale ONLY, preserving the page's
+                // own width / initial-scale (desktop shrink-to-fit keeps its
+                // scale). Idempotent per document — re-injection on every
+                // finish is a no-op thanks to the window flag.
                 view.evaluateJavascript(
                     "(function(){" +
+                        "if(window.__minisZoomPatch)return;window.__minisZoomPatch=1;" +
+                        "var fix=function(m){if(!m)return;var c=m.getAttribute('content')||'';" +
+                        "var o=c;" +
+                        "if(/user-scalable\\s*=\\s*no/i.test(c)){" +
+                        "c=c.replace(/user-scalable\\s*=\\s*no/i,'user-scalable=yes');}else" +
+                        "if(!/user-scalable/i.test(c)){c+=', user-scalable=yes';}" +
+                        "var mx=c.match(/maximum-scale\\s*=\\s*([\\d.]+)/i);" +
+                        "if(mx&&parseFloat(mx[1])<10){" +
+                        "c=c.replace(/maximum-scale\\s*=\\s*[\\d.]+/i,'maximum-scale=10');}else" +
+                        "if(!mx){c+=', maximum-scale=10';}" +
+                        "if(c!==o)m.setAttribute('content',c);};" +
                         "var m=document.querySelector('meta[name=viewport]');" +
                         "if(!m){m=document.createElement('meta');m.name='viewport';" +
+                        "m.setAttribute('content','width=device-width, initial-scale=1');" +
                         "document.head.appendChild(m);}" +
-                        "m.setAttribute('content','width=device-width, initial-scale=1, " +
-                        "maximum-scale=10, user-scalable=yes');" +
+                        "fix(m);" +
+                        "new MutationObserver(function(){" +
+                        "fix(document.querySelector('meta[name=viewport]'));})" +
+                        ".observe(document.head,{childList:true,subtree:true," +
+                        "attributes:true,attributeFilter:['content']});" +
                         "})()",
                     null,
                 )

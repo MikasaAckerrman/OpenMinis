@@ -90,7 +90,12 @@ class BrowserUseManager(
                 databaseEnabled = true
                 loadWithOverviewMode = true
                 useWideViewPort = true
-                builtInZoomControls = false
+                // D3: pinch-zoom was hard-disabled here while the browser
+                // sheet doubles as the human login surface (shared cookie
+                // store). Enable zoom; displayZoomControls stays off.
+                builtInZoomControls = true
+                setSupportZoom(true)
+                displayZoomControls = false
                 setSupportMultipleWindows(true)
                 mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                 val ua = customUA ?: profile.userAgentString
@@ -371,6 +376,35 @@ class BrowserUseManager(
                         "window.dispatchEvent(new Event('resize'));", null,
                     )
                 }, 80)
+                // D3b (same durable patch as WebViewHolder): SPA-driven
+                // `user-scalable=no` rewrites (input-focus anti-zoom on
+                // Avito/VK) kill pinch until the next navigation. Keep the
+                // meta patched at every change point.
+                view.evaluateJavascript(
+                    "(function(){" +
+                        "if(window.__minisZoomPatch)return;window.__minisZoomPatch=1;" +
+                        "var fix=function(m){if(!m)return;var c=m.getAttribute('content')||'';" +
+                        "var o=c;" +
+                        "if(/user-scalable\\s*=\\s*no/i.test(c)){" +
+                        "c=c.replace(/user-scalable\\s*=\\s*no/i,'user-scalable=yes');}else" +
+                        "if(!/user-scalable/i.test(c)){c+=', user-scalable=yes';}" +
+                        "var mx=c.match(/maximum-scale\\s*=\\s*([\\d.]+)/i);" +
+                        "if(mx&&parseFloat(mx[1])<10){" +
+                        "c=c.replace(/maximum-scale\\s*=\\s*[\\d.]+/i,'maximum-scale=10');}else" +
+                        "if(!mx){c+=', maximum-scale=10';}" +
+                        "if(c!==o)m.setAttribute('content',c);};" +
+                        "var m=document.querySelector('meta[name=viewport]');" +
+                        "if(!m){m=document.createElement('meta');m.name='viewport';" +
+                        "m.setAttribute('content','width=device-width, initial-scale=1');" +
+                        "document.head.appendChild(m);}" +
+                        "fix(m);" +
+                        "new MutationObserver(function(){" +
+                        "fix(document.querySelector('meta[name=viewport]'));})" +
+                        ".observe(document.head,{childList:true,subtree:true," +
+                        "attributes:true,attributeFilter:['content']});" +
+                        "})()",
+                    null,
+                )
             }
 
             override fun onReceivedError(
