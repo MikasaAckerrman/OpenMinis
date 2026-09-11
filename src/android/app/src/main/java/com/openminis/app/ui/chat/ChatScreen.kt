@@ -2068,6 +2068,8 @@ fun ChatScreen(
                                 // chat — the MODEL selector moved into the
                                 // composer's bottom row (the "Build"-slot pill),
                                 // see the GrokModelPill below.
+                                val topBarSoul by com.openminis.app.agent.SoulStore
+                                    .cachedMetadata.collectAsState()
                                 Text(
                                     text = topBarSoul.name.ifBlank { stringResource(R.string.app_name) },
                                     fontSize = 16.sp,
@@ -5201,7 +5203,9 @@ fun ChatScreen(
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                     style = androidx.compose.ui.text.TextStyle(
-                                        platformStyle = androidx.compose.ui.platform.PlatformTextStyle(includeFontPadding = false),
+                                        platformStyle = androidx.compose.ui.text.PlatformTextStyle(
+                                            includeFontPadding = false,
+                                        ),
                                     ),
                                 )
                                 Spacer(Modifier.width(2.dp))
