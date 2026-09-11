@@ -18,7 +18,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.automirrored.filled.Terminal
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.DataUsage
@@ -152,7 +151,7 @@ fun GrokSettingsScreen(
                     onClick = onTerminalClick, // placeholder
                 )
                 SettingsRow(
-                    icon = Icons.AutoMirrored.Filled.Terminal,
+                    icon = Icons.Outlined.Code,
                     title = "Терминал",
                     onClick = onTerminalClick,
                 )
