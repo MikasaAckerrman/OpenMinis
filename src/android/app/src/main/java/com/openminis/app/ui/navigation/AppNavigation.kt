@@ -437,6 +437,13 @@ fun AppNavigation(
             Routes.chat(htmlShortcut.sessionId)
         }
         quickActionStart != null -> quickActionStart
+        // Grok-style: if providers are configured, start directly in a new
+        // chat (home screen = blank chat with input). The drawer (swipe-left
+        // or hamburger) holds the session list + settings + new chat.
+        // First-time users with no providers fall back to SESSION_LIST for
+        // onboarding.
+        providerRepository.instances.isNotEmpty() ->
+            Routes.chat("__new__${java.util.UUID.randomUUID()}")
         else -> Routes.SESSION_LIST
     }
     // Grok-style drawer: swipe-from-left-edge or hamburger button opens
@@ -450,7 +457,9 @@ fun AppNavigation(
                 drawerState = drawerState,
                 chatRepository = chatRepository,
                 onSessionClick = { sessionId ->
-                    navController.safeNavigate(Routes.chat(sessionId))
+                    navController.safeNavigate(Routes.chat(sessionId)) {
+                        launchSingleTop = true
+                    }
                 },
                 onNewChat = {
                     navController.safeNavigate(Routes.chat("__new__${java.util.UUID.randomUUID()}")) {
