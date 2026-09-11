@@ -2064,36 +2064,19 @@ fun ChatScreen(
                                         .padding(horizontal = 4.dp, vertical = 2.dp),
                                 )
                             } else {
-                                // New chat: model-group selector, tap opens picker
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(2.dp),
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(6.dp))
-                                        .clickable { showModelPicker = true }
-                                        .padding(horizontal = 4.dp, vertical = 2.dp),
-                                ) {
-                                    val groupNameDisplay = selectedGroupName.ifEmpty {
-                                        val defaultGroupId = providerRepository.defaultPrimaryGroupId
-                                        availableGroups.firstOrNull { it.id == defaultGroupId }?.name
-                                            ?: stringResource(R.string.model_picker_default_badge)
-                                    }
-                                    Text(
-                                        text = groupNameDisplay,
-                                        fontSize = 16.sp,
-                                        lineHeight = 19.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = ChatColors.primaryText,
-                                        maxLines = 1,
-                                        style = noFontPad,
-                                    )
-                                    Icon(
-                                        Icons.Default.KeyboardArrowDown,
-                                        contentDescription = null,
-                                        tint = ChatColors.tertiaryText,
-                                        modifier = Modifier.size(16.dp),
-                                    )
-                                }
+                                // GROK: the top bar shows the app name for a new
+                                // chat — the MODEL selector moved into the
+                                // composer's bottom row (the "Build"-slot pill),
+                                // see the GrokModelPill below.
+                                Text(
+                                    text = topBarSoul.name.ifBlank { stringResource(R.string.app_name) },
+                                    fontSize = 16.sp,
+                                    lineHeight = 19.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = ChatColors.primaryText,
+                                    maxLines = 1,
+                                    style = noFontPad,
+                                )
                             }
                         }
                     }
@@ -3698,7 +3681,18 @@ fun ChatScreen(
                                     onRevert = null,
                                 )
                             }
-                            is FlatChatItem.AssistantTyping -> TypingIndicator()
+                            is FlatChatItem.AssistantTyping -> {
+                                // GROK: verbatim thinking indicator — Grok's own
+                                // dot-matrix Lottie + "Думаю для Ns" ticking from
+                                // the streaming turn's start. Replaces the iOS
+                                // "<Soul> is thinking…" bouncing-dots indicator.
+                                val streamingTurn = messages.lastOrNull {
+                                    it.role == "assistant" && it.isStreaming
+                                }
+                                GrokThinkingIndicator(
+                                    startMs = streamingTurn?.createdAtMs ?: 0L,
+                                )
+                            }
                             is FlatChatItem.AgentRunCard -> {
                                 // Subscribed here, not in the flat list, so a node
                                 // state change repaints just this card instead of
@@ -3712,7 +3706,12 @@ fun ChatScreen(
                                     // Run registered but no snapshot yet (or already
                                     // cleared): fall back to the dots rather than
                                     // rendering an empty card.
-                                    TypingIndicator()
+                                    val streamingTurn = messages.lastOrNull {
+                                        it.role == "assistant" && it.isStreaming
+                                    }
+                                    GrokThinkingIndicator(
+                                        startMs = streamingTurn?.createdAtMs ?: 0L,
+                                    )
                                 }
                             }
                             is FlatChatItem.AssistantError -> InlineErrorBanner(
@@ -5171,7 +5170,51 @@ fun ChatScreen(
                             }
                         }
 
-                        Spacer(modifier = Modifier.width(8.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+
+                        // GROK "Build"-slot: the MODEL selector pill lives in the
+                        // composer's bottom row (not the top bar) — measured
+                        // [203,2562][572,2688] = 105×36dp pill with a chevron,
+                        // bg #2C2C2C. Tap opens the existing model picker sheet.
+                        val groupNameDisplay = selectedGroupName.ifEmpty {
+                            val defaultGroupId = providerRepository.defaultPrimaryGroupId
+                            availableGroups.firstOrNull { it.id == defaultGroupId }?.name
+                                ?: stringResource(R.string.model_picker_default_badge)
+                        }
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(18.dp))
+                                .background(ChatColors.inputIconBg, RoundedCornerShape(18.dp))
+                                .clickable { showModelPicker = true }
+                                .padding(horizontal = 14.dp, vertical = 7.dp)
+                                // GROK: pill hugs its label but must never push
+                                // the trailing buttons off the row — cap and
+                                // ellipsize long group names.
+                                .widthIn(max = 120.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = groupNameDisplay,
+                                    fontSize = 15.sp,
+                                    color = ChatColors.primaryText,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    style = androidx.compose.ui.text.TextStyle(
+                                        platformStyle = androidx.compose.ui.platform.PlatformTextStyle(includeFontPadding = false),
+                                    ),
+                                )
+                                Spacer(Modifier.width(2.dp))
+                                Icon(
+                                    Icons.Default.KeyboardArrowDown,
+                                    contentDescription = "Select model",
+                                    tint = ChatColors.secondaryText,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.width(4.dp))
 
                         // Left: "/" slash command button (iOS: italic /, bold)
                         InputCircleButton(
@@ -5198,7 +5241,7 @@ fun ChatScreen(
                         // choice to spend minutes and money belongs on the same
                         // row as the send button.
                         val forceAgents by viewModel.forceAgents.collectAsState()
-                        Spacer(modifier = Modifier.width(8.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
                         Box(
                             modifier = Modifier
                                 .size(36.dp)
@@ -5502,15 +5545,29 @@ fun ChatScreen(
                         }
 
                         if (sttAvailable) {
-                            MicButton(
-                                isRecording = !com.openminis.app.ui.chat.voice.VoiceModePrefs.isVoiceActive &&
-                                    (sttState == com.openminis.app.speech.RecognitionState.RECORDING ||
-                                        sttState == com.openminis.app.speech.RecognitionState.STARTING),
-                                localeBadge = null,
-                                onClick = { triggerVoiceInput() },
-                                onLongClick = { showLangSheet = true },
-                                isVoiceActive = com.openminis.app.ui.chat.voice.VoiceModePrefs.isVoiceActive,
-                            )
+                            // GROK (density 3.5): dictation mic = BARE 20dp
+                            // glyph ([959,2590][1029,2660]), no circle well —
+                            // replaced the iOS 38dp circle MicButton here.
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .combinedClickable(
+                                        onClick = { triggerVoiceInput() },
+                                        onLongClick = { showLangSheet = true },
+                                    ),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Mic,
+                                    contentDescription = "Voice input",
+                                    tint = if (!com.openminis.app.ui.chat.voice.VoiceModePrefs.isVoiceActive &&
+                                        (sttState == com.openminis.app.speech.RecognitionState.RECORDING ||
+                                            sttState == com.openminis.app.speech.RecognitionState.STARTING)
+                                    ) Color.Red else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                            }
                         }
 
                         Spacer(modifier = Modifier.width(8.dp))

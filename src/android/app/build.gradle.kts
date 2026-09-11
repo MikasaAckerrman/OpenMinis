@@ -238,6 +238,9 @@ dependencies {
     // Compose BOM
     val composeBom = platform("androidx.compose:compose-bom:2025.09.00")
     implementation(composeBom)
+    // GROK assets: original Grok Lottie animations (thinking dots, agent
+    // spinner, copy check) play verbatim via lottie-compose.
+    implementation("com.airbnb.android:lottie-compose:6.6.7")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.ui:ui")

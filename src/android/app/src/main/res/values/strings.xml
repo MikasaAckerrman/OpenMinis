@@ -532,6 +532,7 @@
     <string name="browser_minis_browsing">Minis is browsing</string>
     <!-- Streaming indicator shown while the assistant is composing a reply. %1$s is the Soul-customized assistant name (default "Minis"). -->
     <string name="chat_typing_indicator">%1$s is thinking</string>
+    <string name="chat_thinking_elapsed">Thinking for %1$ds</string>
     <!-- Composer placeholder. %1$s is the Soul-customized assistant name (default "Minis"). The parenthetical is an inline hint reminding the user that typing '@' opens the file-mention picker. T-android-placeholder-single-line collapses the prior two-row (title + hint) layout into a single line, matching iOS 19e1d61f. -->
     <string name="chat_input_placeholder">Ask anything</string>
     <string name="browser_takeover">Takeover</string>

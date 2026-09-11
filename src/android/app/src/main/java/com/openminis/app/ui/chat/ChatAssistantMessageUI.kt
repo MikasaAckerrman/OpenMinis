@@ -380,7 +380,8 @@ internal fun AssistantMessageView(message: ChatMessage, onRetry: (() -> Unit)? =
         // Typing indicator when streaming with no content yet (info-only blocks don't count)
         val hasRealBlocks = message.toolBlocks.any { it.kind != "info" }
         if (message.isStreaming && message.content.isEmpty() && !hasRealBlocks) {
-            TypingIndicator()
+            // GROK: verbatim thinking indicator (dot-matrix Lottie + elapsed).
+            GrokThinkingIndicator(startMs = message.createdAtMs)
         }
 
         // Legacy fallback: render message.content when no text blocks exist (old sessions).
