@@ -2010,7 +2010,12 @@ fun ChatScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    // iOS-style centered layout: "Minis" + group row + provider·model row
+                    // [T-grok-topbar] Grok-style single-row title: when a real
+                    // session title exists show it (tap = rename); otherwise
+                    // show the model-group selector "Group ⌄" (tap = model
+                    // picker). Replaces the iOS-style two-row layout
+                    // (title row + dot/group + provider·model chip row) —
+                    // Grok's top bar is one centered control.
                     Box(
                         modifier = Modifier.fillMaxWidth(),
                         contentAlignment = Alignment.Center,
@@ -2018,7 +2023,7 @@ fun ChatScreen(
                         val noFontPad = androidx.compose.ui.text.TextStyle(
                             platformStyle = androidx.compose.ui.text.PlatformTextStyle(includeFontPadding = false),
                         )
-                        // Fallback pulse animation (iOS: 3× red pulse on model switch)
+                        // Fallback pulse animation (3× red pulse on model switch)
                         val fallbackTrigger by viewModel.fallbackTrigger.collectAsState()
                         val fallbackPulseAlpha = remember { androidx.compose.animation.core.Animatable(0f) }
                         LaunchedEffect(fallbackTrigger) {
@@ -2033,92 +2038,41 @@ fun ChatScreen(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(10.dp))
                                 .background(Color.Red.copy(alpha = 0.35f * fallbackPulseAlpha.value))
-                                // [T-android-topbar-shrink] vertical 4dp→2dp.
-                                // Combined with the expandedHeight drop below,
-                                // closes the dead-space gap between the model
-                                // name row and the TopAppBar bottom edge that
-                                // T-topbar-model-row-clip's 76dp overshoot left
-                                // behind. Horizontal 32dp keeps the fallback
-                                // pulse highlight comfortably padded around
-                                // the longest title.
-                                .padding(horizontal = 32.dp, vertical = 2.dp),
+                                .padding(horizontal = 24.dp, vertical = 2.dp),
                         ) {
-                            // Nav title: current session title when one
-                            // exists and the toggle is on, else fall back to
-                            // the Soul name (matches the input placeholder
-                            // "Message <SoulName>"), then to app_name
-                            // ("Minis") as the terminal fallback.
-                            // Tap opens the same SessionEditSheet used from
-                            // the session list — drafts return null from
-                            // loadSessionEntity so the sheet stays closed.
-                            // SoulStore.cachedMetadata is the same source the
-                            // input placeholder uses (see ~line 3581), so
-                            // soul renames in Soul Settings reflect here live.
-                            val topBarSoul by com.openminis.app.agent.SoulStore
-                                .cachedMetadata.collectAsState()
-                            val displayTitle = when {
-                                showChatTitlePill
-                                    && sessionTitle.isNotBlank()
-                                    && sessionTitle != "New Chat" -> sessionTitle
-                                topBarSoul.name.isNotBlank() -> topBarSoul.name
-                                else -> stringResource(R.string.app_name)
-                            }
-                            Text(
-                                text = displayTitle,
-                                fontSize = 16.sp,
-                                lineHeight = 19.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = ChatColors.primaryText,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                style = noFontPad,
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .clickable {
-                                        coroutineScope.launch {
-                                            editingSession = viewModel.loadSessionEntity()
+                            val hasSessionTitle = showChatTitlePill
+                                && sessionTitle.isNotBlank()
+                                && sessionTitle != "New Chat"
+                            if (hasSessionTitle) {
+                                // Existing chat: session title, tap renames
+                                Text(
+                                    text = sessionTitle,
+                                    fontSize = 16.sp,
+                                    lineHeight = 19.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = ChatColors.primaryText,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    style = noFontPad,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .clickable {
+                                            coroutineScope.launch {
+                                                editingSession = viewModel.loadSessionEntity()
+                                            }
                                         }
-                                    }
-                                    .padding(horizontal = 4.dp, vertical = 2.dp),
-                            )
-                            // Model picker subtitle: green dot + group +
-                            // provider/model. Tap opens the model picker —
-                            // separated from the title above so tapping the
-                            // title rows opens the rename sheet instead.
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .clickable { showModelPicker = true }
-                                    .padding(horizontal = 4.dp, vertical = 1.dp),
-                            ) {
-                                // Line 1: green dot + group name + dropdown arrow (iOS: "● Default ⌄")
+                                        .padding(horizontal = 4.dp, vertical = 2.dp),
+                                )
+                            } else {
+                                // New chat: model-group selector, tap opens picker
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(3.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .clickable { showModelPicker = true }
+                                        .padding(horizontal = 4.dp, vertical = 2.dp),
                                 ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(6.dp)
-                                            .background(
-                                                if (modelName.isNotEmpty()) Color(0xFF34C759) else Color(0xFFFF9500),
-                                                CircleShape,
-                                            ),
-                                    )
-                                    // T-android-topbar-group-name-fallback:
-                                    // _selectedGroupName is empty during the
-                                    // brief window before loadSession's group
-                                    // resolve runs, or whenever a binding
-                                    // resolve fails. Falling straight to the
-                                    // "Default" badge string masks the
-                                    // active group's real name (e.g. the
-                                    // onboarding-created "Default Models" or
-                                    // any user-renamed group). Insert a real
-                                    // fallback chain: collected VM value →
-                                    // active/default group name from the live
-                                    // config → terminal badge string. Mirrors
-                                    // the #476 TopBar title fallback pattern
-                                    // (commit b4c88775).
                                     val groupNameDisplay = selectedGroupName.ifEmpty {
                                         val defaultGroupId = providerRepository.defaultPrimaryGroupId
                                         availableGroups.firstOrNull { it.id == defaultGroupId }?.name
@@ -2126,10 +2080,10 @@ fun ChatScreen(
                                     }
                                     Text(
                                         text = groupNameDisplay,
-                                        fontSize = 12.sp,
-                                        lineHeight = 14.sp,
-                                        fontWeight = FontWeight.Medium,
-                                        color = ChatColors.secondaryText,
+                                        fontSize = 16.sp,
+                                        lineHeight = 19.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = ChatColors.primaryText,
                                         maxLines = 1,
                                         style = noFontPad,
                                     )
@@ -2137,125 +2091,8 @@ fun ChatScreen(
                                         Icons.Default.KeyboardArrowDown,
                                         contentDescription = null,
                                         tint = ChatColors.tertiaryText,
-                                        modifier = Modifier.size(14.dp),
+                                        modifier = Modifier.size(16.dp),
                                     )
-                                }
-                                // Line 2: "provider · model" (iOS: "MiniMax ·
-                                // MiniMax-M2.7") + the thinking-level badge laid
-                                // out as a Row of two SEPARATE tappable siblings
-                                // (mirrors iOS AIChatView row-2 HStack).
-                                //
-                                // [T-android-thinking-badge-navbar] Gesture
-                                // separation: the whole subtitle Column above owns
-                                // `clickable { showModelPicker = true }`, so a tap
-                                // on the model text still opens the model picker.
-                                // The badge declares its OWN `clickable` (see
-                                // ThinkingLevelBadge), and in Compose the innermost
-                                // clickable consumes the down/up events — so a tap
-                                // that lands on the badge opens the thinking sheet
-                                // and never bubbles up to the Column's model-picker
-                                // handler. Two hit targets, zero gesture conflict,
-                                // no pointerInput plumbing needed.
-                                //
-                                // Sizing: the model text takes `weight(1f, fill =
-                                // false)` so it truncates first (Ellipsis) when the
-                                // navbar is narrow; the badge has no weight, so it
-                                // keeps its intrinsic width and always renders in
-                                // full — the level label never gets clipped.
-                                if (providerName.isNotEmpty() || modelName.isNotEmpty()) {
-                                    val thinkingLevelBadgeState by viewModel.thinkingLevel.collectAsState()
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                    ) {
-                                        // [T-model-chip] The resolved provider·model
-                                        // now renders as a real CHIP (bordered,
-                                        // rounded, filled) instead of bare text, so
-                                        // the active model reads as a distinct
-                                        // tappable control (user request: show the
-                                        // model "отдельной строкой/чипом"). Tap still
-                                        // bubbles to the Column's showModelPicker
-                                        // handler. Fast/thinking badges stay OUTSIDE
-                                        // the chip as separate siblings.
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                            modifier = Modifier
-                                                .weight(1f, fill = false)
-                                                .clip(RoundedCornerShape(8.dp))
-                                                .background(ChatColors.toolCapsuleBg)
-                                                .border(
-                                                    1.dp,
-                                                    ChatColors.separator.copy(alpha = 0.5f),
-                                                    RoundedCornerShape(8.dp),
-                                                )
-                                                .padding(horizontal = 8.dp, vertical = 3.dp),
-                                        ) {
-                                            // ⚡ fast-mode badge stays leading INSIDE
-                                            // the chip, ahead of the model name.
-                                            val fastBadgeEligible by viewModel.showFastModeToggle.collectAsState()
-                                            val fastBadgeOn by viewModel.fastModeEnabled.collectAsState()
-                                            if (fastBadgeEligible && fastBadgeOn) {
-                                                Box(
-                                                    contentAlignment = Alignment.Center,
-                                                    modifier = Modifier
-                                                        .size(11.dp)
-                                                        .background(Color(0xFFFF9500), CircleShape),
-                                                ) {
-                                                    Icon(
-                                                        Icons.Default.Bolt,
-                                                        contentDescription = null,
-                                                        tint = Color.White,
-                                                        modifier = Modifier.size(9.dp),
-                                                    )
-                                                }
-                                            } else {
-                                                Icon(
-                                                    Icons.Default.Memory,
-                                                    contentDescription = null,
-                                                    tint = ChatColors.secondaryText,
-                                                    modifier = Modifier.size(12.dp),
-                                                )
-                                            }
-                                            Text(
-                                                text = if (providerName.isNotEmpty() && modelName.isNotEmpty()) {
-                                                    "$providerName · $modelName"
-                                                } else {
-                                                    modelName.ifEmpty { providerName }
-                                                },
-                                                fontSize = 11.sp,
-                                                lineHeight = 13.sp,
-                                                fontWeight = FontWeight.Medium,
-                                                color = ChatColors.secondaryText,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis,
-                                                style = noFontPad,
-                                                modifier = Modifier.weight(1f, fill = false),
-                                            )
-                                        }
-                                        // Show the badge ONLY when the model can
-                                        // think AND thinking is currently on:
-                                        //   - availableThinkingLevels non-empty →
-                                        //     the bound model actually supports
-                                        //     thinking (no badge for models that
-                                        //     can't reason);
-                                        //   - level.isEnabled (≠ Off) → thinking is
-                                        //     switched on right now.
-                                        // When Off we render NOTHING (no greyed
-                                        // placeholder): iOS found a grey "Off" pill
-                                        // read as ambiguous ("is thinking on or
-                                        // off?"), so the badge simply disappears.
-                                        // The sheet still lists Off, so users can
-                                        // turn thinking back off from there.
-                                        if (viewModel.availableThinkingLevels.isNotEmpty() &&
-                                            thinkingLevelBadgeState.isEnabled
-                                        ) {
-                                            ThinkingLevelBadge(
-                                                level = thinkingLevelBadgeState,
-                                                onClick = { showThinkingLevelSheet = true },
-                                            )
-                                        }
-                                    }
                                 }
                             }
                         }
