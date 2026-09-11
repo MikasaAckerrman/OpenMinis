@@ -196,6 +196,18 @@ jobs:
           path: src/android/app/build/outputs/apk/clone/app-clone.apk
           retention-days: 7
 
+      - name: Build Design APK
+        run: |
+          cd src/android
+          ./gradlew :app:assembleDesign --no-daemon -Dorg.gradle.jvmargs="-Xmx4g"
+
+      - name: Upload Design APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-design-apk
+          path: src/android/app/build/outputs/apk/design/app-design.apk
+          retention-days: 7
+
       - name: Auto-push version bump (if [quick] and not workflow_dispatch)
         if: contains(github.event.head_commit.message, '[quick]') && github.event_name != 'workflow_dispatch'
         run: |

@@ -126,19 +126,20 @@ android {
             initWith(getByName("debug"))
             applicationIdSuffix = ".clone"
             versionNameSuffix = "-clone"
-            // BuildConfig.DEBUG is false for any buildType other than `debug`,
-            // even one that inherits from it — AGP derives it from the type
-            // NAME. The RPC server (127.0.0.1:5321) and the minis-debug offload
-            // handler are gated on BuildConfig.DEBUG, so without this the clone
-            // would install fine and then be untestable: no agent.graph.* calls.
-            // isDebuggable stays true via initWith, so `run-as` works either way.
             isDebuggable = true
             buildConfigField("boolean", "DEBUG", "true")
-            // The launcher label comes from src/clone/res/values/strings.xml,
-            // NOT resValue: app_name already exists in src/main/res, and
-            // resValue would collide with it ("duplicate resource").
-            // matchingFallbacks: this buildType is not declared by any library
-            // dependency, so consumers must fall back to debug.
+            matchingFallbacks += listOf("debug")
+        }
+
+        // [T-design-variant] A second side-by-side install for UI redesign
+        // testing. Separate applicationId (.design) so it installs alongside
+        // both the primary app AND the clone — no uninstall needed.
+        create("design") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".design"
+            versionNameSuffix = "-design"
+            isDebuggable = true
+            buildConfigField("boolean", "DEBUG", "true")
             matchingFallbacks += listOf("debug")
         }
     }
@@ -170,6 +171,9 @@ android {
     // output per variant.
     sourceSets {
         getByName("clone") {
+            assets.srcDirs("src/debug/assets")
+        }
+        getByName("design") {
             assets.srcDirs("src/debug/assets")
         }
     }
@@ -227,7 +231,7 @@ val stageDebugSkillAssets by tasks.registering(Exec::class) {
 // Release variants stay excluded — that is the point of the src/debug source set.
 tasks.matching {
     it.name.startsWith("merge") && it.name.endsWith("Assets") &&
-        (it.name.contains("Debug") || it.name.contains("Clone"))
+        (it.name.contains("Debug") || it.name.contains("Clone") || it.name.contains("Design"))
 }.configureEach { dependsOn(stageDebugSkillAssets) }
 
 dependencies {

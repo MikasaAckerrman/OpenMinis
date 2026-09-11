@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Design variant launcher label. Separate from "Minis Clone" so the
+     user can distinguish the UI redesign test build. -->
+<resources>
+    <string name="app_name">Minis Design</string>
+</resources>
