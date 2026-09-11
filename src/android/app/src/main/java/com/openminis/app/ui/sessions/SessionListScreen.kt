@@ -274,7 +274,6 @@ fun SessionListScreen(
     providerRepository: ProviderRepository,
     onSessionClick: (String) -> Unit,
     onNewChat: (String) -> Unit,
-    onSettingsClick: () -> Unit,
     onAddProviderClick: () -> Unit = {},
     onSelectModelsClick: () -> Unit = {},
     onTerminalClick: () -> Unit = {},

@@ -540,9 +540,6 @@ fun AppNavigation(
                 onNewChat = { sessionId ->
                     navController.safeNavigate(Routes.chat(sessionId))
                 },
-                onSettingsClick = {
-                    navController.safeNavigate(Routes.SETTINGS)
-                },
                 onAddProviderClick = {
                     navController.safeNavigate(Routes.ADD_PROVIDER)
                 },
@@ -574,7 +571,6 @@ fun AppNavigation(
                 memoryRepository = memoryRepository,
                 skillRepository = skillRepository,
                 mcpRepository = mcpRepository,
-                onBack = { navController.safePopBackStack() },
                 onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
                 // [T-new-chat-menu-entry] Chat-menu "New Chat": same draft-id
                 // funnel as the session list / NewChat deep link — a fresh
