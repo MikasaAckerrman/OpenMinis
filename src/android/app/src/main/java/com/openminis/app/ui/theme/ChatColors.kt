@@ -34,6 +34,8 @@ data class ChatPalette(
     val tertiaryText: Color,
     val disabledText: Color,
     val userBubble: Color,
+    val userBubbleText: Color,
+    val streamingText: Color,
     val toolBg: Color,
     val toolBorder: Color,
     val toolCapsuleBg: Color,
@@ -71,6 +73,8 @@ val LightChatPalette = ChatPalette(
     tertiaryText = Color(0x4D3C3C43),
     disabledText = Color(0x2E3C3C43),
     userBubble = Color(0x1E787880),
+    userBubbleText = Color(0xFF1C1C1E),
+    streamingText = Color(0xFF8E8E93),
     toolBg = Color(0xFFF2F2F7),
     toolBorder = Color(0x14000000),
     toolCapsuleBg = Color(0xFFF2F2F7),
@@ -95,27 +99,31 @@ val LightChatPalette = ChatPalette(
     fabAccent = Color(0xFFB7AF96),
 )
 
-// Grok-style OLED-black dark palette. Background is pure #000 (AMOLED),
-// surfaces sit in a light ramp (#1C1C1E → #2C2C2C) so layers separate on
-// black. Text is pure white, accent/link is a soft blue.
+// Grok-style OLED-black dark palette, sampled from the real Grok APK
+// screenshots (density 3.0; see /tmp/sample*.py): background #111113,
+// composer card #212121, user bubble #242628 with #d9d9d9 text, completed
+// answer text #fcfcfc, streaming/tool-label text #9e9e9e. Text is white,
+// accent/link is a soft blue.
 val DarkChatPalette = ChatPalette(
     isDark = true,
-    background = Color(0xFF000000),
+    background = Color(0xFF111113),
     secondaryBg = Color(0xFF1C1C1E),
-    inputBg = Color(0xFF1C1C1E),
-    inputIconBg = Color(0xFF242424),
+    inputBg = Color(0xFF212121),
+    inputIconBg = Color(0xFF2C2C2C),
     inputIconBorder = Color(0xFF3A3A3A),
     inputBorder = Color(0x40545458),
     primaryText = Color(0xFFFFFFFF),
     secondaryText = Color(0x99EBEBF5),
     tertiaryText = Color(0x4DEBEBF5),
     disabledText = Color(0x2EEBEBF5),
-    userBubble = Color(0xFF1C1C1E),
+    userBubble = Color(0xFF242628),
+    userBubbleText = Color(0xFFD9D9D9),
+    streamingText = Color(0xFF9E9E9E),
     toolBg = Color(0xFF1C1C1E),
     toolBorder = Color(0x40545458),
-    toolCapsuleBg = Color(0xFF242424),
+    toolCapsuleBg = Color(0xFF2C2C2C),
     separator = Color(0x66545458),
-    sendButton = Color(0xFFFFFFFF),
+    sendButton = Color(0xFFD9D9D9),
     sendButtonDisabled = Color(0x2EEBEBF5),
     codeBlockBg = Color(0xFF0A0A0A),
     codeBlockText = Color(0xFF8CF38C),

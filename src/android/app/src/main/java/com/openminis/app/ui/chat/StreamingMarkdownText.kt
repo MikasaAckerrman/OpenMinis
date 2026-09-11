@@ -581,6 +581,21 @@ private fun StreamingMarkdownTextBody(
     }
 
     ShardSubIndexScope {
+        // GROK: while the turn streams, its text renders in the dimmed
+        // streaming color (#9e9e9e dark, measured on the in-progress answer
+        // in grok_screenshot_chat); the completed text is #fcfcfc/white.
+        // Overriding the chat palette for the duration of the stream gives
+        // every markdown element (paragraphs, list items, headings) the
+        // streaming tone without touching each RenderBlock call site.
+        val basePalette = com.openminis.app.ui.theme.LocalChatPalette.current
+        val effectivePalette = if (isStreaming) {
+            basePalette.copy(primaryText = basePalette.streamingText)
+        } else {
+            basePalette
+        }
+        androidx.compose.runtime.CompositionLocalProvider(
+            com.openminis.app.ui.theme.LocalChatPalette provides effectivePalette,
+        ) {
         Column(modifier = modifier) {
             // [T-android-stream-fade] Last block during a live stream gets
             // LocalAppendOnlyFade=true so MdText fades in newly-appended
@@ -596,6 +611,7 @@ private fun StreamingMarkdownTextBody(
                     RenderBlock(block)
                 }
             }
+        }
         }
     }
 }

@@ -418,9 +418,10 @@ internal fun InputCircleButton(
     onClick: () -> Unit,
     content: @Composable () -> Unit,
 ) {
-    Box(
+        // GROK: composer row buttons scale to 42dp (send/stop measured
+        // 42×42dp at [1078,2562][1204,2688] in grok_ui_chat_final).
         modifier = Modifier
-            .size(38.dp)
+            .size(42.dp)
             .background(ChatColors.inputIconBg, CircleShape)
             .border(0.5.dp, ChatColors.inputIconBorder, CircleShape)
             .clip(CircleShape)
@@ -454,9 +455,10 @@ internal fun MicButton(
     val tint = if (isRecording) Color.Red
                else MaterialTheme.colorScheme.onSurfaceVariant
     val borderColor = if (isRecording) Color.Transparent else ChatColors.inputIconBorder
+        // GROK: 42dp row-button scale (see InputCircleButton note).
     Box(
         modifier = Modifier
-            .size(38.dp)
+            .size(42.dp)
             .background(bg, CircleShape)
             .border(0.5.dp, borderColor, CircleShape)
             .clip(CircleShape)

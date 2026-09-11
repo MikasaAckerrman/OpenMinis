@@ -46,9 +46,9 @@ private val DarkSecondary = Color(0xFF8E8E93)
 private val DarkOnSecondary = Color(0xFF000000)
 private val DarkSecondaryContainer = Color(0xFF2A2A2A)
 private val DarkOnSecondaryContainer = Color(0xFFE0E0E0)
-private val DarkBackground = Color(0xFF000000)
+private val DarkBackground = Color(0xFF111113)
 private val DarkOnBackground = Color(0xFFE8E8E8)
-private val DarkSurface = Color(0xFF000000)
+private val DarkSurface = Color(0xFF111113)
 private val DarkOnSurface = Color(0xFFE8E8E8)
 private val DarkSurfaceVariant = Color(0xFF1C1C1E)
 private val DarkOnSurfaceVariant = Color(0xFF8E8E93)
@@ -109,9 +109,11 @@ private val DarkColorScheme = darkColorScheme(
     surfaceVariant = DarkSurfaceVariant,
     onSurfaceVariant = DarkOnSurfaceVariant,
     surfaceContainerLowest = DarkBackground,
-    surfaceContainerLow = Color(0xFF1C1C1E),
+    // GROK: drawer/settings surface sampled #111113-#1C1C1E ramp from the
+    // real APK. background #111113, cards #1C1C1E (GroDrawer / settings rows).
+    surfaceContainerLow = Color(0xFF161618),
     surfaceContainer = Color(0xFF1C1C1E),
-    surfaceContainerHigh = Color(0xFF2A2A2A),
+    surfaceContainerHigh = Color(0xFF232325),
     surfaceContainerHighest = Color(0xFF2A2A2A),
     outline = DarkOutline,
     outlineVariant = Color(0xFF2C2C2E),

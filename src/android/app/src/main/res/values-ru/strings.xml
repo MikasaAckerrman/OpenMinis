@@ -376,7 +376,7 @@
     <string name="browser_reload">Обновить</string>
     <string name="browser_minis_browsing">Minis просматривает страницы</string>
     <string name="chat_typing_indicator">%1$s думает</string>
-    <string name="chat_input_placeholder">Сообщение для %1$s (@ для упоминания файлов)</string>
+    <string name="chat_input_placeholder">Задайте любой вопрос</string>
     <string name="browser_takeover">Перехватить управление</string>
     <string name="browser_settings_done">Готово</string>
     <string name="browser_settings_user_agent">User Agent</string>

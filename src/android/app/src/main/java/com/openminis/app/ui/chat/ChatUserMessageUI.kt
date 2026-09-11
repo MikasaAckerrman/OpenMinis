@@ -371,9 +371,11 @@ internal fun UserMessageBubble(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        val textColor = if (isQueued) secondaryTextColor else MaterialTheme.colorScheme.onSurface
+                        val textColor = if (isQueued) secondaryTextColor else ChatColors.userBubbleText
                         val bubbleBg = if (isQueued) Color.Transparent else userBubbleColor
-                        val shape = RoundedCornerShape(18.dp)
+                        // Grok: stadium-like bubble, measured R≈25dp on a
+                        // 50dp-tall "hello" bubble (/tmp/radius.py).
+                        val shape = RoundedCornerShape(25.dp)
                         val dashedStroke = if (isQueued) {
                             Modifier.drawBehind {
                                 val stroke = androidx.compose.ui.graphics.drawscope.Stroke(
@@ -382,7 +384,7 @@ internal fun UserMessageBubble(
                                         floatArrayOf(6.dp.toPx(), 4.dp.toPx()), 0f
                                     ),
                                 )
-                                val r = 18.dp.toPx()
+                                val r = 25.dp.toPx()
                                 drawRoundRect(
                                     color = secondaryTextColor.copy(alpha = 0.5f),
                                     cornerRadius = androidx.compose.ui.geometry.CornerRadius(r, r),
@@ -423,12 +425,16 @@ internal fun UserMessageBubble(
                                 Text(
                                     text = message.content,
                                     color = textColor,
-                                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 16.5.sp),
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp),
                                     modifier = bubbleModifier
                                         .background(bubbleBg, shape)
                                         .clip(shape)
                                         .then(dashedStroke)
-                                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                                        // Grok (density-3 dump, /tmp/radius.py):
+                                        // bubble radius 25dp, text padding
+                                        // H 18.7dp / V 14dp around a 22dp-tall
+                                        // 15sp line.
+                                        .padding(horizontal = 18.7.dp, vertical = 14.dp),
                                 )
                             }
                         }

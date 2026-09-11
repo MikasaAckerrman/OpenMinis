@@ -286,105 +286,18 @@ internal fun AssistantHeader(
     // this action answers ("some parts don't get copied").
     onCopyAnswer: (() -> Unit)? = null,
 ) {
-    // [T-soul-md] Identity header = locked ✨ sparkle gradient icon +
-    // SOUL.md-driven `name`. The emoji-customization field was removed,
-    // so we no longer branch on `SoulMetadata.emoji`; the icon stays the
-    // canonical sparkle (iOS: sparkles SF Symbol + gradient). Only the
-    // `name` field is user-customizable — defaults to "Minis" when
-    // SOUL.md is missing the field or set to the default value.
-    val soulMeta by com.openminis.app.agent.SoulStore.cachedMetadata.collectAsState()
-    val displayName = soulMeta.name.ifBlank { com.openminis.app.agent.SoulMetadata.DEFAULT.name }
-    // [T-message-surgery] The header row is the long-press handle for
-    // assistant-turn surgery. The body itself can't host it: assistant text is
-    // inside a SelectionContainer where a long press starts text selection,
-    // and hijacking that would break copy — which users need far more often
-    // than they need to delete a turn.
-    var showMenu by remember { mutableStateOf(false) }
-    val hasActions = onRewrite != null || onDelete != null || onCopyAnswer != null
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-            // [T-android-user-assistant-spacing-16] top=10 so the
-            // User→Assistant boundary reads ~16dp: user-bubble bottom(4) +
-            // LazyColumn spacedBy(2) + this top(10) = 16. The header→body gap
-            // inside the turn is unaffected (that's this row's bottom=2).
-            .padding(top = 10.dp, bottom = 2.dp)
-            .then(
-                if (hasActions) {
-                    Modifier.pointerInput(onRewrite, onDelete, onCopyAnswer) {
-                        detectTapGestures(onLongPress = { showMenu = true })
-                    }
-                } else Modifier
-            ),
-    ) {
-        val sparkleGradient = Brush.linearGradient(
-            colors = listOf(SparkleColor1, SparkleColor2),
-        )
-        Icon(
-            imageVector = Icons.Filled.AutoAwesome,
-            contentDescription = null,
-            tint = Color.White,
-            modifier = Modifier
-                .size(18.dp)
-                .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
-                .drawWithContent {
-                    drawContent()
-                    drawRect(brush = sparkleGradient, blendMode = BlendMode.SrcIn)
-                },
-        )
-        Spacer(modifier = Modifier.width(6.dp))
-        Text(
-            text = displayName,
-            fontSize = 16.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.onSurface,
-        )
-        if (hasActions) {
-            DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
-                // [T-copy-whole-answer] First item: it is the only
-                // non-destructive action here and the one reached most often.
-                if (onCopyAnswer != null) {
-                    DropdownMenuItem(
-                        text = { Text(stringResource(R.string.msg_longpress_copy_answer)) },
-                        onClick = { showMenu = false; onCopyAnswer() },
-                        leadingIcon = {
-                            Icon(
-                                Icons.Filled.ContentCopy,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp),
-                            )
-                        },
-                    )
-                }
-                if (onRewrite != null) {
-                    DropdownMenuItem(
-                        text = { Text(stringResource(R.string.msg_longpress_rewrite)) },
-                        onClick = { showMenu = false; onRewrite() },
-                        leadingIcon = {
-                            Icon(
-                                Icons.Filled.EditNote,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp),
-                            )
-                        },
-                    )
-                }
-                if (onDelete != null) {
-                    DropdownMenuItem(
-                        text = { Text(stringResource(R.string.msg_longpress_delete)) },
-                        onClick = { showMenu = false; onDelete() },
-                        leadingIcon = {
-                            Icon(
-                                Icons.Filled.Delete,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp),
-                            )
-                        },
-                    )
-                }
-            }
-        }
-    }
+    // GROK PARITY: Grok renders no assistant name/avatar header above AI
+    // turns (verified in grok_ui_chat_final + grok_screenshot_chat.png —
+    // content rows start directly). The per-turn actions (rewrite / delete /
+    // copy-answer) therefore moved to the turn FOOTER (timestamp row,
+    // long-press), which is emitted for every finished assistant turn —
+    // see the AssistantFooter case in ChatScreen.kt.
+    //
+    // This composable stays as the turn-gap spacer so LazyColumn item
+    // structure (and the LazyColumn key reconciliation) is unchanged; the
+    // action lambdas are kept in the signature for binary-compat with the
+    // existing call site but are no longer rendered here.
+    Spacer(modifier = Modifier.height(12.dp))
 }
 
 @Composable

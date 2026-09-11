@@ -2099,8 +2099,24 @@ fun ChatScreen(
                     }
                 },
                 navigationIcon = {
+                    // GROK: top-left is the account avatar circle (56dp touch
+                    // target, ~36dp visible disc) that opens the drawer —
+                    // grok_ui_home [14,175][182,343] + screenshot.
                     IconButton(onClick = onOpenDrawer) {
-                        Icon(Icons.Outlined.Menu, contentDescription = "Menu")
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(ChatColors.inputIconBg),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                Icons.Outlined.Menu,
+                                contentDescription = "Menu",
+                                tint = ChatColors.primaryText,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
                     }
                 },
                 actions = {
@@ -3220,8 +3236,20 @@ fun ChatScreen(
                             }
                         }
                         val isNewestItem = item == flatItems.lastOrNull()
+                        // GROK PARITY: AI content rows are indented 51.3dp from
+                        // the screen edge (grok_ui_chat_final: text at x=154px
+                        // = 51.3dp vs the list's 16dp margin → 35.3dp extra).
+                        // User bubbles stay flush; header/footer/system rows
+                        // keep their own alignment.
+                        val grokAiIndent = when (item) {
+                            is FlatChatItem.UserBubble,
+                            is FlatChatItem.AssistantHeader,
+                            is FlatChatItem.AssistantFooter,
+                            is FlatChatItem.AssistantInfo -> Modifier
+                            else -> Modifier.padding(start = 35.3.dp)
+                        }
                         Box(
-                            modifier = Modifier
+                            modifier = grokAiIndent
                                 .alpha(rowAlpha)
                                 .then(
                                     if (isNewestItem) {
@@ -3418,19 +3446,122 @@ fun ChatScreen(
                                 },
                             )
                             is FlatChatItem.AssistantFooter -> {
-                                // [T-msg-timestamps] Finish stamp under the
-                                // assistant turn: "HH:mm:ss" (turn end) plus
-                                // "· <dur>" when a real live-turn duration is
-                                // known. Left-aligned under the message body,
-                                // muted. Hidden entirely if the label resolves
-                                // to null (unknown finish time).
-                                assistantTurnFinishedLabel(item.createdAtMs, item.finishedAtMs)?.let { label ->
-                                    Text(
-                                        text = label,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-                                        modifier = Modifier.padding(start = 24.dp, top = 1.dp, bottom = 2.dp),
-                                    )
+                                // GROK PARITY: per-turn actions moved here
+                                // from the (now invisible) assistant header.
+                                // Grok shows no name row above AI turns; the
+                                // long-press handle is the turn footer, which
+                                // is emitted for every finished non-system
+                                // assistant turn. Mid-stream the footer isn't
+                                // emitted and the actions were already gated
+                                // on !isStreaming — same semantics as before.
+                                var showTurnMenu by remember(item.messageId) { mutableStateOf(false) }
+                                val footerLabel = assistantTurnFinishedLabel(item.createdAtMs, item.finishedAtMs)
+                                val hasTurnActions = !isStreaming
+                                Box(
+                                    modifier = Modifier
+                                        .padding(start = 24.dp, top = 1.dp, bottom = 2.dp)
+                                        .then(
+                                            if (hasTurnActions) {
+                                                Modifier.pointerInput(item.messageId) {
+                                                    detectTapGestures(
+                                                        onLongPress = { showTurnMenu = true },
+                                                        // A plain tap on the
+                                                        // invisible surface
+                                                        // must not swallow
+                                                        // scroll-fling tails —
+                                                        // only long-press acts.
+                                                    )
+                                                }
+                                            } else Modifier
+                                        ),
+                                ) {
+                                    if (footerLabel != null) {
+                                        Text(
+                                            text = footerLabel,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                                        )
+                                    } else if (hasTurnActions) {
+                                        // Turns without a resolvable timestamp
+                                        // (legacy sessions) still need a touch
+                                        // target for the action menu; keep it
+                                        // visually empty and cheap.
+                                        Spacer(modifier = Modifier.height(16.dp))
+                                    }
+                                    DropdownMenu(
+                                        expanded = showTurnMenu,
+                                        onDismissRequest = { showTurnMenu = false },
+                                    ) {
+                                        // [T-copy-whole-answer] First item: the
+                                        // most frequent, non-destructive action.
+                                        DropdownMenuItem(
+                                            text = { Text(stringResource(R.string.msg_longpress_copy_answer)) },
+                                            onClick = {
+                                                showTurnMenu = false
+                                                val realId = originalMessageId(item.messageId)
+                                                val msg = messages.firstOrNull { it.id == realId }
+                                                val blocks = msg?.toolBlocks?.map {
+                                                    com.openminis.app.data.AssistantTurnCopy.Block(
+                                                        kind = it.kind,
+                                                        content = it.content,
+                                                    )
+                                                } ?: emptyList()
+                                                val text = com.openminis.app.data.AssistantTurnCopy.plainText(
+                                                    blocks = blocks,
+                                                    legacyContent = msg?.content ?: "",
+                                                )
+                                                if (text.isEmpty()) {
+                                                    android.widget.Toast.makeText(
+                                                        context,
+                                                        context.getString(R.string.msg_copy_answer_empty_toast),
+                                                        android.widget.Toast.LENGTH_SHORT,
+                                                    ).show()
+                                                } else {
+                                                    val cb = context.getSystemService(
+                                                        android.content.Context.CLIPBOARD_SERVICE,
+                                                    ) as android.content.ClipboardManager
+                                                    cb.setPrimaryClip(
+                                                        android.content.ClipData.newPlainText("answer", text),
+                                                    )
+                                                    android.widget.Toast.makeText(
+                                                        context,
+                                                        context.getString(R.string.msg_copy_answer_toast),
+                                                        android.widget.Toast.LENGTH_SHORT,
+                                                    ).show()
+                                                }
+                                            },
+                                            leadingIcon = {
+                                                Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
+                                            },
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text(stringResource(R.string.msg_longpress_rewrite)) },
+                                            onClick = {
+                                                showTurnMenu = false
+                                                val realId = originalMessageId(item.messageId)
+                                                coroutineScope.launch {
+                                                    val prefill = viewModel.messageTextForRewriteAsync(realId)
+                                                    if (prefill != null) {
+                                                        pendingRewriteText = prefill
+                                                        pendingRewriteMessageId = realId
+                                                    }
+                                                }
+                                            },
+                                            leadingIcon = {
+                                                Icon(Icons.Filled.EditNote, contentDescription = null, modifier = Modifier.size(18.dp))
+                                            },
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text(stringResource(R.string.msg_longpress_delete)) },
+                                            onClick = {
+                                                showTurnMenu = false
+                                                pendingDeleteMessageId = originalMessageId(item.messageId)
+                                            },
+                                            leadingIcon = {
+                                                Icon(Icons.Filled.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
+                                            },
+                                        )
+                                    }
                                 }
                             }
                             is FlatChatItem.AssistantText -> BoundsTrackedBlock(
@@ -4415,7 +4546,9 @@ fun ChatScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .drawBehind {
-                            val radiusPx = 20.dp.toPx()
+                            // GROK: composer corner radius 24dp (design spec,
+                            // grok_design_spec.md "Border radius: 24 (web CSS)").
+                            val radiusPx = 24.dp.toPx()
                             val canvas = drawContext.canvas.nativeCanvas
                             // Pass 1: symmetric ambient halo — small blur, low alpha.
                             shadowPaint.setShadowLayer(
@@ -4923,10 +5056,10 @@ fun ChatScreen(
                                         val soulName by com.openminis.app.agent.SoulStore
                                             .cachedMetadata.collectAsState()
                                         Text(
-                                            stringResource(
-                                                R.string.chat_input_placeholder,
-                                                soulName.name,
-                                            ),
+                                            // GROK: generic "Задайте любой вопрос"
+                                            // hint — no Soul name, no mention
+                                            // hint (grok_ui_home dump).
+                                            stringResource(R.string.chat_input_placeholder),
                                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.25f),
                                             fontSize = 16.5.sp * chatInputFontScale,
                                             maxLines = 1,
@@ -5059,7 +5192,7 @@ fun ChatScreen(
                         Spacer(modifier = Modifier.width(8.dp))
                         Box(
                             modifier = Modifier
-                                .size(38.dp)
+                                .size(42.dp)
                                 .background(
                                     if (forceAgents) MaterialTheme.colorScheme.primary
                                     else ChatColors.inputIconBg,
@@ -5133,7 +5266,7 @@ fun ChatScreen(
                         ) {
                             Box(
                                 modifier = Modifier
-                                    .size(38.dp)
+                                    .size(42.dp)
                                     .background(ChatColors.inputIconBg, CircleShape)
                                     .border(0.5.dp, ChatColors.inputIconBorder, CircleShape)
                                     .clip(CircleShape)
@@ -5390,10 +5523,13 @@ fun ChatScreen(
                         val hasContent = hasText || attachments.isNotEmpty()
                         val showStop = isStreaming && !hasContent
                         if (showStop) {
+                            // GROK: stop is a LIGHT #d9d9d9 circle with a dark
+                            // stop glyph (measured #d9d9d9 bg at stop-btn scan,
+                            // /tmp/sample4.py) — not the iOS red ring.
                             Box(
                                 modifier = Modifier
-                                    .size(38.dp)
-                                    .background(Color(0xFFFF3B30), CircleShape)
+                                    .size(42.dp)
+                                    .background(ChatColors.sendButton, CircleShape)
                                     .clip(CircleShape)
                                     .clickable { viewModel.cancelStream() },
                                 contentAlignment = Alignment.Center,
@@ -5401,7 +5537,7 @@ fun ChatScreen(
                                 Icon(
                                     Icons.Default.Stop,
                                     contentDescription = "Stop",
-                                    tint = Color.White,
+                                    tint = Color(0xFF111113),
                                     modifier = Modifier.size(20.dp),
                                 )
                             }
@@ -5411,7 +5547,7 @@ fun ChatScreen(
                             val canActivate = hasContent
                             Box(
                                 modifier = Modifier
-                                    .size(38.dp)
+                                    .size(42.dp)
                                     .background(
                                         if (canActivate) ChatColors.sendButton
                                         else ChatColors.sendButtonDisabled,
