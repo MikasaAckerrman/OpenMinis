@@ -62,6 +62,15 @@ class MinisApp : Application(), ImageLoaderFactory {
         private set
     lateinit var chatRepository: ChatRepository
         private set
+
+    /**
+     * [T-safe-mode-warm-restart] True once [initRepositories] has run in this
+     * process. The in-memory safe-mode flag can be cleared by the crash-share
+     * dismiss flow while this process is still half-initialized; MainActivity
+     * checks this instead of trusting the flag alone.
+     */
+    val appReady: Boolean
+        get() = this::chatRepository.isInitialized && this::providerRepository.isInitialized
     lateinit var providerRepository: ProviderRepository
         private set
     lateinit var envVarRepository: EnvVarRepository
@@ -153,6 +162,26 @@ class MinisApp : Application(), ImageLoaderFactory {
                     ReportField.LOGCAT,
                 ),
         )
+    }
+
+    /**
+     * Construct the Room database and the repositories the compose tree reads
+     * during startup (AppNavigation's six repositories). Room's `.build()` is
+     * lazy — the actual schema open / migration happens on the first query,
+     * so this is safe to call even in safe-mode. Single source of truth for
+     * both the normal path and [T-safe-mode-warm-restart].
+     */
+    private fun initRepositories() {
+        database = AppDatabase.getInstance(this)
+        chatRepository = ChatRepository(database.chatDao())
+        providerRepository = ProviderRepository(this)
+        envVarRepository = EnvVarRepository(this)
+        // Wire EnvVarRepository into ProviderRepository for agent.keys resolution
+        providerRepository.setEnvVarRepository(envVarRepository)
+        skillRepository = SkillRepository(this)
+        mcpRepository = MCPRepository(this)
+        memoryRepository = MemoryRepository(java.io.File(filesDir, "minis-global/memory"))
+        webAppShortcutRepository = WebAppShortcutRepository(database.webAppShortcutDao())
     }
 
     override fun onCreate() {
@@ -255,7 +284,18 @@ class MinisApp : Application(), ImageLoaderFactory {
         // point of safe-mode is to stop the bleeding before another
         // segfault rewrites the log files.
         if (com.openminis.app.crash.CrashFrequencyDetector.isSafeMode()) {
-            Log.w("MinisApp", "safe-mode ON — skipping app subsystem init")
+            // [T-safe-mode-warm-restart] Repositories are cheap constructors
+            // (Room's DB open is lazy — nothing touches SQLite here). The
+            // dismiss flow in CrashFrequencyDetector calls setSafeMode(false)
+            // while THIS process still has unset lateinit repos; the next
+            // MainActivity in this warm process then composes AppNavigation →
+            // app.chatRepository → UninitializedPropertyAccessException
+            // (2026-09-12 crash loop: DB-downgrade crash → safe-mode →
+            // dismiss → warm restart → lateinit crash → repeat). Init the
+            // repos so a warm restart composes cleanly; the heavy/native
+            // subsystems below stay skipped — that is what safe-mode is for.
+            Log.w("MinisApp", "safe-mode ON — skipping heavy init, repositories stay available")
+            initRepositories()
             return
         }
 
@@ -288,16 +328,7 @@ class MinisApp : Application(), ImageLoaderFactory {
         // unstuck on the next launch.
         com.openminis.app.diagnostics.HangDetector.start(this)
 
-        database = AppDatabase.getInstance(this)
-        chatRepository = ChatRepository(database.chatDao())
-        providerRepository = ProviderRepository(this)
-        envVarRepository = EnvVarRepository(this)
-        // Wire EnvVarRepository into ProviderRepository for agent.keys resolution
-        providerRepository.setEnvVarRepository(envVarRepository)
-        skillRepository = SkillRepository(this)
-        mcpRepository = MCPRepository(this)
-        memoryRepository = MemoryRepository(java.io.File(filesDir, "minis-global/memory"))
-        webAppShortcutRepository = WebAppShortcutRepository(database.webAppShortcutDao())
+        initRepositories()
 
         // [T-soul-md] Seed SOUL.md with the default content on first launch
         // so the Soul settings page and chat bubble identity have a real

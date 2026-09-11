@@ -163,6 +163,22 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // [T-safe-mode-warm-restart] Belt for a half-initialized process:
+        // the dismiss flow clears the in-memory safe-mode flag while the
+        // lateinit repositories of THIS process may still be unset. If the
+        // Application never got to init (or a future regression skips it),
+        // composing here would throw UninitializedPropertyAccessException
+        // and overwrite the crash logs we're trying to ship. Killing the
+        // process forces a clean cold start (full MinisApp.onCreate); it
+        // never touches stored data.
+        val appReady = (application as? com.openminis.app.MinisApp)?.appReady ?: false
+        if (!appReady && !com.openminis.app.crash.CrashFrequencyDetector.isSafeMode()) {
+            android.util.Log.w("MainActivity", "app not ready and safe-mode off — killing process for a clean cold start")
+            finish()
+            android.os.Process.killProcess(android.os.Process.myPid())
+            return
+        }
+
         // Safe-mode short-circuit: if CrashFrequencyDetector tripped in
         // MinisApp.onCreate (≥THRESHOLD recent crash files), the
         // Application skipped all heavy init — no DB, no repos, no
