@@ -373,9 +373,9 @@ internal fun UserMessageBubble(
                     ) {
                         val textColor = if (isQueued) secondaryTextColor else ChatColors.userBubbleText
                         val bubbleBg = if (isQueued) Color.Transparent else userBubbleColor
-                        // Grok: stadium-like bubble, measured R≈25dp on a
-                        // 50dp-tall "hello" bubble (/tmp/radius.py).
-                        val shape = RoundedCornerShape(25.dp)
+                        // Grok (density 3.5): stadium-like bubble, measured
+                        // R≈75px = 21.4dp on a 48dp-tall "hello" bubble.
+                        val shape = RoundedCornerShape(21.dp)
                         val dashedStroke = if (isQueued) {
                             Modifier.drawBehind {
                                 val stroke = androidx.compose.ui.graphics.drawscope.Stroke(
@@ -384,7 +384,7 @@ internal fun UserMessageBubble(
                                         floatArrayOf(6.dp.toPx(), 4.dp.toPx()), 0f
                                     ),
                                 )
-                                val r = 25.dp.toPx()
+                                val r = 21.dp.toPx()
                                 drawRoundRect(
                                     color = secondaryTextColor.copy(alpha = 0.5f),
                                     cornerRadius = androidx.compose.ui.geometry.CornerRadius(r, r),
@@ -430,11 +430,9 @@ internal fun UserMessageBubble(
                                         .background(bubbleBg, shape)
                                         .clip(shape)
                                         .then(dashedStroke)
-                                        // Grok (density-3 dump, /tmp/radius.py):
-                                        // bubble radius 25dp, text padding
-                                        // H 18.7dp / V 14dp around a 22dp-tall
-                                        // 15sp line.
-                                        .padding(horizontal = 18.7.dp, vertical = 14.dp),
+                                        // Grok (density-3.5 dump): bubble text
+                                        // padding H 56px = 16dp, V 42px = 12dp.
+                                        .padding(horizontal = 16.dp, vertical = 12.dp),
                                 )
                             }
                         }

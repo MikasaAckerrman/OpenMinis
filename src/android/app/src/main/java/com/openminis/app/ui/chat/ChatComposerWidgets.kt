@@ -416,13 +416,15 @@ internal fun AttachmentChip(
 @Composable
 internal fun InputCircleButton(
     onClick: () -> Unit,
+    // GROK (density 3.5 recalibration): the gallery/attach button is 48dp
+    // ([35,2541][203,2709] = 168px), mode pills 36dp tall ([1078,2562]
+    // [1204,2688] = 126px). The + attach slot takes 48, the / slash slot 36.
+    sizeDp: Int = 36,
     content: @Composable () -> Unit,
 ) {
     Box(
-        // GROK: composer row buttons scale to 42dp (send/stop measured
-        // 42×42dp at [1078,2562][1204,2688] in grok_ui_chat_final).
         modifier = Modifier
-            .size(42.dp)
+            .size(sizeDp.dp)
             .background(ChatColors.inputIconBg, CircleShape)
             .border(0.5.dp, ChatColors.inputIconBorder, CircleShape)
             .clip(CircleShape)
@@ -456,10 +458,11 @@ internal fun MicButton(
     val tint = if (isRecording) Color.Red
                else MaterialTheme.colorScheme.onSurfaceVariant
     val borderColor = if (isRecording) Color.Transparent else ChatColors.inputIconBorder
-        // GROK: 42dp row-button scale (see InputCircleButton note).
+        // GROK (density 3.5): mic slot ≈42×48dp container with a 20dp glyph;
+        // 36dp circle keeps the row rhythm (send/stop also 36).
     Box(
         modifier = Modifier
-            .size(42.dp)
+            .size(36.dp)
             .background(bg, CircleShape)
             .border(0.5.dp, borderColor, CircleShape)
             .clip(CircleShape)

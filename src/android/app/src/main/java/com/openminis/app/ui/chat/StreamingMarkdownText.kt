@@ -246,8 +246,11 @@ val LocalMarkdownImageTapHandler =
  */
 val LocalMarkdownSessionId = compositionLocalOf<String?> { null }
 
-private val BaseFontSizeDefault = 16.sp
-private val BaseLineHeightDefault = 24.sp
+// GROK (density 3.5): AI text 15sp with ~19.4dp line pitch (66px glyph
+// height, 68px baseline pitch in grok_ui_chat_final) — tighter than the
+// previous iOS-derived 16/24.
+private val BaseFontSizeDefault = 15.sp
+private val BaseLineHeightDefault = 19.5.sp
 
 private val BaseFontSize: TextUnit
     @Composable get() = BaseFontSizeDefault * LocalMarkdownFontScale.current

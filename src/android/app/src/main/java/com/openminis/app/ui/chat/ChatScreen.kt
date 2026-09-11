@@ -3236,17 +3236,17 @@ fun ChatScreen(
                             }
                         }
                         val isNewestItem = item == flatItems.lastOrNull()
-                        // GROK PARITY: AI content rows are indented 51.3dp from
-                        // the screen edge (grok_ui_chat_final: text at x=154px
-                        // = 51.3dp vs the list's 16dp margin → 35.3dp extra).
-                        // User bubbles stay flush; header/footer/system rows
-                        // keep their own alignment.
+                        // GROK PARITY (density 3.5): AI content rows are
+                        // indented 44dp from the screen edge (grok_ui_chat_final:
+                        // text at x=154px = 44dp vs the list's 16dp margin →
+                        // 28dp extra). User bubbles stay flush; header/footer/
+                        // system rows keep their own alignment.
                         val grokAiIndent = when (item) {
                             is FlatChatItem.UserBubble,
                             is FlatChatItem.AssistantHeader,
                             is FlatChatItem.AssistantFooter,
                             is FlatChatItem.AssistantInfo -> Modifier
-                            else -> Modifier.padding(start = 35.3.dp)
+                            else -> Modifier.padding(start = 28.dp)
                         }
                         Box(
                             modifier = grokAiIndent
@@ -4464,6 +4464,9 @@ fun ChatScreen(
                 // coordinate space without disturbing the bar's own layout.
                 Box(modifier = Modifier
                     .fillMaxWidth()
+                    // GROK (density 3.5): the composer card FLOATS with 8dp
+                    // side margins ([28,...][1232,...]) instead of full-bleed.
+                    .padding(horizontal = 8.dp)
                     .pointerInput(Unit) {
                         val slop = viewConfiguration.touchSlop
                         awaitEachGesture {
@@ -4807,7 +4810,8 @@ fun ChatScreen(
                     androidx.compose.runtime.key(sessionId) {
                         val interactionSource = remember { MutableInteractionSource() }
                         val mergedTextStyle = MaterialTheme.typography.bodyMedium.copy(
-                            fontSize = 16.5.sp * chatInputFontScale,
+                            // GROK (density 3.5): input text ≈16sp.
+                            fontSize = 16.sp * chatInputFontScale,
                             color = MaterialTheme.colorScheme.onSurface,
                         )
                         // [T-android-enter-to-send-broken] Live read of the
@@ -5059,9 +5063,11 @@ fun ChatScreen(
                                             // GROK: generic "Задайте любой вопрос"
                                             // hint — no Soul name, no mention
                                             // hint (grok_ui_home dump).
+                                            // GROK (density 3.5): hint height
+                                            // 74px = 21.1dp ≈ 16sp.
                                             stringResource(R.string.chat_input_placeholder),
                                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.25f),
-                                            fontSize = 16.5.sp * chatInputFontScale,
+                                            fontSize = 16.sp * chatInputFontScale,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis,
                                         )
@@ -5095,20 +5101,22 @@ fun ChatScreen(
                         )
                     }
 
-                    // Button row below text field (iOS layout: + / ... mic send)
+                    // Button row below text field (Grok: row = 48dp tall)
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             // T185: 12dp horizontal lines the +/slash and
                             // mic/send icon-button column up with the
                             // attachment row + textfield + Move-to popup.
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                            .padding(horizontal = 12.dp, vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         // Left: + button (iOS: 34×34 circle, secondary bg)
                         Box {
                             InputCircleButton(
                                 onClick = { showAttachMenu = true },
+                                // GROK: attach/gallery slot is 48dp.
+                                sizeDp = 48,
                             ) {
                                 Icon(
                                     Icons.Default.Add,
@@ -5166,7 +5174,8 @@ fun ChatScreen(
                         Spacer(modifier = Modifier.width(8.dp))
 
                         // Left: "/" slash command button (iOS: italic /, bold)
-                        InputCircleButton(onClick = {
+                        InputCircleButton(
+                            onClick = {
                             if (viewModel.showSlashMenu.value) {
                                 viewModel.setInputText(viewModel.dismissSlashMenu(inputText))
                             } else {
@@ -5192,7 +5201,7 @@ fun ChatScreen(
                         Spacer(modifier = Modifier.width(8.dp))
                         Box(
                             modifier = Modifier
-                                .size(42.dp)
+                                .size(36.dp)
                                 .background(
                                     if (forceAgents) MaterialTheme.colorScheme.primary
                                     else ChatColors.inputIconBg,
@@ -5266,7 +5275,7 @@ fun ChatScreen(
                         ) {
                             Box(
                                 modifier = Modifier
-                                    .size(42.dp)
+                                    .size(36.dp)
                                     .background(ChatColors.inputIconBg, CircleShape)
                                     .border(0.5.dp, ChatColors.inputIconBorder, CircleShape)
                                     .clip(CircleShape)
@@ -5528,7 +5537,7 @@ fun ChatScreen(
                             // /tmp/sample4.py) — not the iOS red ring.
                             Box(
                                 modifier = Modifier
-                                    .size(42.dp)
+                                    .size(36.dp)
                                     .background(ChatColors.sendButton, CircleShape)
                                     .clip(CircleShape)
                                     .clickable { viewModel.cancelStream() },
@@ -5547,7 +5556,7 @@ fun ChatScreen(
                             val canActivate = hasContent
                             Box(
                                 modifier = Modifier
-                                    .size(42.dp)
+                                    .size(36.dp)
                                     .background(
                                         if (canActivate) ChatColors.sendButton
                                         else ChatColors.sendButtonDisabled,
