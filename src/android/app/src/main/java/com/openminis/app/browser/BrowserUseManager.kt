@@ -385,12 +385,10 @@ class BrowserUseManager(
                         "var fix=function(m){if(!m)return;var c=m.getAttribute('content')||'';" +
                         "var o=c;" +
                         "if(/user-scalable\\s*=\\s*no/i.test(c)){" +
-                        "c=c.replace(/user-scalable\\s*=\\s*no/i,'user-scalable=yes');}else" +
-                        "if(!/user-scalable/i.test(c)){c+=', user-scalable=yes';}" +
+                        "c=c.replace(/user-scalable\\s*=\\s*no/i,'user-scalable=yes');}else if(!/user-scalable/i.test(c)){c+=', user-scalable=yes';}" +
                         "var mx=c.match(/maximum-scale\\s*=\\s*([\\d.]+)/i);" +
                         "if(mx&&parseFloat(mx[1])<10){" +
-                        "c=c.replace(/maximum-scale\\s*=\\s*[\\d.]+/i,'maximum-scale=10');}else" +
-                        "if(!mx){c+=', maximum-scale=10';}" +
+                        "c=c.replace(/maximum-scale\\s*=\\s*[\\d.]+/i,'maximum-scale=10');}else if(!mx){c+=', maximum-scale=10';}" +
                         "if(c!==o)m.setAttribute('content',c);};" +
                         "var m=document.querySelector('meta[name=viewport]');" +
                         "if(!m){m=document.createElement('meta');m.name='viewport';" +
