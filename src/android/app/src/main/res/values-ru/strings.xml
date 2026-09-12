@@ -1053,6 +1053,9 @@
     <string name="thinking_level_medium">Среднее</string>
     <string name="thinking_level_high">Высокое</string>
     <string name="thinking_level_max">Максимум</string>
+    <string name="thinking_level_xhigh">Сверхвысокое</string>
+    <string name="thinking_level_ultra">Ультра</string>
+    <string name="thinking_level_sheet_title">Интенсивность размышления</string>
     <string name="model_picker_title">Выбор модели</string>
     <string name="model_picker_done">Готово</string>
     <string name="model_picker_search_placeholder">Поиск моделей</string>
