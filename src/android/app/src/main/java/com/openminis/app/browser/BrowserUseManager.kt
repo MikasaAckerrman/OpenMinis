@@ -399,6 +399,12 @@ class BrowserUseManager(
                         "fix(document.querySelector('meta[name=viewport]'));})" +
                         ".observe(document.head,{childList:true,subtree:true," +
                         "attributes:true,attributeFilter:['content']});" +
+                        "var st=document.createElement('style');" +
+                        "st.textContent='input[type=text],input[type=tel],"
+                        + "input[type=email],input[type=search],input[type=url],"
+                        + "input[type=password],input[type=number],textarea"
+                        + "{font-size:16px !important}';"
+                        "document.head.appendChild(st);" +
                         "})()",
                     null,
                 )
