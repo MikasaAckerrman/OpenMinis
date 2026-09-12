@@ -44,6 +44,8 @@ import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.VideocamOff
 import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material3.Switch
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.material.icons.filled.Edit
@@ -240,7 +242,7 @@ fun BrowserSheet(
                     ) {
                         Icon(Icons.Default.MoreVert, contentDescription = stringResource(R.string.webpreview_more), modifier = Modifier.size(20.dp))
                     }
-                    MinisMenu(
+                    DropdownMenu(
                         expanded = showToolsMenu,
                         onDismissRequest = { showToolsMenu = false },
                     ) {
@@ -273,7 +275,7 @@ fun BrowserSheet(
                                 selectedTab?.manager?.loadURL(target)
                             },
                         )
-                        MinisMenuDivider()
+                        HorizontalDivider()
                         DropdownMenuItem(
                             text = { Text(stringResource(R.string.browser_perm_camera)) },
                             leadingIcon = {

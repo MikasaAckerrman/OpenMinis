@@ -228,9 +228,6 @@ interface ChatDao {
         limit: Int,
     ): List<MessageEntity>
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertDeletedMessages(rows: List<DeletedMessageEntity>)
-
     /**
      * Archive-then-truncate: copy every row at/after [keepCount] into
      * `deleted_messages`, then delete them from `messages`. One transaction —

@@ -1053,6 +1053,14 @@ class BrowserTabPool(private val context: Context) {
 
     // -- User Agent --
 
+    /** Toggle between mobile and desktop user agent. Used by the browser tools hub. */
+    fun toggleUserAgentFromUI() {
+        val next = if (userAgentProfile == UserAgentProfile.MOBILE_CHROME)
+            UserAgentProfile.DESKTOP_CHROME
+        else UserAgentProfile.MOBILE_CHROME
+        setUserAgentFromUI(next)
+    }
+
     /** Set user agent from UI settings. Applies to all existing tabs and reloads them. */
     fun setUserAgentFromUI(profile: UserAgentProfile, customUA: String? = null) {
         userAgentProfile = profile
