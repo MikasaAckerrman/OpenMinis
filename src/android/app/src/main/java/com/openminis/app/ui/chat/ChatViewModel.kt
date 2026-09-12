@@ -2391,6 +2391,17 @@ class ChatViewModel(
                     m.id in plan.deleteIds || m.sourceDbIds.any { it in plan.deleteIds }
                 }
                 withContext(Dispatchers.Main) {
+                    // [T-ghost-message-fix] Remove from UI IMMEDIATELY so the
+                    // deleted message doesn't linger as a ghost while the
+                    // async loadSession() reload is in flight. Without this,
+                    // the user sees the message for the ~200ms it takes
+                    // loadSession() to rebuild _messages from the DB, and a
+                    // second delete attempt shows "Этого сообщения больше нет
+                    // в сессии" even though it's still on screen.
+                    val deletedIdSet = plan.deleteIds.toSet()
+                    _messages.value = _messages.value.filterNot { m ->
+                        m.id in deletedIdSet || m.sourceDbIds.any { it in deletedIdSet }
+                    }
                     revokeMemoryWritesInDeletedMessages(deletedUi)
                     reloadSessionFromDb()
                     val note = if (plan.notes.isEmpty()) {
