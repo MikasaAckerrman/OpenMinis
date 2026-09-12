@@ -1222,15 +1222,32 @@ class BrowserTabPool(private val context: Context) {
             val w = json.optInt("sessionViewportWidth", 0)
             val h = json.optInt("sessionViewportHeight", 0)
             if (w > 0 && h > 0) {
-                _sessionViewportWidth.value = w
-                _sessionViewportHeight.value = h
-                // Re-apply to any live tabs that predate load (rare). At
-                // session-load time we're not in a suspend context and the
-                // usual case has zero live tabs, so fire-and-forget is
-                // adequate — the override is already stored and new tabs
-                // will pick it up via `resolvedViewportSize()`.
-                if (_tabs.value.isNotEmpty()) {
-                    evictionScope.launch { applyViewportToAllTabs() }
+                // T-browser-mobile-first (D15): drop restored overrides WIDER
+                // than the device's natural CSS width. A stale desktop-width
+                // override (e.g. from the agent's set_viewport experiments)
+                // survives the process and pins the fingerprint to desktop:
+                // sites like Avito compute their device class from
+                // window.innerWidth at load and serve the desktop variant
+                // ("компьютерная версия" bug). Mobile profile + mobile-first
+                // priority = the natural width wins on restore; the agent can
+                // re-apply a wide override explicitly via set_viewport.
+                val metrics = context.resources.displayMetrics
+                val naturalCss = if (metrics.density > 0f) {
+                    (metrics.widthPixels / metrics.density).toInt()
+                } else metrics.widthPixels
+                if (userAgentProfile == UserAgentProfile.MOBILE_CHROME && w > naturalCss) {
+                    Log.i(TAG, "mobile-first: dropping stale wide viewport override ${w}x$h (natural $naturalCss)")
+                } else {
+                    _sessionViewportWidth.value = w
+                    _sessionViewportHeight.value = h
+                    // Re-apply to any live tabs that predate load (rare). At
+                    // session-load time we're not in a suspend context and the
+                    // usual case has zero live tabs, so fire-and-forget is
+                    // adequate — the override is already stored and new tabs
+                    // will pick it up via `resolvedViewportSize()`.
+                    if (_tabs.value.isNotEmpty()) {
+                        evictionScope.launch { applyViewportToAllTabs() }
+                    }
                 }
             }
         } catch (e: Exception) {

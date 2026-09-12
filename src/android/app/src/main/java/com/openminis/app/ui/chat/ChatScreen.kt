@@ -5118,6 +5118,20 @@ fun ChatScreen(
 
                         Spacer(modifier = Modifier.width(8.dp))
 
+                        // Left: browser globe (one-tap re-entry into the
+                        // session browser — tabs + URL bar restore from the
+                        // per-session pool, see BrowserTabPool.saveState).
+                        InputCircleButton(onClick = { viewModel.toggleBrowserSheet() }) {
+                            Icon(
+                                Icons.Default.Language,
+                                contentDescription = stringResource(R.string.chat_menu_open_browser),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(8.dp))
+
                         // Left: "/" slash command button (iOS: italic /, bold)
                         InputCircleButton(onClick = {
                             if (viewModel.showSlashMenu.value) {
