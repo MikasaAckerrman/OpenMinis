@@ -5776,7 +5776,15 @@ class ChatViewModel(
                     // Only transport faults may be resumed, and only when the user
                     // has not moved on. The policy is pure: it decides, the VM
                     // executes (timer + resume call).
-                    val isTransient = e is com.openminis.app.data.model.LLMError.TransientError
+                    // [T-auto-resume-network-error] Streaming IOExceptions are
+                    // wrapped as NetworkError by mapError(), not TransientError.
+                    // Without this check, "stream was reset: CANCEL" (a mid-stream
+                    // socket death) reaches here as NetworkError, isTransient is
+                    // false, classify returns OTHER, and the turn dies instead of
+                    // auto-resuming. Match the in-request retry path (line ~8599)
+                    // which already checks both.
+                    val isTransient = e is com.openminis.app.data.model.LLMError.TransientError ||
+                        e is com.openminis.app.data.model.LLMError.NetworkError
                     val cause = com.openminis.app.data.AutoResumePolicy.classify(e.message, isTransient)
                     val lastAssistantMsg = _messages.value.lastOrNull { it.role == "assistant" }
                     val hasPartialAnswer = lastAssistantMsg?.let {
