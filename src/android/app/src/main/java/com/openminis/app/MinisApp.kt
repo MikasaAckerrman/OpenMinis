@@ -210,6 +210,11 @@ class MinisApp : Application(), ImageLoaderFactory {
         // never pass through a ViewModel.
         com.openminis.app.data.FastModePrefs.prime(this)
 
+        // [T-build-tracking] Record this install/update in the append-only
+        // history file. Cheap: one read + at most one write. Runs before
+        // heavy init so the record survives even if something below crashes.
+        com.openminis.app.data.InstallHistory.recordIfChanged(this)
+
         // T283: install NDK signal handler for native crashes (SIGSEGV/
         // SIGABRT/SIGBUS/SIGFPE/SIGILL/SIGSYS). Writes a one-shot text
         // report to filesDir/logs/native-crash-<stamp>.log before re-raising

@@ -177,6 +177,11 @@ jobs:
       # Both variants share the committed debug keystore, so a debug APK built
       # later still installs over any earlier one.
       - name: Build Clone APK
+        env:
+          # [T-build-tracking] Build provenance injected into BuildConfig.
+          # GITHUB_SHA, GITHUB_REF_NAME, GITHUB_RUN_ID are set automatically
+          # by GitHub Actions; BUILD_DATE must be set explicitly.
+          BUILD_DATE: ${{ github.event.head_commit.timestamp || github.run_started_at }}
         run: |
           cd src/android
           ./gradlew :app:assembleClone --no-daemon -Dorg.gradle.jvmargs="-Xmx4g"

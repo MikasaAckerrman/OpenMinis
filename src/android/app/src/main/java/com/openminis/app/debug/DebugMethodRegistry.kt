@@ -92,9 +92,16 @@ object DebugMethodRegistry {
         ),
         MethodSpec(
             name = "debug.appInfo",
-            description = "Return app metadata, device info, and disk usage.",
+            description = "Return app metadata, build provenance (git sha/branch/ci run id/build date), device info, and disk usage.",
             params = emptyList(),
-            returns = "{platform, sdkVersion, device, androidVersion, prootBooted, filesDir, logFiles, totalLogSize, diskUsage:{filesDir, sessions, global}}",
+            returns = "{versionCode, versionName, gitSha, gitBranch, ciRunId, buildDate, isDebugBuild, platform, sdkVersion, device, androidVersion, prootBooted, filesDir, logFiles, totalLogSize, diskUsage:{filesDir, sessions, global}}",
+            example = JSONObject(),
+        ),
+        MethodSpec(
+            name = "debug.installHistory",
+            description = "Return the full install/update history — every APK version ever installed on this device, with git provenance for each.",
+            params = emptyList(),
+            returns = "{count, current:{versionCode, versionName, gitSha, gitBranch, ciRunId, buildDate, isDebugBuild}, history:[{versionCode, versionName, gitSha, gitBranch, ciRunId, buildDate, installedAt, isDebugBuild}]}",
             example = JSONObject(),
         ),
         MethodSpec(
