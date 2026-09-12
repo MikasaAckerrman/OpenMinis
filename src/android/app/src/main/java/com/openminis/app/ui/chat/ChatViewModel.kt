@@ -5781,7 +5781,6 @@ class ChatViewModel(
                 } catch (e: Exception) {
                     AppLogger.error(TAG_STREAM, "$label runAgentLoop EXCEPTION ${e.javaClass.simpleName}: ${e.message}")
                     Log.e(TAG, "Agent loop error ($label)", e)
-                    setInlineError(e.message ?: "Unknown error")
                     
                     // [T-auto-resume] Decide whether to resume automatically.
                     // Only transport faults may be resumed, and only when the user
@@ -5797,6 +5796,12 @@ class ChatViewModel(
                     val isTransient = e is com.openminis.app.data.model.LLMError.TransientError ||
                         e is com.openminis.app.data.model.LLMError.NetworkError
                     val cause = com.openminis.app.data.AutoResumePolicy.classify(e.message, isTransient)
+                    
+                    // [T-error-diagnostics] Show a user-friendly reason instead
+                    // of the raw exception text. The user was seeing "stream was
+                    // reset: CANCEL" and "connection closed" without knowing if
+                    // it's their network, the gateway, or the model.
+                    setInlineError(formatErrorForUser(e.message ?: "Unknown error", cause))
                     val lastAssistantMsg = _messages.value.lastOrNull { it.role == "assistant" }
                     val hasPartialAnswer = lastAssistantMsg?.let {
                         it.content.isNotBlank() || it.toolBlocks.isNotEmpty()
@@ -7068,6 +7073,31 @@ class ChatViewModel(
         }
         val suffix = context.getString(R.string.compact_hint_suffix)
         return if (errorText.contains(suffix)) errorText else "$errorText\n\n$suffix"
+    }
+
+    /**
+     * [T-error-diagnostics] Classify a raw error into a user-friendly reason
+     * so the user knows WHERE the failure is — their network, the gateway,
+     * the model, or something else. The raw exception text is kept as a
+     * secondary line for debugging.
+     */
+    private fun formatErrorForUser(
+        rawError: String,
+        cause: com.openminis.app.data.AutoResumePolicy.Cause,
+    ): String {
+        val label = when (cause) {
+            com.openminis.app.data.AutoResumePolicy.Cause.OFFLINE ->
+                context.getString(R.string.error_diag_offline)
+            com.openminis.app.data.AutoResumePolicy.Cause.CONNECTION ->
+                context.getString(R.string.error_diag_connection)
+            com.openminis.app.data.AutoResumePolicy.Cause.NO_RESPONSE ->
+                context.getString(R.string.error_diag_no_response)
+            com.openminis.app.data.AutoResumePolicy.Cause.BAD_GATEWAY ->
+                context.getString(R.string.error_diag_bad_gateway)
+            com.openminis.app.data.AutoResumePolicy.Cause.OTHER ->
+                return rawError
+        }
+        return "$label\n$rawError"
     }
 
     private fun setInlineError(errorText: String) {

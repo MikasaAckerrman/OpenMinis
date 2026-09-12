@@ -1374,4 +1374,9 @@
     <string name="browser_downloads_cancel">Отменить загрузку</string>
     <string name="browser_downloads_failed">Сбой</string>
     <string name="browser_downloads_open">Открыть</string>
+    <!-- [T-error-diagnostics] User-friendly error classification -->
+    <string name="error_diag_offline">📱 Сеть недоступна — нет соединения (возможно вышка/радио)</string>
+    <string name="error_diag_connection">🔌 Соединение оборвано — сеть или шлюз разорвал связь</string>
+    <string name="error_diag_no_response">⏱️ Сервер не отвечает — запрос отправлен, ответа нет</string>
+    <string name="error_diag_bad_gateway">🖥️ Ошибка шлюза — 5xx на стороне сервиса</string>
 </resources>

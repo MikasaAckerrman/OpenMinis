@@ -1667,4 +1667,9 @@
     <string name="browser_downloads_cancel">Cancel download</string>
     <string name="browser_downloads_failed">Failed</string>
     <string name="browser_downloads_open">Open</string>
+    <!-- [T-error-diagnostics] User-friendly error classification -->
+    <string name="error_diag_offline">📱 Network unavailable — no connection (possibly tower/radio)</string>
+    <string name="error_diag_connection">🔌 Connection lost — network or gateway dropped the link</string>
+    <string name="error_diag_no_response">⏱️ Server not responding — request sent, no reply</string>
+    <string name="error_diag_bad_gateway">🖥️ Gateway error — 5xx on the service side</string>
 </resources>
