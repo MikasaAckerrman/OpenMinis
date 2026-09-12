@@ -55,17 +55,28 @@ fun StandardChatSheet(
     onDismiss: () -> Unit,
     leadingAction: (@Composable () -> Unit)? = null,
     heightFraction: Float = 0.9f,
+    /** [T-browser-fullscreen] true = edge-to-edge window with no drag handle. */
+    fullscreen: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val configuration = LocalConfiguration.current
-    val sheetHeight = (configuration.screenHeightDp * heightFraction.coerceIn(0.1f, 1f)).dp
+    val sheetHeight = if (fullscreen) {
+        configuration.screenHeightDp.dp
+    } else {
+        (configuration.screenHeightDp * heightFraction.coerceIn(0.1f, 1f)).dp
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = ChatColors.background,
-        dragHandle = { CompactDragHandle() },
+        dragHandle = if (fullscreen) {
+            // [T-browser-fullscreen] no handle — the full viewport is content.
+            null
+        } else {
+            { CompactDragHandle() }
+        },
     ) {
         Column(
             modifier = Modifier

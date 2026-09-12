@@ -512,6 +512,11 @@
     <string name="browser_settings_title">Browser Settings</string>
     <string name="browser_new_tab">New Tab</string>
     <string name="browser_history_action">History</string>
+    <string name="browser_downloads_action">Downloads</string>
+    <string name="browser_translate_action">Translate page</string>
+    <string name="browser_perm_camera">Camera for sites</string>
+    <string name="browser_perm_mic">Microphone for sites</string>
+    <string name="browser_desktop_toggle">Desktop version</string>
     <string name="browser_close_tab">Close tab</string>
     <string name="browser_search_placeholder">Search or enter URL</string>
     <string name="browser_no_tab_open">No browser tab open</string>

@@ -11,6 +11,7 @@ import android.util.Log
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
+import android.webkit.PermissionRequest
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
@@ -35,6 +36,10 @@ import java.io.File
 class BrowserUseManager(
     val webView: WebView,
     profile: UserAgentProfile = UserAgentProfile.MOBILE_CHROME,
+    /** [T-browser-permissions] Session-level media toggles read at grant time. */
+    private val cameraPermissionAllowed: () -> Boolean = { false },
+    private val micPermissionAllowed: () -> Boolean = { false },
+    private val appContext: Context? = null,
 ) {
     companion object {
         private const val TAG = "BrowserUseManager"
@@ -532,6 +537,35 @@ class BrowserUseManager(
 
             override fun onCloseWindow(window: WebView) {
                 onCloseWindow?.invoke()
+            }
+
+            // [T-browser-permissions] getUserMedia gate: a page's camera/mic
+            // request is granted ONLY when the session toggle (browser ⋯
+            // menu, default OFF) AND the OS permission are both in place;
+            // VIDEO/MICROPHONE only, never the full MediaStream. Denied
+            // otherwise — pages learn of the refusal instead of hanging.
+            override fun onPermissionRequest(request: PermissionRequest) {
+                val resources = request.resources ?: run { request.deny(); return }
+                val wantCamera = resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
+                val wantMic = resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
+                val cameraOk = wantCamera && cameraPermissionAllowed() && appContext.let {
+                    it != null && androidx.core.content.ContextCompat.checkSelfPermission(
+                        it, android.Manifest.permission.CAMERA,
+                    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                }
+                val micOk = wantMic && micPermissionAllowed() && appContext.let {
+                    it != null && androidx.core.content.ContextCompat.checkSelfPermission(
+                        it, android.Manifest.permission.RECORD_AUDIO,
+                    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                }
+                val granted = mutableListOf<String>()
+                if (cameraOk) granted.add(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
+                if (micOk) granted.add(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
+                if (granted.isEmpty() || granted.size < resources.size) {
+                    request.deny()
+                } else {
+                    request.grant(granted.toTypedArray())
+                }
             }
         }
     }

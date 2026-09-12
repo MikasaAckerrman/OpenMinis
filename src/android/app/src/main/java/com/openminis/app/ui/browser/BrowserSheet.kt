@@ -36,6 +36,16 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Translate
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MicOff
+import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material.icons.filled.VideocamOff
+import androidx.compose.material.icons.filled.OpenInBrowser
+import androidx.compose.material3.Switch
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Language
@@ -105,12 +115,17 @@ fun BrowserSheet(
     val canGoForward = selectedTab?.manager?.canGoForward?.collectAsState()?.value ?: false
     val isAgentBusy = tabPool.isAgentBusy
     val userAgentProfile = tabPool.currentUserAgentProfile.collectAsState().value
+    // [T-browser-permissions] Session media toggles for the ⋯ menu.
+    val cameraPagePermission by tabPool.cameraPagePermission.collectAsState()
+    val micPagePermission by tabPool.micPagePermission.collectAsState()
 
     var urlInput by remember(currentURL) { mutableStateOf(currentURL) }
     var showHistory by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     // [T-android-browser-download-ux] Downloads panel + badge state.
     var showDownloads by remember { mutableStateOf(false) }
+    // [T-browser-fullscreen-menu] Firefox-style ⋯ hub.
+    var showToolsMenu by remember { mutableStateOf(false) }
     val downloadEntries by tabPool.downloads.collectAsState()
 
     val accent = MaterialTheme.colorScheme.primary
@@ -138,6 +153,9 @@ fun BrowserSheet(
     StandardChatSheet(
         title = pageTitle.ifEmpty { stringResource(R.string.browser_title) },
         onDismiss = onDismiss,
+        // [T-browser-fullscreen] the globe opens the browser edge-to-edge:
+        // the whole viewport is the page, tools live in the ⋯ hub.
+        fullscreen = true,
         leadingAction = {
             // UA-profile icon doubles as the entry point to settings, matching
             // the prior centered-title-with-icon affordance.
@@ -213,6 +231,115 @@ fun BrowserSheet(
                     modifier = Modifier.size(36.dp),
                 ) {
                     Icon(Icons.Default.History, contentDescription = stringResource(R.string.browser_history_action), modifier = Modifier.size(20.dp))
+                }
+                // [T-browser-fullscreen-menu] Firefox-style tools hub in ⋯.
+                Box {
+                    IconButton(
+                        onClick = { showToolsMenu = true },
+                        modifier = Modifier.size(36.dp),
+                    ) {
+                        Icon(Icons.Default.MoreVert, contentDescription = stringResource(R.string.webpreview_more), modifier = Modifier.size(20.dp))
+                    }
+                    MinisMenu(
+                        expanded = showToolsMenu,
+                        onDismissRequest = { showToolsMenu = false },
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.browser_history_action)) },
+                            leadingIcon = { Icon(Icons.Default.History, contentDescription = null) },
+                            onClick = {
+                                showToolsMenu = false
+                                showHistory = true
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.browser_downloads_action)) },
+                            leadingIcon = { Icon(Icons.Default.Download, contentDescription = null) },
+                            onClick = {
+                                showToolsMenu = false
+                                showDownloads = true
+                            },
+                        )
+                        // [T-browser-translate] zero-key translation: route the
+                        // page through Google Translate's web endpoint.
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.browser_translate_action)) },
+                            leadingIcon = { Icon(Icons.Default.Translate, contentDescription = null) },
+                            enabled = !isAgentBusy && currentURL.startsWith("http"),
+                            onClick = {
+                                showToolsMenu = false
+                                val target = "https://translate.google.com/translate?sl=auto&tl=ru&u=" +
+                                    java.net.URLEncoder.encode(currentURL, "UTF-8")
+                                selectedTab?.manager?.loadURL(target)
+                            },
+                        )
+                        MinisMenuDivider()
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.browser_perm_camera)) },
+                            leadingIcon = {
+                                Icon(
+                                    if (cameraPagePermission) Icons.Default.PhotoCamera else Icons.Default.VideocamOff,
+                                    contentDescription = null,
+                                )
+                            },
+                            trailingIcon = {
+                                Switch(
+                                    checked = cameraPagePermission,
+                                    onCheckedChange = null,
+                                    modifier = Modifier.height(24.dp),
+                                )
+                            },
+                            onClick = {
+                                tabPool.setCameraPagePermission(!cameraPagePermission)
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.browser_perm_mic)) },
+                            leadingIcon = {
+                                Icon(
+                                    if (micPagePermission) Icons.Default.Mic else Icons.Default.MicOff,
+                                    contentDescription = null,
+                                )
+                            },
+                            trailingIcon = {
+                                Switch(
+                                    checked = micPagePermission,
+                                    onCheckedChange = null,
+                                    modifier = Modifier.height(24.dp),
+                                )
+                            },
+                            onClick = {
+                                tabPool.setMicPagePermission(!micPagePermission)
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.browser_desktop_toggle)) },
+                            leadingIcon = {
+                                Icon(
+                                    when (userAgentProfile) {
+                                        UserAgentProfile.MOBILE_CHROME -> Icons.Default.PhoneAndroid
+                                        UserAgentProfile.DESKTOP_CHROME -> Icons.Default.Computer
+                                        UserAgentProfile.CUSTOM -> Icons.Default.Edit
+                                    },
+                                    contentDescription = null,
+                                )
+                            },
+                            onClick = {
+                                showToolsMenu = false
+                                scope.launch { tabPool.toggleUserAgentFromUI() }
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.webpreview_open_external)) },
+                            leadingIcon = { Icon(Icons.Default.OpenInBrowser, contentDescription = null) },
+                            enabled = currentURL.startsWith("http"),
+                            onClick = {
+                                showToolsMenu = false
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(currentURL))
+                                context.startActivity(intent)
+                            },
+                        )
+                    }
                 }
             }
 

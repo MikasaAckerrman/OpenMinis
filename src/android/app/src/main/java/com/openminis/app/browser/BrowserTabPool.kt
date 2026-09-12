@@ -159,6 +159,26 @@ class BrowserTabPool(private val context: Context) {
     private var sessionId: String? = null
     private val savedURLs = mutableMapOf<Int, String>()
 
+    // [T-browser-permissions] Per-session media permission toggles, surfaced
+    // in the browser ⋯ menu. Default OFF: a page requesting camera/mic gets
+    // denied until the user explicitly flips the toggle for THIS session.
+    // Persisted in browser_tabs/<sid>.json alongside the tabs, so each
+    // session carries its own grants ("в каждой сессии разные сессии").
+    private val _cameraPagePermission = MutableStateFlow(false)
+    val cameraPagePermission: StateFlow<Boolean> = _cameraPagePermission.asStateFlow()
+    private val _micPagePermission = MutableStateFlow(false)
+    val micPagePermission: StateFlow<Boolean> = _micPagePermission.asStateFlow()
+
+    fun setCameraPagePermission(enabled: Boolean) {
+        _cameraPagePermission.value = enabled
+        saveState()
+    }
+
+    fun setMicPagePermission(enabled: Boolean) {
+        _micPagePermission.value = enabled
+        saveState()
+    }
+
     /**
      * Global custom viewport. `0` means "use the UA profile default".
      * Persisted across launches via SharedPreferences. Session-level overrides
@@ -783,7 +803,12 @@ class BrowserTabPool(private val context: Context) {
 
         val id = nextTabId++
         val webView = WebView(context)
-        val manager = BrowserUseManager(webView, userAgentProfile)
+        val manager = BrowserUseManager(
+            webView, userAgentProfile,
+            cameraPermissionAllowed = { _cameraPagePermission.value },
+            micPermissionAllowed = { _micPagePermission.value },
+            appContext = context,
+        )
         if (userAgentProfile == UserAgentProfile.CUSTOM && !customUserAgentString.isNullOrEmpty()) {
             manager.setUserAgent(userAgentProfile, customUserAgentString)
         }
@@ -884,7 +909,12 @@ class BrowserTabPool(private val context: Context) {
         }
         val id = nextTabId++
         val newWebView = WebView(context)
-        val manager = BrowserUseManager(newWebView, userAgentProfile)
+        val manager = BrowserUseManager(
+            newWebView, userAgentProfile,
+            cameraPermissionAllowed = { _cameraPagePermission.value },
+            micPermissionAllowed = { _micPagePermission.value },
+            appContext = context,
+        )
         if (userAgentProfile == UserAgentProfile.CUSTOM && !customUserAgentString.isNullOrEmpty()) {
             manager.setUserAgent(userAgentProfile, customUserAgentString)
         }
@@ -1190,6 +1220,8 @@ class BrowserTabPool(private val context: Context) {
             }
             json.put("tabURLs", urlsJson)
             json.put("selectedTabId", _selectedTabId.value)
+            json.put("cameraPagePermission", _cameraPagePermission.value)
+            json.put("micPagePermission", _micPagePermission.value)
             // Persist session viewport override alongside tab URLs so reopening
             // the session restores the override. Mirrors iOS `PersistedTabs`.
             if (_sessionViewportWidth.value > 0 && _sessionViewportHeight.value > 0) {
@@ -1217,6 +1249,8 @@ class BrowserTabPool(private val context: Context) {
                 }
                 _selectedTabId.value = json.optInt("selectedTabId", 0)
             }
+            _cameraPagePermission.value = json.optBoolean("cameraPagePermission", false)
+            _micPagePermission.value = json.optBoolean("micPagePermission", false)
             // Restore session viewport override. 0/missing = no override; fall
             // back to the global custom viewport / UA profile default.
             val w = json.optInt("sessionViewportWidth", 0)
