@@ -14,11 +14,14 @@ import com.openminis.app.data.model.TraceEvent
 import com.openminis.app.data.repository.ProviderRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
 
 /**
  * Core execution engine for agent graphs.
@@ -36,7 +39,7 @@ internal object AgentGraphRunner {
         val taskId: String,
         val artifactDir: String,
         val input: String,
-        val sessionMap: MutableMap<String, String> = mutableMapOf(), // runtimeId -> sessionId
+        val sessionMap: ConcurrentHashMap<String, String> = ConcurrentHashMap(), // runtimeId -> sessionId
         /**
          * [T-agent-graph-role-session] runtime-id -> sessionId is not enough when
          * a plan is split into sequential steps for the SAME role: step 2 should
@@ -44,18 +47,18 @@ internal object AgentGraphRunner {
          * session keyed here, so their history accumulates while OTHER roles stay
          * isolated — the test designer still never sees the implementation.
          */
-        val sessionByGroup: MutableMap<String, String> = mutableMapOf(),
+        val sessionByGroup: ConcurrentHashMap<String, String> = ConcurrentHashMap(),
         /** The single user-visible session narrating this run, or null. */
-        var showcaseId: String? = null,
-        val handoffMap: MutableMap<String, Handoff> = mutableMapOf(), // nodeId -> handoff received
-        val artifactIndex: MutableMap<String, String> = mutableMapOf(), // path -> content
-        val trace: MutableList<TraceEvent> = mutableListOf(),
-        val nodeStatus: MutableMap<String, NodeStatus> = mutableMapOf(),
+        @Volatile var showcaseId: String? = null,
+        val handoffMap: ConcurrentHashMap<String, Handoff> = ConcurrentHashMap(), // nodeId -> handoff received
+        val artifactIndex: ConcurrentHashMap<String, String> = ConcurrentHashMap(), // path -> content
+        val trace: ConcurrentLinkedQueue<TraceEvent> = ConcurrentLinkedQueue(),
+        val nodeStatus: ConcurrentHashMap<String, NodeStatus> = ConcurrentHashMap(),
         /** Nodes already enqueued or started — guards against double-dispatch
          *  when a fan-in node's predecessors finish at different times. */
-        val dispatched: MutableSet<String> = mutableSetOf(),
+        val dispatched: MutableSet<String> = ConcurrentHashMap.newKeySet(),
         /** nodeId -> why the scope guard rejected its handoff. */
-        val scopeViolations: MutableMap<String, String> = mutableMapOf(),
+        val scopeViolations: ConcurrentHashMap<String, String> = ConcurrentHashMap(),
     )
 
     enum class NodeStatus { PENDING, RUNNING, COMPLETED, FAILED, BLOCKED, SKIPPED, OUT_OF_SCOPE }
@@ -234,7 +237,7 @@ internal object AgentGraphRunner {
         return node to (idx - 1)
     }
 
-    private suspend fun executeGraph(execContext: ExecutionContext): GraphRunResult {
+    private suspend fun executeGraph(execContext: ExecutionContext): GraphRunResult = coroutineScope {
         val state = execContext.state
         val graph = state.graph
 
@@ -280,7 +283,7 @@ internal object AgentGraphRunner {
                     taskId = state.taskId,
                     status = RunStatus.FAILED,
                     artifacts = state.artifactIndex,
-                    trace = state.trace,
+                    trace = state.trace.toList(),
                     error = "Deadlock: incomplete exit nodes ${incompleteExits.joinToString(", ")}",
                 )
             }
@@ -295,7 +298,7 @@ internal object AgentGraphRunner {
                 // for "already launched".
                 if (!state.dispatched.add(nodeId)) continue
 
-                val job = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                val job = launch {
                     executeNode(execContext, node, nodeId, replicaIndex)
                 }
                 runningJobs[nodeId] = job
@@ -340,7 +343,7 @@ internal object AgentGraphRunner {
             taskId = state.taskId,
             status = finalStatus,
             artifacts = state.artifactIndex,
-            trace = state.trace,
+            trace = state.trace.toList(),
         )
     }
 
@@ -503,7 +506,7 @@ internal object AgentGraphRunner {
         val handoff = validation.handoff
             ?: HandoffValidator.parseHandoff(finalResponse)
             ?: run {
-                handleParseFailure(execContext, node, finalResponse)
+                handleParseFailure(execContext, node, runtimeId, finalResponse)
                 return
             }
 
@@ -817,10 +820,10 @@ internal object AgentGraphRunner {
     ): ConditionEvaluator.Result = ConditionEvaluator.evaluate(condition, handoff)
 
     /** Handle handoff parse failure. */
-    private fun handleParseFailure(execContext: ExecutionContext, node: AgentNode, response: String) {
+    private fun handleParseFailure(execContext: ExecutionContext, node: AgentNode, runtimeId: String, response: String) {
         val state = execContext.state
-        addTrace(state, node.id, node.role, "PARSE_FAILURE", "Could not parse handoff from response")
-        state.nodeStatus[node.id] = NodeStatus.FAILED
+        addTrace(state, runtimeId, node.role, "PARSE_FAILURE", "Could not parse handoff from response")
+        state.nodeStatus[runtimeId] = NodeStatus.FAILED
     }
 
     /**
