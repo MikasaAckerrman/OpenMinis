@@ -105,7 +105,6 @@ import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Extension
-import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.CheckCircle
@@ -438,9 +437,6 @@ fun ChatScreen(
     val messages by viewModel.uiMessages.collectAsState()
     val hasOlderMessages by viewModel.hasOlderMessages.collectAsState()
     val isStreaming by viewModel.isStreaming.collectAsState()
-    // [T-agent-graph-live-progress] Non-null while a graph run started from this
-    // chat is in flight; swaps the typing dots for the per-agent progress card.
-    val activeAgentRunTaskId by viewModel.activeAgentRunTaskId.collectAsState()
     val canResume by viewModel.canResume.collectAsState()
     val error by viewModel.error.collectAsState()
     val modelName by viewModel.modelName.collectAsState()
@@ -607,19 +603,19 @@ fun ChatScreen(
     // can position the cursor (e.g. AFTER the leading "/" when the slash
     // button inserts it) — a plain String overload would reset cursor to 0
     // on every external write.
-    var inputFieldValue by remember(sessionId) {
-        mutableStateOf(androidx.compose.ui.text.input.TextFieldValue(inputText))
+    var inputFieldValue by remember {
+        mutableStateOf(androidx.compose.ui.text.input.TextFieldValue(""))
     }
     // T217-2: suppress IME commits arriving briefly after send. clearFocus
     // triggers finishComposingText, which makes voice/Pinyin IMEs commit
     // their pending candidate back through onValueChange even after we
     // cleared inputText. Drop those late commits during a short window.
-    var lastSendTimeMs by remember(sessionId) { mutableStateOf(0L) }
+    var lastSendTimeMs by remember { mutableStateOf(0L) }
     // [T-voice-mode-memory-refine-android] True when a voice recording started
     // since the composer was last cleared. The SEND is what commits the mode:
     // mic-start no longer writes "voice" (an accidental mic tap with no send
     // must not flip the default) — instead this flag is consulted on send.
-    var voiceUsedSinceClear by remember(sessionId) { mutableStateOf(false) }
+    var voiceUsedSinceClear by remember { mutableStateOf(false) }
     // Shared by both send paths (send button / Enter): commit the composer
     // mode at send time — "voice" if this composition used voice, otherwise
     // "text" — then reset the tracker for the now-cleared composer.
@@ -638,9 +634,9 @@ fun ChatScreen(
     // as the follow-grace window for the reserve-change pin. Deliberately
     // separate from lastSendTimeMs above — that one also drives the 300ms
     // IME-residue suppression in the composer and must stay UI-send-only.
-    var lastUserAppendMs by remember(sessionId) { mutableStateOf(0L) }
-    androidx.compose.runtime.LaunchedEffect(sessionId, inputText) {
-        if (inputFieldValue.text != inputText || inputFieldValue.composition != null) {
+    var lastUserAppendMs by remember { mutableStateOf(0L) }
+    androidx.compose.runtime.LaunchedEffect(inputText) {
+        if (inputFieldValue.text != inputText) {
             // [T-android-slash-menu-align-ios-prepend] Honor a one-shot caret
             // override from the slash flow (prepend "/ " → caret 1; insert
             // "/<skill> " → caret after the prefix). Read-and-clear so it
@@ -705,21 +701,6 @@ fun ChatScreen(
     var showNewChatStopDialog by remember { mutableStateOf(false) }
     // [T-android-enhanced-cache] First-enable confirmation dialog visibility.
     var showEnhancedCacheDialog by remember { mutableStateOf(false) }
-    // [T-message-surgery] Pending single-message operations. Deleting is
-    // irreversible and may take related tool rows with it, so it is confirmed;
-    // rewriting opens an editor pre-filled with the stored text.
-    var pendingDeleteMessageId by remember { mutableStateOf<String?>(null) }
-    var pendingRewriteMessageId by remember { mutableStateOf<String?>(null) }
-    var pendingRewriteText by remember { mutableStateOf("") }
-    // The `safeMutate` wrapper (which tears down the selection toolbar before
-    // the message list is reshuffled — see its declaration for the crash it
-    // prevents) lives in a nested scope further down, but these dialogs are
-    // hosted out here. Publish it through a holder so the dialogs get the same
-    // protection instead of mutating the list with a live toolbar attached.
-    val safeMutateRef = remember { mutableStateOf<((() -> Unit) -> Unit)?>(null) }
-    val safeMutateFromDialog: (() -> Unit) -> Unit = { block ->
-        safeMutateRef.value?.invoke(block) ?: block()
-    }
 
     // Bridge VM's slash-command "/clear" request into local Compose state so
     // the menu and slash-command entry points share a single confirmation
@@ -2133,71 +2114,45 @@ fun ChatScreen(
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                                     ) {
-                                        // [T-model-chip] The resolved provider·model
-                                        // now renders as a real CHIP (bordered,
-                                        // rounded, filled) instead of bare text, so
-                                        // the active model reads as a distinct
-                                        // tappable control (user request: show the
-                                        // model "отдельной строкой/чипом"). Tap still
-                                        // bubbles to the Column's showModelPicker
-                                        // handler. Fast/thinking badges stay OUTSIDE
-                                        // the chip as separate siblings.
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                            modifier = Modifier
-                                                .weight(1f, fill = false)
-                                                .clip(RoundedCornerShape(8.dp))
-                                                .background(ChatColors.toolCapsuleBg)
-                                                .border(
-                                                    1.dp,
-                                                    ChatColors.separator.copy(alpha = 0.5f),
-                                                    RoundedCornerShape(8.dp),
-                                                )
-                                                .padding(horizontal = 8.dp, vertical = 3.dp),
-                                        ) {
-                                            // ⚡ fast-mode badge stays leading INSIDE
-                                            // the chip, ahead of the model name.
-                                            val fastBadgeEligible by viewModel.showFastModeToggle.collectAsState()
-                                            val fastBadgeOn by viewModel.fastModeEnabled.collectAsState()
-                                            if (fastBadgeEligible && fastBadgeOn) {
-                                                Box(
-                                                    contentAlignment = Alignment.Center,
-                                                    modifier = Modifier
-                                                        .size(11.dp)
-                                                        .background(Color(0xFFFF9500), CircleShape),
-                                                ) {
-                                                    Icon(
-                                                        Icons.Default.Bolt,
-                                                        contentDescription = null,
-                                                        tint = Color.White,
-                                                        modifier = Modifier.size(9.dp),
-                                                    )
-                                                }
-                                            } else {
+                                        // [T-codex-fast-mode] ⚡ badge ahead of the
+                                        // resolved model name — small orange circle
+                                        // + white bolt, shown only while Fast Mode
+                                        // is enabled AND the active model is
+                                        // eligible (iOS 9e3c76ef row-3 placement,
+                                        // 09944220 9pt sizing).
+                                        val fastBadgeEligible by viewModel.showFastModeToggle.collectAsState()
+                                        val fastBadgeOn by viewModel.fastModeEnabled.collectAsState()
+                                        if (fastBadgeEligible && fastBadgeOn) {
+                                            Box(
+                                                contentAlignment = Alignment.Center,
+                                                modifier = Modifier
+                                                    .size(11.dp)
+                                                    .background(Color(0xFFFF9500), CircleShape),
+                                            ) {
                                                 Icon(
-                                                    Icons.Default.Memory,
+                                                    Icons.Default.Bolt,
                                                     contentDescription = null,
-                                                    tint = ChatColors.secondaryText,
-                                                    modifier = Modifier.size(12.dp),
+                                                    tint = Color.White,
+                                                    modifier = Modifier.size(9.dp),
                                                 )
                                             }
-                                            Text(
-                                                text = if (providerName.isNotEmpty() && modelName.isNotEmpty()) {
-                                                    "$providerName · $modelName"
-                                                } else {
-                                                    modelName.ifEmpty { providerName }
-                                                },
-                                                fontSize = 11.sp,
-                                                lineHeight = 13.sp,
-                                                fontWeight = FontWeight.Medium,
-                                                color = ChatColors.secondaryText,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis,
-                                                style = noFontPad,
-                                                modifier = Modifier.weight(1f, fill = false),
-                                            )
                                         }
+                                        Text(
+                                            text = if (providerName.isNotEmpty() && modelName.isNotEmpty()) {
+                                                "$providerName · $modelName"
+                                            } else {
+                                                modelName.ifEmpty { providerName }
+                                            },
+                                            fontSize = 11.sp,
+                                            lineHeight = 13.sp,
+                                            color = ChatColors.tertiaryText,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            style = noFontPad,
+                                            // Yield first when space is tight; the
+                                            // badge to the right stays intrinsic.
+                                            modifier = Modifier.weight(1f, fill = false),
+                                        )
                                         // Show the badge ONLY when the model can
                                         // think AND thinking is currently on:
                                         //   - availableThinkingLevels non-empty →
@@ -2232,47 +2187,6 @@ fun ChatScreen(
                     }
                 },
                 actions = {
-                    // Live context pressure. The numerator is the provider's
-                    // latest input/context usage; the denominator is the same
-                    // effective window used by compaction policy (model window,
-                    // clamped by the bound group's contextLimitTokens). Do not
-                    // show a fake 0% before the first usage block arrives.
-                    val contextTokens by viewModel.lastTurnContextTokens.collectAsState()
-                    val contextWindow = viewModel.currentModelContextWindow
-                    if (contextTokens > 0 && contextWindow != null && contextWindow > 0) {
-                        val contextFraction =
-                            (contextTokens.toFloat() / contextWindow.toFloat()).coerceIn(0f, 1f)
-                        val contextPercent =
-                            (contextTokens.toLong() * 100L / contextWindow.toLong()).coerceIn(0L, 999L)
-                        val contextColor = when {
-                            contextFraction >= 0.90f -> MaterialTheme.colorScheme.error
-                            contextFraction >= 0.70f -> Color(0xFFFF9500)
-                            else -> Color(0xFF34C759)
-                        }
-                        Box(
-                            modifier = Modifier
-                                .size(36.dp)
-                                .clip(CircleShape)
-                                .clickable { showTokenUsageSheet = true },
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            androidx.compose.material3.CircularProgressIndicator(
-                                progress = { contextFraction },
-                                modifier = Modifier.size(28.dp),
-                                color = contextColor,
-                                trackColor = ChatColors.tertiaryText.copy(alpha = 0.22f),
-                                strokeWidth = 2.5.dp,
-                            )
-                            Text(
-                                text = "$contextPercent%",
-                                color = ChatColors.primaryText,
-                                fontSize = 8.sp,
-                                lineHeight = 9.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
-                            )
-                        }
-                    }
                     // iOS: "..." circle button → dropdown menu
                     Box {
                         IconButton(onClick = { showChatMenu = true }) {
@@ -2304,22 +2218,6 @@ fun ChatScreen(
                                 },
                                 leadingIcon = {
                                     Icon(Icons.Outlined.Forum, contentDescription = null)
-                                },
-                            )
-                            MinisMenuDivider()
-                            // [T-model-picker-menu-entry] Choose Model — make
-                            // the picker discoverable from the "..." menu (user
-                            // report: "не вижу где выбран"). The top-bar chip
-                            // still opens the same sheet; this is the redundant,
-                            // labelled entry point.
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.chat_menu_choose_model)) },
-                                onClick = {
-                                    showChatMenu = false
-                                    showModelPicker = true
-                                },
-                                leadingIcon = {
-                                    Icon(Icons.Default.Memory, contentDescription = null)
                                 },
                             )
                             MinisMenuDivider()
@@ -2902,13 +2800,7 @@ fun ChatScreen(
                             } else {
                                 withContext(Dispatchers.Default) {
                                     val merged = mergeStreamingOverlay(msgs, stream)
-                                    buildFlatChatItems(
-                                        merged,
-                                        null,
-                                        fromIndex = splitIdx,
-                                        seedKeys = frozenKeys,
-                                        activeAgentRunTaskId = activeAgentRunTaskId,
-                                    )
+                                    buildFlatChatItems(merged, null, fromIndex = splitIdx, seedKeys = frozenKeys)
                                 }
                             }
                             flatItems = if (liveRows.isEmpty()) frozenRows else frozenRows + liveRows
@@ -2959,8 +2851,7 @@ fun ChatScreen(
                     // the end.
                     val newest = flatItems.lastOrNull() ?: return@LaunchedEffect
                     if (newest !is FlatChatItem.AssistantToolUse &&
-                        newest !is FlatChatItem.AssistantTyping &&
-                        newest !is FlatChatItem.AgentRunCard
+                        newest !is FlatChatItem.AssistantTyping
                     ) return@LaunchedEffect
                     if (newest.key == lastTrailingPinKey) return@LaunchedEffect
                     if (userScrolledAway) return@LaunchedEffect
@@ -2998,9 +2889,6 @@ fun ChatScreen(
                     is FlatChatItem.AssistantToolUse -> grayedMap[originalMessageId(messageId)] == true
                     is FlatChatItem.AssistantInfo -> false  // system rows never grayed
                     is FlatChatItem.AssistantTyping -> false
-                    // Live progress card is never part of persisted history, so
-                    // a compact marker can't gray it.
-                    is FlatChatItem.AgentRunCard -> false
                     is FlatChatItem.AssistantError -> grayedMap[originalMessageId(messageId)] == true
                     is FlatChatItem.AssistantLegacyContent -> grayedMap[originalMessageId(messageId)] == true
                 }
@@ -3078,9 +2966,6 @@ fun ChatScreen(
                     focusManager.clearFocus()
                     block()
                 }
-                // [T-message-surgery] Publish it to the outer scope so the
-                // delete/rewrite dialogs hosted there get the same teardown.
-                androidx.compose.runtime.SideEffect { safeMutateRef.value = safeMutate }
                 // Hoist slash-menu state up so the LazyColumn pointerInput
                 // tap-spy below can react to it. The popup itself, declared
                 // further down near the composer, reads viewModel.showSlashMenu
@@ -3377,40 +3262,24 @@ fun ChatScreen(
                                     }
                                     safeMutate { viewModel.retryFromMessage(item.message.id) }
                                 }),
-                                // [T-remove-edit-action] The "Edit" item is gone.
-                                // It re-ran the conversation from this turn
-                                // (truncating everything after it), which read as
-                                // "edit" but silently threw away later turns.
-                                // Rewrite does what the label promised — change
-                                // the stored text — and Retry covers "run this
-                                // again". Keeping both was two menu items that
-                                // looked the same and behaved differently.
-                                onEdit = null,
+                                // T187: long-press → Edit pulls the user message
+                                // text into the composer; the next send truncates
+                                // from this turn (inclusive) before persisting
+                                // the edited content. Gated on isStreaming the
+                                // same way Retry is.
+                                onEdit = if (isStreaming || item.message.isQueued) null else ({
+                                    val prefill = viewModel.editMessage(item.message.id)
+                                    if (prefill != null) {
+                                        viewModel.setInputText(prefill)
+                                        coroutineScope.launch {
+                                            tracedScrollToItem("EDIT-MSG", 0, 0)
+                                        }
+                                        inputFocusRequester.requestFocus()
+                                    }
+                                }),
                                 onWithdraw = if (item.message.isQueued) {
                                     { safeMutate { viewModel.withdrawQueuedMessage(item.message.id) } }
                                 } else null,
-                                // [T-message-surgery] Real history mutation on
-                                // the user's own turn: rewrite the stored text
-                                // in place, or drop the turn and keep the rest
-                                // of the session. Queued bubbles aren't in the
-                                // DB yet — Withdraw is their remove action.
-                                onRewrite = if (isStreaming || item.message.isQueued) null else ({
-                                    // [T-rewrite-assistant-full] Prefill from the
-                                    // STORED text, not the on-screen copy (which
-                                    // has reminders / the attachments inventory
-                                    // stripped) — saving the stripped version back
-                                    // would quietly rewrite history.
-                                    coroutineScope.launch {
-                                        val prefill = viewModel.messageTextForRewriteAsync(item.message.id)
-                                        if (prefill != null) {
-                                            pendingRewriteText = prefill
-                                            pendingRewriteMessageId = item.message.id
-                                        }
-                                    }
-                                }),
-                                onDelete = if (isStreaming || item.message.isQueued) null else ({
-                                    pendingDeleteMessageId = item.message.id
-                                }),
                                 onPreviewFile = { uri, name ->
                                     // T150: turn the persisted file:// URI back
                                     // into a FileItem and hand off to the host
@@ -3433,29 +3302,7 @@ fun ChatScreen(
                                 },
                             )
                             } // close UserBubble SideEffect + UserMessageBubble block
-                            is FlatChatItem.AssistantHeader -> AssistantHeader(
-                                // [T-message-surgery] Long-press the assistant
-                                // name row → rewrite / delete that turn for
-                                // real. Hidden mid-stream, like every other
-                                // history-mutating action.
-                                // buildFlatChatItems appends a "#2" dedupe
-                                // suffix when one message yields several header
-                                // rows, so strip it — the VM resolves against
-                                // real message ids.
-                                onRewrite = if (isStreaming) null else ({
-                                    val realId = originalMessageId(item.messageId)
-                                    coroutineScope.launch {
-                                        val prefill = viewModel.messageTextForRewriteAsync(realId)
-                                        if (prefill != null) {
-                                            pendingRewriteText = prefill
-                                            pendingRewriteMessageId = realId
-                                        }
-                                    }
-                                }),
-                                onDelete = if (isStreaming) null else ({
-                                    pendingDeleteMessageId = originalMessageId(item.messageId)
-                                }),
-                            )
+                            is FlatChatItem.AssistantHeader -> AssistantHeader()
                             is FlatChatItem.AssistantText -> BoundsTrackedBlock(
                                 messageId = item.messageId,
                                 slotKey = "text:${item.block.id}",
@@ -3589,34 +3436,12 @@ fun ChatScreen(
                                 } else null,
                             )
                             is FlatChatItem.AssistantTyping -> TypingIndicator()
-                            is FlatChatItem.AgentRunCard -> {
-                                // Subscribed here, not in the flat list, so a node
-                                // state change repaints just this card instead of
-                                // rebuilding every row.
-                                val runs by com.openminis.app.offload.AgentRunProgress
-                                    .snapshots.collectAsState()
-                                val snapshot = runs[item.taskId]
-                                if (snapshot != null) {
-                                    AgentRunProgressCard(snapshot = snapshot)
-                                } else {
-                                    // Run registered but no snapshot yet (or already
-                                    // cleared): fall back to the dots rather than
-                                    // rendering an empty card.
-                                    TypingIndicator()
-                                }
-                            }
                             is FlatChatItem.AssistantError -> InlineErrorBanner(
                                 error = item.error,
                                 onRetry = {
                                     coroutineScope.launch { tracedScrollToItem("INLINE-RETRY-LAST", 0, 0) }
                                     safeMutate { viewModel.retryLast() }
                                 },
-                                // [429/content-filter fallback CTA] Take the user
-                                // straight to Model Groups so they add a backup
-                                // model instead of guessing where to go. The
-                                // banner shows this button only when the error
-                                // text is route-level (see ErrorFallbackHint).
-                                onAddFallback = { onModelGroupsClick() },
                             )
                             is FlatChatItem.AssistantLegacyContent -> BoundsTrackedBlock(
                                 messageId = item.messageId,
@@ -3644,10 +3469,16 @@ fun ChatScreen(
                         }
                         } // Box (alpha wrapper)
                     }
-                    // "Load older messages" sits at the visual top under
-                    // reverseLayout. The ViewModel reads the previous Room
-                    // page and rebuilds the materialized window so tool-use /
-                    // tool-result pairs remain intact across page boundaries.
+                    // [T-android-larky-longsession-followup] "Load older
+                    // messages" header — placed AFTER items() so under
+                    // reverseLayout it sits at the VISUAL TOP of the list.
+                    // Only emitted when the session has trimmed older messages
+                    // behind the window; tapping bumps the cap by
+                    // VISIBLE_MESSAGE_CAP_STEP and the FlatChat pipeline
+                    // rebuilds with the wider slice. The item key is stable so
+                    // LazyListState's anchor (firstVisibleItem) survives the
+                    // re-emission and the user keeps their scroll position
+                    // relative to the message they were reading.
                     if (hasOlderMessages) {
                         item(key = "__load_older_messages__", contentType = "load_older") {
                             Box(
@@ -3816,13 +3647,6 @@ fun ChatScreen(
                         },
                     )
                 }
-
-                // [destructive-command-gate] Confirmation for a shell command
-                // that deletes. Renders only when one is pending; the shell
-                // coroutine is suspended meanwhile. Placed here so it sits above
-                // the message list and the tool sheet — the command is blocked
-                // until answered, so nothing else in the chat can proceed.
-                DestructiveCommandDialog()
 
                 // Scroll-to-bottom FAB (iOS: circle chevron.down, bottom-right)
                 // T138 phase 2 v3: show on user-scroll intent, not transient
@@ -4761,7 +4585,7 @@ fun ChatScreen(
                         }
                     } else
                     // Text field (iOS: placeholder "Message Minis", no border)
-                    androidx.compose.runtime.key(sessionId) {
+                    run {
                         val interactionSource = remember { MutableInteractionSource() }
                         val mergedTextStyle = MaterialTheme.typography.bodyMedium.copy(
                             fontSize = 16.5.sp * chatInputFontScale,
@@ -5132,44 +4956,6 @@ fun ChatScreen(
                                 fontWeight = FontWeight.Bold,
                                 fontStyle = FontStyle.Italic,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-
-                        // [A1] Agents toggle: ON forces the agent team for every
-                        // turn in this chat, OFF hands the decision back to the
-                        // auto-route classifier. Placed next to + and / because
-                        // it is a composer mode, not a settings option — the
-                        // choice to spend minutes and money belongs on the same
-                        // row as the send button.
-                        val forceAgents by viewModel.forceAgents.collectAsState()
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Box(
-                            modifier = Modifier
-                                .size(38.dp)
-                                .background(
-                                    if (forceAgents) MaterialTheme.colorScheme.primary
-                                    else ChatColors.inputIconBg,
-                                    CircleShape,
-                                )
-                                .border(
-                                    0.5.dp,
-                                    if (forceAgents) Color.Transparent
-                                    else ChatColors.inputIconBorder,
-                                    CircleShape,
-                                )
-                                .clip(CircleShape)
-                                .clickable { viewModel.setForceAgents(!forceAgents) },
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                Icons.Default.Groups,
-                                contentDescription = stringResource(
-                                    if (forceAgents) R.string.chat_agents_toggle_on
-                                    else R.string.chat_agents_toggle_off,
-                                ),
-                                tint = if (forceAgents) MaterialTheme.colorScheme.onPrimary
-                                else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(20.dp),
                             )
                         }
 
@@ -5569,75 +5355,6 @@ fun ChatScreen(
                 )
             }
 
-            // [T-message-surgery] Delete confirmation. Irreversible, and the
-            // plan may take paired tool rows along, so the body says so.
-            pendingDeleteMessageId?.let { targetId ->
-                MinisAlertDialog(
-                    onDismissRequest = { pendingDeleteMessageId = null },
-                    title = stringResource(R.string.msg_delete_confirm_title),
-                    text = stringResource(R.string.msg_delete_confirm_body),
-                    confirmText = stringResource(R.string.msg_longpress_delete),
-                    isDestructive = true,
-                    onConfirm = {
-                        pendingDeleteMessageId = null
-                        safeMutateFromDialog { viewModel.deleteMessage(targetId) }
-                    },
-                )
-            }
-            // [T-message-surgery] Rewrite editor. Not MinisAlertDialog: this
-            // needs a multi-line text field, and the confirm action must be
-            // disabled while the text is unchanged or blank.
-            pendingRewriteMessageId?.let { targetId ->
-                androidx.compose.ui.window.Dialog(
-                    onDismissRequest = { pendingRewriteMessageId = null },
-                ) {
-                    androidx.compose.material3.Surface(
-                        shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp),
-                        color = MaterialTheme.colorScheme.surface,
-                        tonalElevation = 6.dp,
-                    ) {
-                        Column(modifier = Modifier.padding(20.dp)) {
-                            Text(
-                                text = stringResource(R.string.msg_rewrite_dialog_title),
-                                style = MaterialTheme.typography.titleMedium,
-                            )
-                            Spacer(Modifier.height(6.dp))
-                            Text(
-                                text = stringResource(R.string.msg_rewrite_dialog_hint),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            Spacer(Modifier.height(12.dp))
-                            androidx.compose.material3.OutlinedTextField(
-                                value = pendingRewriteText,
-                                onValueChange = { pendingRewriteText = it },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .heightIn(min = 120.dp, max = 320.dp),
-                                textStyle = MaterialTheme.typography.bodyMedium,
-                            )
-                            Spacer(Modifier.height(16.dp))
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.End,
-                            ) {
-                                androidx.compose.material3.TextButton(
-                                    onClick = { pendingRewriteMessageId = null },
-                                ) { Text(stringResource(R.string.common_cancel)) }
-                                Spacer(Modifier.width(8.dp))
-                                androidx.compose.material3.TextButton(
-                                    enabled = pendingRewriteText.isNotBlank(),
-                                    onClick = {
-                                        val text = pendingRewriteText
-                                        pendingRewriteMessageId = null
-                                        safeMutateFromDialog { viewModel.rewriteMessageText(targetId, text) }
-                                    },
-                                ) { Text(stringResource(R.string.msg_rewrite_save)) }
-                            }
-                        }
-                    }
-                }
-            }
             // T137: Clear Chat confirmation. Wipes messages + agent history +
             // compact markers; the session row, workspace files, attachments,
             // and offload payloads are intentionally preserved (iOS parity).

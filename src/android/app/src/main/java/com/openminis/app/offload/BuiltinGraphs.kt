@@ -47,38 +47,6 @@ internal object BuiltinGraphs {
             "remembers it was a guess. If something is missing I return " +
             "STATUS: NEEDS_CLARIFICATION and name exactly what."
 
-    /**
-     * Debugging discipline, injected into every implementer/reviewer prompt.
-     *
-     * This is the rule the human maintainer paid for the hard way: a chain of
-     * agents is a chain of stages, and a stage that is only observed by
-     * shipping a build and re-running end-to-end costs one build per broken
-     * link. That is how a two-fix job became a week. The rule below forces the
-     * cheap checks (read the whole path, add a log, run the pure part locally,
-     * predict the failure) BEFORE the expensive one (build + install + run).
-     */
-    private const val DEBUG_DISCIPLINE =
-        "DEBUGGING DISCIPLINE — non-negotiable, this pipeline exists in a slow " +
-            "build-and-install loop where each blind iteration costs real time:\n" +
-            "1. READ THE WHOLE PATH FIRST. Before changing anything, trace the " +
-            "entire chain from input to output and list every place it can " +
-            "break. Do not fix the first symptom and rebuild — an unused value " +
-            "or unreachable block is found by reading, not by running.\n" +
-            "2. OBSERVABILITY BEFORE FIXES. If a stage's success and its silent " +
-            "failure look identical from outside, add a durable log line that " +
-            "distinguishes them FIRST. Never rebuild just to learn where it " +
-            "broke.\n" +
-            "3. PROVE IT LOCALLY. Put the logic behind a check that runs without " +
-            "the full build — a unit test, a pure function, a dry run with a " +
-            "stub. A full rebuild is for CONFIRMING a fix already proven " +
-            "locally, never for discovering whether it works.\n" +
-            "4. ONE ROOT CAUSE AT A TIME, NAMED. State the single root cause and " +
-            "why the fix addresses it. If you cannot name it, you have not " +
-            "found it — keep investigating, do not guess-and-build.\n" +
-            "5. VERIFY THE ENVIRONMENT before blaming the code: stale config, " +
-            "exhausted quota misreported as an auth error, a renamed model, a " +
-            "dead debug channel have all masqueraded as code bugs here."
-
     private const val CONFIDENCE =
         "I end with `Confidence: High|Medium|Low` — how thoroughly I actually " +
             "checked, not how sure I feel. 'No issues, Confidence: Low' is " +
@@ -116,10 +84,7 @@ internal object BuiltinGraphs {
                     first line of DELIVERABLES.
 
                     I read the codebase first — a plan written without looking is a guess
-                    with formatting. But I have a small tool budget on purpose: a handful of
-                    targeted reads, then the plan. If I find myself exploring instead of
-                    deciding, the answer is to plan with what I have and name the unknowns
-                    in REMAINING_RISKS.
+                    with formatting.
 
                     $NO_CODE
                     $NO_GUESS
@@ -146,8 +111,6 @@ internal object BuiltinGraphs {
 
                     If the plan cannot be followed as written, that is a finding: I stop with
                     STATUS: BLOCKED and say why, rather than quietly redesigning it.
-
-                    $DEBUG_DISCIPLINE
                 """.trimIndent(),
             ),
             AgentNode(
@@ -173,8 +136,6 @@ internal object BuiltinGraphs {
                     style preference), minimal recommendation.
                     $CONFIDENCE
                     If nothing at Medium or above: `No blocking correctness issues found.`
-
-                    $DEBUG_DISCIPLINE
                 """.trimIndent(),
             ),
         ),
@@ -185,12 +146,9 @@ internal object BuiltinGraphs {
     )
 
     /**
-     * Seven nodes with two parallel review lanes and fan-in.
-     *
-     * Review parallelises safely — two reviewers reading the same diff cannot
-     * corrupt each other's work, and they answer independent questions
-     * (correctness vs security). Implementation does not, which is why there is
-     * exactly one implementer; see the note on that node.
+     * Seven nodes with two parallel review lanes and two implementer replicas.
+     * Exercises everything the engine can do — replicas, sharding, fan-in,
+     * conditional routing — which is what makes it useful as a test target.
      */
     fun full(): AgentGraph = AgentGraph(
         id = ID_FULL,
@@ -267,7 +225,7 @@ internal object BuiltinGraphs {
             AgentNode(
                 id = "architect",
                 role = AgentRole.SOLUTION_ARCHITECT,
-                ownedArtifact = "a design document with interface contracts and an implementation order",
+                ownedArtifact = "a design document with interface contracts and a two-way shard split",
                 mayDelegateTo = listOf(AgentRole.SENIOR_IMPLEMENTER),
                 modelRole = "architect",
                 thinkingLevel = ThinkingLevel.HIGH,
@@ -281,10 +239,11 @@ internal object BuiltinGraphs {
                     a file ownership map; migration order when the change is not additive;
                     risks with mitigations.
 
-                    ORDER — a single implementer works through my map sequentially, so I
-                    state the order explicitly and put anything another step depends on
-                    first. I do not split the work into parallel lanes: one implementer with
-                    the whole picture makes consistent decisions, two make conflicting ones.
+                    SHARDING — two implementers run in parallel. My ownership map MUST split
+                    into two DISJOINT groups, stated as `SHARD A: <files>` and
+                    `SHARD B: <files>`. Two implementers touching one file means one loses
+                    work. If the change genuinely cannot be split, I say so and put
+                    everything in SHARD A, leaving SHARD B empty.
 
                     I write a DESIGN DOCUMENT. $NO_CODE
                     I MUST NEVER optimise for cleverness: the simplest design that satisfies
@@ -295,7 +254,7 @@ internal object BuiltinGraphs {
             AgentNode(
                 id = "implementer",
                 role = AgentRole.SENIOR_IMPLEMENTER,
-                ownedArtifact = "production code implementing the approved design",
+                ownedArtifact = "production code confined to MY shard",
                 mayDelegateTo = listOf(
                     AgentRole.CODE_CORRECTNESS_REVIEWER,
                     AgentRole.SECURITY_REVIEWER,
@@ -303,38 +262,29 @@ internal object BuiltinGraphs {
                 modelRole = "coder",
                 thinkingLevel = ThinkingLevel.MEDIUM,
                 maxTurns = 15,
-                // Single implementer, not two replicas.
-                //
-                // This node ran `replicas = 2` with a shard map, which is the
-                // exact architecture Cognition's "Don't Build Multi-Agents"
-                // documents as the fragile one: two workers cannot see each
-                // other's reasoning, so their ACTIONS carry conflicting implicit
-                // decisions even when they never touch the same file — their
-                // Flappy Bird example produced a Mario-styled background beside
-                // a bird with the wrong physics, both individually correct.
-                // Anthropic's own multi-agent write-up says the same about this
-                // domain specifically: coding has few genuinely parallel
-                // subtasks and today's models coordinate poorly in real time.
-                // Sharding is still supported by the engine for graphs that want
-                // it; the built-in stops advertising it as the default.
-                replicas = 1,
-                shardHint = emptyList(),
+                replicas = 2,
+                shardHint = listOf(
+                    "SHARD A from the architect's ownership map. I read SHARD B only to " +
+                        "honour its interfaces; I never edit a file in it.",
+                    "SHARD B from the architect's ownership map. I read SHARD A only to " +
+                        "honour its interfaces; I never edit a file in it.",
+                ),
                 allowedTools = listOf("file_read", "file_write", "file_edit", "shell"),
                 systemPrompt = """
-                    You implement the approved design.
+                    You implement the approved design inside your shard, and nowhere else.
 
-                    SCOPE DISCIPLINE — I implement what the design specifies and nothing
-                    adjacent. If the design cannot be finished without a change it did not
-                    call for, I return STATUS: BLOCKED naming the file and the change rather
-                    than making it myself, however small.
+                    SHARD DISCIPLINE — a sibling implementer works the other shard right
+                    now. Before editing any file I ask: is this file in MY shard? If not, I
+                    stop. Editing outside my shard means we overwrite each other and one of
+                    us loses work. If my shard cannot be finished without a change on the
+                    other side, I return STATUS: BLOCKED naming the file and the change. I
+                    do NOT make it myself, however small.
 
                     I MUST NEVER: change a public interface without approval; write or edit
                     tests; expand scope; "improve" code beyond what the design requires.
 
                     If the design cannot be implemented as written, I stop and say so rather
                     than quietly bending it.
-
-                    $DEBUG_DISCIPLINE
                 """.trimIndent(),
             ),
             AgentNode(
@@ -360,8 +310,6 @@ internal object BuiltinGraphs {
                     OUTPUT per issue: location, severity, a concrete failure scenario,
                     minimal recommendation.
                     $CONFIDENCE
-
-                    $DEBUG_DISCIPLINE
                 """.trimIndent(),
             ),
             AgentNode(

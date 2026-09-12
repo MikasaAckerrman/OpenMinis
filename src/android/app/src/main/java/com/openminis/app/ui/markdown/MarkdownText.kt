@@ -51,9 +51,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import coil.compose.AsyncImage
-import coil.request.ImageRequest
 import com.openminis.app.sandbox.PRootKernel
-import com.openminis.app.ui.DisplayBitmapLimits.limitDisplaySize
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -735,17 +733,10 @@ private fun openMediaExternally(context: Context, file: File, mime: String) {
 
 @Composable
 private fun MinisImageBlock(block: MarkdownParser.Block.Image) {
-    val context = LocalContext.current
-    val request = remember(block.url) {
-        ImageRequest.Builder(context)
-            .data(block.url)
-            .limitDisplaySize()
-            .build()
-    }
     val surfaceBg = MaterialTheme.colorScheme.surfaceVariant
     val borderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
     AsyncImage(
-        model = request,
+        model = block.url,
         contentDescription = block.alt.ifEmpty { filenameFromUrl(block.url) },
         contentScale = ContentScale.Fit,
         modifier = Modifier
@@ -783,9 +774,7 @@ private fun MinisVideoBlock(block: MarkdownParser.Block.Video) {
                 retriever.setDataSource(f.absolutePath)
                 val bmp = retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
                 android.util.Log.d("MdMedia", "video thumbnail for ${f.name} -> ${bmp?.width}x${bmp?.height}")
-                // [T-runtime-bitmap-canvas-crash] Cap native-resolution frame
-                // before it reaches Canvas (see DisplayBitmapLimits.capForDisplay).
-                com.openminis.app.ui.DisplayBitmapLimits.capForDisplay(bmp)
+                bmp
             } catch (t: Throwable) {
                 android.util.Log.w("MdMedia", "video thumbnail failed: ${t.message}")
                 null

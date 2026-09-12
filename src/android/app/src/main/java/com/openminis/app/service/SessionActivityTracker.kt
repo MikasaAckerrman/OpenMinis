@@ -25,11 +25,6 @@ object SessionActivityTracker {
 
     private const val TAG = "SessionTracker"
 
-    // All active/present mutations and the corresponding FGS decision run
-    // under this object's monitor (@Synchronized methods below). Stream jobs
-    // finish on different IO threads; a plain StateFlow read-modify-write can
-    // lose a session id, then stop the service while that session is still live.
-
     private val _activeSessions = MutableStateFlow<Set<String>>(emptySet())
     val activeSessions: StateFlow<Set<String>> = _activeSessions.asStateFlow()
 
@@ -191,19 +186,6 @@ object SessionActivityTracker {
     private val pendingErrorFlag = mutableSetOf<String>()
 
     /**
-     * [T-completion-haptics] Per-session "the user pressed Stop" flag. Same
-     * shape as [pendingErrorFlag] and consumed by the same [setInactive] pass.
-     *
-     * Needed because `setInactive` alone cannot tell a finished turn from a
-     * cancelled one — both look like active → inactive — and the completion
-     * buzz must stay silent on cancel (the user's thumb is already on the
-     * screen; buzzing tells them what they just did). The notification path
-     * deliberately keeps its existing two-state error/success contract, so this
-     * is a separate flag rather than a third value on the old one.
-     */
-    private val pendingCancelFlag = mutableSetOf<String>()
-
-    /**
      * T180-bg-notif: completion listener. Wired in MinisApp.onCreate to
      * a [com.openminis.app.notification.BackgroundTaskNotifier] so when
      * an agent loop ends while the app is backgrounded, the user gets a
@@ -219,25 +201,6 @@ object SessionActivityTracker {
 
     fun setCompletionListener(listener: ((sessionId: String, isError: Boolean) -> Unit)?) {
         completionListener = listener
-    }
-
-    /**
-     * [T-completion-haptics] Turn-ended listener carrying the FULL outcome
-     * (completed / failed / cancelled), wired in MinisApp to
-     * [com.openminis.app.feedback.CompletionHaptics].
-     *
-     * Separate from [completionListener] on purpose: that one exists to post a
-     * notification and only distinguishes success from error. Widening its
-     * signature would touch the notifier for no benefit, and overloading it
-     * would make the "cancel does not notify but also does not buzz" rule
-     * implicit. One listener per concern, each with the shape it needs.
-     */
-    private var turnEndListener: ((sessionId: String, outcome: com.openminis.app.feedback.TurnOutcome) -> Unit)? = null
-
-    fun setTurnEndListener(
-        listener: ((sessionId: String, outcome: com.openminis.app.feedback.TurnOutcome) -> Unit)?,
-    ) {
-        turnEndListener = listener
     }
 
     /**
@@ -295,7 +258,6 @@ object SessionActivityTracker {
      * loop's cancel callback — captured here so the notification's Stop
      * action can fan out to every running session.
      */
-    @Synchronized
     fun setActive(sessionId: String, onStop: (() -> Unit)? = null) {
         val wasIdle = !shouldRunService()
         _activeSessions.value = _activeSessions.value + sessionId
@@ -325,13 +287,11 @@ object SessionActivityTracker {
      * sessions remain active *and* the user is no longer present in any
      * chat.
      */
-    @Synchronized
     fun setInactive(sessionId: String) {
         val wasActive = sessionId in _activeSessions.value
         _activeSessions.value = _activeSessions.value - sessionId
         synchronized(streamCancellers) { streamCancellers.remove(sessionId) }
         val wasError = synchronized(pendingErrorFlag) { pendingErrorFlag.remove(sessionId) }
-        val wasCancelled = synchronized(pendingCancelFlag) { pendingCancelFlag.remove(sessionId) }
         Log.d(TAG, "Session deactivated: $sessionId (total: ${_activeSessions.value.size})")
 
         if (_activeSessions.value.isEmpty()) {
@@ -365,29 +325,7 @@ object SessionActivityTracker {
         // the "completed" semantic honest).
         if (wasActive) {
             completionListener?.invoke(sessionId, wasError)
-            // [T-completion-haptics] Fired from the same wasActive gate so a
-            // session that never streamed can't produce a buzz. Cancel wins
-            // over error when both flags are set: pressing Stop often surfaces
-            // a cancellation-shaped error downstream, and the user's own Stop
-            // is the more truthful description of how the turn ended.
-            val outcome = when {
-                wasCancelled -> com.openminis.app.feedback.TurnOutcome.Cancelled
-                wasError -> com.openminis.app.feedback.TurnOutcome.Failed
-                else -> com.openminis.app.feedback.TurnOutcome.Completed
-            }
-            turnEndListener?.invoke(sessionId, outcome)
         }
-    }
-
-    /**
-     * [T-completion-haptics] Caller marks the session's stream as
-     * user-cancelled. Must be invoked BEFORE [setInactive] (the flag is
-     * consumed there), which is why [com.openminis.app.ui.chat.ChatViewModel.cancelStream]
-     * calls it above its own setInactive pair. If never called, the turn is
-     * reported as completed / failed.
-     */
-    fun markStreamCancelled(sessionId: String) {
-        synchronized(pendingCancelFlag) { pendingCancelFlag.add(sessionId) }
     }
 
     /**
@@ -407,7 +345,6 @@ object SessionActivityTracker {
      * at adj=200 across Home / app-switcher / lock-screen, even when no
      * stream is in flight.
      */
-    @Synchronized
     fun setPresent(sessionId: String) {
         if (sessionId in _presentSessions.value) return
         val wasIdle = !shouldRunService()
@@ -426,7 +363,6 @@ object SessionActivityTracker {
      * MainActivity when the user leaves the chat route or the Activity
      * is paused.
      */
-    @Synchronized
     fun setAbsent(sessionId: String) {
         if (sessionId !in _presentSessions.value) return
         _presentSessions.value = _presentSessions.value - sessionId
@@ -445,7 +381,6 @@ object SessionActivityTracker {
      * pinned at adj=200 across the user's brief absence. Backgrounding
      * is the entire scenario this exists to protect against.
      */
-    @Synchronized
     fun clearPresence() {
         if (_presentSessions.value.isEmpty()) return
         _presentSessions.value = emptySet()
@@ -492,7 +427,6 @@ object SessionActivityTracker {
      * below so the notification can render a tool-specific icon and
      * progress indicator.
      */
-    @Synchronized
     fun updateToolStatus(status: String) {
         _currentToolStatus.value = status
         if (_activeSessions.value.isNotEmpty()) {
@@ -517,7 +451,6 @@ object SessionActivityTracker {
      * static per-tool label ("Browser"). Pass null/blank to fall back to
      * the per-tool label (existing behavior).
      */
-    @Synchronized
     fun updateToolStatus(status: String, toolName: String?, isRunning: Boolean, toolTitle: String?) {
         _currentToolStatus.value = status
         _currentToolName.value = toolName
@@ -539,7 +472,6 @@ object SessionActivityTracker {
      * SUCCESS/FAILED/TIMEOUT/CANCELLED so the notification stops
      * showing an active progress bar.
      */
-    @Synchronized
     fun clearToolRunning(outcome: ToolOutcome = ToolOutcome.Unknown) {
         if (!_isToolRunning.value && _currentToolName.value == null) return
         // Snapshot identity + status before wiping the live values so the
@@ -626,18 +558,6 @@ object SessionActivityTracker {
                 ctx?.getString(com.openminis.app.R.string.notif_in_session) ?: "In session"
             else -> "Idle"
         }
-    }
-
-    @Synchronized
-    internal fun resetForTest() {
-        _activeSessions.value = emptySet()
-        _presentSessions.value = emptySet()
-        synchronized(streamCancellers) { streamCancellers.clear() }
-        synchronized(pendingErrorFlag) { pendingErrorFlag.clear() }
-        synchronized(pendingCancelFlag) { pendingCancelFlag.clear() }
-        completionListener = null
-        turnEndListener = null
-        appContext = null
     }
 
     private fun stopService() {

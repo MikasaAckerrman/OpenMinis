@@ -80,31 +80,13 @@ object PRootKernel {
         // statically, so only the native lib dir is needed.
         nativeLibDir = rootfsManager.nativeLibDir.absolutePath
 
-        // PROOT_LOADER / PROOT_LOADER_32.
-        //
-        // proot also carries a copy of the loader inside its own binary and can
-        // extract it at runtime (extract_loader() in src/execve/enter.c), but
-        // that fallback is useless on Android 10+: it writes the loader into
-        // PROOT_TMP_DIR and chmod +x's it, and W^X forbids executing a file the
-        // app wrote into its own data directory. Every execve inside the rootfs
-        // then fails with `execve("/bin/sh"): Permission denied`, which looks
-        // like a broken rootfs but is a missing loader.
-        //
-        // Only the APK's native library directory is executable, so the loader
-        // must ship as libproot-loader.so (deps/build_proot.sh installs it) and
-        // be named here explicitly.
+        // PROOT_LOADER / PROOT_LOADER_32 overrides. The loader is bundled into
+        // the proot binary (extracted via /proc/self/fd at runtime), so these
+        // files normally do not exist — kept only to honour a side-loaded
+        // loader if one is present.
         val loaderPath = File(rootfsManager.nativeLibDir, "libproot-loader.so")
         val loader32Path = File(rootfsManager.nativeLibDir, "libproot-loader32.so")
-        if (loaderPath.exists()) {
-            prootLoaderPath = loaderPath.absolutePath
-        } else {
-            Log.e(
-                TAG,
-                "libproot-loader.so missing from ${rootfsManager.nativeLibDir} — proot will " +
-                    "fall back to extracting its bundled loader, which Android's W^X blocks; " +
-                    "expect execve(...): Permission denied for every command",
-            )
-        }
+        if (loaderPath.exists()) prootLoaderPath = loaderPath.absolutePath
         if (loader32Path.exists()) prootLoader32Path = loader32Path.absolutePath
 
         // Set default PATH for Alpine Linux
@@ -172,7 +154,7 @@ object PRootKernel {
         // Start the native_offload server so the proot extension can reach it
         // over the abstract unix socket. Handlers must have been registered
         // via NativeOffloadServer.register() before this point.
-        NativeOffloadServer.start(rootfsManager.rootfsDir, context.packageName)
+        NativeOffloadServer.start(rootfsManager.rootfsDir)
 
         // Materialize stub binaries inside the rootfs for each handler so
         // /bin/sh's PATH search succeeds and triggers an execve the extension
@@ -927,67 +909,12 @@ object PRootKernel {
     }
 
     /**
-     * Directory handed to proot as PROOT_TMP_DIR.
-     *
-     * proot unpacks its bundled loader here (see create_temp_file() in
-     * src/path/temp.c) before it can exec anything inside the rootfs. If the
-     * directory is missing or not writable, proot fails with
-     *
-     *   proot error: can't chmod '<tmp>/proot-<pid>-XXXXXX': No such file or directory
-     *   proot error: execve("/bin/sh"): Permission denied
-     *
-     * — the second line being the only one that used to reach the user, which
-     * reads like a broken rootfs when in fact the rootfs is fine.
-     *
-     * [T-clone-variant] The clone install starts with an empty cacheDir, and
-     * Android may drop cacheDir entirely under storage pressure at any time, so
-     * mkdirs() failing is a real state, not a theoretical one. The old code
-     * ignored its return value. Now: verify, and fall back to filesDir, which
-     * the app owns and the system never reclaims behind our back.
-     *
+     * Get the cache directory for PROOT_TMP_DIR.
      * Must be called after boot().
      */
     internal fun getProotTmpDir(context: Context): File {
-        val cacheTmp = File(context.cacheDir, "proot-tmp")
-        if (ensureUsableDir(cacheTmp)) return cacheTmp
-
-        val filesTmp = File(context.filesDir, "proot-tmp")
-        if (ensureUsableDir(filesTmp)) {
-            Log.w(
-                TAG,
-                "getProotTmpDir: ${cacheTmp.absolutePath} unusable, " +
-                    "falling back to ${filesTmp.absolutePath}",
-            )
-            return filesTmp
-        }
-
-        // Both unusable — return the cache path anyway so the caller's own
-        // preflight reports a concrete path, rather than crashing here.
-        Log.e(
-            TAG,
-            "getProotTmpDir: neither ${cacheTmp.absolutePath} nor " +
-                "${filesTmp.absolutePath} is a writable directory — " +
-                "proot will fail to unpack its loader",
-        )
-        return cacheTmp
-    }
-
-    /**
-     * True when [dir] exists as a directory we can write into, creating it if
-     * needed. Writability is probed with an actual file: canWrite() lies on
-     * some Android storage layers.
-     */
-    private fun ensureUsableDir(dir: File): Boolean {
-        if (!dir.isDirectory && !dir.mkdirs() && !dir.isDirectory) return false
-        return try {
-            val probe = File(dir, ".wprobe")
-            probe.delete()
-            val ok = probe.createNewFile()
-            probe.delete()
-            ok
-        } catch (e: Exception) {
-            Log.w(TAG, "ensureUsableDir: write probe failed in ${dir.absolutePath}: ${e.message}")
-            false
-        }
+        val tmpDir = File(context.cacheDir, "proot-tmp")
+        tmpDir.mkdirs()
+        return tmpDir
     }
 }

@@ -78,11 +78,6 @@ class MinisApp : Application(), ImageLoaderFactory {
         private set
     lateinit var backgroundTaskNotifier: BackgroundTaskNotifier
         private set
-    // [T-completion-haptics] Double-buzz on turn end. Held on the Application
-    // so the Settings row can fire a preview through the same instance the
-    // tracker uses (one Vibrator lookup, one place that can fail).
-    lateinit var completionHaptics: com.openminis.app.feedback.CompletionHaptics
-        private set
     lateinit var mountedFoldersStore: MountedFoldersStore
         private set
 
@@ -433,10 +428,7 @@ class MinisApp : Application(), ImageLoaderFactory {
             )
         }
 
-        // [T-clone-variant] Pass applicationId so the abstract socket name is
-        // per-install: the namespace is device-global, and the clone variant
-        // would otherwise fail to bind and lose its whole sandbox.
-        NativeOffloadServer.start(RootfsManager.getInstance(this).rootfsDir, packageName)
+        NativeOffloadServer.start(RootfsManager.getInstance(this).rootfsDir)
 
         // Initialize session activity tracker for foreground service management
         SessionActivityTracker.init(this)
@@ -478,27 +470,6 @@ class MinisApp : Application(), ImageLoaderFactory {
             backgroundTaskNotifier.notifyTaskCompleted(sessionId, isError)
         }
 
-        // [T-completion-haptics] Double-buzz when a turn ends. Wired to the
-        // tracker's turn-end hook rather than to ChatViewModel: all four
-        // stream-teardown paths (send / retry / resume / rerun) already funnel
-        // through setInactive, and the notifier proved that hook is the
-        // deterministic one. Unlike the notification, this fires whether the
-        // app is foreground or background — a buzz while you're staring at the
-        // screen is the confirmation you asked for, not an interruption; and it
-        // is the foreground case that matters most when the phone is on a desk
-        // beside you.
-        completionHaptics = com.openminis.app.feedback.CompletionHaptics(this)
-        SessionActivityTracker.setTurnEndListener { _, outcome ->
-            completionHaptics.onTurnEnded(
-                outcome = outcome,
-                enabled = backgroundSettingsRepository.isCompletionVibrationEnabled(),
-                // [T-haptics-customization] Read the profile at FIRE time, not at
-                // wiring time: the user may change the pattern between turns and
-                // a captured value would keep buzzing the old shape.
-                profile = backgroundSettingsRepository.readVibrationProfile(),
-            )
-        }
-
         // [T-android-config-confirm-timeout] Wire the config-confirm background
         // notifier into the (Context-free) gate, so a minis-config approval that
         // is waiting while the app is backgrounded nudges the user before the
@@ -526,30 +497,7 @@ class MinisApp : Application(), ImageLoaderFactory {
             override fun onActivityStarted(activity: Activity) {
                 val wasBackgrounded = foregroundActivityCount == 0
                 foregroundActivityCount++
-                if (wasBackgrounded) {
-                    _isAppForegroundFlow.value = true
-                    // [T-android-stale-conn-fg-evict] Evict the shared LLM
-                    // connection pool the instant we return to the foreground,
-                    // BEFORE the user can fire the first request. A background
-                    // stint can silently kill the h2 tunnel (VPN/proxy socket to
-                    // localhost survives the flap, so no NetworkCallback fires
-                    // and the pool is never evicted). The first post-resume
-                    // request then writes into the dead tunnel and hangs the
-                    // full TTFB watchdog window ("no response from server (30s)"
-                    // — the exact symptom users hit re-entering a chat). Evicting
-                    // only closes IDLE connections and marks in-flight ones for
-                    // eviction once idle, so a still-streaming request is never
-                    // interrupted — worst case a fresh connection is opened.
-                    runCatching {
-                        com.openminis.app.network.NetworkMonitor.sharedLLMConnectionPool.evictAll()
-                    }
-                    com.openminis.app.logging.AppLogger.info(
-                        "BgDiag",
-                        "app -> FOREGROUND, active sessions=" +
-                            com.openminis.app.service.SessionActivityTracker
-                                .activeSessions.value.size,
-                    )
-                }
+                if (wasBackgrounded) _isAppForegroundFlow.value = true
                 // T298: as soon as the app transitions background → foreground,
                 // clear any task-completed notifications still in the tray.
                 // The user is back in front of the app — there's no point
@@ -598,16 +546,6 @@ class MinisApp : Application(), ImageLoaderFactory {
                 foregroundActivityCount = (foregroundActivityCount - 1).coerceAtLeast(0)
                 if (foregroundActivityCount == 0) {
                     _isAppForegroundFlow.value = false
-                    // [T-background-diag] Timestamp the moment we go background.
-                    // Correlating it with a later onCleared / FGS onDestroy shows
-                    // HOW LONG the OS tolerated us — seconds points at an OEM
-                    // power manager, minutes at ordinary memory pressure.
-                    com.openminis.app.logging.AppLogger.info(
-                        "BgDiag",
-                        "app -> BACKGROUND, active sessions=" +
-                            com.openminis.app.service.SessionActivityTracker
-                                .activeSessions.value.size,
-                    )
                     // [T-android-config-confirm-timeout] The user switched away
                     // while a config-confirm dialog may still be showing — nudge
                     // them so they can come back before the 120s timeout.
@@ -664,20 +602,12 @@ class MinisApp : Application(), ImageLoaderFactory {
             },
         )
 
-        // Debug server: only start in debug builds (NEVER in release).
-        //
-        // [T-clone-variant] The port is derived from applicationId so the clone
-        // can run at the same time as the primary install. Two servers on one
-        // port means the second bind fails and that install becomes untestable —
-        // and the failure is easy to misread as "the clone is broken".
-        //   primary: 5321   clone: 5322
+        // Debug server: only start in debug builds (NEVER in release)
         if (BuildConfig.DEBUG) {
-            val rpcPort = if (packageName.endsWith(".clone")) 5322 else 5321
             try {
-                com.openminis.app.debug.DebugServer(this, rpcPort).start()
-                Log.i("MinisApp", "debug RPC server on 127.0.0.1:$rpcPort ($packageName)")
+                com.openminis.app.debug.DebugServer(this).start()
             } catch (e: Exception) {
-                Log.w("MinisApp", "Failed to start debug server on $rpcPort: ${e.message}")
+                Log.w("MinisApp", "Failed to start debug server: ${e.message}")
             }
         }
 

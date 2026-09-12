@@ -276,10 +276,7 @@ import com.openminis.app.ui.theme.ChatColors
 import com.openminis.app.ui.components.MinisTextButton
 
 @Composable
-internal fun AssistantHeader(
-    onRewrite: (() -> Unit)? = null,
-    onDelete: (() -> Unit)? = null,
-) {
+internal fun AssistantHeader() {
     // [T-soul-md] Identity header = locked ✨ sparkle gradient icon +
     // SOUL.md-driven `name`. The emoji-customization field was removed,
     // so we no longer branch on `SoulMetadata.emoji`; the icon stays the
@@ -288,13 +285,6 @@ internal fun AssistantHeader(
     // SOUL.md is missing the field or set to the default value.
     val soulMeta by com.openminis.app.agent.SoulStore.cachedMetadata.collectAsState()
     val displayName = soulMeta.name.ifBlank { com.openminis.app.agent.SoulMetadata.DEFAULT.name }
-    // [T-message-surgery] The header row is the long-press handle for
-    // assistant-turn surgery. The body itself can't host it: assistant text is
-    // inside a SelectionContainer where a long press starts text selection,
-    // and hijacking that would break copy — which users need far more often
-    // than they need to delete a turn.
-    var showMenu by remember { mutableStateOf(false) }
-    val hasActions = onRewrite != null || onDelete != null
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
@@ -302,14 +292,7 @@ internal fun AssistantHeader(
             // User→Assistant boundary reads ~16dp: user-bubble bottom(4) +
             // LazyColumn spacedBy(2) + this top(10) = 16. The header→body gap
             // inside the turn is unaffected (that's this row's bottom=2).
-            .padding(top = 10.dp, bottom = 2.dp)
-            .then(
-                if (hasActions) {
-                    Modifier.pointerInput(onRewrite, onDelete) {
-                        detectTapGestures(onLongPress = { showMenu = true })
-                    }
-                } else Modifier
-            ),
+            .padding(top = 10.dp, bottom = 2.dp),
     ) {
         val sparkleGradient = Brush.linearGradient(
             colors = listOf(SparkleColor1, SparkleColor2),
@@ -333,36 +316,6 @@ internal fun AssistantHeader(
             fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.onSurface,
         )
-        if (hasActions) {
-            DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
-                if (onRewrite != null) {
-                    DropdownMenuItem(
-                        text = { Text(stringResource(R.string.msg_longpress_rewrite)) },
-                        onClick = { showMenu = false; onRewrite() },
-                        leadingIcon = {
-                            Icon(
-                                Icons.Filled.EditNote,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp),
-                            )
-                        },
-                    )
-                }
-                if (onDelete != null) {
-                    DropdownMenuItem(
-                        text = { Text(stringResource(R.string.msg_longpress_delete)) },
-                        onClick = { showMenu = false; onDelete() },
-                        leadingIcon = {
-                            Icon(
-                                Icons.Filled.Delete,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp),
-                            )
-                        },
-                    )
-                }
-            }
-        }
     }
 }
 
@@ -499,20 +452,9 @@ internal fun BoundsTrackedBlock(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-internal fun InlineErrorBanner(
-    error: String,
-    onRetry: (() -> Unit)? = null,
-    // [429/content-filter fallback CTA] When non-null AND the error is a
-    // route-level failure a backup model would fix, the banner shows a second
-    // button that takes the user straight to Model Groups instead of leaving
-    // them to guess where to add a fallback. Null on screens with no such
-    // navigation target (the button is simply omitted).
-    onAddFallback: (() -> Unit)? = null,
-) {
+internal fun InlineErrorBanner(error: String, onRetry: (() -> Unit)? = null) {
     val clipboard = LocalClipboardManager.current
-    val showFallbackCta = onAddFallback != null &&
-        com.openminis.app.provider.ErrorFallbackHint.suggestsAddingFallback(error)
-    Column(
+    Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(top = 4.dp)
@@ -525,71 +467,42 @@ internal fun InlineErrorBanner(
                 },
             )
             .padding(horizontal = 10.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-                imageVector = Icons.Default.Error,
-                contentDescription = null,
-                tint = Color(0xFFFF3B30),
-                modifier = Modifier.size(14.dp),
-            )
+        Icon(
+            imageVector = Icons.Default.Error,
+            contentDescription = null,
+            tint = Color(0xFFFF3B30),
+            modifier = Modifier.size(14.dp),
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(
+            text = error,
+            color = Color(0xFFFF3B30),
+            fontSize = 12.sp,
+            lineHeight = 16.sp,
+            maxLines = 3,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        if (onRetry != null) {
             Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = error,
-                color = Color(0xFFFF3B30),
-                fontSize = 12.sp,
-                lineHeight = 16.sp,
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-            if (onRetry != null) {
-                Spacer(modifier = Modifier.width(8.dp))
-                Row(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(50))
-                        .background(Color(0xFFFF3B30).copy(alpha = 0.15f))
-                        .clickable(onClick = onRetry)
-                        .padding(horizontal = 10.dp, vertical = 3.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Refresh,
-                        contentDescription = null,
-                        tint = Color(0xFFFF3B30),
-                        modifier = Modifier.size(10.dp),
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(stringResource(R.string.chat_longpress_retry), color = Color(0xFFFF3B30), fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                }
-            }
-        }
-        // Second row: the "Add backup model" shortcut, only when the error is
-        // route-level and a navigation target exists. Full-width tappable pill
-        // so it reads as a primary next-step, not a tucked-away link.
-        if (showFallbackCta) {
-            Spacer(modifier = Modifier.height(6.dp))
             Row(
                 modifier = Modifier
                     .clip(RoundedCornerShape(50))
                     .background(Color(0xFFFF3B30).copy(alpha = 0.15f))
-                    .clickable(onClick = onAddFallback!!)
-                    .padding(horizontal = 10.dp, vertical = 4.dp),
+                    .clickable(onClick = onRetry)
+                    .padding(horizontal = 10.dp, vertical = 3.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Icon(
-                    imageVector = Icons.Default.Add,
+                    imageVector = Icons.Default.Refresh,
                     contentDescription = null,
                     tint = Color(0xFFFF3B30),
-                    modifier = Modifier.size(11.dp),
+                    modifier = Modifier.size(10.dp),
                 )
                 Spacer(modifier = Modifier.width(4.dp))
-                Text(
-                    stringResource(R.string.chat_error_add_fallback),
-                    color = Color(0xFFFF3B30),
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold,
-                )
+                Text(stringResource(R.string.chat_longpress_retry), color = Color(0xFFFF3B30), fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
             }
         }
     }
@@ -724,14 +637,8 @@ internal fun ToolCallPill(
         block.toolStatus == ToolBlockStatus.TIMEOUT
     val isCancelled = block.toolStatus == ToolBlockStatus.CANCELLED
 
-    // [T-uicopy-capsule] Вызов `minis-uicopy` идёт через shell_execute (это
-    // CLI, вшитый в APK), но в капсуле должен читаться как конвейер
-    // реконструкции UI, а не как безымянная команда терминала. Подменяем ТОЛЬКО
-    // косметику (иконка/цвет/подпись) — сам инструмент, схема модели и агент-луп
-    // не меняются.
-    val effectiveTool = effectiveToolName(block.toolName, block.toolArgs)
-    val toolAccent = toolAccentColor(effectiveTool)
-    val toolIcon = toolIconFor(effectiveTool)
+    val toolAccent = toolAccentColor(block.toolName)
+    val toolIcon = toolIconFor(block.toolName)
 
     // Icon color: tool color when running/done, error/cancel colors on failure
     val iconTint = when {
@@ -846,21 +753,7 @@ internal fun ToolCallPill(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    // [T-uicopy-capsule] Для конвейера ui-copy подпись берём из
-                    // фазы (что именно сейчас делается: «Анализирую
-                    // изображение», «Рендерю реконструкцию»), иначе — обычный
-                    // tool_title модели. Fallback на имя инструмента сохранён.
-                    //
-                    // [T-uicopy-diff-verdict] Для завершённого `diff` фаза
-                    // дополняется ИЗМЕРЕННЫМ результатом («Сравниваю с
-                    // оригиналом · MAE 1.96 · совпало 95.0%»): из капсулы должно
-                    // быть видно не только что сравнение шло, но и чем
-                    // закончилось. Пока команда бежит, вердикта ещё нет в
-                    // выводе — тогда показывается только фаза.
-                    text = uiCopyPhaseLabel(block.toolArgs)?.let { phase ->
-                        val verdict = if (isDone) uiCopyDiffVerdict(block.content) else null
-                        if (verdict != null) "$phase · $verdict" else phase
-                    } ?: block.toolTitle.ifEmpty { block.toolName },
+                    text = block.toolTitle.ifEmpty { block.toolName },
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Medium,
                     color = MaterialTheme.colorScheme.onSurface,

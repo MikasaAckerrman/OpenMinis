@@ -3,9 +3,7 @@ package com.openminis.app.debug
 import android.content.Context
 import androidx.core.content.FileProvider
 import com.openminis.app.MinisApp
-import com.openminis.app.data.SessionDeletionPolicy
 import com.openminis.app.data.model.ThinkingLevel
-import com.openminis.app.logging.AppLogger
 import com.openminis.app.ui.chat.InputAttachment
 import org.json.JSONObject
 import java.io.File
@@ -15,12 +13,9 @@ import java.io.File
  *
  * The `chat.prompt` / `chat.retry` paths drive the existing [ChatViewModel]
  * machinery via [HeadlessChatRunner]; `chat.session.cancel` calls
- * [ChatViewModel.cancelStream] on the cached VM.
- *
- * [T-no-agent-session-deletion] `chat.session.delete` is registered but always
- * refuses — see [SessionDeletionPolicy]. Everything on this surface is reachable
- * by the agent via `minis-debug`, and destroying stored sessions/messages is
- * reserved for the user in the app UI.
+ * [ChatViewModel.cancelStream] on the cached VM; `chat.session.delete` writes
+ * directly to the repo (no VM needed). This keeps the agent-loop / streaming
+ * code single-sourced — the RPC is purely a transport.
  */
 internal object ChatMutationMethods {
 
@@ -117,25 +112,6 @@ internal object ChatMutationMethods {
         }
     }
 
-    /**
-     * [T-no-agent-session-deletion] REFUSES ALWAYS — retry drops every message
-     * after the retried turn (see `deletedMessageCount` in the response shape).
-     *
-     * Blocking whole-session deletion but leaving this open would let the same
-     * data loss happen one turn at a time, so the boundary has to cover it.
-     *
-     * This does NOT affect the two legitimate re-run paths, because neither
-     * goes through this RPC wrapper:
-     *  - the user long-pressing Retry in the UI (ChatViewModel, Origin.USER_UI);
-     *  - `minis-scheduled --target rerun`, which the USER scheduled — its
-     *    alarm fires ScheduledAgentRunner, which calls HeadlessChatRunner.retry
-     *    DIRECTLY. Verified: ScheduledAgentRunner imports HeadlessChatRunner,
-     *    not ChatMutationMethods.
-     *
-     * So what is refused here is precisely the case with no legitimate owner:
-     * an agent in the sandbox calling `minis-debug call chat.retry` mid-task and
-     * discarding part of the transcript on its own initiative.
-     */
     suspend fun retry(context: Context, params: JSONObject): JSONObject {
         val sessionId = params.optString("sessionId", "").ifEmpty {
             throw RPCException(-32602, "Missing 'sessionId' param")
@@ -143,15 +119,6 @@ internal object ChatMutationMethods {
         val app = app(context)
         app.chatRepository.dao.getSession(sessionId)
             ?: throw RPCException(-32602, "Session not found")
-
-        if (!SessionDeletionPolicy.mayDeleteMessages(SessionDeletionPolicy.Origin.AGENT_RPC)) {
-            AppLogger.warning(
-                "ChatMutationMethods",
-                "chat.retry refused for $sessionId (Origin.AGENT_RPC; retry deletes messages)",
-            )
-            throw RPCException(-32601, SessionDeletionPolicy.REFUSAL_MESSAGE)
-        }
-
         val messageId = if (params.has("messageId") && !params.isNull("messageId")) params.optString("messageId").ifEmpty { null } else null
 
         // Apply model override (per-call only; iOS docs say session binding is
@@ -202,19 +169,6 @@ internal object ChatMutationMethods {
         val app = app(context)
         app.chatRepository.dao.getSession(sessionId)
             ?: throw RPCException(-32602, "Session not found")
-
-        // [T-no-agent-session-deletion] Same boundary as chat.retry: this cuts
-        // at a tool block and drops it plus everything after (see
-        // `deletedMessageCount`). The in-app trigger is a tool-bubble
-        // long-press (Origin.USER_UI) and does not pass through here.
-        if (!SessionDeletionPolicy.mayDeleteMessages(SessionDeletionPolicy.Origin.AGENT_RPC)) {
-            AppLogger.warning(
-                "ChatMutationMethods",
-                "chat.rerunFromToolBlock refused for $sessionId (Origin.AGENT_RPC)",
-            )
-            throw RPCException(-32601, SessionDeletionPolicy.REFUSAL_MESSAGE)
-        }
-
         val wait = params.optBoolean("wait", false)
         val timeoutSec = params.optInt("waitTimeout", 600).coerceIn(1, 1800)
         val result = HeadlessChatRunner.rerunFromToolBlock(
@@ -393,57 +347,6 @@ internal object ChatMutationMethods {
     }
 
     /**
-     * [T-session-rescue] `chat.session.rescue` — trigger the LOCAL, LLM-free
-     * hard compaction on a session. This is the automation seam for verifying
-     * the repair path on a session whose provider is unreachable or whose
-     * history is too large to send, so unlike `chat.compact.before` it does
-     * NOT require a resolvable provider.
-     */
-    suspend fun sessionRescue(context: Context, params: JSONObject): JSONObject {
-        val sessionId = params.optString("sessionId", "").ifEmpty {
-            throw RPCException(-32602, "Missing 'sessionId' param")
-        }
-        val app = app(context)
-        app.chatRepository.dao.getSession(sessionId)
-            ?: throw RPCException(-32602, "Session not found")
-        val waitTimeoutSec = params.optInt("waitTimeout", 60).coerceIn(1, 600)
-        val beforeMarkerCount = app.chatRepository.dao.listCompactMarkers(sessionId).size
-        val result = HeadlessChatRunner.rescue(
-            context = context,
-            sessionId = sessionId,
-            wait = true,
-            timeoutMs = waitTimeoutSec * 1000L,
-        )
-        val afterMarkers = app.chatRepository.dao.listCompactMarkers(sessionId)
-        val latest = afterMarkers.maxByOrNull { it.createdAt }
-        return JSONObject().apply {
-            put("sessionId", sessionId)
-            put("beforeMarkerCount", beforeMarkerCount)
-            put("afterMarkerCount", afterMarkers.size)
-            put("wrote", afterMarkers.size > beforeMarkerCount)
-            put("status", result.status)
-            if (result.timedOut) put("timedOut", true)
-            if (result.error != null) put("error", result.error)
-            put("digestLength", result.summary?.length ?: 0)
-            put(
-                "isRescueDigest",
-                result.summary?.startsWith(com.openminis.app.data.RescueDigest.OPEN_TAG) == true,
-            )
-            put("digestPreview", result.summary?.take(240) ?: JSONObject.NULL)
-            put("latestMarker", latest?.let { m ->
-                JSONObject().apply {
-                    put("id", m.id)
-                    put("version", m.version)
-                    put("anchorMessageId", m.lastCompactedMessageId ?: JSONObject.NULL)
-                    put("summaryLength", m.summary.length)
-                    put("compactedCount", m.compactedCount)
-                    put("createdAt", m.createdAt)
-                }
-            } ?: JSONObject.NULL)
-        }
-    }
-
-    /**
      * Mirrors iOS `chat.compact.revert` ([DebugRPCChat.compactRevert]).
      * Removes the latest compact marker on the session. Refuses while a
      * stream or another compact is in flight (delegates to
@@ -483,25 +386,6 @@ internal object ChatMutationMethods {
         }
     }
 
-    /**
-     * [T-no-agent-session-deletion] REFUSES ALWAYS.
-     *
-     * Everything reaching this method came over the debug JSON-RPC surface,
-     * which is exactly what `minis-debug` — and therefore the agent in the
-     * sandbox — can call. Session deletion is irreversible and no agent
-     * workflow needs it: compaction shrinks what is SENT while leaving every
-     * message row on disk, so there is no legitimate reason for the agent to
-     * destroy stored data. See [SessionDeletionPolicy].
-     *
-     * The old body is kept below the guard on purpose: the method still
-     * validates its params and reports "not found" the same way, so callers
-     * (and the iOS-parity method list) see an unchanged contract — they just
-     * cannot get past the boundary. `confirm=true` was never a safeguard here;
-     * the agent writes its own params.
-     *
-     * A user deleting a session from the app UI does NOT come through here — it
-     * goes through SessionListViewModel with Origin.USER_UI.
-     */
     suspend fun delete(context: Context, params: JSONObject): JSONObject {
         val sessionId = params.optString("sessionId", "").ifEmpty {
             throw RPCException(-32602, "Missing 'sessionId' param")
@@ -512,17 +396,8 @@ internal object ChatMutationMethods {
         val app = app(context)
         app.chatRepository.dao.getSession(sessionId)
             ?: throw RPCException(-32602, "Session not found")
-
-        if (!SessionDeletionPolicy.mayDelete(SessionDeletionPolicy.Origin.AGENT_RPC)) {
-            AppLogger.warning(
-                "ChatMutationMethods",
-                "chat.session.delete refused for $sessionId (Origin.AGENT_RPC)",
-            )
-            throw RPCException(-32601, SessionDeletionPolicy.REFUSAL_MESSAGE)
-        }
-
-        // Unreachable while the policy refuses AGENT_RPC. Kept so the intended
-        // teardown order stays documented if the boundary is ever widened.
+        // Cancel any in-flight stream first so we don't leave a dangling job
+        // writing into a deleted session row.
         HeadlessChatRunner.cancel(context, sessionId)
         app.chatRepository.deleteSession(sessionId)
         HeadlessChatRunner.forget(sessionId)

@@ -64,13 +64,13 @@ interface ChatDao {
     // stands in for the whole run. Keeping the run id on BOTH means deleting the
     // showcase can find and remove its workers.
     @Query(
-        "SELECT * FROM sessions WHERE agent_run_id IS NULL " +
+        "SELECT * FROM sessions WHERE agent_run_id IS NULL OR is_agent_showcase = 1 " +
             "ORDER BY updated_at DESC"
     )
     fun observeSessions(): Flow<List<ChatSessionEntity>>
 
     @Query(
-        "SELECT * FROM sessions WHERE agent_run_id IS NULL " +
+        "SELECT * FROM sessions WHERE agent_run_id IS NULL OR is_agent_showcase = 1 " +
             "ORDER BY updated_at DESC"
     )
     suspend fun listSessions(): List<ChatSessionEntity>
@@ -173,30 +173,6 @@ interface ChatDao {
     @Query("DELETE FROM messages WHERE session_id = :sessionId AND sort_order >= :keepCount")
     suspend fun deleteMessagesAfter(sessionId: String, keepCount: Int)
 
-    /**
-     * [session-longpress-compress] Delete every message row of a session whose
-     * sort_order is STRICTLY LESS than [beforeSortOrder]. Used to permanently
-     * shrink a compacted session: after a rescue digest is written, the folded
-     * rows are no longer sent to the model (the digest replaces them), so
-     * keeping them only bloats the DB and slows session open. The anchor row
-     * itself (sort_order == beforeSortOrder) is preserved so the compact
-     * marker's boundary still resolves and the last exchange stays visible.
-     */
-    @Query("DELETE FROM messages WHERE session_id = :sessionId AND sort_order < :beforeSortOrder")
-    suspend fun deleteMessagesBefore(sessionId: String, beforeSortOrder: Int): Int
-
-    /**
-     * [T-message-surgery] Delete ONE message row, leaving everything after it
-     * in place. Distinct from [deleteMessagesAfter], which is the retry/edit
-     * "truncate the tail" primitive — here the user is removing a single turn
-     * from the middle of a session they want to keep going.
-     *
-     * Returns the number of rows removed (0 = id not in this session), so the
-     * caller can tell a real deletion from a stale id instead of guessing.
-     */
-    @Query("DELETE FROM messages WHERE session_id = :sessionId AND id = :messageId")
-    suspend fun deleteMessageById(sessionId: String, messageId: String): Int
-
     @Query("SELECT COUNT(*) FROM messages")
     suspend fun totalMessageCount(): Int
 
@@ -294,13 +270,11 @@ interface ChatDao {
     suspend fun updateLastAssistantError(sessionId: String, errorInfo: String?)
 
     // Pinned sessions first, then by updated_at.
-    // [T-agent-graph-showcase-hide] Worker AND showcase sessions are hidden: a
-    // run now surfaces as a live card inside the chat that started it (see
-    // AgentRunProgressCard), so a separate showcase chat in the list is just
-    // noise the user did not create. The showcase session still exists (kept for
-    // its transcript, reachable via the card), it is only excluded from the list.
+    // [T-agent-graph-showcase] Same worker filter as observeSessions: an agent
+    // run's worker sessions must not surface here either, or the list this feeds
+    // would show them despite the main list hiding them.
     @Query(
-        "SELECT * FROM sessions WHERE agent_run_id IS NULL " +
+        "SELECT * FROM sessions WHERE agent_run_id IS NULL OR is_agent_showcase = 1 " +
             "ORDER BY CASE WHEN pinned_at IS NOT NULL THEN 0 ELSE 1 END, pinned_at DESC, updated_at DESC"
     )
     fun observeSessionsSorted(): Flow<List<ChatSessionEntity>>

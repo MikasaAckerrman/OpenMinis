@@ -280,23 +280,6 @@
     <string name="action_print">Печать</string>
     <string name="filepreview_save_to_gallery">Сохранить в галерею</string>
     <string name="filepreview_save_as">Сохранить как…</string>
-    <string name="settings_agent_models">Модели агентов</string>
-    <string name="settings_agent_models_subtitle">Выбор модели для каждой роли агента</string>
-    <string name="settings_agent_models_header">Модель по роли</string>
-    <string name="settings_agent_models_footer">По умолчанию каждая роль агента работает на той модели, в которой вы сейчас общаетесь, — то есть агенты используют провайдера, за которого вы уже платите. Здесь можно закрепить за ролью конкретную модель. Ключ для роли (agent.keys.&lt;role&gt;) по-прежнему имеет приоритет.</string>
-    <string name="agent_models_use_current">Моя текущая модель</string>
-    <string name="agent_models_use_current_named">Моя текущая модель (%1$s)</string>
-    <string name="agent_models_no_models">Нет доступных текстовых моделей — сначала добавьте провайдера</string>
-    <string name="agent_role_planner">Планировщик</string>
-    <string name="agent_role_analyst">Аналитик требований</string>
-    <string name="agent_role_architect">Архитектор</string>
-    <string name="agent_role_coder">Разработчик</string>
-    <string name="agent_role_reviewer">Ревьюер</string>
-    <string name="agent_role_tester">Проектировщик тестов</string>
-    <string name="filepreview_install_apk">Установить APK</string>
-    <string name="filepreview_apk_unreadable">Файл APK недоступен</string>
-    <string name="filepreview_enable_install_permission">Разрешите Minis устанавливать неизвестные приложения и нажмите «Установить APK» ещё раз</string>
-    <string name="filepreview_apk_install_failed">Не удалось открыть установщик пакетов</string>
     <string name="filepreview_loading">Загрузка…</string>
     <string name="filepreview_loading_pdf">Загрузка PDF…</string>
     <string name="filepreview_loading_archive">Чтение архива…</string>
@@ -351,12 +334,6 @@
     <string name="sessionlist_regenerate_title">Создать название заново</string>
     <string name="sessionlist_regenerating_title">Создание названия…</string>
     <string name="sessionlist_duplicate">Дублировать</string>
-    <!-- [session-longpress-compress] -->
-    <string name="sessionlist_compress">Сжать контекст</string>
-    <string name="sessionlist_compressing">Сжимаю…</string>
-    <string name="sessionlist_compress_done">Контекст сжат (−%1$d%%)</string>
-    <string name="sessionlist_compress_empty">В этой сессии нечего сжимать</string>
-    <string name="sessionlist_compress_failed">Не удалось сжать сессию</string>
     <string name="sessionlist_search_action">Поиск</string>
     <string name="sessionlist_dismiss">Закрыть</string>
     <string name="sessionlist_delete_one_title">Удалить разговор?</string>
@@ -731,11 +708,6 @@
     <string name="share_provider_json_import_failed">Недействительный файл конфигурации провайдера</string>
     <string name="provider_list_api_key">Ключ API</string>
     <string name="provider_list_disabled">Отключено</string>
-    <!-- [T-provider-folders] Пользовательские папки в списке провайдеров. -->
-    <string name="provider_list_folder_key_count">Провайдеров: %1$d</string>
-    <string name="provider_detail_folder">Папка</string>
-    <string name="provider_detail_folder_placeholder">Без папки</string>
-    <string name="provider_detail_folder_footer">Сгруппируйте провайдеров одного источника в одну папку в списке. Оставьте пустым, чтобы провайдер остался без папки.</string>
     <string name="provider_detail_export">Экспортировать</string>
     <string name="provider_detail_label">Метка</string>
     <string name="provider_detail_manual_bearer_token">Ручной Bearer-токен</string>
@@ -885,29 +857,6 @@
     <string name="settings_section_notifications">Уведомления</string>
     <string name="settings_task_notifications">Уведомления о задачах</string>
     <string name="settings_task_notifications_footer">Уведомлять, когда задача агента завершается, пока приложение в фоне. Показывает прогресс в шторке уведомлений и на экране блокировки.</string>
-    <!-- [T-completion-haptics] Двойная вибрация при завершении хода. -->
-    <string name="settings_completion_vibration">Вибрация по завершении</string>
-    <string name="settings_completion_vibration_footer">Два коротких импульса, когда ответ дописан — и когда приложение открыто, и когда в фоне. Молчит, если ход остановили вы сами, и подчиняется режиму «Не беспокоить».</string>
-    <string name="settings_completion_vibration_unavailable">На этом устройстве нет вибромотора.</string>
-    <!-- [T-haptics-customization] Настройка формы вибрации. -->
-    <string name="settings_vibration_pattern">Рисунок</string>
-    <string name="settings_vibration_strength">Сила</string>
-    <string name="settings_vibration_length">Длительность</string>
-    <string name="settings_vibration_bypass_dnd">Игнорировать беззвучный режим</string>
-    <string name="settings_vibration_bypass_dnd_footer">Вибрировать даже в беззвучном режиме и в «Не беспокоить». Включите, если не чувствуете вибрацию при выключенном экране — некоторые оболочки (в том числе OriginOS) глушат вибрацию уведомлений, когда звук выключен.</string>
-    <string name="vibration_pattern_double">Двойная</string>
-    <string name="vibration_pattern_single_long">Одна длинная</string>
-    <string name="vibration_pattern_triple">Тройная</string>
-    <string name="vibration_pattern_short_long">Короткая + длинная</string>
-    <string name="vibration_pattern_heartbeat">Пульс</string>
-    <string name="vibration_pattern_long_rumble">Гул</string>
-    <string name="vibration_strength_light">Слабая</string>
-    <string name="vibration_strength_medium">Средняя</string>
-    <string name="vibration_strength_strong">Сильная</string>
-    <string name="vibration_length_short">Короткая</string>
-    <string name="vibration_length_normal">Обычная</string>
-    <string name="vibration_length_long">Длинная</string>
-    <string name="vibration_length_extra_long">Очень длинная</string>
     <string name="notif_one_task_running">1 задача выполняется</string>
     <string name="notif_n_tasks_running">Задач выполняется: %1$d</string>
     <string name="notif_in_session">В сессии</string>
@@ -948,7 +897,6 @@
     <string name="agent_loop_section_remove">Убрать из цикла агента</string>
     <string name="agent_loop_section_group_badge">Группа</string>
     <string name="chat_menu_new_chat">Новый чат</string>
-    <string name="chat_menu_choose_model">Выбрать модель</string>
     <string name="chat_new_chat_stop_dialog_body">В этом чате выполняется задача. Новый чат остановит её.</string>
     <string name="chat_new_chat_stop_dialog_confirm">Остановить и создать чат</string>
     <string name="chat_menu_clear_chat">Очистить чат</string>
@@ -961,8 +909,6 @@
     <string name="enhanced_cache_dialog_confirm">Включить</string>
     <string name="chat_longpress_copy">Копировать</string>
     <string name="chat_longpress_retry">Повторить</string>
-    <!-- [429/content-filter fallback CTA] -->
-    <string name="chat_error_add_fallback">Добавить запасную модель</string>
     <string name="tool_longpress_rerun_from_here">Перезапустить отсюда</string>
     <string name="tool_longpress_copy_details">Копировать сведения об инструменте</string>
     <string name="tool_longpress_copied_toast">Сведения об инструменте скопированы</string>
@@ -973,9 +919,6 @@
     <string name="add_models_to_group_no_match">Подходящие модели не найдены.</string>
     <string name="chat_longpress_edit">Изменить</string>
     <string name="chat_edit_exit_button">Выйти из режима редактирования</string>
-    <!-- A1 — переключатель «Агенты» в композере -->
-    <string name="chat_agents_toggle_on">Агенты включены — этот чат ведёт команда агентов</string>
-    <string name="chat_agents_toggle_off">Агенты выключены — маршрутизация решает сама</string>
     <string name="chat_clear_dialog_body">Удалить все сообщения из этой сессии? Файлы в рабочей области, вложения и выгрузки сохранятся.</string>
     <string name="chat_clear_dialog_confirm">Очистить</string>
     <string name="settings_shared_folders">Общие папки</string>
@@ -1022,40 +965,6 @@
     <string name="slash_thinking_subtitle">Рассуждение %1$s — нажмите для переключения</string>
     <string name="slash_thinking_unsupported">Не поддерживается текущей моделью</string>
     <string name="slash_clear_subtitle">Очистить все сообщения в этой сессии</string>
-    <string name="slash_rescue_title">Спасти</string>
-    <string name="slash_rescue_subtitle">Починить зависшую сессию — сжатие на устройстве, без запроса к модели</string>
-    <string name="rescue_busy_streaming">Нельзя спасать, пока идёт ответ. Сначала остановите текущий ход.</string>
-    <string name="rescue_busy_compacting">Сжатие уже выполняется. Дождитесь его завершения.</string>
-    <string name="rescue_empty_session">Спасать нечего — сессия пуста.</string>
-    <string name="rescue_no_persisted_messages">Нельзя спасти: пока нет сохранённых сообщений для привязки.</string>
-    <string name="rescue_nothing_to_digest">Спасать нечего — в сессии нет читаемого содержимого.</string>
-    <string name="rescue_done">Сессия спасена локально: ~%1$d → ~%2$d токенов (дайджест %3$d симв.). Большие выводы инструментов перенесены в /var/minis/offloads/ и доступны через file_read. Отменить — «Откатить сжатие».</string>
-    <string name="rescue_failed">Спасение не удалось: %1$s</string>
-    <string name="rescue_hint_suffix">Похоже, история этой сессии слишком велика для отправки. Введите /rescue — она будет сжата прямо на устройстве, без запроса к модели. Ничего не удаляется, отменить можно через «Откатить сжатие».</string>
-    <string name="rescue_refine_done">Сводку переписала модель: %1$d симв. (~%2$d токенов). Все пути, ссылки и хеши проверены — на месте.</string>
-    <string name="rescue_refine_rejected">Модель при переписывании потеряла часть дословных деталей, поэтому оставлена сводка, собранная на устройстве. Ничего не потеряно.</string>
-    <string name="rescue_refine_unavailable">Модель недоступна для шага переписывания — оставлена сводка, собранная на устройстве. Сессия работоспособна в любом случае.</string>
-    <string name="msg_longpress_delete">Удалить сообщение</string>
-    <string name="msg_longpress_rewrite">Переписать текст</string>
-    <string name="msg_delete_busy_streaming">Остановите текущий ответ, прежде чем менять историю.</string>
-    <string name="msg_delete_busy_compacting">Дождитесь окончания сжатия, прежде чем менять историю.</string>
-    <string name="msg_delete_not_found">Этого сообщения больше нет в сессии.</string>
-    <string name="msg_delete_done">Удалено сообщений: %1$d — и из чата, и из истории, которую видит модель.</string>
-    <string name="msg_delete_done_with_notes">Удалено сообщений: %1$d. Чтобы история осталась корректной: %2$s.</string>
-    <string name="msg_delete_failed">Не удалось удалить: %1$s</string>
-    <string name="msg_rewrite_done">Текст сообщения переписан. Дальше модель читает новую версию.</string>
-    <string name="msg_rewrite_no_text">В этом сообщении нет редактируемого текста (только вызовы инструментов или вложения).</string>
-    <string name="msg_rewrite_dialog_title">Переписать сообщение</string>
-    <string name="msg_rewrite_dialog_hint">Это реально заменяет сохранённый текст — на следующем ходу модель прочитает новую версию. Вызовы инструментов и вложения сохраняются.</string>
-    <string name="msg_rewrite_save">Сохранить</string>
-    <string name="msg_delete_confirm_title">Удалить это сообщение?</string>
-    <string name="msg_delete_confirm_body">Оно исчезнет из чата и из того, что видит модель. Связанные вызовы инструментов или их результаты могут быть удалены тоже — чтобы история осталась корректной. Отменить нельзя.</string>
-    <string name="maintenance_full_compact">Контекст %1$d / %2$d токенов — сворачиваю старые ходы в сводку в фоне. Текущий ход при этом отправляется.</string>
-    <string name="maintenance_rescue_compact">Контекст %1$d / %2$d токенов — слишком много, чтобы надёжно сжать через модель, поэтому сжимаю на устройстве. Отменить — «Откатить сжатие».</string>
-    <string name="maintenance_context_full_retry">Провайдер сообщил, что окно контекста заполнено. Сжимаю на устройстве и повторяю этот ход — ничего не теряется, отменить можно через «Откатить сжатие».</string>
-    <string name="compact_retry_smaller">Модель отказала по стоимости — запрашиваю более короткую сводку (%1$d токенов) на той же модели.</string>
-    <string name="compact_switching_model">У этой модели лимит запросов или закончилась квота — пробую %1$s из той же группы.</string>
-    <string name="compact_all_routes_refused">Отказали все модели (%1$s). Сжимаю на устройстве — запрос к модели не нужен, сессия останется работоспособной.</string>
     <string name="thinking_level_off">Выкл.</string>
     <string name="thinking_level_low">Низкое</string>
     <string name="thinking_level_medium">Среднее</string>
@@ -1340,10 +1249,8 @@
     <string name="session_mcps_empty_title">Нет серверов MCP</string>
     <string name="session_mcps_empty_subtitle">Добавьте серверы в Настройки → Интеграции MCP.</string>
     <string name="error_empty_response_generic">Модель вернула пустой ответ. Попробуйте ещё раз или смените модель.</string>
-    <string name="chat_history_still_loading">История беседы ещё загружается. Черновик и вложения сохранены — попробуйте отправить снова через несколько секунд.</string>
     <string name="error_empty_response_context_large">Модель вернула пустой ответ. Контекст беседы может быть слишком большим — попробуйте сжать его или начать новую сессию.</string>
     <string name="error_empty_response_after_tool">Модель не вернула ответ после результата инструмента, даже после напоминания. Возможно, она перегружена — попробуйте ещё раз или смените модель.</string>
-    <string name="error_output_limit_reached">Модель достигла лимита выходных токенов и не успела закончить. Нажмите «Продолжить», чтобы продолжить с частичного ответа.</string>
     <string name="thinking_truncated_hint">Показаны последние %1$dK из %2$dK символов</string>
     <string name="thinking_view_full">Показать полное содержимое</string>
     <!-- Spoken substitutions for links during read-aloud (TTS) -->

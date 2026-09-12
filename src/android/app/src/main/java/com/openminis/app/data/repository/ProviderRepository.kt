@@ -1772,32 +1772,8 @@ class ProviderRepository(private val context: Context) {
     }
 
     // API Key management
-
-    /**
-     * [T-stale-credential-after-key-swap] Bumped on every credential write.
-     *
-     * Providers are built ONCE per session (ChatViewModel.currentProvider) and
-     * capture the API key as a constructor string. Nothing used to tell a live
-     * session that the key it captured is no longer the stored one, so after
-     * "paste new key in Settings → Providers" every open chat kept sending the
-     * OLD key until the process was killed — surfacing as "Invalid API key" on
-     * a brand-new, fully-funded key, "fixed" only by force-closing the app.
-     *
-     * A monotonic generation counter is the smallest honest signal: consumers
-     * that cache a provider observe it and rebuild. We deliberately do NOT
-     * expose the key itself through a flow — the value stays in the encrypted
-     * store and is read on demand at rebuild time.
-     */
-    private val _credentialGeneration = MutableStateFlow(0)
-    val credentialGeneration: StateFlow<Int> = _credentialGeneration.asStateFlow()
-
     fun saveApiKey(instanceId: String, key: String) {
-        val previous = encryptedPrefs.getString("apikey_$instanceId", null)
         encryptedPrefs.edit().putString("apikey_$instanceId", key).apply()
-        // Only signal on an actual change: OAuth refresh paths call this with
-        // an identical token on every validity check, and rebuilding providers
-        // on a no-op write would churn every open session for nothing.
-        if (previous != key) _credentialGeneration.value += 1
     }
 
     fun loadApiKey(instanceId: String): String? {
@@ -1805,9 +1781,7 @@ class ProviderRepository(private val context: Context) {
     }
 
     fun deleteApiKey(instanceId: String) {
-        val existed = encryptedPrefs.contains("apikey_$instanceId")
         encryptedPrefs.edit().remove("apikey_$instanceId").apply()
-        if (existed) _credentialGeneration.value += 1
     }
 
     // -- Import / Export --
@@ -1960,10 +1934,6 @@ class ProviderRepository(private val context: Context) {
             // when set; old/new readers without the key decode to null →
             // default UA. Field name matches iOS for cross-platform interop.
             instance.customUserAgent?.takeIf { it.isNotBlank() }?.let { put("customUserAgent", it) }
-            // [T-provider-folders] Additive, optional. Carries the list-UI
-            // folder across export/import so re-importing a bundle of keys
-            // lands them back in the same folder instead of ungrouped.
-            instance.folder?.takeIf { it.isNotBlank() }?.let { put("folder", it) }
         }
         return obj.toString(2)
     }
@@ -1999,8 +1969,6 @@ class ProviderRepository(private val context: Context) {
         // [T-provider-custom-user-agent] Additive: old exports lack the key →
         // empty → null → default UA. Field name matches iOS.
         val customUserAgent = dict.optString("customUserAgent", "").ifEmpty { null }
-        // [T-provider-folders] Additive: old exports lack the key → ungrouped.
-        val folder = dict.optString("folder", "").trim().ifEmpty { null }
 
         val instance = ProviderInstance(
             id = java.util.UUID.randomUUID().toString(),
@@ -2011,7 +1979,6 @@ class ProviderRepository(private val context: Context) {
             appendV1Suffix = appendV1,
             useResponsesAPI = useResponsesAPI,
             customUserAgent = customUserAgent,
-            folder = folder,
         )
         addInstance(instance)
 
@@ -2412,22 +2379,7 @@ class ProviderRepository(private val context: Context) {
             }
         }
 
-        // 2. Explicit per-role entry set in Settings → Agent Models.
-        val perRole = agentRoleModelEntryId(role)
-        if (!perRole.isNullOrBlank()) {
-            val entry = config.modelEntries.firstOrNull { it.id == perRole && !it.isHidden }
-            if (entry != null) {
-                resolutionLog?.invoke(
-                    "role '$role' -> Settings per-role model -> ${entry.model.displayName}"
-                )
-                return entry
-            }
-            resolutionLog?.invoke(
-                "role '$role': per-role model '$perRole' no longer visible — falling back"
-            )
-        }
-
-        // 3. Explicit shared default.
+        // 2. Explicit shared default.
         val explicit = agentDefaultModelEntryId
         if (!explicit.isNullOrBlank()) {
             val entry = config.modelEntries.firstOrNull { it.id == explicit && !it.isHidden }
@@ -2443,36 +2395,14 @@ class ProviderRepository(private val context: Context) {
             )
         }
 
-        // 4. THE model the user actually chats with. This is the sensible
-        // default the user expects: "agents use the provider I use". Order:
-        // last-used entry (the model most recently selected/sent) → the first
-        // member of the default primary group. Both are text-capable, on an
-        // enabled provider, and — crucially — the one the user has funded.
-        val userDefault = lastUsedVisibleEntry()
-            ?: defaultPrimaryGroupId
-                ?.let { group(it) }
-                ?.memberEntryIds
-                ?.firstNotNullOfOrNull { mid ->
-                    config.modelEntries.firstOrNull { it.id == mid && !it.isHidden }
-                }
-        if (userDefault != null) {
-            resolutionLog?.invoke(
-                "role '$role' -> user's current model -> ${userDefault.model.displayName} " +
-                    "(override per role in Settings → Agent Models)"
-            )
-            return userDefault
-        }
-
-        // 5. Last-resort catalog pick — never trust catalog order (flagship
-        // first would select a 128K-output Opus and fail quota pre-authorisation).
-        // Prefer the smallest known output cap, then stable display/id ordering.
-        val fallbackCandidates = resolvedAgentLoopEntries() + allVisibleEntries()
-        val fallback = com.openminis.app.offload.AgentModelFallbackSelector
-            .select(fallbackCandidates)
+        // 3. Whatever the user already uses.
+        val fallback = resolvedAgentLoopEntries().firstOrNull()
+            ?: allVisibleEntries().firstOrNull()
+            ?: lastUsedVisibleEntry()
         if (fallback != null) {
             resolutionLog?.invoke(
                 "role '$role' -> implicit fallback -> ${fallback.model.displayName} " +
-                    "(set a per-role model in Settings → Agent Models)"
+                    "(set agent.keys.$role or agent.defaultModelEntry to pin this)"
             )
         } else {
             resolutionLog?.invoke(
@@ -2481,23 +2411,6 @@ class ProviderRepository(private val context: Context) {
         }
         return fallback
     }
-
-    /**
-     * Per-role model entry chosen by the user in Settings → Agent Models.
-     * Null means "no explicit choice; use the shared default / current model".
-     * Keyed per role so a planner and a coder can run on different models.
-     */
-    fun agentRoleModelEntryId(role: String): String? =
-        prefs.getString(agentRoleModelKey(role), null)
-
-    fun setAgentRoleModelEntryId(role: String, entryId: String?) {
-        prefs.edit().apply {
-            if (entryId.isNullOrBlank()) remove(agentRoleModelKey(role))
-            else putString(agentRoleModelKey(role), entryId)
-        }.apply()
-    }
-
-    private fun agentRoleModelKey(role: String) = "agentRoleModel_${role.lowercase()}"
 
     /**
      * Single model entry used by every agent role that has no per-role key.

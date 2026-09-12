@@ -38,18 +38,10 @@ class GeminiProvider(
 ) : LLMProvider {
     override val name = "Google"
 
-    // [LlmDispatchGate] throttle key: pace by endpoint host (see OpenAIProvider).
-    override val throttleKey: String =
-        com.openminis.app.provider.LlmDispatchGate.keyForUrl(basePath)
-
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.MINUTES)
         .writeTimeout(30, TimeUnit.SECONDS)
-        // [T-stale-conn-ping] h2 keep-alive ping so a silently-dropped idle
-        // connection is detected in ~15s instead of hanging the TTFB watchdog.
-        // See OpenAIProvider for the full rationale.
-        .pingInterval(15, TimeUnit.SECONDS)
         // [T-android-stale-conn-retry-hang] Shared pool — see NetworkMonitor.
         // Network-transition eviction must reach provider connections.
         .connectionPool(com.openminis.app.network.NetworkMonitor.sharedLLMConnectionPool)
@@ -64,12 +56,6 @@ class GeminiProvider(
         tools: List<AgentToolDefinition>,
         thinkingLevel: ThinkingLevel,
     ): LLMResponse = withContext(Dispatchers.IO) {
-        // [429-concurrent-sessions] Direct-socket non-streaming path — the only
-        // gate for Gemini's sendMessage. Pace against the per-host bucket and
-        // hold a stream permit for the request's duration. (Streaming is gated
-        // separately in LLMProvider.streamMessage.)
-        com.openminis.app.provider.LlmDispatchGate.awaitRateSlot(throttleKey)
-        com.openminis.app.provider.LlmDispatchGate.withStreamPermit {
         val body = buildRequestBody(messages, systemPrompt, maxTokens, temperature, imageParts, tools, thinkingLevel)
         val url = "$basePath/models/${model.id}:generateContent?key=$apiKey"
         val request = Request.Builder()
@@ -85,7 +71,7 @@ class GeminiProvider(
         val responseBody = response.body?.string() ?: ""
 
         if (!response.isSuccessful) {
-            throw mapHttpError(response.code, responseBody, response.header("Retry-After"))
+            throw mapHttpError(response.code, responseBody)
         }
 
         val json = JSONObject(responseBody)
@@ -94,7 +80,6 @@ class GeminiProvider(
         val usage = extractUsage(json)
         val mediaAttachments = extractInlineMedia(json)
         LLMResponse(text, finishReason ?: "end_turn", usage, mediaAttachments)
-        }
     }
 
     override fun streamMessageClamped(
@@ -132,7 +117,7 @@ class GeminiProvider(
         if (!response.isSuccessful) {
             val errorBody = response.body?.string() ?: ""
             response.close()
-            throw mapHttpError(response.code, errorBody, response.header("Retry-After"))
+            throw mapHttpError(response.code, errorBody)
         }
 
         val reader = BufferedReader(InputStreamReader(response.body!!.byteStream()))
@@ -483,34 +468,12 @@ class GeminiProvider(
         )
     }
 
-    private fun mapHttpError(statusCode: Int, body: String, retryAfterHeader: String? = null): LLMError {
-        if (statusCode == 401 || statusCode == 403) {
-            // See QuotaErrorDetection: 403 covers both auth failure and
-            // balance-too-low pre-charge rejection on relay gateways.
-            if (com.openminis.app.provider.QuotaErrorDetection.isQuotaFailure(body)) {
-                return LLMError.QuotaExceeded(
-                    com.openminis.app.provider.QuotaErrorDetection.describe(body)
-                )
-            }
-            return LLMError.InvalidApiKey()
-        }
-        if (statusCode == 429) {
-            return LLMError.RateLimited(
-                com.openminis.app.provider.RateLimitPolicy.parseRetryAfterMs(retryAfterHeader)
-            )
-        }
+    private fun mapHttpError(statusCode: Int, body: String): LLMError {
+        if (statusCode == 401 || statusCode == 403) return LLMError.InvalidApiKey()
+        if (statusCode == 429) return LLMError.RateLimited()
         val message = "Gemini API error $statusCode: ${body.take(200)}"
         val transientCodes = setOf(500, 502, 503, 504, 529)
-        if (statusCode in transientCodes) {
-            if (com.openminis.app.provider.ContentFilterDetection
-                    .isContentFilterRejection(body)
-            ) {
-                return LLMError.ProviderError(
-                    com.openminis.app.provider.ContentFilterDetection.describe(body),
-                )
-            }
-            return LLMError.TransientError(message)
-        }
+        if (statusCode in transientCodes) return LLMError.TransientError(message)
         return LLMError.ProviderError(message)
     }
 

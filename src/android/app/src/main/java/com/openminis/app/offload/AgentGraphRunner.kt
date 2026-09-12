@@ -14,7 +14,6 @@ import com.openminis.app.data.model.TraceEvent
 import com.openminis.app.data.repository.ProviderRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -36,20 +35,6 @@ internal object AgentGraphRunner {
         val graph: AgentGraph,
         val taskId: String,
         val artifactDir: String,
-        /**
-         * Where [artifactDir] actually lives on the Android filesystem.
-         *
-         * `/var/minis/...` is a path inside the PRoot rootfs, not a host path:
-         * `File("/var/minis/workspace/…")` resolves against the app's real root,
-         * where nothing of the sort exists. Every write therefore threw ENOENT and
-         * killed the node right after a perfectly good handoff. Host I/O goes
-         * through here; [artifactDir] stays the Linux path because that is what
-         * the user sees in logs and taps as `minis://workspace/...`.
-         *
-         * Null only if path resolution is unavailable (PRoot never booted), in
-         * which case artifact persistence is skipped rather than fatal.
-         */
-        val artifactHostDir: File?,
         val input: String,
         val sessionMap: MutableMap<String, String> = mutableMapOf(), // runtimeId -> sessionId
         /**
@@ -61,7 +46,7 @@ internal object AgentGraphRunner {
          */
         val sessionByGroup: MutableMap<String, String> = mutableMapOf(),
         /** The single user-visible session narrating this run, or null. */
-        val showcaseId: String? = null,
+        var showcaseId: String? = null,
         val handoffMap: MutableMap<String, Handoff> = mutableMapOf(), // nodeId -> handoff received
         val artifactIndex: MutableMap<String, String> = mutableMapOf(), // path -> content
         val trace: MutableList<TraceEvent> = mutableListOf(),
@@ -138,61 +123,16 @@ internal object AgentGraphRunner {
                 "contextBudget=${graph.config.contextBudgetTokens}",
         )
 
-        // [T-agent-graph-showcase] One readable session narrating the run. Worker
-        // sessions stay hidden; this is what the user opens. Created before the
-        // first node so the very first "started" line has somewhere to land, and
-        // before the artifact dir is resolved so artifacts land in the workspace
-        // THIS session's `minis://workspace/...` links point at.
-        val showcaseId = AgentRunShowcase.create(
-            context = context,
-            taskId = taskId,
-            graphName = graph.name,
-            input = input,
-            nodeCount = graph.nodes.size,
-            runtimeCount = runtimeCount,
-        )
-        // [T-agent-graph-live-progress] Open the live progress record BEFORE the
-        // first node, for the same reason the showcase is created first: an event
-        // arriving for an unknown taskId is dropped, so a late begin() would lose
-        // the entry node's start.
-        AgentRunProgress.begin(taskId, graph.name)
-
-        // Prepare artifact directory.
-        //
-        // ARTIFACT_DIR_BASE is a Linux path inside the PRoot rootfs, so it must be
-        // translated before any host-side File call. Doing it once here keeps
-        // every later write honest; `File("/var/minis/…")` silently points at a
-        // non-existent host directory and every write throws ENOENT.
-        //
-        // Resolved against the showcase session when there is one: `workspace` is
-        // a per-session subdir, and the global mount map is last-writer-wins
-        // across sessions, so the session-scoped resolver is the only one that
-        // reliably answers "where will the link in THIS chat point".
+        // Prepare artifact directory
         val artifactDir = "$ARTIFACT_DIR_BASE/$taskId"
-        val artifactHostDir = (
-            if (showcaseId != null) {
-                com.openminis.app.sandbox.PRootKernel
-                    .resolveSessionHostPath(showcaseId, artifactDir, context)
-            } else {
-                com.openminis.app.sandbox.PRootKernel.resolveHostPath(artifactDir)
-            }
-            )?.also { it.mkdirs() }
-        if (artifactHostDir == null) {
-            com.openminis.app.logging.AppLogger.warning(
-                LOG_TAG,
-                "[${taskId.take(8)}] cannot resolve host path for $artifactDir — " +
-                    "artifacts will not be persisted (run continues)",
-            )
-        }
+        File(artifactDir).mkdirs()
 
         // Initialize state
         val state = GraphState(
             graph = graph,
             taskId = taskId,
             artifactDir = artifactDir,
-            artifactHostDir = artifactHostDir,
             input = input,
-            showcaseId = showcaseId,
         )
 
         // Initialize all nodes as PENDING
@@ -202,6 +142,18 @@ internal object AgentGraphRunner {
                 state.nodeStatus[rid] = NodeStatus.PENDING
             }
         }
+
+        // [T-agent-graph-showcase] One readable session narrating the run. Worker
+        // sessions stay hidden; this is what the user opens. Created before the
+        // first node so the very first "started" line has somewhere to land.
+        state.showcaseId = AgentRunShowcase.create(
+            context = context,
+            taskId = taskId,
+            graphName = graph.name,
+            input = input,
+            nodeCount = graph.nodes.size,
+            runtimeCount = runtimeCount,
+        )
 
         val execContext = ExecutionContext(state, context, providerRepo, json)
 
@@ -217,23 +169,13 @@ internal object AgentGraphRunner {
             artifactCount = result.artifacts.size,
             scopeViolations = state.scopeViolations,
         )
-        // Mark the run settled. NOT cleared here: the chat still has to render
-        // the final card and commit its message, and clearing now would make the
-        // card vanish mid-commit. Ownership of the cleanup sits with the caller
-        // that showed the card.
-        AgentRunProgress.finish(taskId, result.status.name)
 
         // Tool policies are keyed by session id in a process-wide map. Without
         // this the map grows by one entry per node per run and never shrinks —
         // small, but a leak that also means a deleted session's policy lingers
-        // and could apply to a recycled id. Same for the role prompt store.
+        // and could apply to a recycled id.
         for (sid in state.sessionMap.values + state.sessionByGroup.values) {
             com.openminis.app.tools.AgentToolPolicyStore.clearPolicy(sid)
-            com.openminis.app.tools.AgentSystemPromptStore.clearPrompt(sid)
-            com.openminis.app.tools.AgentRuntimePolicyStore.clear(sid)
-            com.openminis.app.tools.AgentWorkspaceStore.clear(sid)
-            com.openminis.app.tools.AgentNodeBinding.unbind(sid)
-            com.openminis.app.tools.AgentToolBudgetStore.clear(sid)
         }
 
         // Write trace
@@ -242,7 +184,7 @@ internal object AgentGraphRunner {
         }
 
         // Write final artifacts summary
-        writeArtifactIndex(state, result.artifacts)
+        writeArtifactIndex(artifactDir, result.artifacts)
 
         // A per-node status summary is the single most useful line when a run
         // did not do what was expected: it shows at a glance which stage was
@@ -292,36 +234,7 @@ internal object AgentGraphRunner {
         return node to (idx - 1)
     }
 
-    /**
-     * Run the graph, with node coroutines as children of the caller.
-     *
-     * The [kotlinx.coroutines.coroutineScope] wrapper is load-bearing: nodes used
-     * to be launched into a freshly built `CoroutineScope`, which made them
-     * unreachable from the caller's Job. That was survivable while runs only
-     * started from debug RPC, but a run started from a chat turn can be
-     * cancelled by the user tapping Stop — and orphaned nodes would keep calling
-     * models, spending tokens on a turn nobody is waiting for.
-     */
-    private suspend fun executeGraph(execContext: ExecutionContext): GraphRunResult =
-        kotlinx.coroutines.coroutineScope {
-            try {
-                executeGraphIn(this, execContext)
-            } finally {
-                // A run reaches its verdict as soon as the exit nodes are
-                // terminal — an unrelated parallel branch may still be mid-call.
-                // Cancel those: their output can no longer change the result, so
-                // letting them finish is pure token spend. coroutineScope then
-                // waits for the cancelled children to unwind, which also means
-                // nothing is still appending to state.trace when the caller gets
-                // the result.
-                coroutineContext[Job]?.cancelChildren()
-            }
-        }
-
-    private suspend fun executeGraphIn(
-        scope: kotlinx.coroutines.CoroutineScope,
-        execContext: ExecutionContext,
-    ): GraphRunResult {
+    private suspend fun executeGraph(execContext: ExecutionContext): GraphRunResult {
         val state = execContext.state
         val graph = state.graph
 
@@ -335,32 +248,6 @@ internal object AgentGraphRunner {
         val runningJobs = mutableMapOf<String, Job>()
 
         while (true) {
-            // Reap completed jobs BEFORE deciding that "work is in flight".
-            //
-            // Previously this block lived below the two empty-queue branches.
-            // As soon as the entry node finished, readyQueue was empty and
-            // runningJobs still contained its already-completed Job. The loop
-            // interpreted that as active work, delayed, and continued forever;
-            // the code that removed the Job and queued its successor was
-            // permanently unreachable. Live symptom: Orchestrator reported a
-            // valid COMPLETE handoff, but Implementer never started.
-            val completedNodeIds = runningJobs
-                .filterValues { it.isCompleted }
-                .keys
-                .toList()
-            for (nodeId in completedNodeIds) {
-                runningJobs.remove(nodeId)
-                for (readyId in queueSuccessors(execContext, nodeId)) {
-                    if (readyId !in state.dispatched) {
-                        readyQueue.add(readyId)
-                        val targetRole = resolveRuntimeNode(graph, readyId)?.first?.role
-                        if (targetRole != null) {
-                            addTrace(state, readyId, targetRole, "QUEUED", "successor of $nodeId")
-                        }
-                    }
-                }
-            }
-
             // Exit when every declared exit node reached a terminal state and
             // nothing is left to run. `all {}` on an empty list is true, so a
             // graph without exitNodeIds ends as soon as the queue drains —
@@ -408,32 +295,25 @@ internal object AgentGraphRunner {
                 // for "already launched".
                 if (!state.dispatched.add(nodeId)) continue
 
-                val job = scope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                    // executeNode's failure paths all mark status and return, but
-                    // an unexpected throw would escape into a bare CoroutineScope
-                    // with no handler — i.e. the thread's default handler, i.e. an
-                    // app crash. Now that a run can be started from the chat send
-                    // path rather than only from debug RPC, that is a crash in the
-                    // user's face. Contain it: a thrown node is a FAILED node.
-                    try {
-                        executeNode(execContext, node, nodeId, replicaIndex)
-                    } catch (e: kotlinx.coroutines.CancellationException) {
-                        state.nodeStatus[nodeId] = NodeStatus.FAILED
-                        addTrace(state, nodeId, node.role, "CANCELLED", "node cancelled")
-                        throw e
-                    } catch (e: Exception) {
-                        state.nodeStatus[nodeId] = NodeStatus.FAILED
-                        addTrace(
-                            state, nodeId, node.role, "ERROR",
-                            "${e.javaClass.simpleName}: ${e.message ?: "no message"}",
-                        )
-                        com.openminis.app.logging.AppLogger.error(
-                            LOG_TAG,
-                            "[${state.taskId.take(8)}] node $nodeId threw: ${e.javaClass.simpleName}: ${e.message}",
-                        )
-                    }
+                val job = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                    executeNode(execContext, node, nodeId, replicaIndex)
                 }
                 runningJobs[nodeId] = job
+            }
+
+            // Check completed jobs
+            val toRemove = mutableListOf<String>()
+            for ((nodeId, job) in runningJobs) {
+                if (job.isCompleted) {
+                    toRemove.add(nodeId)
+                }
+            }
+            for (nodeId in toRemove) {
+                runningJobs.remove(nodeId)
+                // Queue successors that just became runnable
+                for (readyId in queueSuccessors(execContext, nodeId)) {
+                    if (readyId !in state.dispatched) readyQueue.add(readyId)
+                }
             }
 
             // Small delay to prevent busy loop
@@ -461,31 +341,8 @@ internal object AgentGraphRunner {
             status = finalStatus,
             artifacts = state.artifactIndex,
             trace = state.trace,
-            finalHandoff = resolveFinalHandoff(state, allExitRuntimeIds),
         )
     }
-
-    /**
-     * The exit node's handoff as text, for callers that show a run to a human.
-     *
-     * Prefers a COMPLETE handoff: with several exit nodes (or replicas), one
-     * blocked branch should not become the reported answer while a finished one
-     * is available. Falls back to any exit handoff, so a run that only got as
-     * far as BLOCKED still explains itself rather than reporting nothing.
-     */
-    private fun resolveFinalHandoff(
-        state: GraphState,
-        exitRuntimeIds: List<String>,
-    ): String? {
-        val chosen = pickFinalHandoff(exitRuntimeIds.mapNotNull { state.handoffMap[it] })
-            ?: return null
-        return HandoffValidator.buildHandoff(chosen)
-    }
-
-    /** See [resolveFinalHandoff]; split out so the choice is testable on its own. */
-    internal fun pickFinalHandoff(exitHandoffs: List<Handoff>): Handoff? =
-        exitHandoffs.firstOrNull { it.status == HandoffStatus.COMPLETE }
-            ?: exitHandoffs.firstOrNull()
 
     /** Execute a single agent node. */
     private suspend fun executeNode(
@@ -552,8 +409,6 @@ internal object AgentGraphRunner {
             context = context,
             modelEntryId = modelEntryId,
             allowedTools = node.allowedTools,
-            maxOutputTokens = graph.config.defaultMaxOutputTokens,
-            workspaceHostPath = state.artifactHostDir?.absolutePath,
             agentRunId = state.taskId,
             agentRole = node.role.name,
         ).also { sessionStore[sessionKey] = it }
@@ -572,65 +427,9 @@ internal object AgentGraphRunner {
             replicaInfo = if (node.replicas > 1) "${replicaIndex + 1}/${node.replicas}" else null,
             model = modelEntryId.take(24),
         )
-        // [T-agent-graph-live-progress] Same event, second consumer: the chat
-        // that started the run renders this so the user sees WHICH agent is
-        // working instead of a silent bubble for minutes.
-        AgentRunProgress.nodeStarted(
-            taskId = state.taskId,
-            runtimeId = runtimeId,
-            role = node.role,
-            label = AgentRunShowcase.roleLabel(node.role),
-            replicaInfo = if (node.replicas > 1) "${replicaIndex + 1}/${node.replicas}" else null,
-            model = modelEntryId.take(24),
-        )
-        // [A3] Let the tool executor find this node from its session id, so the
-        // card can name the tool a long-running agent is currently in.
-        com.openminis.app.tools.AgentNodeBinding.bind(sessionId, state.taskId, runtimeId)
-        // Arm the per-node tool budget. `maxTurns` had been a dead field since
-        // the graph model was written; run 9eb70345 showed the cost — the
-        // planner made 14 tool calls and never produced a plan. Set here rather
-        // than at session creation because a sessionGroup shares one session
-        // across roles, and each role must start with its own budget.
-        com.openminis.app.tools.AgentToolBudgetStore.set(
-            sessionId,
-            if (node.maxTurns > 0) node.maxTurns else AgentToolBudget.DEFAULT_BUDGET,
-            roleLabel = AgentRunShowcase.roleLabel(node.role),
-            artifact = node.ownedArtifact.ifBlank { "your artifact" },
-        )
 
-        // Build system prompt with role + tool allowlist + scope contract.
-        //
-        // [T-agent-graph-role-prompt] Registered in the store the chat layer
-        // reads, which is the ONLY way it reaches the provider — the graph
-        // sends its turns through the normal chat path, and that path builds
-        // its own system prompt. Before this the value was computed and then
-        // discarded, so every node ran as the general Minis assistant: it
-        // answered the task in prose, never emitted a handoff block, and the
-        // run died on the entry node with PARSE_FAILURE.
-        //
-        // Written per turn rather than once at session creation because
-        // sessionGroup nodes share one session: the next role in the group
-        // must overwrite the previous role's contract, not inherit it.
+        // Build system prompt with role + tool allowlist + scope contract
         val systemPrompt = buildSystemPrompt(node, state, replicaIndex)
-        // [T-agent-worker-prompt] Marked as a WORKER prompt: the chat layer uses
-        // it as the WHOLE system prompt instead of appending it under the general
-        // assistant prompt. Measured on PROBE-10, that general prompt is 22 000
-        // chars (~5 500 tokens) of android-*/minis-config/browser_use/memory docs
-        // the worker's schema does not even expose — paid on every call of every
-        // role, and it framed the role contract as a footnote to argue against.
-        com.openminis.app.tools.AgentSystemPromptStore.setPrompt(
-            sessionId,
-            com.openminis.app.tools.AgentWorkerPrompt.build(
-                assistantName = com.openminis.app.agent.SoulStore
-                    .cachedMetadata.value.name.trim().ifEmpty { "Minis" },
-                roleContract = systemPrompt,
-                allowedTools = node.allowedTools.map {
-                    com.openminis.app.tools.AgentTools.canonicalToolName(it)
-                },
-                workspaceDir = state.artifactDir,
-            ),
-            standalone = true,
-        )
 
         // Build user message with handoff from predecessors + input
         val userMessage = buildUserMessage(node, state, runtimeId)
@@ -639,52 +438,23 @@ internal object AgentGraphRunner {
         var response: String? = null
         var attempts = 0
         val maxAttempts = graph.config.retryPolicy.maxRetries + 1
-        // Per-role budget. The graph's flat default is a chat-turn number and cut
-        // the planner off mid-thought on run f0949263; see AgentNodeTimeout.
-        val nodeTimeoutMs = AgentNodeTimeout.timeoutMsFor(node.role, graph.config.defaultTimeoutMs)
 
         while (attempts < maxAttempts && response == null) {
             attempts++
-            addTrace(
-                state, runtimeId, node.role, "ATTEMPT",
-                "Attempt $attempts/$maxAttempts (timeout ${nodeTimeoutMs / 1000}s)",
-            )
-            // Surface the attempt in the chat card: a silent retry looks exactly
-            // like a hang from the user's seat.
-            AgentRunProgress.nodeAttempt(
-                state.taskId, runtimeId, attempts, maxAttempts, nodeTimeoutMs,
-            )
+            addTrace(state, runtimeId, node.role, "ATTEMPT", "Attempt $attempts/$maxAttempts")
 
-            val startedAtMs = System.currentTimeMillis()
             val promptResult = AgentSessionManager.sendAndWait(
                 context = context,
                 sessionId = sessionId,
                 text = userMessage,
                 thinkingLevel = node.thinkingLevel,
-                timeoutMs = nodeTimeoutMs,
+                timeoutMs = graph.config.defaultTimeoutMs,
             )
-            val elapsedMs = System.currentTimeMillis() - startedAtMs
 
             if (promptResult.status == "Completed" && promptResult.responseText != null) {
                 response = promptResult.responseText
             } else if (graph.config.retryPolicy.retryOn.contains(promptResult.status)) {
-                // A node that consumed its whole budget was working, not broken.
-                // Retrying pays the full price to hit the identical wall — that
-                // is precisely how run f0949263 spent three minutes producing
-                // nothing. Stop and let the run report why.
-                if (!AgentNodeTimeout.shouldRetryAfterTimeout(elapsedMs, nodeTimeoutMs)) {
-                    addTrace(
-                        state, runtimeId, node.role, "RETRY_SKIPPED",
-                        "Status: ${promptResult.status} after ${elapsedMs / 1000}s of " +
-                            "${nodeTimeoutMs / 1000}s — the model needed more time, not another try",
-                    )
-                    break
-                }
-                addTrace(
-                    state, runtimeId, node.role, "RETRY",
-                    "Status: ${promptResult.status} after ${elapsedMs / 1000}s, " +
-                        "waiting ${graph.config.retryPolicy.backoffMs}ms",
-                )
+                addTrace(state, runtimeId, node.role, "RETRY", "Status: ${promptResult.status}, waiting ${graph.config.retryPolicy.backoffMs}ms")
                 kotlinx.coroutines.delay(graph.config.retryPolicy.backoffMs)
             } else {
                 // Non-retryable error
@@ -702,9 +472,6 @@ internal object AgentGraphRunner {
                     context, state.showcaseId, node.role,
                     "no valid reply after $maxAttempts attempt(s)",
                 )
-                AgentRunProgress.nodeSettled(
-                    state.taskId, runtimeId, AgentRunProgress.NodeState.FAILED,
-                )
                 return
             }
 
@@ -721,11 +488,7 @@ internal object AgentGraphRunner {
                 sessionId = sessionId,
                 text = retryMessage,
                 thinkingLevel = node.thinkingLevel,
-                // Same per-role budget as the main attempt: reformatting a
-                // handoff is cheaper than producing it, but the model still has
-                // the whole task in context and a chat-length timeout would cut
-                // off a correction that was about to land.
-                timeoutMs = nodeTimeoutMs,
+                timeoutMs = graph.config.defaultTimeoutMs,
             )
             val retryText = retryResult.responseText
             if (retryResult.status == "Completed" && retryText != null) {
@@ -774,24 +537,23 @@ internal object AgentGraphRunner {
             HandoffStatus.NEEDS_CLARIFICATION -> NodeStatus.BLOCKED
         }
 
-        // Extract and persist artifacts. Persistence is best-effort: a handoff
-        // that passed validation is a real result, and losing the copy of a
-        // deliverable must not retroactively fail the node that produced it.
+        // Extract and persist artifacts
         val artifactPaths = HandoffValidator.extractArtifactPaths(handoff.deliverables)
         for (path in artifactPaths) {
-            val content = readArtifactContent(context, path) ?: continue
-            state.artifactIndex[path] = content
-            // Also copy to task artifact dir. The store reduces the name to its
-            // last segment, so a deliverable path from model output cannot write
-            // outside the run's own directory.
-            writeArtifact(state, path, content)
+            val content = readArtifactContent(context, path)
+            if (content != null) {
+                state.artifactIndex[path] = content
+                // Also copy to task artifact dir
+                val targetPath = "${state.artifactDir}/${File(path).name}"
+                File(targetPath).writeText(content)
+            }
         }
 
         // If COMPLETE with deliverables, also save the handoff itself
         if (handoff.status == HandoffStatus.COMPLETE) {
-            val handoffText = HandoffValidator.buildHandoff(handoff)
-            writeArtifact(state, "${runtimeId}_handoff.md", handoffText)
-            state.artifactIndex["${state.artifactDir}/${runtimeId}_handoff.md"] = handoffText
+            val handoffPath = "${state.artifactDir}/${runtimeId}_handoff.md"
+            File(handoffPath).writeText(HandoffValidator.buildHandoff(handoff))
+            state.artifactIndex[handoffPath] = HandoffValidator.buildHandoff(handoff)
         }
 
         addTrace(state, runtimeId, node.role, "HANDOFF", "Status: ${handoff.status}, To: ${handoff.to}")
@@ -801,18 +563,6 @@ internal object AgentGraphRunner {
             role = node.role,
             runtimeId = runtimeId,
             handoff = handoff,
-        )
-        // Mirror the handoff's verdict into the live progress card. BLOCKED and
-        // NEEDS_CLARIFICATION both mean "did not deliver", which the reader needs
-        // to see — a card that only ever showed green would hide a stalled run.
-        AgentRunProgress.nodeSettled(
-            taskId = state.taskId,
-            runtimeId = runtimeId,
-            state = when (handoff.status) {
-                HandoffStatus.COMPLETE -> AgentRunProgress.NodeState.COMPLETED
-                HandoffStatus.BLOCKED,
-                HandoffStatus.NEEDS_CLARIFICATION -> AgentRunProgress.NodeState.BLOCKED
-            },
         )
     }
 
@@ -991,95 +741,63 @@ internal object AgentGraphRunner {
             graph.nodes.find { it.id == configId }?.replicaIds() ?: listOf(configId)
 
         // Edges are declared between CONFIG ids; map the finished replica back.
-        val startConfigId = resolveRuntimeNode(graph, completedRuntimeId)?.first?.id
+        val completedConfigId = resolveRuntimeNode(graph, completedRuntimeId)?.first?.id
             ?: completedRuntimeId
 
-        // [T-agent-graph-skip-cascade] A skipped node is never a job, so the
-        // event loop never calls queueSuccessors for it. Without cascading the
-        // skip here, a blocked node mid-chain leaves everything downstream in
-        // PENDING forever and the run dead-ends as a false "deadlock" instead of
-        // settling. builtin_light hides this (its only successor is the exit),
-        // builtin_full does not. Worklist of config ids whose successors still
-        // need evaluating; a target we just marked SKIPPED is pushed back so its
-        // own successors are evaluated (and skipped) in turn. Proven in
-        // AgentGraphSchedulerTest.
-        val settledConfigIds = ArrayDeque<String>()
-        settledConfigIds.add(startConfigId)
-        val processedFrom = mutableSetOf<String>()
+        for (edge in graph.edges.filter { it.from == completedConfigId }) {
+            val incoming = graph.edges.filter { it.to == edge.to }
 
-        while (settledConfigIds.isNotEmpty()) {
-            val completedConfigId = settledConfigIds.removeFirst()
-            if (!processedFrom.add(completedConfigId)) continue
+            // Fan-in over REPLICAS too: a node waits for every replica of every
+            // predecessor. Without this the auditor would start after one of
+            // two implementer replicas, reviewing half the work.
+            val allPredRuntimeIds = incoming.flatMap { runtimeIdsOf(it.from) }.distinct()
+            if (!allPredRuntimeIds.all { terminal(it) }) continue
 
-            for (edge in graph.edges.filter { it.from == completedConfigId }) {
-                val incoming = graph.edges.filter { it.to == edge.to }
-
-                // Fan-in over REPLICAS too: a node waits for every replica of every
-                // predecessor. Without this the auditor would start after one of
-                // two implementer replicas, reviewing half the work.
-                val allPredRuntimeIds = incoming.flatMap { runtimeIdsOf(it.from) }.distinct()
-                if (!allPredRuntimeIds.all { terminal(it) }) continue
-
-                // At least one predecessor must have COMPLETED, and CONDITIONAL
-                // edges must have their condition hold on that predecessor.
-                val satisfied = incoming.any { inEdge ->
-                    runtimeIdsOf(inEdge.from).any { predRuntimeId ->
-                        val predOk = state.nodeStatus[predRuntimeId] == NodeStatus.COMPLETED
-                        when (inEdge.type) {
-                            EdgeType.CONDITIONAL -> {
-                                val h = state.handoffMap[predRuntimeId]
-                                predOk && h != null && evaluateCondition(inEdge.condition, h)
-                            }
-                            else -> predOk
+            // At least one predecessor must have COMPLETED, and CONDITIONAL
+            // edges must have their condition hold on that predecessor.
+            val satisfied = incoming.any { inEdge ->
+                runtimeIdsOf(inEdge.from).any { predRuntimeId ->
+                    val predOk = state.nodeStatus[predRuntimeId] == NodeStatus.COMPLETED
+                    when (inEdge.type) {
+                        EdgeType.CONDITIONAL -> {
+                            val h = state.handoffMap[predRuntimeId]
+                            predOk && h != null && evaluateCondition(inEdge.condition, h)
                         }
+                        else -> predOk
                     }
                 }
+            }
 
-                // Activate (or skip) every replica of the target.
-                for (targetRuntimeId in runtimeIdsOf(edge.to)) {
-                    if (targetRuntimeId in state.dispatched) continue
-                    if (terminal(targetRuntimeId)) continue
-                    if (satisfied) {
-                        state.nodeStatus[targetRuntimeId] = NodeStatus.PENDING
-                        ready.add(targetRuntimeId)
-                    } else {
-                        state.nodeStatus[targetRuntimeId] = NodeStatus.SKIPPED
-                        // Record WHY. A skipped node with no explanation is
-                        // indistinguishable from a bug in the routing.
-                        val why = incoming
-                            .filter { it.type == EdgeType.CONDITIONAL }
-                            .mapNotNull { inEdge ->
-                                runtimeIdsOf(inEdge.from).firstNotNullOfOrNull { pid ->
-                                    state.handoffMap[pid]?.let { h ->
-                                        evaluateConditionExplained(inEdge.condition, h).explanation
-                                    }
+            // Activate (or skip) every replica of the target.
+            for (targetRuntimeId in runtimeIdsOf(edge.to)) {
+                if (targetRuntimeId in state.dispatched) continue
+                if (terminal(targetRuntimeId)) continue
+                if (satisfied) {
+                    state.nodeStatus[targetRuntimeId] = NodeStatus.PENDING
+                    ready.add(targetRuntimeId)
+                } else {
+                    state.nodeStatus[targetRuntimeId] = NodeStatus.SKIPPED
+                    // Record WHY. A skipped node with no explanation is
+                    // indistinguishable from a bug in the routing.
+                    val why = incoming
+                        .filter { it.type == EdgeType.CONDITIONAL }
+                        .mapNotNull { inEdge ->
+                            runtimeIdsOf(inEdge.from).firstNotNullOfOrNull { pid ->
+                                state.handoffMap[pid]?.let { h ->
+                                    evaluateConditionExplained(inEdge.condition, h).explanation
                                 }
                             }
-                            .joinToString("; ")
-                            .ifBlank { "no predecessor COMPLETED" }
-                        val targetRole = graph.nodes.find { it.id == edge.to }?.role
-                        if (targetRole != null) {
-                            addTrace(state, targetRuntimeId, targetRole, "SKIPPED", why)
-                            AgentRunShowcase.noteSkipped(
-                                execContext.context, state.showcaseId, targetRole, why,
-                            )
-                            AgentRunProgress.nodeSkipped(
-                                taskId = state.taskId,
-                                runtimeId = targetRuntimeId,
-                                role = targetRole,
-                                label = AgentRunShowcase.roleLabel(targetRole),
-                            )
                         }
+                        .joinToString("; ")
+                        .ifBlank { "no predecessor COMPLETED" }
+                    val targetRole = graph.nodes.find { it.id == edge.to }?.role
+                    if (targetRole != null) {
+                        addTrace(state, targetRuntimeId, targetRole, "SKIPPED", why)
+                        AgentRunShowcase.noteSkipped(
+                            execContext.context, state.showcaseId, targetRole, why,
+                        )
                     }
                 }
-
-                // If every replica of the target ended up SKIPPED, it will never
-                // run, so cascade: evaluate ITS successors now (they will be
-                // skipped in turn unless another, completed branch feeds them).
-                val targetAllSkipped = runtimeIdsOf(edge.to).all {
-                    state.nodeStatus[it] == NodeStatus.SKIPPED
-                }
-                if (targetAllSkipped) settledConfigIds.add(edge.to)
             }
         }
         return ready.distinct()
@@ -1132,80 +850,37 @@ internal object AgentGraphRunner {
         }
     }
 
-    /**
-     * Write one artifact into the run's directory, host-side.
-     *
-     * Best-effort by design: the caller has already produced a validated
-     * handoff, so a failed copy is a lost convenience, not a lost result. The
-     * previous code let an IOException here propagate and kill the node —
-     * which is exactly how a working run got reported as a crash.
-     */
-    private fun writeArtifact(state: GraphState, fileName: String, content: String) {
-        artifactStore(state).write(fileName, content)
-    }
-
-    private fun artifactStore(state: GraphState) = AgentArtifactStore(
-        hostDir = state.artifactHostDir,
-        onError = { msg ->
-            com.openminis.app.logging.AppLogger.warning(
-                LOG_TAG, "[${state.taskId.take(8)}] $msg",
-            )
-        },
-    )
-
     /** Read artifact content from file system or minis:// URL. */
     private fun readArtifactContent(context: Context, path: String): String? {
         return try {
-            // Both forms name a path inside the PRoot rootfs, so both need
-            // translating to a host path before File() can see them.
-            val linuxPath = if (path.startsWith("minis://")) {
-                path.replace("minis://", "/var/minis/")
+            if (path.startsWith("minis://")) {
+                val realPath = path.replace("minis://", "/var/minis/")
+                File(realPath).readText()
             } else {
-                path
+                File(path).readText()
             }
-            val host = com.openminis.app.sandbox.PRootKernel.resolveHostPath(linuxPath)
-                ?: return null
-            host.readText()
         } catch (_: Exception) {
             null
         }
     }
 
-    /**
-     * Write trace to offloads directory, host-side.
-     *
-     * Same translation as artifacts: TRACE_DIR is a rootfs path. Also
-     * best-effort — the run's result is already computed by the time this is
-     * called, and `agent.graph.trace` returning "not found" is a far better
-     * outcome than a completed run throwing on its way out.
-     */
+    /** Write trace to offloads directory. */
     private fun writeTrace(taskId: String, trace: List<TraceEvent>, json: Json) {
-        try {
-            val traceFile = com.openminis.app.sandbox.PRootKernel
-                .resolveHostPath("$TRACE_DIR/agent_graph_$taskId.json") ?: return
-            traceFile.parentFile?.mkdirs()
-            val traceJson = json.encodeToString(
-                kotlinx.serialization.builtins.ListSerializer(TraceEvent.serializer()),
-                trace,
-            )
-            traceFile.writeText(traceJson)
-        } catch (e: Exception) {
-            com.openminis.app.logging.AppLogger.warning(
-                LOG_TAG,
-                "[${taskId.take(8)}] could not write trace: ${e.message}",
-            )
-        }
+        val traceFile = File(TRACE_DIR, "agent_graph_${taskId}.json")
+        traceFile.parentFile?.mkdirs()
+        val traceJson = json.encodeToString(
+            kotlinx.serialization.builtins.ListSerializer(TraceEvent.serializer()),
+            trace,
+        )
+        traceFile.writeText(traceJson)
     }
 
-    /**
-     * Write artifact index into the run's host directory.
-     *
-     * Takes the resolved host dir rather than the Linux path so it cannot
-     * accidentally reintroduce the untranslated-path bug. Best-effort for the
-     * same reason as [writeArtifact].
-     */
-    private fun writeArtifactIndex(state: GraphState, artifacts: Map<String, String>) {
-        artifactStore(state).writeIndex(artifacts)
+    /** Write artifact index. */
+    private fun writeArtifactIndex(artifactDir: String, artifacts: Map<String, String>) {
+        val indexFile = File(artifactDir, "ARTIFACT_INDEX.json")
+        val obj = org.json.JSONObject()
+        for ((k, v) in artifacts) obj.put(k, v)
+        indexFile.writeText(obj.toString(2))
     }
 
     private fun handleMissingModelEntry(
@@ -1217,15 +892,5 @@ internal object AgentGraphRunner {
         val state = execContext.state
         addTrace(state, runtimeId, node.role, "MISSING_MODEL_ENTRY", reason)
         state.nodeStatus[runtimeId] = NodeStatus.FAILED
-        // This path returns BEFORE nodeStarted() ever fired, so record the node
-        // as skipped-with-reason rather than settling something the card has
-        // never seen — otherwise "no model configured" would show as an empty
-        // card and read like a hang.
-        AgentRunProgress.nodeSkipped(
-            taskId = state.taskId,
-            runtimeId = runtimeId,
-            role = node.role,
-            label = AgentRunShowcase.roleLabel(node.role),
-        )
     }
 }

@@ -251,8 +251,6 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
-import coil.request.ImageRequest
-import com.openminis.app.ui.DisplayBitmapLimits.limitDisplaySize
 import com.openminis.app.offload.OffloadPermissionManager
 import com.mikepenz.markdown.compose.components.markdownComponents
 import com.mikepenz.markdown.m3.Markdown
@@ -288,15 +286,8 @@ internal fun UserMessageBubble(
     precededByUser: Boolean = false,
     onCopy: () -> Unit = {},
     onRetry: (() -> Unit)? = {},
-    // [T-remove-edit-action] Kept in the signature (default null → the row never
-    // renders) rather than deleted: no caller passes it today, but a future
-    // "edit and re-run" affordance with clearer wording may want it back.
     onEdit: (() -> Unit)? = null,
     onWithdraw: (() -> Unit)? = null,
-    // [T-message-surgery] Real history mutation, distinct from onEdit (which
-    // re-runs the conversation from this turn). Null hides the row.
-    onRewrite: (() -> Unit)? = null,
-    onDelete: (() -> Unit)? = null,
     onPreviewFile: (Uri, String) -> Unit = { _, _ -> },
 ) {
     var showMenu by remember { mutableStateOf(false) }
@@ -357,7 +348,6 @@ internal fun UserMessageBubble(
                         allFileNames = message.attachmentNames,
                         nonImageUris = message.attachmentUris,
                         onPreviewFile = onPreviewFile,
-                        onLongPress = { showMenu = true },
                     )
                 }
 
@@ -506,24 +496,6 @@ internal fun UserMessageBubble(
                         leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(18.dp)) },
                     )
                 }
-                // [T-message-surgery] Rewrite = change what the history SAYS,
-                // in place, without re-running anything. Delete = drop this
-                // turn and keep the rest of the session. Both mutate the DB,
-                // so both are hidden mid-stream by the caller.
-                if (onRewrite != null) {
-                    DropdownMenuItem(
-                        text = { Text(stringResource(R.string.msg_longpress_rewrite)) },
-                        onClick = { showMenu = false; onRewrite() },
-                        leadingIcon = { Icon(Icons.Default.EditNote, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                    )
-                }
-                if (onDelete != null) {
-                    DropdownMenuItem(
-                        text = { Text(stringResource(R.string.msg_longpress_delete)) },
-                        onClick = { showMenu = false; onDelete() },
-                        leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                    )
-                }
             }
         }
     }
@@ -538,20 +510,13 @@ internal fun UserMessageBubble(
  * Images render as thumbnail (tap → fullscreen preview dialog).
  * Files render as icon + 2-line filename (tap → system handler).
  */
-@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun UserAttachmentList(
     imageUris: List<Uri>,
     allFileNames: List<String>,
     nonImageUris: List<Uri> = emptyList(),
     onPreviewFile: (Uri, String) -> Unit = { _, _ -> },
-    // [T-attachment-longpress-menu] Long-press on a tile must reach the same
-    // bubble menu a long-press on the text reaches. The outer Box's
-    // pointerInput never sees it: `clickable` on a child consumes the whole
-    // gesture stream, so a long-press that started on a thumbnail was
-    // swallowed — which is exactly why an image-only message could not be
-    // deleted (there is no text to press instead).
-    onLongPress: (() -> Unit)? = null,
 ) {
     var previewImageIndex by remember { mutableStateOf<Int?>(null) }
 
@@ -567,12 +532,8 @@ internal fun UserAttachmentList(
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         imageUris.forEachIndexed { idx, uri ->
-            val context = LocalContext.current
-            val request = remember(uri) {
-                ImageRequest.Builder(context).data(uri).limitDisplaySize().build()
-            }
             AsyncImage(
-                model = request,
+                model = uri,
                 contentDescription = "Image attachment",
                 contentScale = ContentScale.Crop,
                 modifier = Modifier
@@ -580,13 +541,7 @@ internal fun UserAttachmentList(
                     .clip(RoundedCornerShape(8.dp))
                     .background(ChatColors.secondaryBg)
                     .border(0.5.dp, ChatColors.thumbnailBorder, RoundedCornerShape(8.dp))
-                    // [T-attachment-longpress-menu] combinedClickable, not
-                    // clickable: tap still opens the viewer, long-press now
-                    // forwards to the bubble menu instead of being eaten.
-                    .combinedClickable(
-                        onClick = { previewImageIndex = idx },
-                        onLongClick = onLongPress,
-                    ),
+                    .clickable { previewImageIndex = idx },
             )
         }
 
@@ -602,7 +557,6 @@ internal fun UserAttachmentList(
                     // chip predates T150 persistence.
                     if (uri != null) onPreviewFile(uri, name)
                 },
-                onLongClick = onLongPress,
             )
         }
     }
@@ -626,15 +580,11 @@ internal fun UserAttachmentList(
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FileAttachmentTile(
     fileName: String,
     tileSize: androidx.compose.ui.unit.Dp,
     onClick: () -> Unit,
-    // [T-attachment-longpress-menu] Forwarded to the bubble menu, same reason
-    // as the image tiles above.
-    onLongClick: (() -> Unit)? = null,
 ) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -643,7 +593,7 @@ private fun FileAttachmentTile(
             .size(tileSize)
             .clip(RoundedCornerShape(8.dp))
             .background(ChatColors.secondaryBg)
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .clickable(onClick = onClick)
             .padding(horizontal = 4.dp, vertical = 6.dp),
     ) {
         Icon(
@@ -711,15 +661,8 @@ private fun ImageGalleryDialog(
                 state = pagerState,
                 modifier = Modifier.fillMaxSize(),
             ) { page ->
-                val context = LocalContext.current
-                val request = remember(uris[page]) {
-                    ImageRequest.Builder(context)
-                        .data(uris[page])
-                        .limitDisplaySize()
-                        .build()
-                }
                 AsyncImage(
-                    model = request,
+                    model = uris[page],
                     contentDescription = null,
                     contentScale = ContentScale.Fit,
                     modifier = Modifier.fillMaxSize(),

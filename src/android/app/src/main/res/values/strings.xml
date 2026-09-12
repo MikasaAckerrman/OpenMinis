@@ -422,23 +422,6 @@
     <string name="action_print">Print</string>
     <string name="filepreview_save_to_gallery">Save to gallery</string>
     <string name="filepreview_save_as">Save as…</string>
-    <string name="settings_agent_models">Agent Models</string>
-    <string name="settings_agent_models_subtitle">Pick a model per agent role</string>
-    <string name="settings_agent_models_header">Model per role</string>
-    <string name="settings_agent_models_footer">By default every agent role runs on the model you are chatting with, so agents use the provider you already pay for. Override a role here to pin it to a specific model. A per-role API key (agent.keys.&lt;role&gt;) still takes priority.</string>
-    <string name="agent_models_use_current">Use my current model</string>
-    <string name="agent_models_use_current_named">My current model (%1$s)</string>
-    <string name="agent_models_no_models">No text models available — add a provider first</string>
-    <string name="agent_role_planner">Planner</string>
-    <string name="agent_role_analyst">Requirements analyst</string>
-    <string name="agent_role_architect">Architect</string>
-    <string name="agent_role_coder">Implementer</string>
-    <string name="agent_role_reviewer">Reviewer</string>
-    <string name="agent_role_tester">Test designer</string>
-    <string name="filepreview_install_apk">Install APK</string>
-    <string name="filepreview_apk_unreadable">APK file is unavailable</string>
-    <string name="filepreview_enable_install_permission">Allow Minis to install unknown apps, then tap Install APK again</string>
-    <string name="filepreview_apk_install_failed">Couldn’t open the package installer</string>
     <string name="filepreview_loading">Loading…</string>
     <string name="filepreview_loading_pdf">Loading PDF…</string>
     <string name="filepreview_loading_archive">Reading archive…</string>
@@ -494,12 +477,6 @@
     <string name="sessionlist_regenerate_title">Regenerate Title</string>
     <string name="sessionlist_regenerating_title">Regenerating title…</string>
     <string name="sessionlist_duplicate">Duplicate</string>
-    <!-- [session-longpress-compress] Long-press menu action + overlay + results -->
-    <string name="sessionlist_compress">Compress context</string>
-    <string name="sessionlist_compressing">Compressing…</string>
-    <string name="sessionlist_compress_done">Context compressed (−%1$d%%)</string>
-    <string name="sessionlist_compress_empty">Nothing to compress in this session</string>
-    <string name="sessionlist_compress_failed">Couldn\'t compress this session</string>
     <string name="sessionlist_search_action">Search</string>
     <string name="sessionlist_dismiss">Dismiss</string>
     <string name="sessionlist_delete_one_title">Delete conversation?</string>
@@ -903,11 +880,6 @@
     <string name="share_provider_json_import_failed">Invalid provider configuration file</string>
     <string name="provider_list_api_key">API Key</string>
     <string name="provider_list_disabled">Disabled</string>
-    <!-- [T-provider-folders] User-defined folders in the provider list. -->
-    <string name="provider_list_folder_key_count">%1$d providers</string>
-    <string name="provider_detail_folder">Folder</string>
-    <string name="provider_detail_folder_placeholder">No folder</string>
-    <string name="provider_detail_folder_footer">Group providers from the same source under one folder in the provider list. Leave blank to keep this provider ungrouped.</string>
     <string name="provider_detail_export">Export</string>
     <string name="provider_detail_label">Label</string>
     <string name="provider_detail_manual_bearer_token">Manual Bearer Token</string>
@@ -1092,29 +1064,6 @@
     <string name="settings_section_notifications">Notifications</string>
     <string name="settings_task_notifications">Task Notifications</string>
     <string name="settings_task_notifications_footer">Notify when an agent task finishes while the app is in the background. Shows progress in the notification shade and on the lock screen.</string>
-    <!-- [T-completion-haptics] Double-buzz when a turn ends. -->
-    <string name="settings_completion_vibration">Vibrate When Done</string>
-    <string name="settings_completion_vibration_footer">Two short pulses when a reply finishes, whether the app is open or in the background. Silent when you stop a turn yourself, and follows your Do Not Disturb setting.</string>
-    <string name="settings_completion_vibration_unavailable">This device has no vibration motor.</string>
-    <!-- [T-haptics-customization] Buzz shape pickers. -->
-    <string name="settings_vibration_pattern">Pattern</string>
-    <string name="settings_vibration_strength">Strength</string>
-    <string name="settings_vibration_length">Length</string>
-    <string name="settings_vibration_bypass_dnd">Ignore silent mode</string>
-    <string name="settings_vibration_bypass_dnd_footer">Vibrate even in silent mode or Do Not Disturb. Turn this on if you never feel the buzz with the screen off — some phone skins (OriginOS among them) mute notification vibration while the ringer is silent.</string>
-    <string name="vibration_pattern_double">Double</string>
-    <string name="vibration_pattern_single_long">One long</string>
-    <string name="vibration_pattern_triple">Triple</string>
-    <string name="vibration_pattern_short_long">Short + long</string>
-    <string name="vibration_pattern_heartbeat">Heartbeat</string>
-    <string name="vibration_pattern_long_rumble">Rumble</string>
-    <string name="vibration_strength_light">Light</string>
-    <string name="vibration_strength_medium">Medium</string>
-    <string name="vibration_strength_strong">Strong</string>
-    <string name="vibration_length_short">Short</string>
-    <string name="vibration_length_normal">Normal</string>
-    <string name="vibration_length_long">Long</string>
-    <string name="vibration_length_extra_long">Extra long</string>
     <string name="notif_one_task_running">1 task running</string>
     <string name="notif_n_tasks_running">%1$d tasks running</string>
     <string name="notif_in_session">In session</string>
@@ -1172,7 +1121,6 @@
 
     <!-- T184-chatmenu-i18n — ChatScreen overflow ⋮ menu, longpress, attach -->
     <string name="chat_menu_new_chat">New Chat</string>
-    <string name="chat_menu_choose_model">Choose Model</string>
     <string name="chat_new_chat_stop_dialog_body">A task is running in this chat. Starting a new chat will stop it.</string>
     <string name="chat_new_chat_stop_dialog_confirm">Stop &amp; New Chat</string>
     <string name="chat_menu_clear_chat">Clear Chat</string>
@@ -1185,10 +1133,6 @@
     <string name="enhanced_cache_dialog_confirm">Enable</string>
     <string name="chat_longpress_copy">Copy</string>
     <string name="chat_longpress_retry">Retry</string>
-    <!-- [429/content-filter fallback CTA] Shown on the inline error banner when
-         the failure is route-level (rate limit exhausted / gateway content
-         filter) and a backup model in the group would recover it. -->
-    <string name="chat_error_add_fallback">Add backup model</string>
     <string name="tool_longpress_rerun_from_here">Re-run from here</string>
     <string name="tool_longpress_copy_details">Copy tool details</string>
     <string name="tool_longpress_copied_toast">Tool details copied</string>
@@ -1203,9 +1147,6 @@
     <!-- T187 — user-bubble long-press Edit + Exit Edit Mode + Clear Chat dialog -->
     <string name="chat_longpress_edit">Edit</string>
     <string name="chat_edit_exit_button">Exit Edit Mode</string>
-    <!-- A1 — composer "Agents" toggle -->
-    <string name="chat_agents_toggle_on">Agents on — this chat uses the agent team</string>
-    <string name="chat_agents_toggle_off">Agents off — routing decides automatically</string>
     <string name="chat_clear_dialog_body">Remove all messages from this session? Files in workspace, attachments, and offloads are kept.</string>
     <string name="chat_clear_dialog_confirm">Clear</string>
 
@@ -1258,46 +1199,6 @@
     <string name="slash_thinking_subtitle">Thinking %1$s — tap to toggle</string>
     <string name="slash_thinking_unsupported">Not supported by current model</string>
     <string name="slash_clear_subtitle">Clear all messages in this session</string>
-    <!-- [T-session-rescue] Local, LLM-free hard compaction for a session that
-         can no longer reach the model. -->
-    <string name="slash_rescue_title">Rescue</string>
-    <string name="slash_rescue_subtitle">Repair a stuck session — compress locally, no model call</string>
-    <string name="rescue_busy_streaming">Cannot rescue while a response is in progress. Stop the current turn first.</string>
-    <string name="rescue_busy_compacting">A compact is already running. Wait for it to finish.</string>
-    <string name="rescue_empty_session">Nothing to rescue — this session is empty.</string>
-    <string name="rescue_no_persisted_messages">Cannot rescue: no saved messages to anchor to yet.</string>
-    <string name="rescue_nothing_to_digest">Nothing to rescue — no readable content in this session.</string>
-    <string name="rescue_done">Session rescued locally: ~%1$d → ~%2$d tokens (digest %3$d chars). Large tool outputs were moved to /var/minis/offloads/ and can be re-read with file_read. Undo via Revert compact.</string>
-    <string name="rescue_failed">Rescue failed: %1$s</string>
-    <string name="rescue_hint_suffix">This session\'s history may be too large to send. Type /rescue to compress it on-device (no model call needed) and try again — nothing is deleted, and you can undo it with Revert compact.</string>
-    <!-- [T-session-rescue-refine] Stage 2: model rewrite of the local digest. -->
-    <string name="rescue_refine_done">Summary rewritten by the model: %1$d chars (~%2$d tokens). All paths, URLs and hashes were verified present.</string>
-    <string name="rescue_refine_rejected">The model\'s rewrite dropped some verbatim details, so the on-device summary was kept. Nothing was lost.</string>
-    <string name="rescue_refine_unavailable">The model was unreachable for the rewrite step — keeping the on-device summary. The session is usable either way.</string>
-    <!-- [T-message-surgery] Real (persisted) message delete / rewrite. -->
-    <string name="msg_longpress_delete">Delete message</string>
-    <string name="msg_longpress_rewrite">Rewrite text</string>
-    <string name="msg_delete_busy_streaming">Stop the current response before editing the history.</string>
-    <string name="msg_delete_busy_compacting">Wait for compaction to finish before editing the history.</string>
-    <string name="msg_delete_not_found">That message is no longer in this session.</string>
-    <string name="msg_delete_done">Deleted %1$d message(s) from the session and from the model\'s history.</string>
-    <string name="msg_delete_done_with_notes">Deleted %1$d message(s). To keep the history valid: %2$s.</string>
-    <string name="msg_delete_failed">Could not delete: %1$s</string>
-    <string name="msg_rewrite_done">Message text rewritten. The model will read the new text from now on.</string>
-    <string name="msg_rewrite_no_text">That message has no editable text (tool calls / attachments only).</string>
-    <string name="msg_rewrite_dialog_title">Rewrite message</string>
-    <string name="msg_rewrite_dialog_hint">This replaces the stored text for real — the model reads the new version on the next turn. Tool calls and attachments are kept.</string>
-    <string name="msg_rewrite_save">Save</string>
-    <string name="msg_delete_confirm_title">Delete this message?</string>
-    <string name="msg_delete_confirm_body">It will be removed from the chat and from what the model sees. Related tool calls or results may be removed too, to keep the history valid. This cannot be undone.</string>
-    <!-- [T-context-maintenance] Tiered upkeep notices. -->
-    <string name="maintenance_full_compact">Context at %1$d / %2$d tokens — folding older turns into a summary in the background. This turn still goes through.</string>
-    <string name="maintenance_rescue_compact">Context at %1$d / %2$d tokens — too full to summarise via the model reliably, so compressing on-device instead. Undo via Revert compact.</string>
-    <string name="maintenance_context_full_retry">The provider says the context window is full. Compressing on-device and retrying this turn — nothing is lost, and you can undo it with Revert compact.</string>
-    <!-- [T-compact-route] Compaction refusal ladder. -->
-    <string name="compact_retry_smaller">The model refused on cost — asking for a shorter summary (%1$d tokens) on the same model.</string>
-    <string name="compact_switching_model">That model is rate limited or out of quota — trying %1$s from this group instead.</string>
-    <string name="compact_all_routes_refused">Every model refused (%1$s). Compressing on-device instead — no model call needed, and the session stays usable.</string>
     <string name="thinking_level_off">Off</string>
     <string name="thinking_level_low">Low</string>
     <string name="thinking_level_medium">Medium</string>
@@ -1507,22 +1408,6 @@
     <string name="shortcut_camera_chat_short">Chat with Camera</string>
     <string name="shortcut_camera_chat_long">Chat with Camera</string>
 
-    <!-- Offline translation (EN↔RU, Bergamot/WASM). Reachable from the
-         text-selection menu, the quick-settings tile and an app-icon shortcut. -->
-    <string name="translate_process_text_label">Translate</string>
-    <string name="translate_clipboard_label">Translate clipboard</string>
-    <string name="translate_tile_label">Translate</string>
-    <string name="translate_working">Translating…</string>
-    <string name="translate_result_title">%1$s → %2$s</string>
-    <string name="translate_copied">Copied</string>
-    <string name="translate_open_in_app">Open in Minis</string>
-    <string name="translate_failed">Translation failed</string>
-    <string name="translate_nothing_selected">Nothing selected</string>
-    <string name="translate_clipboard_empty">Clipboard is empty</string>
-    <string name="translate_engine_missing">Translation engine not installed. Add the toolbox to the shared folder first.</string>
-    <string name="shortcut_translate_short">Translate</string>
-    <string name="shortcut_translate_long">Translate clipboard</string>
-
     <!-- [T-android-scheduled-tasks-design] Scheduled tasks UI -->
     <string name="ok">OK</string>
     <string name="sessionlist_scheduled_tasks">Scheduled tasks</string>
@@ -1600,12 +1485,10 @@
     <string name="debug_trigger_crash_menu">Trigger crash (Debug)</string>
     <!-- [T-android-larky-longsession-followup] Tappable header at the top of the chat list, shown only when more older messages exist behind the windowed slice. -->
     <string name="chat_load_older_messages">↑ Load older messages</string>
-    <string name="chat_history_still_loading">Conversation history is still loading. Your draft and attachments were kept — try sending again in a moment.</string>
     <!-- [T-error-persist-android] Shown when the model returns an empty reply (no text, no tools). -->
     <string name="error_empty_response_generic">Model returned an empty response. Please try again or switch models.</string>
     <string name="error_empty_response_context_large">The model returned an empty response. The conversation context may be too large — try compacting or starting a new session.</string>
     <string name="error_empty_response_after_tool">The model returned no response after a tool result, even after a reminder. It may be overloaded — please retry or switch models.</string>
-    <string name="error_output_limit_reached">The model reached its output-token limit before finishing. Tap Resume to continue from the partial response.</string>
     <!-- [T-thinking-render-perf-android] Inline windowed-tail hint + large-content viewer entry. -->
     <string name="thinking_truncated_hint">Showing last %1$dK of %2$dK characters</string>
     <string name="thinking_view_full">View full content</string>

@@ -29,17 +29,7 @@ class MinisAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "MinisA11y"
-
-        /**
-         * [T-clone-variant] Component id, used only for display in
-         * `android-a11y-cli service status`. Built from the runtime package so a
-         * variant (com.openminis.app.clone) reports its OWN component instead of
-         * the primary install's — the class part comes from the manifest
-         * namespace, which does not change with applicationId.
-         */
-        fun serviceId(context: android.content.Context): String =
-            "${context.packageName}/com.openminis.app.accessibility.MinisAccessibilityService"
-
+        const val SERVICE_ID = "com.openminis.app/.accessibility.MinisAccessibilityService"
         private const val EVENT_RING_CAP = 1024
 
         @Volatile

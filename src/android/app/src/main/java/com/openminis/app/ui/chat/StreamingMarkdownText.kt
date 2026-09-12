@@ -2250,11 +2250,7 @@ private fun RenderMdVideo(block: MdBlock.Video) {
                 retriever.setDataSource(f.absolutePath)
                 val bmp = retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
                 android.util.Log.d("MdStream", "video thumbnail ${f.name} -> ${bmp?.width}x${bmp?.height}")
-                // [T-runtime-bitmap-canvas-crash] getFrameAtTime returns the
-                // frame at the clip's NATIVE resolution — a 4K/8K clip yields a
-                // bitmap far past the RecordingCanvas ceiling, crashing the whole
-                // app when this thumbnail is drawn. Cap the longest edge.
-                com.openminis.app.ui.DisplayBitmapLimits.capForDisplay(bmp)
+                bmp
             } catch (t: Throwable) {
                 android.util.Log.w("MdStream", "video thumbnail failed: ${t.message}")
                 null

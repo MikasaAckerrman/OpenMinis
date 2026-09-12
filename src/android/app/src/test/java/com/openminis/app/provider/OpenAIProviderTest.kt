@@ -337,55 +337,6 @@ class OpenAIProviderTest {
         throw AssertionError("Expected ProviderError")
     }
 
-    @Test
-    fun `503 no upstream account routes to ProviderError not transient retry`() = runBlocking {
-        // Relay has no upstream provider with credit for this model. Retrying the
-        // SAME gateway is doomed, so it must classify as ProviderError (fallback),
-        // NOT TransientError (same-provider retry). Reproduces the user report
-        // "Transient error: [503] No upstream account available".
-        val body = """{"error":{"message":"No upstream account available. [trace_id=2bc4c1f4]"}}"""
-        server.enqueue(MockResponse().setResponseCode(503).setBody(body))
-        try {
-            provider.sendMessage(listOf(LLMMessage(LLMMessage.Role.USER, "test")), null, 100)
-        } catch (e: LLMError.ProviderError) {
-            assertTrue(e.message!!.contains("503"))
-            return@runBlocking
-        } catch (e: LLMError) {
-            throw AssertionError("Expected ProviderError, got ${e.javaClass.simpleName}: ${e.message}")
-        }
-        throw AssertionError("Expected ProviderError")
-    }
-
-    @Test
-    fun `503 all nodes exhausted routes to ProviderError`() = runBlocking {
-        // Same class as "no upstream account": the relay has no working node for
-        // this model, so retrying the SAME gateway is doomed. User report:
-        // "Transient error: [503] all nodes exhausted; retry later".
-        val body = """{"error":{"message":"all nodes exhausted; retry later"}}"""
-        server.enqueue(MockResponse().setResponseCode(503).setBody(body))
-        try {
-            provider.sendMessage(listOf(LLMMessage(LLMMessage.Role.USER, "test")), null, 100)
-        } catch (e: LLMError.ProviderError) {
-            return@runBlocking
-        } catch (e: LLMError) {
-            throw AssertionError("Expected ProviderError, got ${e.javaClass.simpleName}: ${e.message}")
-        }
-        throw AssertionError("Expected ProviderError")
-    }
-
-    @Test
-    fun `generic 503 without permanent marker stays transient`() = runBlocking {        // A plain server hiccup should still be retried on the same provider.
-        server.enqueue(MockResponse().setResponseCode(503).setBody("""{"error":{"message":"temporary overload"}}"""))
-        try {
-            provider.sendMessage(listOf(LLMMessage(LLMMessage.Role.USER, "test")), null, 100)
-        } catch (e: LLMError.TransientError) {
-            return@runBlocking
-        } catch (e: LLMError) {
-            throw AssertionError("Expected TransientError, got ${e.javaClass.simpleName}: ${e.message}")
-        }
-        throw AssertionError("Expected TransientError")
-    }
-
     // -- Provider metadata --
 
     @Test

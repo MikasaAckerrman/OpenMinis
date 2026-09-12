@@ -52,43 +52,6 @@ internal object ConfigBuiltins {
         registerDefaults(r, providerRepo)
         registerSoul(r, context)
         registerMemory(r, context)
-        registerContext(r, context)
-    }
-
-    // -- Context — manual compaction controls only --
-
-    private fun registerContext(r: ConfigRegistry, context: Context) {
-        val prefs = context.getSharedPreferences("minis_context_prefs", Context.MODE_PRIVATE)
-        // Automatic compaction/offload is intentionally not configurable.
-        // Session history may be rewritten only by an explicit /compact,
-        // /rescue, long-press action, or operator RPC.
-        // [T-session-rescue] Budget for the local, LLM-free rescue digest.
-        r.register(
-            PrefsIntField(
-                path = "context.rescueDigestMaxChars",
-                displayName = "Rescue digest budget (chars)",
-                description = "Size of the digest produced by the /rescue slash command, which compacts a stuck session on-device without any model call. This digest REPLACES the whole history, so it is the post-rescue context floor. Default 12000 chars ≈ 3K tokens. Lower it if even the rescued session won't send (relay with a hard body cap); raise it to preserve more detail.",
-                prefs = prefs,
-                key = "context.rescue.maxchars",
-                defaultValue = com.openminis.app.data.RescueDigestPrefs.DEFAULT_MAX_CHARS,
-                minValue = com.openminis.app.data.RescueDigestPrefs.MIN_MAX_CHARS,
-                maxValue = com.openminis.app.data.RescueDigestPrefs.MAX_MAX_CHARS,
-            )
-        )
-        // [T-session-rescue-refine] Stage-2 LLM rewrite of the rescue digest.
-        r.register(
-            PrefsBoolField(
-                path = "context.rescueRefine",
-                displayName = "Let the model rewrite the rescue summary",
-                description = "After /rescue builds its on-device digest (which is committed first, so the session already works), send that digest — NOT the oversized history — to the model for a better-written summary. The input is a few thousand tokens by construction, so this succeeds even on a session that could not send at all. The result is accepted only if every path, URL and hash from the digest is still present verbatim and it is actually shorter; otherwise the on-device digest is kept. Turn off to keep /rescue fully offline.",
-                prefs = prefs,
-                key = "context.rescue.refine",
-                defaultValue = true,
-            )
-        )
-        // [T-manual-model-compaction] `context.rescue.refine` (above) is the
-        // only remaining context toggle. Compaction cadence is not
-        // configurable: nothing runs automatically, so there is no cadence.
     }
 
     // -- Memory — global default toggle for the persistent memory feature --
@@ -115,22 +78,6 @@ internal object ConfigBuiltins {
                 prefs = prefs,
                 key = "memory.global.enabled",
                 defaultValue = true,
-            )
-        )
-        // [T-memory-inject-budget] Total char budget for the auto-injected
-        // daily-log fragment, read by ChatViewModel.buildSystemPrompt().
-        // 8000 chars ≈ ~2K tokens; 0 is not meaningful (use memory.enabled
-        // = false to disable injection entirely), hence the floor.
-        r.register(
-            PrefsIntField(
-                path = "memory.injectMaxChars",
-                displayName = "Memory injection budget (chars)",
-                description = "Total char budget for the 'Recent memories' block auto-injected into every system prompt (today + up to 2 older daily logs, newest first, per-file cap 3000). Default 8000 ≈ ~2K tokens. Dense logs used to inject ~90K chars (~25K tokens) per turn. Lower = cheaper context but less continuity; memory_get searches the full logs on demand regardless.",
-                prefs = prefs,
-                key = "memory.inject.maxchars",
-                defaultValue = 8_000,
-                minValue = 1_000,
-                maxValue = 100_000,
             )
         )
     }
@@ -519,70 +466,6 @@ internal object ConfigBuiltins {
                 prefs = prefs,
                 key = "background_notifications_enabled",
                 defaultValue = true,
-            )
-        )
-        // [T-completion-haptics] Double-buzz on turn end. Same prefs file+key
-        // the repository reads, so a CLI write and the Settings toggle are one
-        // and the same write. Not gated on device capability: an emulator or a
-        // tablet without a motor still persists the preference harmlessly (the
-        // vibrate call no-ops), and refusing the write would make the field
-        // behave differently across the user's devices for no gain.
-        r.register(
-            PrefsBoolField(
-                path = "background.completionVibration",
-                displayName = "Vibrate when done",
-                description = "Two short pulses when an agent turn finishes. Silent on user-cancelled turns.",
-                prefs = prefs,
-                key = "completionVibrationEnabled",
-                defaultValue = false,
-            )
-        )
-        // [T-haptics-customization] The buzz shape, same prefs keys the Settings
-        // pickers write. Enum fields rather than free strings so an invalid
-        // value is rejected at write time instead of silently falling back to
-        // the default on the next turn.
-        r.register(
-            PrefsEnumField(
-                path = "background.vibrationPattern",
-                displayName = "Vibration pattern",
-                description = "Shape of the turn-finished buzz.",
-                prefs = prefs,
-                key = "completionVibrationPattern",
-                cases = com.openminis.app.feedback.VibrationPattern.values().map { it.id },
-                defaultValue = com.openminis.app.feedback.VibrationPattern.DEFAULT.id,
-            )
-        )
-        r.register(
-            PrefsEnumField(
-                path = "background.vibrationStrength",
-                displayName = "Vibration strength",
-                description = "How hard the motor is driven (only on devices with amplitude control).",
-                prefs = prefs,
-                key = "completionVibrationIntensity",
-                cases = com.openminis.app.feedback.VibrationIntensity.values().map { it.id },
-                defaultValue = com.openminis.app.feedback.VibrationIntensity.DEFAULT.id,
-            )
-        )
-        r.register(
-            PrefsEnumField(
-                path = "background.vibrationLength",
-                displayName = "Vibration length",
-                description = "Scales every pulse and gap in the chosen pattern.",
-                prefs = prefs,
-                key = "completionVibrationLength",
-                cases = com.openminis.app.feedback.VibrationLength.values().map { it.id },
-                defaultValue = com.openminis.app.feedback.VibrationLength.DEFAULT.id,
-            )
-        )
-        r.register(
-            PrefsBoolField(
-                path = "background.vibrationIgnoreSilent",
-                displayName = "Vibrate in silent mode",
-                description = "Tag the buzz as an alarm so it fires through silent mode / Do Not Disturb. Some OEM skins mute notification vibration while the ringer is off.",
-                prefs = prefs,
-                key = "completionVibrationBypassDnd",
-                defaultValue = false,
-                risk = ConfigRisk.SENSITIVE,
             )
         )
         // [T-android-config-feature-unavailable] Live Updates / "dynamic

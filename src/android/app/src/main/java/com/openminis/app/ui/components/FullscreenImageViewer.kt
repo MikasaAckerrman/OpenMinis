@@ -71,7 +71,6 @@ import coil.ImageLoader
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import coil.request.SuccessResult
-import com.openminis.app.ui.DisplayBitmapLimits.limitDisplaySize
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -91,12 +90,6 @@ fun FullscreenImageViewer(
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
-    val displayRequest = remember(model) {
-        ImageRequest.Builder(context)
-            .data(model)
-            .limitDisplaySize()
-            .build()
-    }
     val view = LocalView.current
     val scope = rememberCoroutineScope()
 
@@ -199,7 +192,7 @@ fun FullscreenImageViewer(
         ) {
             // ── Image ──────────────────────────────────────────────────────────
             AsyncImage(
-                model = displayRequest,
+                model = model,
                 contentDescription = null,
                 contentScale = ContentScale.Fit,
                 modifier = Modifier
@@ -379,11 +372,7 @@ internal suspend fun loadBitmap(context: Context, model: Any): Bitmap? =
     withContext(Dispatchers.IO) {
         try {
             val loader = ImageLoader(context)
-            val req = ImageRequest.Builder(context)
-                .data(model)
-                .limitDisplaySize()
-                .allowHardware(false)
-                .build()
+            val req = ImageRequest.Builder(context).data(model).allowHardware(false).build()
             val result = loader.execute(req)
             (result as? SuccessResult)?.drawable?.toBitmap()
         } catch (e: Exception) {

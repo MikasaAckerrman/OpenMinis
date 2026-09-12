@@ -46,10 +46,6 @@ class AnthropicProvider(
     private val customUserAgent: String? = null,
 ) : LLMProvider {
     override val name = "Anthropic"
-
-    // [LlmDispatchGate] throttle key: pace by endpoint host (see OpenAIProvider).
-    override val throttleKey: String =
-        com.openminis.app.provider.LlmDispatchGate.keyForUrl(basePath)
     override val defaultMaxOutputTokens: Int get() = 64_000
 
     /**
@@ -80,10 +76,6 @@ class AnthropicProvider(
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.MINUTES)
         .writeTimeout(30, TimeUnit.SECONDS)
-        // [T-stale-conn-ping] h2 keep-alive ping so a silently-dropped idle
-        // connection is detected in ~15s instead of hanging the TTFB watchdog.
-        // See OpenAIProvider for the full rationale.
-        .pingInterval(15, TimeUnit.SECONDS)
         // [T-android-stale-conn-retry-hang] Shared pool — see NetworkMonitor.
         // Network-transition eviction must reach provider connections.
         .connectionPool(com.openminis.app.network.NetworkMonitor.sharedLLMConnectionPool)
@@ -98,24 +90,17 @@ class AnthropicProvider(
         tools: List<AgentToolDefinition>,
         thinkingLevel: ThinkingLevel,
     ): LLMResponse = withContext(Dispatchers.IO) {
-        // [429-concurrent-sessions] Direct-socket non-streaming path — the only
-        // gate for Anthropic's sendMessage. Pace against the per-host bucket and
-        // hold a stream permit for the request's duration. (Streaming is gated
-        // separately in LLMProvider.streamMessage.)
-        com.openminis.app.provider.LlmDispatchGate.awaitRateSlot(throttleKey)
-        com.openminis.app.provider.LlmDispatchGate.withStreamPermit {
         val body = buildRequestBody(messages, systemPrompt, maxTokens, stream = false, temperature = temperature, imageParts = imageParts, tools = tools, thinkingLevel = thinkingLevel)
         val request = buildRequest(body.toString(), body)
         val response = client.newCall(request).execute()
         val responseBody = response.body?.string() ?: ""
 
         if (!response.isSuccessful) {
-            throw mapHttpError(response.code, responseBody, response.header("Retry-After"))
+            throw mapHttpError(response.code, responseBody)
         }
 
         val json = JSONObject(responseBody)
         parseResponse(json)
-        }
     }
 
     override fun streamMessageClamped(
@@ -179,7 +164,7 @@ class AnthropicProvider(
                 )
             }
             android.util.Log.e("AnthropicProvider", "Stream failed: ${response.code} isOAuth=$isOAuth body=${errorBody.take(300)}")
-            throw mapHttpError(response.code, errorBody, response.header("Retry-After"))
+            throw mapHttpError(response.code, errorBody)
         }
 
         // Log successful request (debug builds only — see above)
@@ -430,25 +415,8 @@ class AnthropicProvider(
             body.put("tool_choice", JSONObject().put("type", "auto"))
         }
 
-        // [T-request-byte-budget] Final size gate at the provider boundary —
-        // elide OLD, large tool_results (id preserved, content → re-fetchable
-        // placeholder) until the serialized body fits, keeping the freshest
-        // working turns verbatim. ImageBudget caps image bytes; this caps text.
-        // Full output stays in agentHistory / on disk, so nothing is lost.
-        val budgeted = com.openminis.app.data.RequestBudget.plan(
-            messages = messages,
-            protectRecentUserTextTurns = REQUEST_BUDGET_PROTECT_TURNS,
-        )
-        if (budgeted.elidedToolResultCount > 0) {
-            com.openminis.app.logging.AppLogger.info(
-                "AnthropicProvider",
-                "[RequestBudget] elided ${budgeted.elidedToolResultCount} oversize tool_result(s): " +
-                    "${budgeted.bytesBefore}B → ${budgeted.bytesAfter}B (ceiling ${com.openminis.app.data.RequestBudget.DEFAULT_MAX_BODY_BYTES}B)",
-            )
-        }
-
         // Build and merge messages
-        val rawMessages = buildMessages(budgeted.messages, imageParts)
+        val rawMessages = buildMessages(messages, imageParts)
         val merged = mergeConsecutiveSameRole(rawMessages)
 
         // Inject cache_control on last 2 user messages
@@ -793,16 +761,6 @@ class AnthropicProvider(
 
     companion object {
         /**
-         * [T-request-byte-budget] Trailing user-text turns kept verbatim by the
-         * provider-boundary byte gate — matches ChatViewModel's
-         * COMPACT_KEEP_RECENT_USER_TURNS so the protected window is the same one
-         * compact/offload treats as the live working context.
-         */
-        // [T-postanchor-preserve-live-context] 6 → 24, matching
-        // ChatViewModel.COMPACT_KEEP_RECENT_USER_TURNS.
-        private const val REQUEST_BUDGET_PROTECT_TURNS = 24
-
-        /**
          * Parse the `-<major>-<minor>` (or `/<major>.<minor>`) version out of a Claude id.
          * [T-anthropic-temp-claude5-android] The minor segment is OPTIONAL and
          * defaults to 0: single-segment ids (claude-fable-5, claude-opus-5,
@@ -1050,22 +1008,9 @@ class AnthropicProvider(
         )
     }
 
-    private fun mapHttpError(statusCode: Int, body: String, retryAfterHeader: String? = null): LLMError {
-        if (statusCode == 401 || statusCode == 403) {
-            // See QuotaErrorDetection: 403 covers both auth failure and
-            // balance-too-low pre-charge rejection on relay gateways.
-            if (com.openminis.app.provider.QuotaErrorDetection.isQuotaFailure(body)) {
-                return LLMError.QuotaExceeded(
-                    com.openminis.app.provider.QuotaErrorDetection.describe(body)
-                )
-            }
-            return LLMError.InvalidApiKey()
-        }
-        if (statusCode == 429) {
-            return LLMError.RateLimited(
-                com.openminis.app.provider.RateLimitPolicy.parseRetryAfterMs(retryAfterHeader)
-            )
-        }
+    private fun mapHttpError(statusCode: Int, body: String): LLMError {
+        if (statusCode == 401 || statusCode == 403) return LLMError.InvalidApiKey()
+        if (statusCode == 429) return LLMError.RateLimited()
 
         val message = try {
             val json = JSONObject(body)
@@ -1079,17 +1024,6 @@ class AnthropicProvider(
 
         val transientCodes = setOf(500, 502, 503, 504, 529)
         if (statusCode in transientCodes) {
-            // Same trap as in OpenAIProvider: relays that expose an
-            // Anthropic-shaped endpoint run the same keyword filter and report
-            // it as 500. A moderation verdict is deterministic, so retrying is
-            // three doomed round-trips; fall back to another provider instead.
-            if (com.openminis.app.provider.ContentFilterDetection
-                    .isContentFilterRejection(body)
-            ) {
-                return LLMError.ProviderError(
-                    com.openminis.app.provider.ContentFilterDetection.describe(body),
-                )
-            }
             return LLMError.TransientError(message)
         }
         return LLMError.ProviderError(message)

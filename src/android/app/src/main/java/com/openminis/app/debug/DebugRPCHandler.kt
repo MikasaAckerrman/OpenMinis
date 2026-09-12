@@ -156,7 +156,6 @@ class DebugRPCHandler(private val context: Context) {
             "chat.compact.before" -> ChatMutationMethods.compactBefore(context, params)
             "chat.compact.markers.list" -> ChatMutationMethods.compactMarkersList(context, params)
             "chat.compact.revert" -> ChatMutationMethods.compactRevert(context, params)
-            "chat.session.rescue" -> ChatMutationMethods.sessionRescue(context, params)
 
             // Debug-only: direct CLI / offload-handler invocation (T344).
             // Registered solely on DEBUG builds so release APKs cannot expose it.
@@ -1302,22 +1301,14 @@ class DebugRPCHandler(private val context: Context) {
             put("artifacts", artifactsObj)
             put("trace", traceArr)
             result.error?.let { put("error", it) }
-            // Same field the chat turn renders, so a debug run and a routed chat
-            // turn can be compared without digging through the artifact map.
-            result.finalHandoff?.let { put("finalHandoff", it) }
         }
     }
 
     private suspend fun handleAgentGraphTrace(params: JSONObject): JSONObject {
         val taskId = params.optString("taskId", "").takeIf { it.isNotEmpty() }
             ?: throw RPCException(-32602, "Missing required parameter: taskId")
-        // `/var/minis/offloads/...` is a path inside the PRoot rootfs, not a host
-        // path — reading it with a bare File() looks in the app's real root, where
-        // it never exists, so every trace read reported "not found" regardless of
-        // whether the run wrote one. Same translation the writer does.
-        val traceFile = PRootKernel
-            .resolveHostPath("/var/minis/offloads/agent_graph_$taskId.json")
-        if (traceFile == null || !traceFile.exists()) {
+        val traceFile = java.io.File("/var/minis/offloads/agent_graph_${taskId}.json")
+        if (!traceFile.exists()) {
             throw RPCException(-32602, "Trace not found for taskId: $taskId")
         }
         val traceJson = traceFile.readText()

@@ -361,93 +361,8 @@ class RootfsManager private constructor(private val context: Context) {
         // so the next app-upgrade overlay still overwrites cleanly.
         val lockedCount = lockMcpCliLibReadOnly()
 
-        // [T-uicopy-in-apk] То же для вшитого конвейера ui-copy: скрипты и
-        // GUIDE.md становятся read-only внутри гостя. Вместе с overlay-копией
-        // на каждом boot это даёт свойство «инструмент нельзя потерять»:
-        // его нет в скилах, он не зависит от памяти/сети, а `rm` внутри
-        // sandbox по нему не пройдёт. Удалить можно только правкой кода.
-        val uiCopyLocked = lockUiCopyReadOnly()
-
-        // [T-guard-in-apk] Install the destructive-op guard: point rm / mv /
-        // shred / truncate at /usr/local/sbin/minis-guard so a mistaken mask
-        // (`rm -rf om*`) or a delete of another session's work is refused
-        // BEFORE it runs. Shipped as an overlay asset (versioned + CI-tested +
-        // delivered to every device) rather than hand-installed per rootfs, so
-        // a rootfs reset can't silently drop the protection. The enforcement
-        // must stay guest-side because the shell expands the glob before the
-        // guard sees argv — the app-level dispatcher only sees the raw
-        // `rm -rf om*` string, never the three paths it becomes.
-        val guardLinks = installGuardSymlinks()
-
         val elapsedMs = (System.nanoTime() - startNs) / 1_000_000.0
-        Log.i(TAG, "[DefaultMount] Done. $fileCount file(s) overlaid, $markerRemoved EXTERNALLY-MANAGED marker(s) removed, $lockedCount minis-mcp-cli lib path(s) locked read-only, $uiCopyLocked minis-uicopy path(s) locked read-only, $guardLinks guard symlink(s) in %.1fms".format(elapsedMs))
-    }
-
-    /**
-     * [T-guard-in-apk] Symlink rm / mv / shred / truncate in
-     * `/usr/local/sbin` to the shipped `minis-guard`. `/usr/local/sbin` leads
-     * PATH (see PRootKernel PATH setup), so the guest resolves these before the
-     * busybox originals in `/bin`. minis-guard falls back to the real busybox
-     * for allowed commands and on any internal error, so the worst case is
-     * "guard is a no-op", never "rm stopped working".
-     *
-     * Idempotent: recreates the symlink if it points anywhere else, leaves it
-     * untouched when already correct. Skips silently if the guard asset didn't
-     * land (older overlay, partial rootfs) — a dangling rm→guard symlink would
-     * be worse than no guard.
-     *
-     * Uses `ln -sf` via the busybox already in the rootfs rather than
-     * java.nio symlink APIs, which are unreliable across the PRoot bind layer.
-     */
-    private fun installGuardSymlinks(): Int {
-        val guard = File(rootfsDir, "usr/local/sbin/minis-guard")
-        if (!guard.exists()) {
-            Log.w(TAG, "[Guard] minis-guard asset missing, skipping symlink install")
-            return 0
-        }
-        // [T-guard-in-apk] minis-guard is a Python script (#!/usr/bin/python3).
-        // If the interpreter is absent, an rm→guard symlink would make EVERY
-        // rm fail with a bad-interpreter exec error — far worse than no guard.
-        // The shipped Alpine rootfs carries python3, but a user who apk-removed
-        // it must keep a working rm. Gate on the interpreter's presence.
-        if (!File(rootfsDir, "usr/bin/python3").exists()) {
-            Log.w(TAG, "[Guard] python3 absent in rootfs, leaving rm/mv as busybox (guard needs the interpreter)")
-            return 0
-        }
-        // Ensure the guard + claim scripts are executable (copyAssetDir already
-        // sets the bit for /usr/local/{bin,sbin}, but be defensive).
-        guard.setExecutable(true, false)
-        File(rootfsDir, "usr/local/bin/minis-claim").takeIf { it.exists() }
-            ?.setExecutable(true, false)
-
-        val sbin = File(rootfsDir, "usr/local/sbin")
-        sbin.mkdirs()
-        var count = 0
-        for (tool in listOf("rm", "mv", "shred", "truncate")) {
-            val link = File(sbin, tool)
-            try {
-                // Recreate unconditionally: File.delete + a fresh symlink is
-                // simpler than reading the current target, and cheap (4 links,
-                // once per boot). A plain file left here by some other path is
-                // also cleared this way.
-                if (link.exists() || isSymlink(link)) link.delete()
-                val p = ProcessBuilder("/bin/busybox", "ln", "-sf", "minis-guard", link.absolutePath)
-                    .redirectErrorStream(true)
-                    .start()
-                p.waitFor()
-                if (isSymlink(link)) count++
-            } catch (t: Throwable) {
-                Log.w(TAG, "[Guard] failed to link $tool: ${t.message}")
-            }
-        }
-        Log.i(TAG, "[Guard] installed $count/4 destructive-op guard symlink(s)")
-        return count
-    }
-
-    private fun isSymlink(f: File): Boolean = try {
-        f.absoluteFile.let { it.canonicalFile != it.absoluteFile }
-    } catch (t: Throwable) {
-        false
+        Log.i(TAG, "[DefaultMount] Done. $fileCount file(s) overlaid, $markerRemoved EXTERNALLY-MANAGED marker(s) removed, $lockedCount minis-mcp-cli lib path(s) locked read-only in %.1fms".format(elapsedMs))
     }
 
     /**
@@ -473,39 +388,6 @@ class RootfsManager private constructor(private val context: Context) {
             f.setReadable(true, false)
             if (f.isDirectory) f.setExecutable(true, false)
             count++
-        }
-        return count
-    }
-
-    /**
-     * [T-uicopy-in-apk] Same read-only treatment for the shipped ui-copy
-     * toolchain: `/usr/local/lib/minis-uicopy/` (measurement scripts) and
-     * `/usr/local/share/minis-uicopy/` (GUIDE.md + reference reconstruction).
-     *
-     * WHY. The UI-copy pipeline must be available on a fresh install and must
-     * not be removable by accident — not by the user editing files in the
-     * terminal, not by the agent, not by a rootfs reset (the overlay is
-     * re-applied on every boot from APK assets). Only a code change can remove
-     * it. Locking the subtree read-only is the last piece: without it a stray
-     * `rm`/`vi` inside the guest could break the toolchain until the next boot.
-     *
-     * The wrapper at `/usr/local/bin/minis-uicopy` intentionally stays
-     * writable+executable (app-managed, same convention as minis-mcp-cli), and
-     * `copyAssetDir` re-opens read-only files for writing before overwriting,
-     * so an app upgrade still replaces the shipped files cleanly.
-     */
-    private fun lockUiCopyReadOnly(): Int {
-        var count = 0
-        for (rel in listOf("usr/local/lib/minis-uicopy",
-                           "usr/local/share/minis-uicopy")) {
-            val dir = File(rootfsDir, rel)
-            if (!dir.isDirectory) continue
-            for (f in dir.walkBottomUp()) {
-                f.setWritable(false, false)
-                f.setReadable(true, false)
-                if (f.isDirectory) f.setExecutable(true, false)
-                count++
-            }
         }
         return count
     }

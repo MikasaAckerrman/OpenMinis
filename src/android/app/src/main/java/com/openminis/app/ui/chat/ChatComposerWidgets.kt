@@ -253,9 +253,6 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
-import coil.request.ImageRequest
-import com.openminis.app.ui.DisplayBitmapLimits.decodeFileForDisplay
-import com.openminis.app.ui.DisplayBitmapLimits.limitDisplaySize
 import com.openminis.app.offload.OffloadPermissionManager
 import com.mikepenz.markdown.compose.components.markdownComponents
 import com.mikepenz.markdown.m3.Markdown
@@ -310,15 +307,8 @@ internal fun AttachmentChip(
                 ),
         ) {
             if (attachment.isImage) {
-                val context = LocalContext.current
-                val request = remember(attachment.uri) {
-                    ImageRequest.Builder(context)
-                        .data(attachment.uri)
-                        .limitDisplaySize()
-                        .build()
-                }
                 AsyncImage(
-                    model = request,
+                    model = attachment.uri,
                     contentDescription = attachment.fileName,
                     modifier = Modifier
                         .matchParentSize()
@@ -669,7 +659,7 @@ private fun ToolPreviewThumbnail(
                 ) {
                     val path = block.imageFilePath
                     value = if (path == null) null else withContext(Dispatchers.IO) {
-                        try { decodeFileForDisplay(path) } catch (_: Exception) { null }
+                        try { android.graphics.BitmapFactory.decodeFile(path) } catch (_: Exception) { null }
                     }
                 }
                 val bmp = bitmap
@@ -712,7 +702,7 @@ private fun ToolPreviewThumbnail(
                     // the thumb doesn't degrade to the globe placeholder.
                     val path = block.imageFilePath ?: fallbackImagePath
                     value = if (path == null) null else withContext(Dispatchers.IO) {
-                        try { decodeFileForDisplay(path) } catch (_: Exception) { null }
+                        try { android.graphics.BitmapFactory.decodeFile(path) } catch (_: Exception) { null }
                     }
                 }
                 val bitmap = liveBitmap ?: savedBitmap

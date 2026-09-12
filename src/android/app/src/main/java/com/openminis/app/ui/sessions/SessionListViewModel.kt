@@ -5,7 +5,6 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import com.openminis.app.R
 import com.openminis.app.data.db.ChatSessionEntity
 import com.openminis.app.data.model.LLMMessage
 import com.openminis.app.data.model.ThinkingLevel
@@ -111,21 +110,6 @@ class SessionListViewModel(
 
     // Session IDs currently regenerating their titles (UI overlay)
     val regeneratingIds = MutableStateFlow<Set<String>>(emptySet())
-
-    // [session-longpress-compress] Session IDs currently being hard-compacted
-    // (LLM-free RescueDigest). Drives the same loading overlay as title regen so
-    // the user sees the long-press "Compress context" action is working.
-    val compressingIds = MutableStateFlow<Set<String>>(emptySet())
-
-    // [session-longpress-compress] One-shot user-facing result of a compress
-    // run (a short toast/snackbar string). extraBufferCapacity=1 + DROP_OLDEST
-    // so a result emitted while the UI isn't collecting still lands on next
-    // collect. Null payloads are never emitted.
-    val compressResultEvent = kotlinx.coroutines.flow.MutableSharedFlow<String>(
-        replay = 0,
-        extraBufferCapacity = 1,
-        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
-    )
 
     // [T-android-newchat-list-autoscroll] One-shot signal: a session id that
     // we have never seen before has appeared at the TOP of the list (the list
@@ -266,71 +250,8 @@ class SessionListViewModel(
         }
     }
 
-    /**
-     * [model-compaction] Compact a session's context USING THE MODEL, from the
-     * session list's long-press menu.
-     *
-     * Why model-based: the earlier version built a local digest and then
-     * permanently pruned the folded rows. Both were wrong for this user — a
-     * local algorithm cannot preserve what a model can (it degrades the session
-     * instead of shrinking it), and the prune made the operation irreversible.
-     * This routes the list action through the SAME path as the in-chat
-     * `/compact` (ChatViewModel.compactAll → hierarchical split-and-summarize
-     * with per-provider fallbacks), so a history too large for one request is
-     * summarised in parts and merged, and a size-rejecting gateway is handled by
-     * the splitter rather than by giving up.
-     *
-     * Raw rows are NEVER deleted here: the compact marker is reversible via
-     * "Revert compact", and the full history stays on disk as the audit trail.
-     */
-    fun compressSession(id: String) {
-        viewModelScope.launch(Dispatchers.IO) {
-            withContext(Dispatchers.Main) { compressingIds.value = compressingIds.value + id }
-            try {
-                val rows = chatRepository.loadMessages(id)
-                if (rows.isEmpty()) {
-                    compressResultEvent.tryEmit(context.getString(R.string.sessionlist_compress_empty))
-                    return@launch
-                }
-
-                // [model-compaction] Compress via the MODEL, not a local digest.
-                // The local digest drops detail no dumb algorithm can preserve,
-                // which is why the user rejected it. Drive the SAME code path
-                // /compact uses (ChatViewModel.runCompactNow → compactAll →
-                // hierarchical split-and-summarize), so a session too large for
-                // one request is summarised in parts and merged. Only if every
-                // model route refuses does compactAll internally fall back to a
-                // local digest — a last resort, not the default.
-                //
-                // Rows are NEVER pruned here: the marker is reversible ("Revert
-                // compact") and the raw history stays on disk as the audit trail.
-                val vm = com.openminis.app.debug.HeadlessChatRunner
-                    .compactViaModel(context, id, timeoutMs = 10 * 60 * 1000L)
-                if (!vm.ok) {
-                    Log.w(TAG, "compress: model compaction failed for $id: ${vm.error}")
-                    compressResultEvent.tryEmit(context.getString(R.string.sessionlist_compress_failed))
-                    return@launch
-                }
-
-                val beforeChars = rows.sumOf { it.partsJson.length }
-                val summaryLen = vm.summaryLength
-                val pct = if (beforeChars > 0 && summaryLen > 0) {
-                    (100 - summaryLen * 100 / beforeChars).coerceIn(0, 100)
-                } else 0
-                Log.i(TAG, "compress: session=$id rows=${rows.size} ${beforeChars}→$summaryLen chars (-$pct%) via model")
-                compressResultEvent.tryEmit(
-                    context.getString(R.string.sessionlist_compress_done, pct)
-                )
-            } catch (e: Exception) {
-                Log.w(TAG, "compress failed for $id: ${e.message}", e)
-                compressResultEvent.tryEmit(context.getString(R.string.sessionlist_compress_failed))
-            } finally {
-                withContext(Dispatchers.Main) { compressingIds.value = compressingIds.value - id }
-            }
-        }
-    }
-
-    fun togglePin(id: String) {        viewModelScope.launch {
+    fun togglePin(id: String) {
+        viewModelScope.launch {
             val session = chatRepository.getSession(id) ?: return@launch
             val newPinnedAt = if (session.pinnedAt != null) null else System.currentTimeMillis()
             chatRepository.dao.updatePinnedAt(id, newPinnedAt)

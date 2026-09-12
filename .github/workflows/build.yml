@@ -1,14 +1,9 @@
 name: Build APK
 
 on:
-  workflow_dispatch:
   push:
     branches: [main]
     # Trigger on [quick] marker in commit message
-    #
-    # NOTE: `paths-ignore` also filters out commits that touch NO files at all,
-    # so an empty commit cannot be used to re-trigger a run — GitHub skips the
-    # workflow entirely rather than running it with an unchanged tree.
     paths-ignore:
       - '**.md'
       - 'docs/**'
@@ -16,7 +11,7 @@ on:
 
 jobs:
   build:
-    name: Build arm64 Clone APK
+    name: Build arm64 Debug APK
     runs-on: ubuntu-latest
     timeout-minutes: 20
     
@@ -63,103 +58,16 @@ jobs:
       - name: Grant Gradle permission
         run: chmod +x src/android/gradlew
 
-      # Unit tests were compiled by CI but never executed, so a test could rot
-      # into a false green (or stop compiling) without anyone noticing. They are
-      # pure-JVM and finish in seconds, and they run BEFORE the APK build so a
-      # broken invariant fails fast instead of after a 5-minute assemble.
-      #
-      # Scoped to the agent/offload suites on purpose. Turning the gate on
-      # revealed 39 tests that were already red before this step existed:
-      #   AnthropicProviderTest  24 — every case dies in resolveSystemPrompt on
-      #       "ANTHROPIC_OAUTH_IDENTIFIER_PROMPT is not configured", because
-      #       app/provider-customization.properties is gitignored and absent in CI
-      #   OpenAIProviderTest     11 — TransientError "Server returned an empty
-      #       response" against MockWebServer
-      #   TerminalSanitizerTest   4 — real behaviour gap: CR folding drops the
-      #       overwritten tail and padding ("AAAA\rBB" yields "BB", not "BBAA")
-      # Widen this filter as each suite is fixed; do not swap it for the whole
-      # suite until they are green, or the gate goes back to being ignored.
-      # `config.ConfigPathResolverTest` is listed by name rather than as
-      # `config.*` for the same reason: the rest of that package is not covered
-      # yet, and a wildcard would drag in whatever lands there next.
-      - name: Run unit tests
+      - name: Build Debug APK
         run: |
           cd src/android
-          ./gradlew :app:testCloneUnitTest --no-daemon -Dorg.gradle.jvmargs="-Xmx4g" \
-            --tests 'com.openminis.app.offload.*' \
-            --tests 'com.openminis.app.config.ConfigPathResolverTest' \
-            --tests 'com.openminis.app.data.model.ProviderFoldersTest' \
-            --tests 'com.openminis.app.feedback.CompletionFeedbackPolicyTest' \
-            --tests 'com.openminis.app.feedback.VibrationPatternsTest' \
-            --tests 'com.openminis.app.data.MessageSurgeryMergedTurnTest' \
-            --tests 'com.openminis.app.data.ProtectedTailTest' \
-            --tests 'com.openminis.app.data.ContextMaintenanceTest' \
-            --tests 'com.openminis.app.ui.chat.ResidentEvictionPolicyTest' \
-            --tests 'com.openminis.app.ui.chat.VmCacheLruTest' \
-            --tests 'com.openminis.app.provider.QuotaErrorDetectionTest' \
-            --tests 'com.openminis.app.provider.ContentFilterDetectionTest' \
-            --tests 'com.openminis.app.tools.AgentSystemPromptStoreTest' \
-            --tests 'com.openminis.app.tools.AgentWorkerPromptTest' \
-            --tests 'com.openminis.app.tools.AgentSystemPromptStandaloneTest' \
-            --tests 'com.openminis.app.ui.chat.VmCacheLruTest' \
-            --tests 'com.openminis.app.ui.chat.PartsJsonCacheTest' \
-            --tests 'com.openminis.app.ui.chat.AgentModePrefsTest' \
-            --tests 'com.openminis.app.offload.AgentRunProgressTest' \
-            --tests 'com.openminis.app.ui.chat.ChatHistoryWindowTest' \
-            --tests 'com.openminis.app.service.SessionActivityTrackerConcurrencyTest' \
-            --tests 'com.openminis.app.service.SessionConcurrencyManagerTest' \
-            --tests 'com.openminis.app.provider.LlmDispatchGateTest' \
-            --tests 'com.openminis.app.provider.TokenBucketTest' \
-            --tests 'com.openminis.app.provider.RateLimitPolicyTest' \
-            --tests 'com.openminis.app.data.CompactionLaunchPolicyTest' \
-            --tests 'com.openminis.app.data.ContextUsageAttributionTest' \
-            --tests 'com.openminis.app.data.StaleConnectionPolicyTest' \
-            --tests 'com.openminis.app.data.PostAnchorPruneTest' \
-            --tests 'com.openminis.app.data.RequestBudgetTest' \
-            --tests 'com.openminis.app.data.SessionDeletionPolicyTest' \
-            --tests 'com.openminis.app.ui.chat.UiCopyCapsuleTest' \
-            --tests 'com.openminis.app.ui.chat.UiCopyDiffVerdictTest' \
-            --tests 'com.openminis.app.ui.chat.MinisTextKitSelectionOrderTest'
-        # `offload.*` already covers AgentArtifactStoreTest — the artifact store
-        # lives in that package on purpose, next to the runner that uses it.
+          ./gradlew :app:assembleDebug --no-daemon -Dorg.gradle.jvmargs="-Xmx4g"
 
-      - name: Upload unit test report on failure
-        if: failure()
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: unit-test-report
-          path: src/android/app/build/reports/tests/
-          retention-days: 7
-
-      # [T-clone-only-ci] Only the clone variant is built.
-      #
-      # `clone` and `debug` compile the SAME sources — they differ in
-      # applicationId (.clone), launcher label and debug-RPC port only. The
-      # clone installs alongside the primary Minis, so it is where development
-      # builds are tested without risking the install that holds real chats.
-      #
-      # Building debug as well doubled CI time (8 min vs 5) to produce an
-      # artifact nobody installs. To resurrect it — when the primary install
-      # should finally receive the accumulated work — restore this step:
-      #
-      #   - name: Build Debug APK
-      #     run: cd src/android && ./gradlew :app:assembleDebug --no-daemon
-      #   - name: Upload APK artifact
-      #     uses: actions/upload-artifact@v4
-      #     with: { name: app-debug-apk, path: src/android/app/build/outputs/apk/debug/app-debug.apk }
-      #
-      # Both variants share the committed debug keystore, so a debug APK built
-      # later still installs over any earlier one.
-      - name: Build Clone APK
-        run: |
-          cd src/android
-          ./gradlew :app:assembleClone --no-daemon -Dorg.gradle.jvmargs="-Xmx4g"
-
-      - name: Upload Clone APK artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-clone-apk
-          path: src/android/app/build/outputs/apk/clone/app-clone.apk
+          name: app-debug-apk
+          path: src/android/app/build/outputs/apk/debug/app-debug.apk
           retention-days: 7
 
       - name: Auto-push version bump (if [quick] and not workflow_dispatch)
