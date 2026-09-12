@@ -46,6 +46,9 @@ class WebViewHolder(
 
     private var mobileUserAgent: String = ""
 
+    /** Constructor param captured as a property — usable from methods. */
+    private val appCtx: Context = appContext
+
     /** The URL the user's link pointed at before auto-resume may replace it. */
     private val requestedUrl: String = initialUrl
 
@@ -264,7 +267,7 @@ class WebViewHolder(
         ) {
             try {
                 val saved = WebPreviewPositionStore
-                    .getInstance(appContext)
+                    .getInstance(appCtx)
                     .lastFor(requestedUrl)
                 if (saved != null && saved != requestedUrl &&
                     WebPreviewPositionStore.hostOf(saved) == WebPreviewPositionStore.hostOf(requestedUrl)
