@@ -167,14 +167,15 @@ class WebViewHolder(
                 // zoom. After that the WebView honors the NEW meta and pinch
                 // is dead until the next full navigation ("zoom stops working
                 // after the keyboard hides"). Fix: inject a persistent
-                // MutationObserver that patches the meta back at EVERY
-                // change point, including full node replacement. It patches
+                // interval probe (see D7 below) that patches the meta on a 2s
+                // timer — off the SPA commit path. It patches
                 // user-scalable / maximum-scale ONLY, preserving the page's
                 // own width / initial-scale (desktop shrink-to-fit keeps its
                 // scale). Idempotent per document — re-injection on every
                 // finish is a no-op thanks to the window flag.
                 view.evaluateJavascript(
                     "(function(){" +
+                        "if(location.protocol!=='http:'&&location.protocol!=='https:')return;" +
                         "if(window.__minisZoomPatch)return;window.__minisZoomPatch=1;" +
                         "var fix=function(m){if(!m)return;var c=m.getAttribute('content')||'';" +
                         "var o=c;" +

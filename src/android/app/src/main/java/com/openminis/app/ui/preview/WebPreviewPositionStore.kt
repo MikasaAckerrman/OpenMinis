@@ -5,6 +5,8 @@ import android.util.Log
 import org.json.JSONObject
 import java.io.File
 import java.net.URI
+import java.util.LinkedHashMap
+import java.util.concurrent.Executors
 
 /**
  * Persists the web preview's last browsing position so it survives the
@@ -21,6 +23,12 @@ import java.net.URI
  * the agent mirror is written through [com.openminis.app.sandbox.PRootKernel]
  * resolveSessionHostPath so it lands in the per-session workspace mount.
  * Mirror failures never break the in-app path (best-effort, logged).
+ *
+ * T-position-io: all disk work runs on a single background thread — the
+ * record() path fires from WebView callbacks (main thread) on every page
+ * finish, and sync file writes there caused UI jank. All map mutation and
+ * serialization is serialized onto that one thread; readers take the
+ * monitor.
  */
 class WebPreviewPositionStore private constructor(private val context: Context) {
 
@@ -28,6 +36,7 @@ class WebPreviewPositionStore private constructor(private val context: Context) 
         private const val TAG = "WebPreviewPosition"
         private const val FILENAME = "web_preview_position.json"
         private const val MIRROR_LINUX_PATH = "/var/minis/workspace/preview_position.json"
+        private const val MAX_HOSTS = 32
 
         @Volatile
         private var instance: WebPreviewPositionStore? = null
@@ -38,16 +47,24 @@ class WebPreviewPositionStore private constructor(private val context: Context) 
             }
         }
 
-        /** host("https://www.avito.ru/profile/messenger") → "www.avito.ru" */
+        /**
+         * host("https://www.avito.ru/profile") → "avito.ru": lowercased and
+         * `www.`-stripped, so a position saved under www resumeds for the
+         * bare host link too (and vice versa).
+         */
         fun hostOf(url: String): String = try {
-            URI(url).host?.lowercase() ?: ""
+            URI(url).host?.lowercase()?.removePrefix("www.") ?: ""
         } catch (_: Exception) {
             ""
         }
     }
 
-    /** host → last URL on that host. */
-    private val positions = mutableMapOf<String, String>()
+    /** host → last URL on that host, insertion-ordered (oldest evicted first). */
+    private val positions = LinkedHashMap<String, String>()
+
+    private val io = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "web-preview-position").apply { isDaemon = true }
+    }
 
     init {
         load()
@@ -56,24 +73,32 @@ class WebPreviewPositionStore private constructor(private val context: Context) 
     fun lastFor(url: String): String? {
         val host = hostOf(url)
         if (host.isEmpty()) return null
-        return positions[host]
+        synchronized(positions) { return positions[host] }
     }
 
-    @Synchronized
     fun record(url: String) {
         val host = hostOf(url)
         // Only http(s) pages resume — file:// and minis:// previews are
         // one-shot documents (regenerated sandbox outputs), not sessions.
         if (host.isEmpty() || !(url.startsWith("http://") || url.startsWith("https://"))) return
-        if (positions[host] == url) return
-        positions[host] = url
-        save()
+        io.execute {
+            if (positions[host] == url) return@execute
+            positions.remove(host) // re-insert to move to the tail = freshest
+            positions[host] = url
+            while (positions.size > MAX_HOSTS) {
+                val eldest = positions.keys.firstOrNull() ?: break
+                positions.remove(eldest)
+            }
+            persistLocked()
+        }
     }
 
-    private fun save() {
+    private fun persistLocked() {
         try {
             val obj = JSONObject()
-            for ((host, url) in positions) obj.put(host, url)
+            synchronized(positions) {
+                for ((host, url) in positions) obj.put(host, url)
+            }
             File(context.filesDir, FILENAME).writeText(obj.toString())
             mirrorToActiveSession(obj)
         } catch (e: Exception) {
@@ -105,7 +130,9 @@ class WebPreviewPositionStore private constructor(private val context: Context) 
             val file = File(context.filesDir, FILENAME)
             if (!file.exists()) return
             val obj = JSONObject(file.readText())
-            for (key in obj.keys()) positions[key] = obj.optString(key, "")
+            synchronized(positions) {
+                for (key in obj.keys()) positions[key] = obj.optString(key, "")
+            }
         } catch (e: Exception) {
             Log.w(TAG, "load failed: ${e.message}")
         }

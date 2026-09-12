@@ -381,6 +381,7 @@ class BrowserUseManager(
                 // meta patched at every change point.
                 view.evaluateJavascript(
                     "(function(){" +
+                        "if(location.protocol!=='http:'&&location.protocol!=='https:')return;" +
                         "if(window.__minisZoomPatch)return;window.__minisZoomPatch=1;" +
                         "var fix=function(m){if(!m)return;var c=m.getAttribute('content')||'';" +
                         "var o=c;" +
@@ -391,11 +392,11 @@ class BrowserUseManager(
                         "c=c.replace(/maximum-scale\\s*=\\s*[\\d.]+/i,'maximum-scale=10');}else if(!mx){c+=', maximum-scale=10';}" +
                         "if(c!==o)m.setAttribute('content',c);};" +
                         "var ensure=function(){" +
-                        "var m=document.querySelector('meta[name=viewport]');" +
-                        "if(!m){m=document.createElement('meta');m.name='viewport';" +
-                        "m.setAttribute('content','width=device-width, initial-scale=1');" +
-                        "document.head.appendChild(m);}" +
-                        "fix(m);};" +
+                        // D9: patch-only here — the agent's own viewport
+                        // machinery (set_viewport/ensureMetaViewport) owns
+                        // meta creation; creating width=device-width here
+                        // would fight a 1280 set_viewport on meta-less pages.
+                        "fix(document.querySelector('meta[name=viewport]'));};" +
                         "ensure();" +
                         "window.__minisFix=fix;" +
                         // T-preview-react-race (D7): MutationObserver mutating the
