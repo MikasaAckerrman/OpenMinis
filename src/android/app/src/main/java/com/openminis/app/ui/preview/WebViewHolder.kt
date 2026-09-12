@@ -46,6 +46,9 @@ class WebViewHolder(
 
     private var mobileUserAgent: String = ""
 
+    /** The URL the user's link pointed at before auto-resume may replace it. */
+    private val requestedUrl: String = initialUrl
+
     @SuppressLint("SetJavaScriptEnabled")
     val webView: WebView = WebView(appContext).apply {
         settings.javaScriptEnabled = true       // sandbox HTML demos rely on JS
@@ -136,6 +139,24 @@ class WebViewHolder(
                 isLoading = false
                 pageTitle = view.title.orEmpty()
                 AppLogger.debug(TAG, "onPageFinished title=${pageTitle.take(60)}")
+                // T-preview-position: persist the browsing position so it
+                // survives the preview closing (user → chat) and the app
+                // dying. Two consumers: the user's next same-host open
+                // resumes here, and the agent reads the mirrored JSON at
+                // /var/minis/workspace/preview_position.json.
+                WebPreviewPositionStore.getInstance(appContext).record(url)
+                // History parity with the agent browser (BrowserUseManager
+                // already records its pages; the preview didn't — so agent
+                // history missed everything the user browsed here).
+                if (url.startsWith("http://") || url.startsWith("https://")) {
+                    try {
+                        com.openminis.app.browser.BrowserHistoryStore
+                            .getInstance(appContext)
+                            .record(url, pageTitle)
+                    } catch (e: Exception) {
+                        AppLogger.warning(TAG, "history record failed: ${e.message}")
+                    }
+                }
                 // T-preview-pinch-zoom-2 (D1/D4): a ONE-SHOT meta rewrite on
                 // onPageFinished is not durable — production SPAs (Avito, VK)
                 // re-write the viewport meta at runtime, e.g. flipping to
@@ -232,6 +253,30 @@ class WebViewHolder(
      */
     fun startIfNeeded() {
         if (hasLoaded) return
+        // T-preview-position: auto-resume. If the user previously browsed
+        // this host in the preview and stopped at a page, re-opening any
+        // link to the same host lands them exactly where they stopped
+        // instead of the link's raw target. file:// and minis:// previews
+        // (sandbox documents) never resume. The requested URL stays in
+        // [requestedUrl]; reload/expand keep operating on the resumed page.
+        if (!hasLoaded &&
+            (requestedUrl.startsWith("http://") || requestedUrl.startsWith("https://"))
+        ) {
+            try {
+                val saved = WebPreviewPositionStore
+                    .getInstance(appContext)
+                    .lastFor(requestedUrl)
+                if (saved != null && saved != requestedUrl &&
+                    WebPreviewPositionStore.hostOf(saved) == WebPreviewPositionStore.hostOf(requestedUrl)
+                ) {
+                    AppLogger.info(TAG, "resume: $requestedUrl → $saved")
+                    currentUrl = saved
+                }
+            } catch (e: Exception) {
+                AppLogger.warning(TAG, "resume lookup failed: ${e.message}")
+            }
+        }
+        hasLoaded = true
         // T-htmlpreview-2d5c4f3d: defer the actual loadUrl until the
         // WebView is attached to a window AND has been laid out with a
         // positive width/height. Pages that compute `100vh` / `height: 100%`
@@ -242,7 +287,6 @@ class WebViewHolder(
         // We start the load eagerly when the WebView is already laid out
         // (warm reuse — re-entering a sheet for the same holder), and
         // otherwise post once to the WebView's handler after attach.
-        hasLoaded = true
         if (webView.isAttachedToWindow && webView.width > 0 && webView.height > 0) {
             AppLogger.info(TAG, "loadUrl (attached) ${currentUrl.take(160)}")
             webView.loadUrl(currentUrl)
