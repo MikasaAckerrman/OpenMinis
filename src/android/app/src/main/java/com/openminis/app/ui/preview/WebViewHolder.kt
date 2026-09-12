@@ -184,15 +184,21 @@ class WebViewHolder(
                         "if(mx&&parseFloat(mx[1])<10){" +
                         "c=c.replace(/maximum-scale\\s*=\\s*[\\d.]+/i,'maximum-scale=10');}else if(!mx){c+=', maximum-scale=10';}" +
                         "if(c!==o)m.setAttribute('content',c);};" +
+                        "var ensure=function(){" +
                         "var m=document.querySelector('meta[name=viewport]');" +
                         "if(!m){m=document.createElement('meta');m.name='viewport';" +
                         "m.setAttribute('content','width=device-width, initial-scale=1');" +
                         "document.head.appendChild(m);}" +
-                        "fix(m);" +
-                        "new MutationObserver(function(){" +
-                        "fix(document.querySelector('meta[name=viewport]'));})" +
-                        ".observe(document.head,{childList:true,subtree:true," +
-                        "attributes:true,attributeFilter:['content']});" +
+                        "fix(m);};" +
+                        "ensure();" +
+                        "window.__minisFix=fix;" +
+                        // T-preview-react-race (D7): a MutationObserver mutating
+                        // the meta synchronously inside the SPA's own commit
+                        // silently jams the widget: the first transition after
+                        // load works, every later one (submit, "изменить номер",
+                        // code screen) dies with no error. An interval probe (2s)
+                        // stays off the React commit path entirely.
+                        "setInterval(function(){try{ensure();}catch(e){}},2000);" +
                         // T-preview-stuck-zoom (D5): kill the magnifier state at
                         // its source. WebView auto-zooms into focused text
                         // inputs whose computed font-size is < 16px (legacy

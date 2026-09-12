@@ -390,15 +390,18 @@ class BrowserUseManager(
                         "if(mx&&parseFloat(mx[1])<10){" +
                         "c=c.replace(/maximum-scale\\s*=\\s*[\\d.]+/i,'maximum-scale=10');}else if(!mx){c+=', maximum-scale=10';}" +
                         "if(c!==o)m.setAttribute('content',c);};" +
+                        "var ensure=function(){" +
                         "var m=document.querySelector('meta[name=viewport]');" +
                         "if(!m){m=document.createElement('meta');m.name='viewport';" +
                         "m.setAttribute('content','width=device-width, initial-scale=1');" +
                         "document.head.appendChild(m);}" +
-                        "fix(m);" +
-                        "new MutationObserver(function(){" +
-                        "fix(document.querySelector('meta[name=viewport]'));})" +
-                        ".observe(document.head,{childList:true,subtree:true," +
-                        "attributes:true,attributeFilter:['content']});" +
+                        "fix(m);};" +
+                        "ensure();" +
+                        "window.__minisFix=fix;" +
+                        // T-preview-react-race (D7): MutationObserver mutating the
+                        // meta inside the SPA's commit silently jams the widget —
+                        // interval probe (2s) instead, off the React commit path.
+                        "setInterval(function(){try{ensure();}catch(e){}},2000);" +
                         "var st=document.createElement('style');" +
                         "st.textContent='input[type=text],input[type=tel]," +
                         "input[type=email],input[type=search],input[type=url]," +
