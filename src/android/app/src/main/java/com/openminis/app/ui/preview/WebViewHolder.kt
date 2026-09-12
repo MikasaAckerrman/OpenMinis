@@ -255,28 +255,6 @@ class WebViewHolder(
                     "window.dispatchEvent(new Event('resize'));",
                     null,
                 )
-                // T-preview-stuck-zoom (D6): normalize a stuck magnifier scale
-                // after an IME cycle. The legacy zoom-to-editable behavior can
-                // freeze the visual viewport at the focus-zoom scale (page
-                // huge, pinch dead). When the container grows back (keyboard
-                // hidden) and nothing holds focus, wind the scale back to ~1.
-                // Only reacts to IME cycles — never to user pinch gestures.
-                v.postDelayed({
-                    v.evaluateJavascript(
-                        "(function(){var vv=window.visualViewport;if(!vv)return 'x';" +
-                            "var f=document.activeElement;" +
-                            "var focused=f&&(f.tagName==='INPUT'||f.tagName==='TEXTAREA');" +
-                            "return (focused?'f:':'u:')+String(vv.scale||1);})()",
-                    ) { result ->
-                        val s = result?.trim()?.removePrefix("\"")?.removeSuffix("\"") ?: return@evaluateJavascript
-                        if (s.startsWith("u:")) {
-                            val scale = s.substring(2).toFloatOrNull() ?: return@evaluateJavascript
-                            if (scale > 1.15f) {
-                                (v as WebView).zoomBy(1f / scale)
-                            }
-                        }
-                    }
-                }, 350)
             }
         }
     }
