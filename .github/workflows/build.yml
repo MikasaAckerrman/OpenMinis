@@ -132,7 +132,7 @@ jobs:
             --tests 'com.openminis.app.data.SessionDeletionPolicyTest' \
             --tests 'com.openminis.app.ui.chat.UiCopyCapsuleTest' \
             --tests 'com.openminis.app.ui.chat.UiCopyDiffVerdictTest' \
-            --tests 'com.openminis.app.ui.chat.MinisTextKitSelectionOrderTest'
+            --tests 'com.openminis.app.ui.chat.MinisTextKitSelectionOrderTest' \
             --tests 'com.openminis.app.data.SendGatePolicyTest' \
             --tests 'com.openminis.app.data.MessageCutoffTest' \
             --tests 'com.openminis.app.data.TransientRetryBudgetTest' \
