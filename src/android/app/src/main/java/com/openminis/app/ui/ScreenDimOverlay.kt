@@ -83,6 +83,18 @@ fun ScreenDimOverlay() {
     val hasActiveTask = activeSessions.isNotEmpty()
     val lastTouchAt by ScreenInteractionTracker.lastInteractionAtMs.collectAsState()
 
+    // [T-keep-screen-awake-fix] Actually hold the screen ON. Without this the
+    // system sleeps the panel after its timeout regardless of the "Keep Screen
+    // Awake" setting → device enters Doze → radio parks → sessions disconnect.
+    // This is independent of the dim delay: the user may want the screen kept
+    // alive (to hold the radio up on aggressive OEM ROMs like OriginOS 6)
+    // without ever showing the black overlay (delaySec = 0).
+    val keepScreenOn = keepAwake && hasActiveTask
+    DisposableEffect(keepScreenOn) {
+        view.keepScreenOn = keepScreenOn
+        onDispose { view.keepScreenOn = false }
+    }
+
     var dimmed by remember { mutableStateOf(false) }
 
     // Inert unless enabled AND a task is running, so the ticker costs nothing in
