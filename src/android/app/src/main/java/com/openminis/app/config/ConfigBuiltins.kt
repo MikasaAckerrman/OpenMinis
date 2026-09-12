@@ -58,37 +58,13 @@ internal object ConfigBuiltins {
     // -- Context — manual compaction controls only --
 
     private fun registerContext(r: ConfigRegistry, context: Context) {
-        val prefs = context.getSharedPreferences("minis_context_prefs", Context.MODE_PRIVATE)
         // Automatic compaction/offload is intentionally not configurable.
         // Session history may be rewritten only by an explicit /compact,
-        // /rescue, long-press action, or operator RPC.
-        // [T-session-rescue] Budget for the local, LLM-free rescue digest.
-        r.register(
-            PrefsIntField(
-                path = "context.rescueDigestMaxChars",
-                displayName = "Rescue digest budget (chars)",
-                description = "Size of the digest produced by the /rescue slash command, which compacts a stuck session on-device without any model call. This digest REPLACES the whole history, so it is the post-rescue context floor. Default 12000 chars ≈ 3K tokens. Lower it if even the rescued session won't send (relay with a hard body cap); raise it to preserve more detail.",
-                prefs = prefs,
-                key = "context.rescue.maxchars",
-                defaultValue = com.openminis.app.data.RescueDigestPrefs.DEFAULT_MAX_CHARS,
-                minValue = com.openminis.app.data.RescueDigestPrefs.MIN_MAX_CHARS,
-                maxValue = com.openminis.app.data.RescueDigestPrefs.MAX_MAX_CHARS,
-            )
-        )
-        // [T-session-rescue-refine] Stage-2 LLM rewrite of the rescue digest.
-        r.register(
-            PrefsBoolField(
-                path = "context.rescueRefine",
-                displayName = "Let the model rewrite the rescue summary",
-                description = "After /rescue builds its on-device digest (which is committed first, so the session already works), send that digest — NOT the oversized history — to the model for a better-written summary. The input is a few thousand tokens by construction, so this succeeds even on a session that could not send at all. The result is accepted only if every path, URL and hash from the digest is still present verbatim and it is actually shorter; otherwise the on-device digest is kept. Turn off to keep /rescue fully offline.",
-                prefs = prefs,
-                key = "context.rescue.refine",
-                defaultValue = true,
-            )
-        )
-        // [T-manual-model-compaction] `context.rescue.refine` (above) is the
-        // only remaining context toggle. Compaction cadence is not
-        // configurable: nothing runs automatically, so there is no cadence.
+        // long-press action, or operator RPC. The former local "rescue"
+        // digest and its two config toggles (context.rescue.maxchars /
+        // context.rescue.refine) were removed along with the on-device
+        // digest — AI compaction is the only supported compaction path, and
+        // it has no user-tunable knobs.
     }
 
     // -- Memory — global default toggle for the persistent memory feature --

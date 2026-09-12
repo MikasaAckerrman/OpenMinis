@@ -438,6 +438,21 @@ fun ChatScreen(
     val messages by viewModel.uiMessages.collectAsState()
     val hasOlderMessages by viewModel.hasOlderMessages.collectAsState()
     val isStreaming by viewModel.isStreaming.collectAsState()
+    // [T-auto-resume] Hoisted here (same scope as isStreaming) so the banner
+    // can read them inside LazyListScope (which is not a composable scope).
+    val autoResumeCountdown by viewModel.autoResumeCountdown.collectAsState()
+    val autoResumeAttempt by viewModel.autoResumeAttempt.collectAsState()
+    // [T-resume-banner-false-stopped] Process-wide streaming truth. `isStreaming`
+    // above belongs to ONE ViewModel instance; SessionActivityTracker is
+    // maintained by the streamJob itself and is authoritative. When they disagree
+    // the chat was showing "Interrupted — tap Resume" over a session that was
+    // still working. Hoisted here (not inside the LazyColumn) because
+    // LazyListScope is not a composable scope.
+    val processStreamingSessions by com.openminis.app.service
+        .SessionActivityTracker.activeSessions.collectAsState()
+    val sessionStreamingNow = processStreamingSessions.contains(
+        viewModel.realSessionId.ifEmpty { sessionId },
+    )
     // [T-agent-graph-live-progress] Non-null while a graph run started from this
     // chat is in flight; swaps the typing dots for the per-agent progress card.
     val activeAgentRunTaskId by viewModel.activeAgentRunTaskId.collectAsState()
@@ -2322,6 +2337,32 @@ fun ChatScreen(
                                     Icon(Icons.Default.Memory, contentDescription = null)
                                 },
                             )
+                            // [T-provider-ux] Move to… — moved here from a
+                            // floating capsule pinned over the composer's
+                            // top-right corner. That capsule overlapped the
+                            // text field on a narrow screen and could not be
+                            // dismissed (dismissOnClickOutside = false), so a
+                            // share-seeded draft left it sitting on top of what
+                            // the user was typing until the turn was sent. The
+                            // action is rare and deliberate, which is exactly
+                            // what a menu is for; the entry only appears while a
+                            // share-injected draft is actually movable.
+                            val canMoveDraft by viewModel.hasInjectedShareContent.collectAsState()
+                            if (canMoveDraft) {
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.move_to_sheet_title)) },
+                                    onClick = {
+                                        showChatMenu = false
+                                        showMoveSheet = true
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.AutoMirrored.Filled.ArrowForward,
+                                            contentDescription = null,
+                                        )
+                                    },
+                                )
+                            }
                             MinisMenuDivider()
                             // Clear Chat (iOS parity, red)
                             DropdownMenuItem(
@@ -2992,6 +3033,7 @@ fun ChatScreen(
                 fun FlatChatItem.isCompacted(): Boolean = when (this) {
                     is FlatChatItem.UserBubble -> grayedMap[originalMessageId(message.id)] == true
                     is FlatChatItem.AssistantHeader -> grayedMap[originalMessageId(messageId)] == true
+                    is FlatChatItem.AssistantFooter -> grayedMap[originalMessageId(messageId)] == true
                     is FlatChatItem.AssistantText -> grayedMap[originalMessageId(messageId)] == true
                     is FlatChatItem.AssistantMarkdownBlock -> grayedMap[originalMessageId(messageId)] == true
                     is FlatChatItem.AssistantThinking -> grayedMap[originalMessageId(messageId)] == true
@@ -3038,17 +3080,7 @@ fun ChatScreen(
                 // scrolling back in re-registers the shard and the highlight
                 // redraws automatically.
                 val selectionController = remember { SelectionController() }
-                // [T-android-selection-readaloud] Player backing the selection
-                // toolbar's "Read Aloud". Screen-scoped and independent of the
-                // voice panel's own player (that one only exists while voice
-                // mode is active), so reading a selection works any time. Built
-                // lazily on first use — an unused ChatScreen never binds a TTS
-                // engine — and shut down with the screen.
-                val selectionReader = remember { LazyReadAloudPlayer(context) }
-                DisposableEffect(selectionReader) {
-                    onDispose { selectionReader.shutdown() }
-                }
-                val markdownToolbar = remember(context, messageBounds, viewModel, inputFocusRequester, keyboardController, selectionController, selectionReader) {
+                val markdownToolbar = remember(context, messageBounds, viewModel, inputFocusRequester, keyboardController, selectionController) {
                     MinisMarkdownTextToolbar(
                         context = context,
                         registry = messageBounds,
@@ -3062,7 +3094,6 @@ fun ChatScreen(
                             }
                             keyboardController?.show()
                         },
-                        onReadAloud = { snippet -> selectionReader.speak(snippet) },
                         selectionController = selectionController,
                     )
                 }
@@ -3218,7 +3249,31 @@ fun ChatScreen(
                         .lastOrNull { it.role == "assistant" }
                         ?.error
                         ?.isNotBlank() == true
-                    if (canResume && !isStreaming && error == null && !lastAssistantHasError) {
+                    // [T-resume-banner-false-stopped] Gate also checks the
+                    // PROCESS-wide streaming set (hoisted above the LazyColumn as
+                    // `sessionStreamingNow` — LazyListScope is not a composable
+                    // scope, so the flow cannot be collected here).
+                    //
+                    // [T-auto-resume] Show the auto-resume countdown instead of
+                    // the manual Resume banner when an automatic retry is pending.
+                    if (autoResumeCountdown > 0) {
+                        item(key = "__auto_resume_banner__", contentType = "auto_resume_banner") {
+                            AutoResumeBanner(
+                                countdown = autoResumeCountdown,
+                                attempt = autoResumeAttempt,
+                                onCancel = {
+                                    viewModel.cancelStream()
+                                },
+                            )
+                        }
+                    } else if (com.openminis.app.data.ResumeVisibilityPolicy.showResumeBanner(
+                            canResume = canResume,
+                            localStreaming = isStreaming,
+                            sessionStreamingProcessWide = sessionStreamingNow,
+                            hasScreenError = error != null,
+                            lastAssistantHasError = lastAssistantHasError,
+                        )
+                    ) {
                         item(key = "__resume_banner__", contentType = "resume_banner") {
                             ResumeBanner(onResume = {
                                 viewModel.resume()
@@ -3267,10 +3322,17 @@ fun ChatScreen(
                             sessionId,
                             item::class.java.simpleName,
                         )
-                        // 0.4f matches iOS .opacity(0.5) closely once Compose's
-                        // sRGB compositing is factored in. Renders below normal
-                        // intensity but the message stays selectable + readable.
-                        val rowAlpha = if (item.isCompacted()) 0.4f else 1f
+                        // [T-compact-no-dim] Compacted history is NOT dimmed
+                        // any more. The user explicitly asked to drop the faded
+                        // "gray background" before the compaction point — it
+                        // read as visual clutter and made the pre-compact region
+                        // look broken. The compact divider row ("N messages
+                        // compacted") is the sole visual marker of where a
+                        // compaction happened; the messages themselves render at
+                        // full intensity. isCompactedHistory is still tracked in
+                        // the model (drives history folding), it just no longer
+                        // changes opacity.
+                        val rowAlpha = 1f
                         // [T-HANG-DIAG] log on first composition of any item
                         // whose content is large enough to be a likely hang
                         // suspect. SideEffect runs after the first successful
@@ -3455,7 +3517,65 @@ fun ChatScreen(
                                 onDelete = if (isStreaming) null else ({
                                     pendingDeleteMessageId = originalMessageId(item.messageId)
                                 }),
+                                // [T-copy-whole-answer] Copy the prose of the
+                                // whole turn. Reads from `messages` (the same
+                                // list the renderer flattens) rather than
+                                // re-reading the DB: the user is copying what
+                                // they can see, and a disk read would also
+                                // bring back <system-reminder> blocks the UI
+                                // strips. Allowed mid-stream — copying does not
+                                // mutate history — and falls back to a toast
+                                // when the turn is tool calls only.
+                                onCopyAnswer = {
+                                    val realId = originalMessageId(item.messageId)
+                                    val msg = messages.firstOrNull { it.id == realId }
+                                    val blocks = msg?.toolBlocks?.map {
+                                        com.openminis.app.data.AssistantTurnCopy.Block(
+                                            kind = it.kind,
+                                            content = it.content,
+                                        )
+                                    } ?: emptyList()
+                                    val text = com.openminis.app.data.AssistantTurnCopy.plainText(
+                                        blocks = blocks,
+                                        legacyContent = msg?.content ?: "",
+                                    )
+                                    if (text.isEmpty()) {
+                                        android.widget.Toast.makeText(
+                                            context,
+                                            context.getString(R.string.msg_copy_answer_empty_toast),
+                                            android.widget.Toast.LENGTH_SHORT,
+                                        ).show()
+                                    } else {
+                                        val cb = context.getSystemService(
+                                            android.content.Context.CLIPBOARD_SERVICE,
+                                        ) as android.content.ClipboardManager
+                                        cb.setPrimaryClip(
+                                            android.content.ClipData.newPlainText("answer", text),
+                                        )
+                                        android.widget.Toast.makeText(
+                                            context,
+                                            context.getString(R.string.msg_copy_answer_toast),
+                                            android.widget.Toast.LENGTH_SHORT,
+                                        ).show()
+                                    }
+                                },
                             )
+                            is FlatChatItem.AssistantFooter -> {
+                                // [T-msg-timestamps] Finish stamp under the
+                                // assistant turn: "HH:mm:ss" (turn end) plus
+                                // "· <dur>" when a real live-turn duration is
+                                // known. Left-aligned under the message body,
+                                // muted. Hidden entirely if the label resolves
+                                // to null (unknown finish time).
+                                assistantTurnFinishedLabel(item.createdAtMs, item.finishedAtMs)?.let { label ->
+                                    Text(
+                                        text = label,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                                        modifier = Modifier.padding(start = 24.dp, top = 1.dp, bottom = 2.dp),
+                                    )
+                                }
+                            }
                             is FlatChatItem.AssistantText -> BoundsTrackedBlock(
                                 messageId = item.messageId,
                                 slotKey = "text:${item.block.id}",
@@ -3722,10 +3842,6 @@ fun ChatScreen(
                             try { inputFocusRequester.requestFocus() } catch (_: IllegalStateException) {}
                             keyboardController?.show()
                         },
-                        // [T-android-selection-readaloud] Speak the selection
-                        // through the same screen-scoped lazy player the
-                        // Compose-SelectionContainer toolbar uses.
-                        onReadAloud = { snippet -> selectionReader.speak(snippet) },
                     ),
                 )
                 // iOS-style selection handle dots, one at each endpoint.
@@ -4336,15 +4452,6 @@ fun ChatScreen(
                         isAntiAlias = true
                     }
                 }
-                // T185: Move-to-session capsule mirrors iOS
-                // AIChatView.swift:1816 (.overlay(alignment: .topTrailing))
-                // on the input card. We render it as the first child of the
-                // composer Column, right-aligned, so it visually sits inside
-                // the input card's top-right corner — Compose doesn't have a
-                // free overlay primitive that doesn't need a Box wrapper,
-                // and an in-flow Row at the top with Arrangement.End is the
-                // cleanest equivalent.
-                val showMoveCapsule by viewModel.hasInjectedShareContent.collectAsState()
                 // Mirrors iOS swipe-up-to-send: drag the input bar upward —
                 // if it holds text, a floating send-arrow + "Release to send"
                 // capsule track the finger; releasing past `swipeArmFraction`
@@ -4461,98 +4568,27 @@ fun ChatScreen(
                         }
                         .padding(top = if (attachments.isNotEmpty()) 8.dp else 4.dp),
                 ) {
-                    // T185: Move-to capsule lives INSIDE the composer card,
-                    // pinned 8dp from the top-right corner, mirroring iOS
-                    // AIChatView.swift:1816 (.overlay(alignment: .topTrailing)
-                    // padding(.top, 6).padding(.trailing, 10)). A Popup
-                    // keeps it out of the composer's layout flow so the
-                    // attachment row + text field still own the full
-                    // vertical rhythm.
-                    if (showMoveCapsule) {
-                        // T185: align Move-to right edge with the
-                        // attachment row + button row (both 12dp). The
-                        // anchorBounds rect is in px, so convert via
-                        // LocalDensity rather than treating the constant
-                        // as dp directly.
-                        val popupDensity = androidx.compose.ui.platform.LocalDensity.current
-                        val rightInsetPx = with(popupDensity) { 12.dp.roundToPx() }
-                        val topInsetPx = with(popupDensity) { 6.dp.roundToPx() }
-                        androidx.compose.ui.window.Popup(
-                            popupPositionProvider = remember(rightInsetPx, topInsetPx) {
-                                object : androidx.compose.ui.window.PopupPositionProvider {
-                                    override fun calculatePosition(
-                                        anchorBounds: androidx.compose.ui.unit.IntRect,
-                                        windowSize: androidx.compose.ui.unit.IntSize,
-                                        layoutDirection: androidx.compose.ui.unit.LayoutDirection,
-                                        popupContentSize: androidx.compose.ui.unit.IntSize,
-                                    ): androidx.compose.ui.unit.IntOffset {
-                                        val x = (anchorBounds.right - popupContentSize.width - rightInsetPx)
-                                            .coerceIn(0, (windowSize.width - popupContentSize.width).coerceAtLeast(0))
-                                        val y = (anchorBounds.top + topInsetPx).coerceAtLeast(0)
-                                        return androidx.compose.ui.unit.IntOffset(x, y)
-                                    }
-                                }
-                            },
-                            onDismissRequest = {},
-                            properties = androidx.compose.ui.window.PopupProperties(
-                                focusable = false,
-                                dismissOnBackPress = false,
-                                dismissOnClickOutside = false,
-                            ),
-                        ) {
-                            androidx.compose.material3.Surface(
-                                shape = androidx.compose.foundation.shape.CircleShape,
-                                // Mirrors iOS .ultraThinMaterial — solid-
-                                // looking pill against the input bg.
-                                // Without a hairline border the capsule
-                                // washed out into the input card on the
-                                // light theme, which is why it stopped
-                                // reading as a pill.
-                                color = MaterialTheme.colorScheme.surfaceVariant,
-                                shadowElevation = 0.dp,
-                                tonalElevation = 0.dp,
-                                border = androidx.compose.foundation.BorderStroke(
-                                    0.5.dp,
-                                    ChatColors.thumbnailBorder,
-                                ),
-                                modifier = Modifier.clickable { showMoveSheet = true },
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.padding(start = 8.dp, end = 12.dp, top = 2.dp, bottom = 2.dp),
-                                ) {
-                                    // arrow.right.circle look-alike: an
-                                    // outlined ring around a → glyph.
-                                    Box(
-                                        modifier = Modifier
-                                            .size(15.dp)
-                                            .border(
-                                                1.dp,
-                                                ChatColors.secondaryText,
-                                                CircleShape,
-                                            ),
-                                        contentAlignment = Alignment.Center,
-                                    ) {
-                                        Icon(
-                                            Icons.AutoMirrored.Filled.ArrowForward,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(10.dp),
-                                            tint = ChatColors.secondaryText,
-                                        )
-                                    }
-                                    Spacer(Modifier.width(6.dp))
-                                    Text(
-                                        "Move to…",
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Medium,
-                                        color = ChatColors.secondaryText,
-                                    )
-                                }
-                            }
-                        }
-                    }
                     // Attachment thumbnails inside the box (iOS: 64×64 squares)
                     if (attachments.isNotEmpty()) {
+                        // [T-attachment-numbering] Numbers computed for the
+                        // whole row, OUTSIDE the LazyRow: a chip's number
+                        // depends on how many IMAGES the turn has, which no
+                        // single item can know. Composer order is pick order;
+                        // numberInPickOrder maps it to the images-first
+                        // sequence the bubble and the XML use, so the badge on
+                        // a chip equals the number the model will read for that
+                        // same file.
+                        //
+                        // Must be here and not in the content lambda: that
+                        // lambda is LazyListScope, not a composable scope, so
+                        // remember() there does not compile.
+                        val chipNumbers = remember(attachments) {
+                            com.openminis.app.data.model.AttachmentIndex
+                                .numberInPickOrder(attachments) { it.isImage }
+                        }
+                        // A single attachment needs no number: "the picture" is
+                        // unambiguous and a lone "1" badge is noise.
+                        val showChipNumbers = attachments.size >= 2
                         LazyRow(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -4565,7 +4601,7 @@ fun ChatScreen(
                             // past the top-right; no extra spacedBy needed.
                             horizontalArrangement = Arrangement.spacedBy(0.dp),
                         ) {
-                            items(attachments, key = { it.id }) { attachment ->
+                            itemsIndexed(attachments, key = { _, a -> a.id }) { chipIndex, attachment ->
                                 // T-pwa-2: long-press menu only appears for
                                 // .html / .htm attachments. The menu lives in
                                 // a Box that anchors to the chip; the sheet
@@ -4580,6 +4616,8 @@ fun ChatScreen(
                                 AttachmentChip(
                                     attachment = attachment,
                                     onRemove = { viewModel.removeAttachment(attachment.id) },
+                                    number = if (showChipNumbers)
+                                        chipNumbers.getOrNull(chipIndex) else null,
                                     // TODO(webapp-hidden): long-press opened
                                     // the WebApp "Add to Home Screen" menu —
                                     // disabled while entry point is hidden.

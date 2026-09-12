@@ -39,10 +39,18 @@ object CompactRoute {
         /** Move to the next provider in the group (index into the fallback list). */
         data class NextProvider(val index: Int) : Step()
 
-        /** No LLM route left — build the summary on-device instead. */
-        object LocalDigest : Step()
-
-        /** Not a routing failure (e.g. bad request): surface it. */
+        /**
+         * No LLM route left. Surface the failure to the user instead of
+         * silently degrading to an on-device digest.
+         *
+         * [T-remove-local-compaction] The local digest used to be the terminal
+         * step here (and content-filter-with-no-backup). It was removed: a
+         * dumb on-device summary drops detail the user cannot afford to lose,
+         * and doing it silently behind a model refusal degraded sessions
+         * without consent. When every model route refuses, compaction now does
+         * NOT happen — the session stays full and the user is told which
+         * failure stranded it, so they can add a working model / retry later.
+         */
         data class Surface(val reason: String) : Step()
     }
 
@@ -105,7 +113,10 @@ object CompactRoute {
             .isContentFilterRejection(errorMessage)
         if (!quota && !rateLimited && !contentFiltered) return Step.Surface(errorMessage)
         if (contentFiltered) {
-            return nextProviderIndex?.let { Step.NextProvider(it) } ?: Step.LocalDigest
+            // [T-remove-local-compaction] Try the next model; if none is left,
+            // surface — no silent on-device digest.
+            return nextProviderIndex?.let { Step.NextProvider(it) }
+                ?: Step.Surface(errorMessage)
         }
 
         // Quota only: a smaller request may be affordable. Rate limit: it
@@ -114,6 +125,10 @@ object CompactRoute {
             shrink(currentMaxTokens)?.let { return Step.RetrySmaller(it) }
         }
         nextProviderIndex?.let { return Step.NextProvider(it) }
-        return Step.LocalDigest
+        // [T-remove-local-compaction] Every LLM route refused. Previously this
+        // fell back to Step.LocalDigest (an on-device summary). That fallback
+        // was removed — compaction only ever runs through a model now, so a
+        // total refusal is surfaced and the session is left intact.
+        return Step.Surface(errorMessage)
     }
 }

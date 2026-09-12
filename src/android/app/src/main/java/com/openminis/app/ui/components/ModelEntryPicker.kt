@@ -395,14 +395,14 @@ fun modalityBadges(model: LLMModel): List<String> {
     return badges
 }
 
-/** Provider color dot — same RGB across ChatScreen, AddModelsToGroup, and
- *  the agent-loop sheets so the visual cue stays consistent everywhere. */
-fun providerDotColor(providerType: ProviderType?): Color = when (providerType) {
-    ProviderType.anthropic -> Color(0xFFAB47BC)
-    ProviderType.gemini -> Color(0xFF42A5F5)
-    ProviderType.openAI -> Color(0xFF4CAF50)
-    ProviderType.openRouter -> Color(0xFF00BCD4)
-    ProviderType.xAI -> Color(0xFFFF7043)
-    ProviderType.kimiCode -> Color(0xFF5C6BC0) // indigo — Kimi accent
-    null -> Color(0xFF8E8E93)
-}
+/**
+ * Provider color dot — same RGB across ChatScreen, AddModelsToGroup, and the
+ * agent-loop sheets so the visual cue stays consistent everywhere.
+ *
+ * [T-provider-ux] The palette itself lives in
+ * [com.openminis.app.data.model.SectionAccent] because section headers need the
+ * same hues, and three literal copies of it (here, the chat picker, the
+ * add-provider icon table) were already drifting.
+ */
+fun providerDotColor(providerType: ProviderType?): Color =
+    Color(com.openminis.app.data.model.SectionAccent.providerTypeColor(providerType))

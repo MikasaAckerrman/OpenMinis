@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -31,6 +32,9 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Diamond
 import androidx.compose.material.icons.filled.FlashOn
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Key
@@ -60,6 +64,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -71,9 +79,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.res.stringResource
 import com.openminis.app.auth.OpenAIOAuthManager
 import com.openminis.app.auth.OpenRouterOAuthManager
+import com.openminis.app.data.model.EndpointHistory
 import com.openminis.app.data.model.ProviderCredential
 import com.openminis.app.data.model.ProviderInstance
 import com.openminis.app.data.model.ProviderType
+import com.openminis.app.data.model.SectionAccent
 import com.openminis.app.data.repository.ProviderRepository
 import com.openminis.app.R
 import kotlinx.coroutines.launch
@@ -190,15 +200,165 @@ private val providerDisplayOrder = listOf(
     ProviderType.openRouter,
 )
 
-/** Icon and color per provider type, matching iOS SF Symbols. */
-private fun providerIcon(type: ProviderType): Pair<ImageVector, Color> = when (type) {
-    ProviderType.openAI -> Icons.Default.Hub to Color(0xFF4CAF50)           // green
-    ProviderType.anthropic -> Icons.Default.AutoAwesome to Color(0xFFAB47BC) // purple
-    ProviderType.gemini -> Icons.Default.Diamond to Color(0xFF42A5F5)        // blue
-    ProviderType.openRouter -> Icons.Default.AltRoute to Color(0xFF00BCD4)    // cyan
-    ProviderType.xAI -> Icons.Default.FlashOn to Color(0xFFFF7043)           // orange — Grok visual cue
-    // [T-kimi-oauth] Indigo — matches iOS's Kimi accent.
-    ProviderType.kimiCode -> Icons.Default.Terminal to Color(0xFF5C6BC0)
+/**
+ * [T-provider-ux] Endpoint text field with an inline completion dropdown.
+ *
+ * The completion list appears only while what you typed is a prefix of an
+ * endpoint you already use, and only while the field has focus. That is the whole
+ * point of replacing the old always-present collapsible history: no permanent UI,
+ * no extra taps, and the suggestion arrives at the moment it is useful.
+ *
+ * Design notes:
+ *  - Rendered in-flow under the field, not in a [androidx.compose.ui.window.Popup].
+ *    A popup would float over the form and, with the keyboard up, is what made the
+ *    old list feel like it was in the way. In-flow means the form reflows and the
+ *    Save button stays reachable.
+ *  - Hidden as soon as the field loses focus, so it cannot linger over the rest of
+ *    the form after you have moved on.
+ *  - `dismissedFor` suppresses the dropdown for the exact string the user
+ *    dismissed. Without it, closing the list and continuing to type the same
+ *    prefix would pop it straight back up, which reads as the UI arguing.
+ */
+@Composable
+private fun EndpointFieldWithCompletion(
+    value: String,
+    onValueChange: (String) -> Unit,
+    placeholder: String,
+    suggestions: List<EndpointHistory.Suggestion>,
+) {
+    var focused by remember { mutableStateOf(false) }
+    var dismissedFor by remember { mutableStateOf<String?>(null) }
+    val completions = remember(suggestions, value) {
+        EndpointHistory.complete(suggestions, value)
+    }
+    val show = focused && completions.isNotEmpty() && dismissedFor != value
+
+    SectionTextField(
+        value = value,
+        onValueChange = {
+            // Typing something new invalidates an earlier dismissal: the user is
+            // now asking about a different string.
+            if (dismissedFor != null && it != dismissedFor) dismissedFor = null
+            onValueChange(it)
+        },
+        placeholder = placeholder,
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(
+            // Uri keyboard: gives the user "/" and ".com" directly and suppresses
+            // autocorrect, which otherwise "fixes" host names into prose.
+            keyboardType = KeyboardType.Uri,
+            imeAction = ImeAction.Done,
+        ),
+        fieldModifier = Modifier.onFocusChanged { focused = it.isFocused },
+    )
+    if (show) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 2.dp, bottom = 4.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    Icons.Default.History,
+                    contentDescription = null,
+                    modifier = Modifier.size(14.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = stringResource(R.string.add_provider_endpoint_completion_header),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    modifier = Modifier.weight(1f),
+                )
+                // An explicit dismiss: the list sits between the field and the
+                // rest of the form, and a user who wants a URL that merely starts
+                // like an existing one needs a way to get it out of the way.
+                Text(
+                    text = stringResource(R.string.add_provider_endpoint_completion_dismiss),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .clickable { dismissedFor = value }
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                )
+            }
+            completions.forEach { s ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            onValueChange(s.url)
+                            // Picking answers the question; without clearing this
+                            // the list would re-open on the value it just wrote.
+                            dismissedFor = s.url
+                        }
+                        .padding(vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = s.url,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            // A host that has only ever served a different
+                            // provider type is usually the wrong paste: an
+                            // Anthropic relay dropped into OpenAI 404s in a way
+                            // that looks like a key problem.
+                            text = if (s.usedByOtherType) {
+                                stringResource(
+                                    R.string.add_provider_endpoint_recent_other_type,
+                                    s.types.joinToString(", ") { it.displayName },
+                                )
+                            } else {
+                                stringResource(
+                                    R.string.add_provider_endpoint_recent_count,
+                                    s.useCount,
+                                )
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (s.usedByOtherType) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                    }
+                    Icon(
+                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Icon and color per provider type, matching iOS SF Symbols.
+ *
+ * [T-provider-ux] Colours come from [SectionAccent] rather than repeated
+ * literals: this table, the chat picker's dots and the section headers were
+ * three copies of one palette.
+ */
+private fun providerIcon(type: ProviderType): Pair<ImageVector, Color> {
+    val icon = when (type) {
+        ProviderType.openAI -> Icons.Default.Hub
+        ProviderType.anthropic -> Icons.Default.AutoAwesome
+        ProviderType.gemini -> Icons.Default.Diamond
+        ProviderType.openRouter -> Icons.Default.AltRoute
+        ProviderType.xAI -> Icons.Default.FlashOn
+        // [T-kimi-oauth] Terminal glyph — matches iOS's Kimi treatment.
+        ProviderType.kimiCode -> Icons.Default.Terminal
+    }
+    return icon to Color(SectionAccent.providerTypeColor(type))
 }
 
 /** Returns available credential types per provider. */
@@ -588,11 +748,33 @@ private fun ColumnScope.ApiKeyConfigSection(
         ) {
             SettingsCardBlock {
                 RowLabel(text = stringResource(R.string.add_provider_custom_api_base_optional))
-                SectionTextField(
+                // Endpoints already in use, mined from the existing instances
+                // (EndpointHistory, pure + unit-tested) rather than kept as a
+                // separate stored list: the instances ARE the history and cannot
+                // go stale, so a deleted provider's URL stops being offered
+                // exactly when it should.
+                val allInstances = providerRepository.config.collectAsState().value.instances
+                val endpointSuggestions = remember(allInstances, providerType) {
+                    EndpointHistory.suggestions(allInstances, providerType)
+                }
+                // [T-provider-ux] Endpoint field with inline completion.
+                //
+                // Replaces the collapsible "previously used endpoints" list that
+                // used to sit under this field. The list answered the right need
+                // — do not retype a gateway host from memory for the twelfth key,
+                // because a typo'd base URL fails as an AUTH error and sends you
+                // hunting the wrong problem — but it answered it in the wrong
+                // shape: a permanent block of UI you had to open, read and close,
+                // for a value you were already typing.
+                //
+                // Completion happens where the typing happens. Type "tab" and the
+                // full "https://tabitoken.com/v1" is one tap away; type nothing
+                // and there is no UI at all.
+                EndpointFieldWithCompletion(
                     value = customBaseURL,
                     onValueChange = onCustomBaseURLChange,
                     placeholder = defaultUrl,
-                    singleLine = true,
+                    suggestions = endpointSuggestions,
                 )
             }
             // Auto Append "/v1" toggle (not for Gemini — Gemini uses full path)
@@ -877,11 +1059,20 @@ private fun ColumnScope.OAuthConfigSection(
         ) {
             SettingsCardBlock {
                 RowLabel(text = stringResource(R.string.add_provider_custom_api_base_optional))
-                SectionTextField(
+                // Same completion as the API-key form. This is the OAuth
+                // "configure manually" path, and it is the one MORE likely to
+                // point at a third-party gateway — leaving it as a bare field
+                // would mean the endpoint you use most often is the one you have
+                // to retype from memory.
+                val oauthAllInstances = providerRepository.config.collectAsState().value.instances
+                val oauthEndpointSuggestions = remember(oauthAllInstances, providerType) {
+                    EndpointHistory.suggestions(oauthAllInstances, providerType)
+                }
+                EndpointFieldWithCompletion(
                     value = customBaseURL,
                     onValueChange = { customBaseURL = it },
                     placeholder = defaultUrl,
-                    singleLine = true,
+                    suggestions = oauthEndpointSuggestions,
                 )
                 Spacer(Modifier.height(12.dp))
                 RowLabel(text = stringResource(R.string.add_provider_bearer_token))

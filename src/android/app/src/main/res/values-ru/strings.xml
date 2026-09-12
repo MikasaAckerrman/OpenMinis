@@ -437,6 +437,9 @@
     <string name="appearance_section_keep_awake">Не гасить экран</string>
     <string name="appearance_keep_awake_footer">Предотвращать переход экрана в спящий режим, пока любая сессия выполняет задачу. Может увеличить расход батареи.</string>
     <string name="appearance_keep_awake_title">Не гасить экран</string>
+    <string name="appearance_screen_dim_off">Не затемнять</string>
+    <string name="appearance_screen_dim_after_seconds">Затемнить через %1$d сек</string>
+    <string name="appearance_screen_dim_after_minutes">Затемнить через %1$d мин</string>
     <string name="appearance_section_chat_title">Название чата</string>
     <string name="appearance_show_chat_title">Показывать название чата</string>
     <string name="appearance_show_chat_title_subtitle">Показывать закреплённую плашку с названием при прокрутке</string>
@@ -922,9 +925,14 @@
     <string name="notif_config_confirm_body_multi">%d изменений требуют вашего рассмотрения — откройте Minis, чтобы принять или отклонить.</string>
     <string name="notif_task_failed_body">Задача завершилась с ошибкой. Нажмите, чтобы открыть чат.</string>
     <string name="selection_add_to_chat_input">Добавить в поле ввода чата</string>
-    <string name="selection_read_aloud">Озвучить</string>
     <string name="selection_copy">Копировать</string>
     <string name="selection_copy_markdown">Копировать Markdown</string>
+    <!-- [T-copy-whole-answer] «Копировать всё» — весь ответ целиком, а не
+         протащенный пальцем фрагмент. Подпись КОРОТКАЯ намеренно: этот бар
+         (MinisMarkdownTextToolbar) не имеет horizontalScroll, и длинные
+         русские подписи уже занимают всю ширину телефона. -->
+    <string name="selection_copy_whole_answer">Копировать всё</string>
+    <string name="selection_copied_whole_answer_toast">Ответ скопирован целиком</string>
     <string name="selection_copy_rich_text">Копировать форматированный текст</string>
     <string name="selection_copied_toast">Скопировано: %1$s</string>
     <string name="selection_copied_as_markdown_toast">Скопировано как Markdown</string>
@@ -1022,19 +1030,7 @@
     <string name="slash_thinking_subtitle">Рассуждение %1$s — нажмите для переключения</string>
     <string name="slash_thinking_unsupported">Не поддерживается текущей моделью</string>
     <string name="slash_clear_subtitle">Очистить все сообщения в этой сессии</string>
-    <string name="slash_rescue_title">Спасти</string>
-    <string name="slash_rescue_subtitle">Починить зависшую сессию — сжатие на устройстве, без запроса к модели</string>
-    <string name="rescue_busy_streaming">Нельзя спасать, пока идёт ответ. Сначала остановите текущий ход.</string>
-    <string name="rescue_busy_compacting">Сжатие уже выполняется. Дождитесь его завершения.</string>
-    <string name="rescue_empty_session">Спасать нечего — сессия пуста.</string>
-    <string name="rescue_no_persisted_messages">Нельзя спасти: пока нет сохранённых сообщений для привязки.</string>
-    <string name="rescue_nothing_to_digest">Спасать нечего — в сессии нет читаемого содержимого.</string>
-    <string name="rescue_done">Сессия спасена локально: ~%1$d → ~%2$d токенов (дайджест %3$d симв.). Большие выводы инструментов перенесены в /var/minis/offloads/ и доступны через file_read. Отменить — «Откатить сжатие».</string>
-    <string name="rescue_failed">Спасение не удалось: %1$s</string>
-    <string name="rescue_hint_suffix">Похоже, история этой сессии слишком велика для отправки. Введите /rescue — она будет сжата прямо на устройстве, без запроса к модели. Ничего не удаляется, отменить можно через «Откатить сжатие».</string>
-    <string name="rescue_refine_done">Сводку переписала модель: %1$d симв. (~%2$d токенов). Все пути, ссылки и хеши проверены — на месте.</string>
-    <string name="rescue_refine_rejected">Модель при переписывании потеряла часть дословных деталей, поэтому оставлена сводка, собранная на устройстве. Ничего не потеряно.</string>
-    <string name="rescue_refine_unavailable">Модель недоступна для шага переписывания — оставлена сводка, собранная на устройстве. Сессия работоспособна в любом случае.</string>
+    <string name="compact_hint_suffix">Похоже, история этой сессии слишком велика для отправки. Введите /compact — она будет сжата, и попробуйте снова. Ничего не удаляется, отменить можно через «Откатить сжатие».</string>
     <string name="msg_longpress_delete">Удалить сообщение</string>
     <string name="msg_longpress_rewrite">Переписать текст</string>
     <string name="msg_delete_busy_streaming">Остановите текущий ответ, прежде чем менять историю.</string>
@@ -1050,12 +1046,8 @@
     <string name="msg_rewrite_save">Сохранить</string>
     <string name="msg_delete_confirm_title">Удалить это сообщение?</string>
     <string name="msg_delete_confirm_body">Оно исчезнет из чата и из того, что видит модель. Связанные вызовы инструментов или их результаты могут быть удалены тоже — чтобы история осталась корректной. Отменить нельзя.</string>
-    <string name="maintenance_full_compact">Контекст %1$d / %2$d токенов — сворачиваю старые ходы в сводку в фоне. Текущий ход при этом отправляется.</string>
-    <string name="maintenance_rescue_compact">Контекст %1$d / %2$d токенов — слишком много, чтобы надёжно сжать через модель, поэтому сжимаю на устройстве. Отменить — «Откатить сжатие».</string>
-    <string name="maintenance_context_full_retry">Провайдер сообщил, что окно контекста заполнено. Сжимаю на устройстве и повторяю этот ход — ничего не теряется, отменить можно через «Откатить сжатие».</string>
     <string name="compact_retry_smaller">Модель отказала по стоимости — запрашиваю более короткую сводку (%1$d токенов) на той же модели.</string>
     <string name="compact_switching_model">У этой модели лимит запросов или закончилась квота — пробую %1$s из той же группы.</string>
-    <string name="compact_all_routes_refused">Отказали все модели (%1$s). Сжимаю на устройстве — запрос к модели не нужен, сессия останется работоспособной.</string>
     <string name="thinking_level_off">Выкл.</string>
     <string name="thinking_level_low">Низкое</string>
     <string name="thinking_level_medium">Среднее</string>
@@ -1341,6 +1333,12 @@
     <string name="session_mcps_empty_subtitle">Добавьте серверы в Настройки → Интеграции MCP.</string>
     <string name="error_empty_response_generic">Модель вернула пустой ответ. Попробуйте ещё раз или смените модель.</string>
     <string name="chat_history_still_loading">История беседы ещё загружается. Черновик и вложения сохранены — попробуйте отправить снова через несколько секунд.</string>
+    <string name="chat_history_partial_warning">Полную историю беседы загрузить не удалось — модель может не видеть старые сообщения. Отправка работает; если ответы теряют контекст, начните новый чат.</string>
+    <string name="chat_history_rewrite_unsafe">Сжатие недоступно: полную историю чата загрузить не удалось, поэтому сжатие может удалить сообщения, которых нет в памяти. Переоткройте чат или начните новый.</string>
+    <string name="chat_cutoff_unresolved">Не удалось сопоставить это сообщение с сохранённым — ничего не изменено. Чат перезагружен с диска, попробуйте снова.</string>
+    <string name="chat_cutoff_implausible">Повтор отменён: он удалил бы почти весь чат — значит, привязка неверная. Ничего не изменено.</string>
+    <string name="chat_retry_offline">Нет сети — ждём и повторяем (%1$d/%2$d)…</string>
+    <string name="chat_retry_waiting_network">Ждём возврата сети…</string>
     <string name="error_empty_response_context_large">Модель вернула пустой ответ. Контекст беседы может быть слишком большим — попробуйте сжать его или начать новую сессию.</string>
     <string name="error_empty_response_after_tool">Модель не вернула ответ после результата инструмента, даже после напоминания. Возможно, она перегружена — попробуйте ещё раз или смените модель.</string>
     <string name="error_output_limit_reached">Модель достигла лимита выходных токенов и не успела закончить. Нажмите «Продолжить», чтобы продолжить с частичного ответа.</string>

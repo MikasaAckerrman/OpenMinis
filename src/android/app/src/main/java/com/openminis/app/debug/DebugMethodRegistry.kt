@@ -675,7 +675,8 @@ object DebugMethodRegistry {
         ),
         MethodSpec(
             name = "chat.retry",
-            description = "REFUSED (T-no-agent-session-deletion): retry drops every message after the retried turn, and deleting stored messages is reserved for the user in the app UI. The user's own re-run paths are unaffected — the in-app Retry goes through ChatViewModel and `minis-scheduled --target rerun` calls HeadlessChatRunner directly, neither passing through this RPC. To shrink a session non-destructively use chat.compact.before or chat.session.rescue.",
+            description = "REFUSED (T-no-agent-session-deletion): retry drops every message after the retried turn, and deleting stored messages is reserved for the user in the app UI. The user's own re-run paths are unaffected — the in-app Retry goes through ChatViewModel and `minis-scheduled --target rerun` calls HeadlessChatRunner directly, neither passing through this RPC. To shrink a session non-destructively use chat.compact.before; to inspect what a past truncation archived use chat.deleted.list / chat.journal.read.",
+>>>>>>> origin/fix/send-gate-deadlock
             params = listOf(
                 ParamSpec("sessionId", "string", required = true, description = "Target session id."),
                 ParamSpec("messageId", "string", required = false, description = "User message id; omit to retry from the most recent user message."),
@@ -689,7 +690,8 @@ object DebugMethodRegistry {
         ),
         MethodSpec(
             name = "chat.rerunFromToolBlock",
-            description = "REFUSED (T-no-agent-session-deletion): cuts at a tool_use block and drops it plus everything after, i.e. it deletes stored messages — reserved for the user in the app UI (tool-bubble long-press 'Re-run From Here'). Use chat.compact.before or chat.session.rescue to shrink a session without losing anything.",
+            description = "REFUSED (T-no-agent-session-deletion): cuts at a tool_use block and drops it plus everything after, i.e. it deletes stored messages — reserved for the user in the app UI (tool-bubble long-press 'Re-run From Here'). Use chat.compact.before to shrink a session without losing anything; chat.deleted.list / chat.journal.read show what a past truncation archived.",
+>>>>>>> origin/fix/send-gate-deadlock
             params = listOf(
                 ParamSpec("sessionId", "string", required = true, description = "Target session id."),
                 ParamSpec("assistantMessageId", "string", required = true, description = "UI assistant bubble id owning the tool block."),
@@ -760,18 +762,53 @@ object DebugMethodRegistry {
             example = ex("sessionId" to "6D0F…"),
         ),
         MethodSpec(
-            name = "chat.session.rescue",
-            description = "Repair a session that can no longer reach the model: build a dense digest of its history LOCALLY (no LLM call, no provider needed), force-offload large tool payloads to /var/minis/offloads/, and write a v2 compact marker so subsequent turns send the digest instead of the history. Unlike chat.compact.before this cannot fail on a network error and works when the provider is unresolvable. Undo with chat.compact.revert.",
+            name = "chat.deleted.list",
+            description = "List messages archived by retry/edit/rerun truncation (deleted_messages table), newest deletion first. These rows are NOT in the session anymore but are still on disk.",
             params = listOf(
                 ParamSpec("sessionId", "string", required = true, description = "Target session id."),
-                ParamSpec("waitTimeout", "int", required = false, default = 60, description = "Seconds to wait for the local digest + offload pass. Clamped [1,600]."),
+                ParamSpec("includeParts", "bool", required = false, default = false, description = "Include the full parts_json of each archived row."),
             ),
-            returns = "{sessionId, beforeMarkerCount, afterMarkerCount, wrote, status, timedOut?, error?, digestLength, isRescueDigest, digestPreview, latestMarker:{id, version, anchorMessageId, summaryLength, compactedCount, createdAt}}",
+            returns = "{sessionId, count, messages:[{archiveId, messageId, role, sortOrder, createdAt, deletedAt, reason, partsLength}]}",
             example = ex("sessionId" to "6D0F…"),
         ),
         MethodSpec(
+            name = "chat.deleted.restore",
+            description = "Copy archived rows back into the session. Filter by deletedAt (one truncation batch) and/or archiveIds. Rows whose message id is already live are skipped, never overwritten. Use dryRun to see the counts first.",
+            params = listOf(
+                ParamSpec("sessionId", "string", required = true, description = "Target session id."),
+                ParamSpec("deletedAt", "int", required = false, description = "Restore only the batch archived at this epoch-ms timestamp."),
+                ParamSpec("archiveIds", "[string]", required = false, description = "Restore only these archive ids."),
+                ParamSpec("dryRun", "bool", required = false, default = false, description = "Report what would be restored without writing."),
+            ),
+            returns = "{sessionId, dryRun, restored, skippedAlreadyLive, archivedTotal}",
+            example = ex("sessionId" to "6D0F…", "dryRun" to true),
+        ),
+        MethodSpec(
+            name = "chat.journal.read",
+            description = "Read the always-on mutation journal — every truncation, refusal, wipe, rewrite, compact and archive-restore, tab-separated, oldest→newest. Independent of the Settings logging toggle, so it is populated even when app logging was never enabled.",
+            params = listOf(
+                ParamSpec("limit", "int", required = false, default = 200, description = "Return at most this many of the newest matching lines. Clamped [1,5000]."),
+                ParamSpec("sessionId", "string", required = false, description = "Only lines for this session (matched on the journalled 8-char prefix)."),
+                ParamSpec("kind", "string", required = false, description = "Filter by event kind: DELETE | REFUSE | WIPE | REWRITE | COMPACT | RESTORE."),
+            ),
+            returns = "{exists, path, sizeBytes, totalLines, matchedLines, count, lines:[string]}",
+            example = ex("sessionId" to "2c7ae861", "kind" to "DELETE"),
+        ),
+        MethodSpec(
+            name = "chat.network.journal",
+            description = "Read the always-on network journal — every transient failure with the context that explains it (concurrent streams, screen on/off, connectivity, host) plus the retry outcome. Answers \"why did the session stop with a network error\". Independent of the Settings logging toggle, and size-trimmed rather than age-trimmed, so evidence does not expire before anyone looks.",
+            params = listOf(
+                ParamSpec("limit", "int", required = false, default = 200, description = "Return at most this many of the newest matching lines. Clamped [1,5000]."),
+                ParamSpec("sessionId", "string", required = false, description = "Only lines for this session (matched on the journalled 8-char prefix)."),
+                ParamSpec("kind", "string", required = false, description = "Filter by event kind: FAIL | RETRY | OK | GIVEUP."),
+            ),
+            returns = "{exists, path, sizeBytes, totalLines, matchedLines, count, lines:[string]}",
+            example = ex("kind" to "GIVEUP", "limit" to 50),
+        ),
+        MethodSpec(
             name = "chat.session.delete",
-            description = "REFUSED (T-no-agent-session-deletion): permanently destroying a session and its messages is reserved for the user in the app UI. There is no undo, and no agent workflow needs it — compaction (chat.compact.before / chat.session.rescue) keeps every message row on disk and only shrinks what is sent to the model. The `confirm` param was never a safeguard on this surface: the caller writes its own params.",
+            description = "REFUSED (T-no-agent-session-deletion): permanently destroying a session and its messages is reserved for the user in the app UI. There is no undo, and no agent workflow needs it — compaction (chat.compact.before) keeps every message row on disk and only shrinks what is sent to the model. The `confirm` param was never a safeguard on this surface: the caller writes its own params.",
+>>>>>>> origin/fix/send-gate-deadlock
             params = listOf(
                 ParamSpec("sessionId", "string", required = true, description = "Target session id."),
                 ParamSpec("confirm", "bool", required = true, default = false, description = "Must be true."),

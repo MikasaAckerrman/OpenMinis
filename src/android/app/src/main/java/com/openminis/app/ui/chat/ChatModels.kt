@@ -147,6 +147,16 @@ data class ChatMessage(
     // ChatMessage.sourceSortOrder, which serves the same UI↔raw mapping
     // role (AIChatViewModel.swift:3411, 3421).
     val sourceDbIds: List<String> = emptyList(),
+    // [T-msg-timestamps] Wall-clock timestamps shown in the UI, IDE-agent
+    // style. `createdAtMs` = when this message came into being: for a user
+    // turn that's the send instant; for an assistant turn it's when the
+    // placeholder bubble was created (turn start). `finishedAtMs` is set
+    // only on assistant messages, the moment streaming drains to a final
+    // state (natural end, turn-limit, or terminal error). Null while a turn
+    // is still in flight and for user messages. Duration = finished-created.
+    // Restored-from-DB rows read entity.created_at / entity.updated_at.
+    val createdAtMs: Long = System.currentTimeMillis(),
+    val finishedAtMs: Long? = null,
 ) {
     /**
      * [T-bridge-message-ui-leak-android] True when this UI message is the

@@ -900,6 +900,65 @@ internal fun rememberBrowserLiveSnapshot(
  * the same on both themes).
  */
 @Composable
+internal fun AutoResumeBanner(
+    countdown: Int,
+    attempt: Int,
+    onCancel: () -> Unit,
+) {
+    val teal = Color(0xFF5AC8FA)  // iOS system teal, distinct from orange Resume
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(teal.copy(alpha = 0.08f))
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.weight(1f),
+        ) {
+            Icon(
+                imageVector = Icons.Default.Refresh,
+                contentDescription = null,
+                tint = teal,
+                modifier = Modifier.size(12.dp),
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = "Повтор через ${countdown} с  ·  попытка $attempt/${com.openminis.app.data.AutoResumePolicy.MAX_ATTEMPTS}",
+                fontSize = 11.sp,
+                color = ChatColors.secondaryText,
+            )
+        }
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(50))
+                .background(teal)
+                .clickable(onClick = onCancel)
+                .padding(horizontal = 10.dp, vertical = 3.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "Отмена",
+                fontSize = 11.sp,
+                color = Color.White,
+            )
+        }
+    }
+}
+
+/**
+ * T239: banner prompting "tap Resume to continue" when the current session has
+ * a partial assistant turn (incomplete agent loop / text-cancel). Separate from
+ * the inline AssistantError banner so a failed tool call AND a partial text
+ * both render (the error as a tool block, this as the next-turn gate). The
+ * colour is deliberately vivid (iOS orange) so it stands out from regular text
+ * (same logic as the AssistantError banner — visibility first, colour match is
+ * the same on both themes).
+ */
+@Composable
 internal fun ResumeBanner(onResume: () -> Unit) {
     val orange = Color(0xFFFF9500)
     // [T-android-c3a-resume-one-tap] Crash-aware resume. When the previous app

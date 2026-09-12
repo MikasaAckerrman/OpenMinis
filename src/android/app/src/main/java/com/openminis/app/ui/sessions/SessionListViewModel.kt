@@ -112,9 +112,9 @@ class SessionListViewModel(
     // Session IDs currently regenerating their titles (UI overlay)
     val regeneratingIds = MutableStateFlow<Set<String>>(emptySet())
 
-    // [session-longpress-compress] Session IDs currently being hard-compacted
-    // (LLM-free RescueDigest). Drives the same loading overlay as title regen so
-    // the user sees the long-press "Compress context" action is working.
+    // [session-longpress-compress] Session IDs currently being compacted via
+    // the model (compactViaModel). Drives the same loading overlay as title
+    // regen so the user sees the long-press "Compress context" action working.
     val compressingIds = MutableStateFlow<Set<String>>(emptySet())
 
     // [session-longpress-compress] One-shot user-facing result of a compress

@@ -1,5 +1,6 @@
 package com.openminis.app.ui.settings
 
+import android.widget.Toast
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -91,6 +92,9 @@ fun ProviderDetailScreen(
     val config by providerRepository.config.collectAsState()
     val instance = config.instances.find { it.id == instanceId }
     var showDeleteDialog by remember { mutableStateOf(false) }
+    // [T-provider-ux] Duplicate confirmation — the copy carries a live API key,
+    // so it is not a silent one-tap action.
+    var showDuplicateDialog by remember { mutableStateOf(false) }
     // T143: long-press → confirm delete on a single model entry. Built-in
     // entries (entry.isCustom == false) skip the gesture because the repo
     // re-creates them from ProviderType.builtInModels on next refresh anyway —
@@ -693,6 +697,31 @@ fun ProviderDetailScreen(
             Text(stringResource(R.string.provider_detail_add_custom_model))
         }
 
+        // [T-provider-ux] Duplicate: a second provider with the same endpoint,
+        // models and key. The common case this serves is one gateway key reused
+        // with different model sets or endpoint variants, which previously meant
+        // re-entering everything by hand or exporting and re-importing a file.
+        // Placed above Delete and confirmed by a dialog, because it copies a
+        // live credential.
+        MinisButton(
+            onClick = { showDuplicateDialog = true },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .padding(top = 20.dp),
+        ) {
+            Text(stringResource(R.string.provider_detail_duplicate))
+        }
+        Text(
+            text = stringResource(R.string.provider_detail_duplicate_footer),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 30.dp)
+                .padding(top = 6.dp),
+        )
+
         // [T-android-delete-provider-button-height] The "Delete provider" button
         // uses the same default 48dp MinisButtonHeight as "Add custom model"
         // above it for visual consistency (no explicit .height override). The
@@ -712,6 +741,34 @@ fun ProviderDetailScreen(
         }
 
         Spacer(modifier = Modifier.height(32.dp))
+    }
+
+    if (showDuplicateDialog) {
+        MinisAlertDialog(
+            onDismissRequest = { showDuplicateDialog = false },
+            title = stringResource(R.string.provider_detail_duplicate),
+            text = stringResource(R.string.provider_detail_duplicate_footer),
+            confirmText = stringResource(R.string.provider_detail_duplicate),
+            onConfirm = {
+                showDuplicateDialog = false
+                val newLabel = providerRepository.duplicateInstance(instanceId)
+                if (newLabel != null) {
+                    AppLogger.info(TAG, "Duplicated provider $instanceId as '$newLabel'")
+                    Toast.makeText(
+                        exportContext,
+                        exportContext.getString(R.string.provider_detail_duplicate_done, newLabel),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                } else {
+                    AppLogger.warning(TAG, "Duplicate failed for provider $instanceId")
+                    Toast.makeText(
+                        exportContext,
+                        exportContext.getString(R.string.provider_detail_duplicate_failed),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                }
+            },
+        )
     }
 
     if (showDeleteDialog) {

@@ -11,12 +11,12 @@ package com.openminis.app.data
  * user needs help with — no response ever arrives, so the counter sits at its
  * initial 0 forever. Everything gated on it then silently does nothing:
  *
- *  - [ContextMaintenance.decide] saw `contextTokens = 0`, concluded "pressure
- *    unknown", and returned LIGHT on every single send. No full compaction, no
- *    rescue, no matter how many turns passed or how large the history was.
- *  - [RescueAdvisor.shouldSuggestRescue] computed `0 / window = 0%`, decided
- *    the session was small, and suppressed the "/rescue" hint on precisely the
- *    vague transport errors it exists to explain.
+ *  - Pressure-gated maintenance saw `contextTokens = 0`, concluded "pressure
+ *    unknown", and did nothing on every single send, no matter how large the
+ *    history was.
+ *  - The size-related error hint computed `0 / window = 0%`, decided the
+ *    session was small, and suppressed itself on precisely the vague transport
+ *    errors it exists to explain.
  *  - Reopening the app is worse than it looks: the counter is in-memory, so a
  *    reload resets it to 0 even for a session that previously reported 190K.
  *

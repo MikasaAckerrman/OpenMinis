@@ -43,6 +43,9 @@ import com.openminis.app.R
  * invokes. Surfaces three actions, mirroring iOS `SelectableMarkdownTextView`:
  *
  *   - **Copy** — selected substring (delegates to `onCopyRequested`).
+ *   - **Copy All** — the whole message that owns the selection, as readable
+ *     plain text. Same [MessageBoundsRegistry] lookup as the two below, so it
+ *     is hidden on cross-message selections rather than copying the wrong one.
  *   - **Copy Markdown** — full raw markdown of the message that owns the
  *     selection. Resolved via the [MessageBoundsRegistry] lookup with the
  *     selection rect; if no message matches (cross-message selection or
@@ -66,14 +69,6 @@ internal class MinisMarkdownTextToolbar(
      * chat composer's input state. Null disables the action.
      */
     private val onAddToInput: ((String) -> Unit)? = null,
-    /**
-     * [T-android-selection-readaloud] Invoked when the user taps **Read Aloud**.
-     * Receives the currently-selected substring (same clipboard round-trip as
-     * [addSelectionToInput]); the host speaks it through ReadAloudPlayer. Null
-     * disables the action. The callback owns the player's lifecycle — this
-     * toolbar deliberately does not create one it could never dispose.
-     */
-    private val onReadAloud: ((String) -> Unit)? = null,
     /**
      * [T-android-markdown-table-copy-actions] The MinisTextKit selection
      * controller. This toolbar is the one Compose's SelectionContainer shows
@@ -122,17 +117,6 @@ internal class MinisMarkdownTextToolbar(
         val sink = onAddToInput ?: return
         withSelection(sink)
     }
-
-    /**
-     * [T-android-selection-readaloud] Speak just the selected substring (not the
-     * whole message) through the host-supplied reader.
-     */
-    internal fun readAloudSelection() {
-        val sink = onReadAloud ?: return
-        withSelection(sink)
-    }
-
-    internal val canReadAloud: Boolean get() = onReadAloud != null
 
     /**
      * Resolve the current selection and hand it to [sink].
@@ -186,6 +170,28 @@ internal class MinisMarkdownTextToolbar(
         val md = state.originatingMarkdown ?: return
         MarkdownClipboard.copyRichText(context, md)
         Toast.makeText(context, "Copied as Rich Text", Toast.LENGTH_SHORT).show()
+    }
+
+    /**
+     * [T-copy-whole-answer] Copy the ENTIRE message that owns the selection, as
+     * readable plain text.
+     *
+     * Why this belongs next to Copy and not only in the header menu: reaching
+     * the whole reply through selection means dragging a handle across
+     * everything, and a selection that starts inside a shard which has scrolled
+     * out of the viewport silently returns only part of it. That is the
+     * "some parts don't get copied" complaint. This takes the message's own
+     * source, so the amount copied does not depend on how far the drag got.
+     *
+     * Distinct from Copy Markdown, which is right beside it: that one yields
+     * the raw source with `**`, `#`, fences intact — for pasting back into a
+     * markdown editor. This strips the syntax, which is what someone who says
+     * "copy the whole answer" means.
+     */
+    internal fun copyWholeAnswer() {
+        val md = state.originatingMarkdown ?: return
+        MarkdownClipboard.copyPlain(context, md)
+        Toast.makeText(context, "Whole answer copied", Toast.LENGTH_SHORT).show()
     }
 
     internal data class ToolbarState(
@@ -271,24 +277,28 @@ internal fun MinisMarkdownTextToolbarHost(toolbar: MinisMarkdownTextToolbar) {
                         toolbar.hide()
                     }
                 }
-                // [T-android-selection-readaloud] Speak just the selected
-                // substring through Minis TTS (provider voice with the system
-                // engine as fallback), mirroring iOS's "Read Aloud / Read
-                // Selection" selection-menu action. Available for any
-                // selection, like Add to Chat Input.
-                if (toolbar.canReadAloud) {
+                // [T-android-selection-readaloud] REMOVED from this bar. The
+                // action itself still exists (voice panel "Read replies"); what
+                // is gone is its slot here. Two reasons, in order:
+                //  1. The user asked for it gone — it was the least-used button
+                //     in the row.
+                //  2. This Row has NO horizontalScroll (unlike the MinisTextKit
+                //     bar), so its width is a hard limit. With Russian labels
+                //     ("Добавить в поле ввода чата", "Копировать форматированный
+                //     текст") five buttons already fill a phone's width; adding
+                //     "Copy whole answer" without removing one would push the
+                //     last item off-screen with no way to reach it.
+                // Markdown / Rich Text / whole-answer only appear when the
+                // selection sits inside a single known message — otherwise it's
+                // ambiguous which message's source to copy.
+                if (state.originatingMarkdown != null) {
                     ToolbarDivider()
                     ToolbarButton(
-                        label = stringResource(R.string.selection_read_aloud),
+                        label = stringResource(R.string.selection_copy_whole_answer),
                     ) {
-                        toolbar.readAloudSelection()
+                        toolbar.copyWholeAnswer()
                         toolbar.hide()
                     }
-                }
-                // Markdown / Rich Text only appear when the selection sits
-                // inside a single known message — otherwise it's ambiguous
-                // which message's source to copy.
-                if (state.originatingMarkdown != null) {
                     ToolbarDivider()
                     ToolbarButton(label = "Copy Markdown") {
                         toolbar.copyMarkdown()

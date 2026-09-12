@@ -284,6 +284,15 @@ internal fun AttachmentChip(
     onRemove: () -> Unit,
     onClick: () -> Unit = {},
     onLongClick: (() -> Unit)? = null,
+    /**
+     * [T-attachment-numbering] 1-based number matching the one the bubble will
+     * show and the model will read, or null when this turn has a single
+     * attachment (a "1" badge on the only chip is noise).
+     *
+     * Numbering has to happen HERE, not only in the bubble: the point is to
+     * say "look at picture 2" while composing, before the turn is sent.
+     */
+    number: Int? = null,
 ) {
     // iOS UserAttachmentList parity: 64dp chip + xmark.circle.fill remove
     // badge at the top-right that sits HALF on the chip and HALF outside
@@ -352,6 +361,31 @@ internal fun AttachmentChip(
                         modifier = Modifier.padding(horizontal = 4.dp),
                     )
                 }
+            }
+        }
+        // [T-attachment-numbering] Number badge at the chip's BOTTOM-left. The
+        // remove badge already owns the top-right, and the file chip's name
+        // label owns the centre, so the bottom-left is the only corner where
+        // this can sit without covering either. Inside the 64dp chip, not the
+        // 72dp outer Box, so it stays on the thumbnail.
+        if (number != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(start = 3.dp, bottom = 3.dp)
+                    .size(16.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(Color.Black.copy(alpha = 0.62f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = number.toString(),
+                    fontSize = 10.sp,
+                    lineHeight = 10.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color.White,
+                    maxLines = 1,
+                )
             }
         }
         // Remove badge (iOS: xmark.circle.fill at the chip's top-right

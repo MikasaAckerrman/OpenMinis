@@ -13,6 +13,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 
@@ -43,9 +44,99 @@ class NetworkMonitor {
          * handing the dead h2 tunnel to every retry — requests wrote into it
          * and hung forever waiting for response headers.
          */
+        // [T-android-stale-conn-per-host] keepAlive lowered 5min → 60s → 30s.
+        // A local VPN/proxy AND a bare cellular/WiFi NAT both silently reap
+        // idle TCP mappings (cellular NAT idle-timeout is often 30-60s), and
+        // the drop is half-open: no RST arrives, so the pooled socket looks
+        // alive and the next request writes into the void. A shorter keepAlive
+        // means WE close the idle socket (clean FIN → next request dials a
+        // fresh one) before the NAT can strand it.
+        //
+        // 30s is deliberately AT/BELOW the shortest realistic NAT idle window
+        // and above [StaleConnectionPolicy.STALE_IDLE_THRESHOLD_MS] (20s), so
+        // the two defences layer instead of fighting: the per-host pre-flight
+        // check ([evictLLMConnectionsIfIdle]) handles the 20-30s band using
+        // observed activity, and this keepAlive is the bookkeeping-independent
+        // backstop that bounds staleness even when no stamp exists (cold
+        // start, host-map eviction). Back-to-back agent-loop turns are seconds
+        // apart, so the warm socket is still reused on the hot path.
         val sharedLLMConnectionPool = okhttp3.ConnectionPool(
-            5, 5, java.util.concurrent.TimeUnit.MINUTES,
+            5, 30, java.util.concurrent.TimeUnit.SECONDS,
         )
+
+        /**
+         * [T-android-stale-conn-per-host] Per-host last-activity bookkeeping
+         * for the pre-flight stale-socket check.
+         *
+         * Why per-host and not one global stamp: pooled TCP sockets are keyed
+         * by host, so staleness is a per-host property. With several sessions
+         * running concurrently against DIFFERENT providers, a single global
+         * stamp let a busy session's traffic mask an idle one — the idle
+         * session's own socket had been reaped by the NAT, but the global stamp
+         * looked fresh, the pre-flight check skipped eviction, and the request
+         * was written into the corpse and hung until the TTFB watchdog fired.
+         *
+         * Keyed by the provider's `throttleKey`, which is already the endpoint
+         * host (LlmDispatchGate.keyForUrl(basePath)) — reused deliberately so
+         * there is ONE host-identity notion in the codebase, not two.
+         *
+         * Logic lives in [com.openminis.app.data.HostActivityTracker] (pure,
+         * unit-tested); this holds only the production clock binding.
+         */
+        private val hostActivity = com.openminis.app.data.HostActivityTracker(
+            nowMs = { android.os.SystemClock.elapsedRealtime() },
+        )
+
+        /**
+         * Record that LLM network activity just happened on [hostKey]
+         * (any-thread safe). Called on every stream chunk.
+         */
+        fun markLLMActivity(hostKey: String) {
+            hostActivity.mark(hostKey)
+        }
+
+        /**
+         * Proactive stale-socket defence, PER HOST. If more than
+         * [idleThresholdMs] has elapsed since the last observed byte from
+         * [hostKey], evict the pool so the next request to that host dials a
+         * FRESH socket instead of writing into a possibly half-open corpse and
+         * hanging until the TTFB watchdog fires.
+         *
+         * This is the load-bearing fix: it makes the stale pooled socket
+         * structurally impossible regardless of the NAT's idle timeout, while
+         * still reusing warm sockets on the hot path (agent-loop turns fire
+         * back-to-back within the threshold and skip eviction). Especially
+         * covers the FIRST post-compaction / post-pause turn, and — since the
+         * idle window is now per-host — the case where a BUSY session on
+         * another provider used to mask an idle session's dead socket.
+         *
+         * Eviction granularity note: OkHttp's ConnectionPool exposes no
+         * per-host eviction, so we evict the whole idle set. That is safe and
+         * cheap — `evictAll()` closes only connections with no active calls,
+         * so a concurrently streaming session is never interrupted; other
+         * hosts merely re-dial on their next turn.
+         *
+         * @param hostKey provider endpoint host (see [markLLMActivity]).
+         * @return true if the pool was evicted.
+         */
+        fun evictLLMConnectionsIfIdle(
+            hostKey: String,
+            idleThresholdMs: Long = com.openminis.app.data.StaleConnectionPolicy.STALE_IDLE_THRESHOLD_MS,
+        ): Boolean {
+            if (!hostActivity.shouldEvictAndClear(hostKey, idleThresholdMs)) return false
+            sharedLLMConnectionPool.evictAll()
+            return true
+        }
+
+        /**
+         * Idle window past which a pooled LLM socket is treated as potentially
+         * reaped. Delegates the numeric threshold to
+         * [com.openminis.app.data.StaleConnectionPolicy] (the unit-testable
+         * single source of truth); kept here only as a re-export for callers
+         * that already reference NetworkMonitor.
+         */
+        const val STALE_IDLE_THRESHOLD_MS: Long =
+            com.openminis.app.data.StaleConnectionPolicy.STALE_IDLE_THRESHOLD_MS
 
         /**
          * Evict all idle sockets from the shared LLM pool on demand. Called
@@ -58,10 +149,73 @@ class NetworkMonitor {
         fun evictLLMConnectionsNow() {
             sharedLLMConnectionPool.evictAll()
         }
+
+        /**
+         * [T-android-dns-await] Process-wide connectivity mirror.
+         *
+         * Why a companion-level flow when the instance already exposes
+         * [status]: the retry path in ChatViewModel has no handle on the
+         * MinisApp-owned NetworkMonitor instance, and threading one through
+         * would mean touching every construction site. The instance publishes
+         * every transition here, so any caller can await connectivity without
+         * new plumbing. There is exactly one monitor per process, so a single
+         * static mirror cannot disagree with itself.
+         *
+         * Defaults to `true` deliberately: if the monitor was never started
+         * (unit tests, early startup), awaiting must not block a request that
+         * would otherwise have worked.
+         */
+        private val _connectivity = MutableStateFlow(true)
+
+        /** Publishes connectivity transitions; called only by the instance. */
+        internal fun publishConnectivity(connected: Boolean) {
+            _connectivity.value = connected
+        }
+
+        /**
+         * Suspends until the device reports usable connectivity, or
+         * [timeoutMs] elapses.
+         *
+         * Used before retrying a name-resolution failure: a DNS lookup that
+         * failed because Doze had parked the radio will fail again instantly
+         * on a fixed 1s/2s/4s ladder, burning every attempt while the link is
+         * still down. Waiting for the link to actually return converts that
+         * into a successful retry.
+         *
+         * @return true if connectivity is available (immediately or after
+         *   waiting), false if [timeoutMs] elapsed while still offline.
+         */
+        suspend fun awaitConnectivity(timeoutMs: Long): Boolean =
+            kotlinx.coroutines.withTimeoutOrNull(timeoutMs) {
+                _connectivity.first { it }
+                true
+            } ?: false
+
+        /**
+         * Current value of the connectivity mirror, without suspending.
+         *
+         * For diagnostics only ([com.openminis.app.data.NetworkJournal]): a
+         * failure line needs to state whether the device believed it was online
+         * at that instant. Deliberately NOT used to gate requests — the mirror
+         * defaults to `true` when the monitor was never started, so a decision
+         * based on it could skip a request that would have worked.
+         */
+        fun isOnlineNow(): Boolean = _connectivity.value
     }
 
     private val _status = MutableStateFlow(NetworkStatus.DISCONNECTED)
     val status: StateFlow<NetworkStatus> = _status.asStateFlow()
+
+    /**
+     * Single write path for [_status] so the process-wide connectivity mirror
+     * ([publishConnectivity], awaited by [awaitConnectivity]) can never drift
+     * out of sync with the instance flow. Every transition — initial state and
+     * all three NetworkCallback edges — goes through here.
+     */
+    private fun setStatus(newStatus: NetworkStatus) {
+        _status.value = newStatus
+        publishConnectivity(newStatus == NetworkStatus.CONNECTED)
+    }
 
     private var connectivityManager: ConnectivityManager? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
@@ -101,6 +255,7 @@ class NetworkMonitor {
         } else {
             NetworkStatus.DISCONNECTED
         }
+        publishConnectivity(_status.value == NetworkStatus.CONNECTED)
         Log.d(TAG, "Initial network status: ${_status.value}")
 
         // Mirror iOS NetworkMonitor.swift:23-26 — do an immediate DNS write so
@@ -116,7 +271,7 @@ class NetworkMonitor {
 
             override fun onAvailable(network: Network) {
                 val previousStatus = _status.value
-                _status.value = NetworkStatus.CONNECTED
+                setStatus(NetworkStatus.CONNECTED)
                 if (previousStatus == NetworkStatus.DISCONNECTED) {
                     Log.d(TAG, "Network transition: DISCONNECTED -> CONNECTED")
                     evictConnectionPool()
@@ -128,7 +283,7 @@ class NetworkMonitor {
             }
 
             override fun onLost(network: Network) {
-                _status.value = NetworkStatus.DISCONNECTED
+                setStatus(NetworkStatus.DISCONNECTED)
                 Log.d(TAG, "Network transition: CONNECTED -> DISCONNECTED")
                 evictConnectionPool()
                 // Rewrite resolv.conf even when disconnected so it falls back
@@ -147,7 +302,7 @@ class NetworkMonitor {
                 val newStatus = if (hasInternet) NetworkStatus.CONNECTED else NetworkStatus.DISCONNECTED
                 if (newStatus != _status.value) {
                     Log.d(TAG, "Network capabilities changed: ${_status.value} -> $newStatus")
-                    _status.value = newStatus
+                    setStatus(newStatus)
                     evictConnectionPool()
                     refreshSandboxDns("onCapabilitiesChanged")
                 }

@@ -74,34 +74,41 @@ class CompactRouteTest {
     }
 
     @Test
-    fun `content filter with no backup repairs locally instead of stranding session`() {
+    fun `content filter with no backup surfaces instead of degrading locally`() {
+        // [T-remove-local-compaction] Previously this fell back to a local
+        // on-device digest. That silent degradation was removed — with no
+        // model left, the refusal is surfaced and the session stays intact.
         val step = CompactRoute.next(
             contentFiltered,
             currentMaxTokens = 8192,
             shrinkStepsUsed = 0,
             nextProviderIndex = null,
         )
-        assertEquals(CompactRoute.Step.LocalDigest, step)
+        assertTrue(step is CompactRoute.Step.Surface)
     }
 
     @Test
-    fun `exhausted providers fall back to the local digest`() {
+    fun `exhausted providers surface the refusal (no local fallback)`() {
+        // [T-remove-local-compaction] Compaction runs ONLY through a model
+        // now. When every route refuses there is no on-device digest to fall
+        // back to — the failure is surfaced so the user can add a working
+        // model / retry, and the history is left untouched.
         for (msg in listOf(quotaCn, rateLimited)) {
             val step = CompactRoute.next(
                 msg, currentMaxTokens = CompactRoute.MIN_MAX_TOKENS,
                 shrinkStepsUsed = CompactRoute.MAX_SHRINK_STEPS, nextProviderIndex = null,
             )
-            assertEquals(CompactRoute.Step.LocalDigest, step)
+            assertTrue("expected Surface for: $msg", step is CompactRoute.Step.Surface)
         }
     }
 
     @Test
-    fun `quota with no smaller budget left goes local when no provider remains`() {
+    fun `quota with no smaller budget left surfaces when no provider remains`() {
         val step = CompactRoute.next(
             quotaCn, currentMaxTokens = CompactRoute.MIN_MAX_TOKENS,
             shrinkStepsUsed = 0, nextProviderIndex = null,
         )
-        assertEquals(CompactRoute.Step.LocalDigest, step)
+        assertTrue(step is CompactRoute.Step.Surface)
     }
 
     @Test

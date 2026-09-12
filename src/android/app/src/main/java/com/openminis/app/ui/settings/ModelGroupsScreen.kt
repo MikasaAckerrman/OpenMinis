@@ -33,6 +33,8 @@ import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MovieCreation
@@ -251,22 +253,6 @@ fun ModelGroupsScreen(
                             selectedId = config.defaultSubGroupId,
                             onSelect = { providerRepository.defaultSubGroupId = it },
                         )
-                        // [T-android-provider-voice] Voice group bindings —
-                        // mirrors iOS voiceInputGroupId / voiceOutputGroupId.
-                        SectionDivider()
-                        GroupDropdown(
-                            label = stringResource(R.string.model_groups_voice_input),
-                            groups = groups,
-                            selectedId = config.voiceInputGroupId,
-                            onSelect = { providerRepository.voiceInputGroupId = it },
-                        )
-                        SectionDivider()
-                        GroupDropdown(
-                            label = stringResource(R.string.model_groups_voice_output),
-                            groups = groups,
-                            selectedId = config.voiceOutputGroupId,
-                            onSelect = { providerRepository.voiceOutputGroupId = it },
-                        )
                     }
                 }
                 item("defaults_section_footer") {
@@ -288,6 +274,81 @@ fun ModelGroupsScreen(
                 onAddModelsTap = onAddAgentLoopModels,
                 onAddGroupsTap = onAddAgentLoopGroups,
             )
+
+            // [T-provider-ux] Voice bindings, LAST and collapsed.
+            //
+            // These two used to sit inside the Defaults card between "Default
+            // Sub" and the footer, i.e. two of the four most prominent rows on
+            // the screen went to a feature many users never touch, and they
+            // pushed Agent Loop — the section that actually gets edited — further
+            // down. Ordering should follow how often something is used.
+            //
+            // Kept rather than removed: voiceInputGroupId / voiceOutputGroupId
+            // are live config consumed by the speech paths, so deleting the UI
+            // would leave settings that can never be changed again. Collapsed
+            // by default is the honest middle: present, out of the way, and the
+            // header states whether anything is bound so the collapsed state
+            // still answers "is voice configured?".
+            item("voice_section_spacer") {
+                Spacer(modifier = Modifier.height(SectionDesign.SectionTopGap))
+            }
+            item("voice_section") {
+                var voiceExpanded by remember { mutableStateOf(false) }
+                val boundCount = listOfNotNull(config.voiceInputGroupId, config.voiceOutputGroupId).size
+                Column {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { voiceExpanded = !voiceExpanded }
+                            .padding(horizontal = 30.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = stringResource(R.string.model_groups_voice_section),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = if (boundCount > 0) {
+                                stringResource(R.string.model_groups_voice_bound_count, boundCount)
+                            } else {
+                                stringResource(R.string.model_groups_voice_unbound)
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                            modifier = Modifier.weight(1f),
+                        )
+                        Icon(
+                            imageVector = if (voiceExpanded) {
+                                Icons.Default.KeyboardArrowUp
+                            } else {
+                                Icons.Default.KeyboardArrowDown
+                            },
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (voiceExpanded) {
+                        SectionCard {
+                            GroupDropdown(
+                                label = stringResource(R.string.model_groups_voice_input),
+                                groups = groups,
+                                selectedId = config.voiceInputGroupId,
+                                onSelect = { providerRepository.voiceInputGroupId = it },
+                            )
+                            SectionDivider()
+                            GroupDropdown(
+                                label = stringResource(R.string.model_groups_voice_output),
+                                groups = groups,
+                                selectedId = config.voiceOutputGroupId,
+                                onSelect = { providerRepository.voiceOutputGroupId = it },
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 

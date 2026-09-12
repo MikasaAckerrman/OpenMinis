@@ -23,9 +23,17 @@ class MinisTextKitSelectionOrderTest {
     }
 
     @Test
-    fun `legacy and nonnumeric ids use visual fallback`() {
-        assertNull(shardOrderKey(id("legacy")))
-        assertNull(shardOrderKey(id("text:block-id")))
+    fun `single-fragment shapes are ordered, not left to visual fallback`() {
+        // [T-android-selection-gaps] This test used to assert null here, which
+        // codified the bug: "text:<blockId>" and "legacy" carry a #subIndex
+        // assigned in composition order, and refusing to read it sent ordering
+        // to on-screen position — unavailable for recycled rows, so long copies
+        // silently lost text. See ShardOrderTest for the full shape matrix.
+        assertEquals(0L, shardOrderKey(id("legacy")))
+        assertEquals(0L, shardOrderKey(id("text:block-id")))
+        assertEquals(2L, shardOrderKey(id("legacy#2")))
+        // Genuinely unknown shapes still fall back, on purpose.
+        assertNull(shardOrderKey(id("no-known-shape")))
     }
 
     @Test

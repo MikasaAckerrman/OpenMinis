@@ -89,11 +89,20 @@ jobs:
             --tests 'com.openminis.app.offload.*' \
             --tests 'com.openminis.app.config.ConfigPathResolverTest' \
             --tests 'com.openminis.app.data.model.ProviderFoldersTest' \
+            --tests 'com.openminis.app.data.model.EndpointHistoryTest' \
+            --tests 'com.openminis.app.data.model.ProviderListSectionsTest' \
+            --tests 'com.openminis.app.data.model.ProviderPickerSectionsTest' \
+            --tests 'com.openminis.app.data.model.SectionAccentTest' \
+            --tests 'com.openminis.app.data.model.PickerSearchTest' \
             --tests 'com.openminis.app.feedback.CompletionFeedbackPolicyTest' \
             --tests 'com.openminis.app.feedback.VibrationPatternsTest' \
             --tests 'com.openminis.app.data.MessageSurgeryMergedTurnTest' \
             --tests 'com.openminis.app.data.ProtectedTailTest' \
-            --tests 'com.openminis.app.data.ContextMaintenanceTest' \
+            --tests 'com.openminis.app.data.CompactQualityTest' \
+            --tests 'com.openminis.app.data.TransportErrorClassifierTest' \
+            --tests 'com.openminis.app.data.ContextPressureTest' \
+            --tests 'com.openminis.app.data.MessageTimestampTest' \
+            --tests 'com.openminis.app.agent.EngineeringDisciplineTest' \
             --tests 'com.openminis.app.ui.chat.ResidentEvictionPolicyTest' \
             --tests 'com.openminis.app.ui.chat.VmCacheLruTest' \
             --tests 'com.openminis.app.provider.QuotaErrorDetectionTest' \
@@ -114,12 +123,29 @@ jobs:
             --tests 'com.openminis.app.data.CompactionLaunchPolicyTest' \
             --tests 'com.openminis.app.data.ContextUsageAttributionTest' \
             --tests 'com.openminis.app.data.StaleConnectionPolicyTest' \
+            --tests 'com.openminis.app.data.HostActivityTrackerTest' \
+            --tests 'com.openminis.app.data.DnsFailurePolicyTest' \
+            --tests 'com.openminis.app.ui.ScreenDimPolicyTest' \
+            --tests 'com.openminis.app.ui.ScreenDimWakeGestureTest' \
             --tests 'com.openminis.app.data.PostAnchorPruneTest' \
             --tests 'com.openminis.app.data.RequestBudgetTest' \
             --tests 'com.openminis.app.data.SessionDeletionPolicyTest' \
             --tests 'com.openminis.app.ui.chat.UiCopyCapsuleTest' \
             --tests 'com.openminis.app.ui.chat.UiCopyDiffVerdictTest' \
             --tests 'com.openminis.app.ui.chat.MinisTextKitSelectionOrderTest'
+            --tests 'com.openminis.app.data.SendGatePolicyTest' \
+            --tests 'com.openminis.app.data.MessageCutoffTest' \
+            --tests 'com.openminis.app.data.TransientRetryBudgetTest' \
+            --tests 'com.openminis.app.data.FallbackDecisionTest' \
+            --tests 'com.openminis.app.data.AutoResumePolicyTest' \
+            --tests 'com.openminis.app.data.AssistantTurnCopyTest' \
+            --tests 'com.openminis.app.data.model.AttachmentIndexTest' \
+            --tests 'com.openminis.app.data.ResumeVisibilityPolicyTest' \
+            --tests 'com.openminis.app.data.CompactDividerCountTest' \
+            --tests 'com.openminis.app.data.MutationJournalTest' \
+            --tests 'com.openminis.app.debug.HeadlessRetryStatusTest' \
+            --tests 'com.openminis.app.ui.chat.MinisTextKitSelectionOrderTest' \
+            --tests 'com.openminis.app.ui.chat.ShardOrderTest'
         # `offload.*` already covers AgentArtifactStoreTest — the artifact store
         # lives in that package on purpose, next to the runner that uses it.
 

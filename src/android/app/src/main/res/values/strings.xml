@@ -205,6 +205,9 @@
     <string name="quicktest_audio_replay">Replay</string>
     <string name="quicktest_transcript_result">Spoken: "%1$s"\nHeard: "%2$s"</string>
     <string name="quicktest_clip_failed">Couldn\'t synthesize the local test clip.</string>
+    <string name="model_groups_voice_section">Voice</string>
+    <string name="model_groups_voice_bound_count">%1$d bound</string>
+    <string name="model_groups_voice_unbound">not configured</string>
     <string name="model_groups_voice_input">Voice Input</string>
     <string name="model_groups_voice_output">Voice Output</string>
     <!-- [T-mcp-env-var-picker-android] Insert a reference to an App env var as $$VAR -->
@@ -587,6 +590,10 @@
     <string name="appearance_section_keep_awake">Keep Screen Awake</string>
     <string name="appearance_keep_awake_footer">Prevent the screen from sleeping while any session is running a task. May increase battery drain.</string>
     <string name="appearance_keep_awake_title">Keep Screen Awake</string>
+    <!-- [T-android-screen-dim] Idle black-out under Keep Screen Awake -->
+    <string name="appearance_screen_dim_off">Don\'t black out</string>
+    <string name="appearance_screen_dim_after_seconds">Black out after %1$d sec</string>
+    <string name="appearance_screen_dim_after_minutes">Black out after %1$d min</string>
     <string name="appearance_section_chat_title">Chat Title</string>
     <string name="appearance_show_chat_title">Show chat title</string>
     <string name="appearance_show_chat_title_subtitle">Show a sticky title pill while scrolling</string>
@@ -906,6 +913,23 @@
     <!-- [T-provider-folders] User-defined folders in the provider list. -->
     <string name="provider_list_folder_key_count">%1$d providers</string>
     <string name="provider_detail_folder">Folder</string>
+    <!-- [T-provider-ux] Search, collapsed sections, duplication, endpoint history. -->
+    <string name="provider_list_search_placeholder">Search providers</string>
+    <string name="provider_list_search_clear">Clear</string>
+    <string name="provider_list_search_no_results">No providers match \"%1$s\"</string>
+    <string name="provider_list_search_summary">%1$d of %2$d providers</string>
+    <string name="provider_list_expand_section">Expand</string>
+    <string name="provider_list_collapse_section">Collapse</string>
+    <string name="provider_detail_duplicate">Duplicate</string>
+    <string name="provider_detail_duplicate_suffix">%1$s copy</string>
+    <string name="provider_detail_duplicate_done">Duplicated as \"%1$s\"</string>
+    <string name="provider_detail_duplicate_failed">Could not duplicate this provider</string>
+    <string name="provider_detail_duplicate_footer">Creates a second provider with the same endpoint, models and API key. Useful for reusing one gateway key with different settings.</string>
+    <string name="add_provider_endpoint_recent_count">Used by %1$d</string>
+    <string name="add_provider_endpoint_completion_header">Endpoints you already use</string>
+    <string name="add_provider_endpoint_completion_dismiss">Dismiss</string>
+    <string name="add_provider_endpoint_recent_other_type">Used with %1$s</string>
+    <string name="model_picker_folder_summary">%1$d providers · %2$d models</string>
     <string name="provider_detail_folder_placeholder">No folder</string>
     <string name="provider_detail_folder_footer">Group providers from the same source under one folder in the provider list. Leave blank to keep this provider ungrouped.</string>
     <string name="provider_detail_export">Export</string>
@@ -1131,13 +1155,16 @@
 
     <!-- T-selection-add-to-input — long-press text selection menu action -->
     <string name="selection_add_to_chat_input">Add to Chat Input</string>
-    <string name="selection_read_aloud">Read Aloud</string>
-    <!-- T-minis-textkit selection menu actions (Copy / Copy Markdown / Copy Rich Text) -->
+    <!-- T-minis-textkit selection menu actions (Copy / Copy All / Copy Markdown / Copy Rich Text) -->
     <string name="selection_copy">Copy</string>
     <string name="selection_copy_markdown">Copy Markdown</string>
     <string name="selection_copy_rich_text">Copy Rich Text</string>
     <!-- Toast messages shown after a selection-menu Copy action fires. %1$s = preview of copied text. -->
     <string name="selection_copied_toast">Copied: %1$s</string>
+    <!-- [T-copy-whole-answer] Selection-menu action: the entire message as
+         readable plain text, not just the dragged substring. -->
+    <string name="selection_copy_whole_answer">Copy All</string>
+    <string name="selection_copied_whole_answer_toast">Whole answer copied</string>
     <string name="selection_copied_as_markdown_toast">Copied as Markdown</string>
     <string name="selection_copied_as_rich_text_toast">Copied as Rich Text</string>
     <!-- [T-markdown-table-copy-actions] Long-press menu actions and toasts on rendered markdown tables. -->
@@ -1258,25 +1285,16 @@
     <string name="slash_thinking_subtitle">Thinking %1$s — tap to toggle</string>
     <string name="slash_thinking_unsupported">Not supported by current model</string>
     <string name="slash_clear_subtitle">Clear all messages in this session</string>
-    <!-- [T-session-rescue] Local, LLM-free hard compaction for a session that
-         can no longer reach the model. -->
-    <string name="slash_rescue_title">Rescue</string>
-    <string name="slash_rescue_subtitle">Repair a stuck session — compress locally, no model call</string>
-    <string name="rescue_busy_streaming">Cannot rescue while a response is in progress. Stop the current turn first.</string>
-    <string name="rescue_busy_compacting">A compact is already running. Wait for it to finish.</string>
-    <string name="rescue_empty_session">Nothing to rescue — this session is empty.</string>
-    <string name="rescue_no_persisted_messages">Cannot rescue: no saved messages to anchor to yet.</string>
-    <string name="rescue_nothing_to_digest">Nothing to rescue — no readable content in this session.</string>
-    <string name="rescue_done">Session rescued locally: ~%1$d → ~%2$d tokens (digest %3$d chars). Large tool outputs were moved to /var/minis/offloads/ and can be re-read with file_read. Undo via Revert compact.</string>
-    <string name="rescue_failed">Rescue failed: %1$s</string>
-    <string name="rescue_hint_suffix">This session\'s history may be too large to send. Type /rescue to compress it on-device (no model call needed) and try again — nothing is deleted, and you can undo it with Revert compact.</string>
-    <!-- [T-session-rescue-refine] Stage 2: model rewrite of the local digest. -->
-    <string name="rescue_refine_done">Summary rewritten by the model: %1$d chars (~%2$d tokens). All paths, URLs and hashes were verified present.</string>
-    <string name="rescue_refine_rejected">The model\'s rewrite dropped some verbatim details, so the on-device summary was kept. Nothing was lost.</string>
-    <string name="rescue_refine_unavailable">The model was unreachable for the rewrite step — keeping the on-device summary. The session is usable either way.</string>
+    <!-- Size-related failure hint: points the user at /compact (AI compaction). -->
+    <string name="compact_hint_suffix">This session\'s history may be too large to send. Type /compact to compress it and try again — nothing is deleted, and you can undo it with Revert compact.</string>
     <!-- [T-message-surgery] Real (persisted) message delete / rewrite. -->
     <string name="msg_longpress_delete">Delete message</string>
     <string name="msg_longpress_rewrite">Rewrite text</string>
+    <!-- [T-copy-whole-answer] Copy the whole assistant reply (prose only, tool
+         payloads and reasoning excluded). -->
+    <string name="msg_longpress_copy_answer">Copy whole answer</string>
+    <string name="msg_copy_answer_toast">Answer copied</string>
+    <string name="msg_copy_answer_empty_toast">Nothing to copy in this turn</string>
     <string name="msg_delete_busy_streaming">Stop the current response before editing the history.</string>
     <string name="msg_delete_busy_compacting">Wait for compaction to finish before editing the history.</string>
     <string name="msg_delete_not_found">That message is no longer in this session.</string>
@@ -1290,14 +1308,9 @@
     <string name="msg_rewrite_save">Save</string>
     <string name="msg_delete_confirm_title">Delete this message?</string>
     <string name="msg_delete_confirm_body">It will be removed from the chat and from what the model sees. Related tool calls or results may be removed too, to keep the history valid. This cannot be undone.</string>
-    <!-- [T-context-maintenance] Tiered upkeep notices. -->
-    <string name="maintenance_full_compact">Context at %1$d / %2$d tokens — folding older turns into a summary in the background. This turn still goes through.</string>
-    <string name="maintenance_rescue_compact">Context at %1$d / %2$d tokens — too full to summarise via the model reliably, so compressing on-device instead. Undo via Revert compact.</string>
-    <string name="maintenance_context_full_retry">The provider says the context window is full. Compressing on-device and retrying this turn — nothing is lost, and you can undo it with Revert compact.</string>
     <!-- [T-compact-route] Compaction refusal ladder. -->
     <string name="compact_retry_smaller">The model refused on cost — asking for a shorter summary (%1$d tokens) on the same model.</string>
     <string name="compact_switching_model">That model is rate limited or out of quota — trying %1$s from this group instead.</string>
-    <string name="compact_all_routes_refused">Every model refused (%1$s). Compressing on-device instead — no model call needed, and the session stays usable.</string>
     <string name="thinking_level_off">Off</string>
     <string name="thinking_level_low">Low</string>
     <string name="thinking_level_medium">Medium</string>
@@ -1310,7 +1323,7 @@
     <string name="thinking_level_sheet_title">Thinking Intensity</string>
     <string name="model_picker_title">Choose Model</string>
     <string name="model_picker_done">Done</string>
-    <string name="model_picker_search_placeholder">Search models</string>
+    <string name="model_picker_search_placeholder">Search providers and models</string>
     <string name="model_picker_search_clear">Clear</string>
     <string name="model_picker_groups_section">Model Groups</string>
     <string name="model_picker_groups_edit">Edit</string>
@@ -1601,6 +1614,16 @@
     <!-- [T-android-larky-longsession-followup] Tappable header at the top of the chat list, shown only when more older messages exist behind the windowed slice. -->
     <string name="chat_load_older_messages">↑ Load older messages</string>
     <string name="chat_history_still_loading">Conversation history is still loading. Your draft and attachments were kept — try sending again in a moment.</string>
+    <string name="chat_history_partial_warning">Full conversation history could not be loaded, so the model may not see older messages. Sending still works — start a new chat if replies lose context.</string>
+    <string name="chat_history_rewrite_unsafe">Compaction is unavailable: the full history of this chat could not be loaded, so compacting could delete messages that are not in memory. Reopen the chat or start a new one.</string>
+    <!-- [T-window-safe-cutoff] Retry/edit refused because the tapped bubble could not be matched to a stored message. Nothing was deleted. -->
+    <string name="chat_cutoff_unresolved">Could not match this message to a stored one, so nothing was changed. The chat was reloaded from disk — try again.</string>
+    <string name="chat_cutoff_implausible">Retry cancelled: it would have deleted most of this chat, which means the anchor was wrong. Nothing was changed.</string>
+    <!-- [T-offline-retry-budget] Shown while a turn is being retried after a name-resolution failure (device had no usable network). %1$d = attempt, %2$d = max. -->
+    <string name="chat_retry_offline">No network — waiting and retrying (%1$d/%2$d)…</string>
+    <string name="chat_retry_bad_gateway">Gateway error upstream — retrying (%1$d/%2$d)…</string>
+    <string name="chat_retry_no_response">Server sent nothing for 2 min — reconnecting (%1$d/%2$d)…</string>
+    <string name="chat_retry_waiting_network">Waiting for the network to come back…</string>
     <!-- [T-error-persist-android] Shown when the model returns an empty reply (no text, no tools). -->
     <string name="error_empty_response_generic">Model returned an empty response. Please try again or switch models.</string>
     <string name="error_empty_response_context_large">The model returned an empty response. The conversation context may be too large — try compacting or starting a new session.</string>
