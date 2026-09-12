@@ -5403,7 +5403,6 @@ class ChatViewModel(
                         }
                         return@launch
                     }
->>>>>>> origin/fix/send-gate-deadlock
                     Log.i(TAG, "rerunFromToolBlock cut at row start (empty trim) tuId=${targetToolUseId.take(12)} keepCount=${row.sortOrder} row=${row.id.take(8)}")
                 } else {
                     // Delete every row after the trimmed assistant row, then
@@ -5422,7 +5421,6 @@ class ChatViewModel(
                         }
                         return@launch
                     }
->>>>>>> origin/fix/send-gate-deadlock
                     chatRepository.updateMessageParts(row.id, keptArr.toString())
                     Log.i(TAG, "rerunFromToolBlock sub-message cut tuId=${targetToolUseId.take(12)} keepCount=${row.sortOrder + 1} partIdx=$cutPartIdx trimmedRow=${row.id.take(8)}")
                 }
@@ -5650,7 +5648,6 @@ class ChatViewModel(
                     reloadSessionFromDb()
                 }
                 return@launch
->>>>>>> origin/fix/send-gate-deadlock
             }
             val archived = chatRepository.archiveAndDeleteMessagesAfter(sid, cutoffSortOrder, "retry")
             if (archived < 0) {
@@ -6035,7 +6032,6 @@ class ChatViewModel(
             )
             reloadSessionFromDb()
             return false
->>>>>>> origin/fix/send-gate-deadlock
         }
         val archived = chatRepository.archiveAndDeleteMessagesAfter(sid, cutoffSortOrder, "edit")
         if (archived < 0) {
@@ -7276,7 +7272,6 @@ class ChatViewModel(
                     // smaller problem than a deleted history).
                     val archived = chatRepository.archiveAndDeleteMessagesAfter(
                         sid, trailingAssistantSortOrder, "retryLast",
->>>>>>> origin/fix/send-gate-deadlock
                     )
                     if (archived < 0) {
                         AppLogger.warning(
