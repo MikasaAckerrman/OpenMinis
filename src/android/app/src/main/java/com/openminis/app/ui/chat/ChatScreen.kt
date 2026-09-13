@@ -5623,11 +5623,17 @@ fun ChatScreen(
 
             // [T-message-surgery] Delete confirmation. Irreversible, and the
             // plan may take paired tool rows along, so the body says so.
+            // [T-descriptive-dialog] Show WHAT is being deleted — the message
+            // role + a content preview — so the user understands the dialog
+            // context instead of seeing a generic "Delete this message?".
             pendingDeleteMessageId?.let { targetId ->
+                val targetMsg = messages.firstOrNull { it.id == targetId }
+                val preview = targetMsg?.content?.take(120)?.trim()?.ifBlank { "(вложение/инструмент)" } ?: "(сообщение)"
+                val roleLabel = if (targetMsg?.role == "user") "Ваше" else "Ответ"
                 MinisAlertDialog(
                     onDismissRequest = { pendingDeleteMessageId = null },
                     title = stringResource(R.string.msg_delete_confirm_title),
-                    text = stringResource(R.string.msg_delete_confirm_body),
+                    text = "$roleLabel: «$preview»\n\n" + stringResource(R.string.msg_delete_confirm_body),
                     confirmText = stringResource(R.string.msg_longpress_delete),
                     isDestructive = true,
                     onConfirm = {
