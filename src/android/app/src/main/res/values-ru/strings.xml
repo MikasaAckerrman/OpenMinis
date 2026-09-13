@@ -1382,4 +1382,6 @@
     <string name="error_diag_connection">🔌 Соединение оборвано — сеть или шлюз разорвал связь</string>
     <string name="error_diag_no_response">⏱️ Сервер не отвечает — запрос отправлен, ответа нет</string>
     <string name="error_diag_bad_gateway">🖥️ Ошибка шлюза — 5xx на стороне сервиса</string>
+    <string name="delete_role_user">Ваше</string>
+    <string name="delete_role_assistant">Ответ</string>
 </resources>

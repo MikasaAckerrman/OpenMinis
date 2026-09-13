@@ -5629,7 +5629,7 @@ fun ChatScreen(
             pendingDeleteMessageId?.let { targetId ->
                 val targetMsg = messages.firstOrNull { it.id == targetId }
                 val preview = targetMsg?.content?.take(120)?.trim()?.ifBlank { "(вложение/инструмент)" } ?: "(сообщение)"
-                val roleLabel = if (targetMsg?.role == "user") "Ваше" else "Ответ"
+                val roleLabel = if (targetMsg?.role == "user") stringResource(R.string.delete_role_user) else stringResource(R.string.delete_role_assistant)
                 MinisAlertDialog(
                     onDismissRequest = { pendingDeleteMessageId = null },
                     title = stringResource(R.string.msg_delete_confirm_title),

@@ -1672,4 +1672,7 @@
     <string name="error_diag_connection">🔌 Connection lost — network or gateway dropped the link</string>
     <string name="error_diag_no_response">⏱️ Server not responding — request sent, no reply</string>
     <string name="error_diag_bad_gateway">🖥️ Gateway error — 5xx on the service side</string>
+    <!-- [T-descriptive-dialog] Role labels for delete confirmation preview -->
+    <string name="delete_role_user">Your message</string>
+    <string name="delete_role_assistant">Assistant reply</string>
 </resources>
