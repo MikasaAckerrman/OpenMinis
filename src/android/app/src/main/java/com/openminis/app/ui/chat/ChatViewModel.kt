@@ -3555,7 +3555,7 @@ class ChatViewModel(
             startMs = System.currentTimeMillis()
         )).copy(
             phase = com.openminis.app.data.CompactPhase.SUMMARIZING,
-            modelLabel = model?.id ?: provider.providerId,
+            modelLabel = model?.id ?: provider.name,
         )
 
         while (true) {
