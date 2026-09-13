@@ -16,6 +16,7 @@ import com.openminis.app.browser.BrowserTabPool
 import com.openminis.app.data.db.MessageEntity
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Compress
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.Psychology
@@ -651,6 +652,30 @@ class ChatViewModel(
         AgentModePrefs.isForced(context, sessionId),
     )
     val forceAgents: StateFlow<Boolean> = _forceAgents.asStateFlow()
+
+    // [T-compact-level] User's preferred compression aggressiveness.
+    // Global (not per-session) — it's a user preference about how much
+    // detail to keep, not a per-chat setting. Stored as the ordinal of
+    // CompactLevel in SharedPreferences "compact_prefs" → key "level".
+    private val _compactLevel = MutableStateFlow(
+        CompactLevel.fromOrdinalSafe(
+            context.getSharedPreferences("compact_prefs", Context.MODE_PRIVATE)
+                .getInt("level", CompactLevel.AUTO.ordinal)
+        )
+    )
+    val compactLevel: StateFlow<CompactLevel> = _compactLevel.asStateFlow()
+
+    fun setCompactLevel(level: CompactLevel) {
+        if (_compactLevel.value == level) return
+        _compactLevel.value = level
+        context.getSharedPreferences("compact_prefs", Context.MODE_PRIVATE)
+            .edit().putInt("level", level.ordinal).commit()
+    }
+
+    // [T-compact-level] Picker sheet visibility.
+    private val _showCompactLevelPicker = MutableStateFlow(false)
+    val showCompactLevelPicker: StateFlow<Boolean> = _showCompactLevelPicker.asStateFlow()
+    fun dismissCompactLevelPicker() { _showCompactLevelPicker.value = false }
 
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
@@ -1565,6 +1590,17 @@ class ChatViewModel(
             title = "Compact",
             subtitle = "",
         ),
+
+        // [T-compact-level] Sub-entry: pick compression aggressiveness.
+        // Opens a small picker sheet so the user can choose Light/Medium/
+        // Ultra/Auto before running /compact. The chosen level persists
+        // across sessions via SharedPreferences.
+        SlashCommand(
+            id = "compact-level",
+            icon = Icons.Default.Tune,
+            title = "Compact Level",
+            subtitle = "",
+        ),
         SlashCommand(
             id = "memory",
             icon = Icons.Default.Psychology,
@@ -1635,6 +1671,8 @@ class ChatViewModel(
 
         when (cmd.id) {
             "compact" -> runCompactNow()
+            // [T-compact-level] Show the level picker sheet.
+            "compact-level" -> { _showCompactLevelPicker.value = true }
             "memory" -> toggleMemoryEnabled()
             "thinking" -> toggleThinking()
             "clear" -> _clearChatConfirmRequested.value = true
@@ -3483,7 +3521,7 @@ class ChatViewModel(
                     messages = listOf(
                         LLMMessage(role = LLMMessage.Role.USER, content = userMessage)
                     ),
-                    systemPrompt = compactSummarySystemPrompt,
+                    systemPrompt = compactSummarySystemPrompt(_compactLevel.value),
                     maxTokens = maxOut,
                     // Mirror iOS AIChatViewModel.swift:12926 — null lets the
                     // provider/model use its default. gpt-5.x family rejects any
@@ -3633,8 +3671,12 @@ class ChatViewModel(
     /**
      * System prompt for the single-shot summarisation call. Matches iOS
      * wording so cross-device summaries stay stylistically aligned.
+     *
+     * [T-compact-level] Appends a level-specific aggressiveness directive
+     * based on the user's compact-level preference (Light/Medium/Ultra/Auto).
      */
-    private val compactSummarySystemPrompt: String = """
+    private fun compactSummarySystemPrompt(level: CompactLevel): String {
+        val base = """
         You are a context compaction engine. Your summary will REPLACE the older messages in the conversation context window — the most recent turns are kept verbatim alongside it, so your job is to compress the SETTLED PAST, not the live thread. The agent will read your summary as past context, then proceed based on the user's NEXT message — your summary is background, not a standing work order. Write the summary in the same language the user used in the conversation.
 
         Compaction is QUALITATIVE COMPRESSION, not deletion. You are not throwing context away — you are distilling it: keep every fact the agent could act on, drop only redundancy, filler, and water. Merge duplicates, collapse repetition, remove ceremony — but never lose a fact, a path, a decision, or an outcome. Weight detail toward the NEWER turns: the closer to the present, the more fully it is preserved.
@@ -3669,7 +3711,16 @@ class ChatViewModel(
         NO FILLER. Your output is machine context, not a reply to a person. Do not open with "Sure", "Certainly" or "Here is the summary". Do not describe what you are about to do, do not comment on these instructions, and do not close with an offer to help. Do not hedge ("it appears that", "possibly"): state what happened. Every sentence must carry a fact the agent could act on — if a sentence could be deleted without losing information, delete it yourself.
 
         Merge repetition instead of listing it: forty successful build steps are one sentence ("ran 40 build steps, all succeeded"), not forty lines. But never merge a FAILURE into a success summary — failures are listed individually with their exact error text, because they are what stops the agent repeating a mistake.
-    """.trimIndent()
+        """.trimIndent()
+
+        val levelDirective = when (level) {
+            CompactLevel.LIGHT -> "\n\nCOMPRESSION LEVEL: LIGHT. Be generous — preserve more detail, especially in recent turns. Keep near-full detail for the last 20% of messages. Target output ~30-40% of original length. Only merge obvious repetition."
+            CompactLevel.MEDIUM -> "\n\nCOMPRESSION LEVEL: MEDIUM. Be balanced — compress moderately, keeping all key facts and decisions but trimming verbose explanations. Target output ~15-20% of original length."
+            CompactLevel.ULTRA -> "\n\nCOMPRESSION LEVEL: ULTRA. Be aggressive — compress hard, keeping only essential facts, decisions, and outcomes. Collapse verbose descriptions to one-liners. Target output ~5% of original length. This is for very long sessions where context must fit in minimal space."
+            CompactLevel.AUTO -> "\n\nCOMPRESSION LEVEL: AUTO (model-chosen). Choose your compression aggressiveness based on the conversation length: short (< 30k tokens) → keep detail; medium (30k-100k) → moderate; long (> 100k) → aggressive. Always preserve protected sections regardless of level."
+        }
+        return base + levelDirective
+    }
 
     // T203 part 2: these MUST be declared before `init { loadSession() }` below.
     // viewModelScope.launch defaults to Dispatchers.Main.immediate, which runs

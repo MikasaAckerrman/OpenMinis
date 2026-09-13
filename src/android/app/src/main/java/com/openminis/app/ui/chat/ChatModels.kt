@@ -238,6 +238,23 @@ enum class ToolBlockStatus {
     STREAMING, PENDING, RUNNING, SUCCESS, FAILED, CANCELLED, TIMEOUT
 }
 
+/**
+ * [T-compact-level] Compression aggressiveness for model-based context
+ * compaction. Mirrors the thinking-level UX: the user picks a level, or
+ * AUTO lets the model decide based on transcript length.
+ */
+enum class CompactLevel(val displayName: String) {
+    LIGHT("Light"),
+    MEDIUM("Medium"),
+    ULTRA("Ultra"),
+    AUTO("Auto");
+
+    companion object {
+        fun fromOrdinalSafe(ord: Int): CompactLevel =
+            entries.getOrElse(ord) { AUTO }
+    }
+}
+
 /** Slash command descriptor shown in the "/" popup. Mirrors iOS SlashCommand. */
 data class SlashCommand(
     val id: String,
