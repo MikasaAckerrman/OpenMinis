@@ -51,6 +51,7 @@ object DraftStore {
     object Logic {
         fun draftKey(sessionId: String) = DRAFT_PREFIX + sessionId
         fun sentKey(sessionId: String) = SENT_PREFIX + sessionId
+        fun queueKey(sessionId: String) = QUEUE_PREFIX + sessionId
 
         fun saveDraft(store: Store, sessionId: String, text: String) {
             if (sessionId.isEmpty()) return
@@ -129,4 +130,27 @@ object DraftStore {
      */
     fun migrate(context: Context, fromSessionId: String, toSessionId: String) =
         Logic.migrate(store(context), fromSessionId, toSessionId)
+
+    // ── Queue persistence [T-queue-persist] ────────────────────────────────
+
+    private const val QUEUE_PREFIX = "queue."
+
+    /** Save the serialized prompt queue for a session (JSON array of {id,text}). */
+    fun saveQueue(context: Context, sessionId: String, json: String) {
+        if (sessionId.isEmpty()) return
+        if (json.isEmpty() || json == "[]") store(context).remove(Logic.queueKey(sessionId))
+        else store(context).put(Logic.queueKey(sessionId), json)
+    }
+
+    /** Load the serialized prompt queue, or "" when none. */
+    fun loadQueue(context: Context, sessionId: String): String {
+        if (sessionId.isEmpty()) return ""
+        return store(context).get(Logic.queueKey(sessionId)) ?: ""
+    }
+
+    /** Clear the persisted queue (after the queue is consumed by the agent loop). */
+    fun clearQueue(context: Context, sessionId: String) {
+        if (sessionId.isEmpty()) return
+        store(context).remove(Logic.queueKey(sessionId))
+    }
 }

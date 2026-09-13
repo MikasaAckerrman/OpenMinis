@@ -4539,6 +4539,9 @@ class ChatViewModel(
                         }
                     }
                 }
+                // [T-queue-persist] Restore any queued prompts that survived
+                // a process restart.
+                restorePromptQueue()
                 // [T-HANG-DIAG] total time spent in loadSession from ENTER to
                 // either successful completion or early return. tHangDiagStart
                 // was captured just inside `try` so this covers the whole
@@ -5183,7 +5186,7 @@ class ChatViewModel(
         toolLoopDetector.reset()
         _canResume.value = false
         _attachments.value = emptyList()
-        _promptQueue.value = emptyList()
+        clearPromptQueue()
         _hasInjectedShareContent.value = false
         // T261: tool-detail sheet is per-session UI state — clear it so a
         // newly cleared chat doesn't briefly flash a stale tool's sheet
@@ -6142,6 +6145,8 @@ class ChatViewModel(
             attachments = pendingAttachments,
         )
         _promptQueue.value = _promptQueue.value + prompt
+        // [T-queue-persist] Save the queue so it survives process death.
+        persistPromptQueue()
 
         val attachmentNames = pendingAttachments.map { it.fileName }
         val imageUris = pendingAttachments.filter { it.isImage }.map { it.uri }
@@ -6165,6 +6170,7 @@ class ChatViewModel(
     fun removeQueuedPrompt(promptId: String) {
         _promptQueue.value = _promptQueue.value.filterNot { it.id == promptId }
         _messages.value = _messages.value.filterNot { it.queuedPromptId == promptId }
+        persistPromptQueue()
     }
 
     /** Withdraw a queued message before it gets injected into the agent loop. */
@@ -6174,7 +6180,92 @@ class ChatViewModel(
         val pid = msg.queuedPromptId ?: return
         _promptQueue.value = _promptQueue.value.filterNot { it.id == pid }
         _messages.value = _messages.value.filterNot { it.id == messageId }
+        persistPromptQueue()
         Log.i(TAG, "Withdrew queued message, queue=${_promptQueue.value.size}")
+    }
+
+    /**
+     * [T-queue-edit] Edit a queued message: move its text back to the input
+     * field and remove it from the queue. The user can then modify and re-send.
+     * If the input field already has text, the queued text is appended.
+     */
+    fun editQueuedMessage(messageId: String) {
+        val msg = _messages.value.firstOrNull { it.id == messageId } ?: return
+        if (!msg.isQueued) return
+        val pid = msg.queuedPromptId ?: return
+        val existing = _inputText.value
+        _inputText.value = if (existing.isBlank()) msg.content else "$existing\n${msg.content}"
+        _promptQueue.value = _promptQueue.value.filterNot { it.id == pid }
+        _messages.value = _messages.value.filterNot { it.id == messageId }
+        persistPromptQueue()
+        Log.i(TAG, "Edited queued message → moved to input, queue=${_promptQueue.value.size}")
+    }
+
+    /**
+     * [T-queue-persist] Serialize the current prompt queue to DraftStore.
+     * Only id + text are persisted — attachments reference files that may not
+     * survive a process restart, so they are not restored.
+     */
+    private fun persistPromptQueue() {
+        val sid = realSessionId.ifEmpty { sessionId }
+        if (sid.isEmpty()) return
+        val arr = org.json.JSONArray()
+        for (p in _promptQueue.value) {
+            arr.put(org.json.JSONObject().apply {
+                put("id", p.id)
+                put("text", p.text)
+            })
+        }
+        com.openminis.app.data.DraftStore.saveQueue(context, sid, arr.toString())
+    }
+
+    /**
+     * [T-queue-persist] Clear both in-memory and persisted queue.
+     */
+    private fun clearPromptQueue() {
+        _promptQueue.value = emptyList()
+        val sid = realSessionId.ifEmpty { sessionId }
+        if (sid.isNotEmpty()) {
+            com.openminis.app.data.DraftStore.clearQueue(context, sid)
+        }
+    }
+
+    /**
+     * [T-queue-persist] Restore the prompt queue from DraftStore on session
+     * load. Reconstructs both _promptQueue and the queued ChatMessages.
+     */
+    private fun restorePromptQueue() {
+        val sid = realSessionId.ifEmpty { sessionId }
+        if (sid.isEmpty()) return
+        val json = com.openminis.app.data.DraftStore.loadQueue(context, sid)
+        if (json.isBlank()) return
+        runCatching {
+            val arr = org.json.JSONArray(json)
+            if (arr.length() == 0) return
+            val prompts = mutableListOf<QueuedPrompt>()
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                val id = obj.optString("id")
+                val text = obj.optString("text")
+                if (id.isNotEmpty() && text.isNotEmpty()) {
+                    prompts.add(QueuedPrompt(id = id, text = text))
+                }
+            }
+            if (prompts.isEmpty()) return
+            _promptQueue.value = prompts
+            // Reconstruct queued ChatMessages
+            val queuedMsgs = prompts.map { p ->
+                ChatMessage(
+                    id = "queued_msg_${p.id}",
+                    role = "user",
+                    content = p.text,
+                    isQueued = true,
+                    queuedPromptId = p.id,
+                )
+            }
+            _messages.value = _messages.value + queuedMsgs
+            Log.i(TAG, "Restored ${prompts.size} queued prompt(s) from DraftStore")
+        }
     }
 
     /**
@@ -6207,7 +6298,7 @@ class ChatViewModel(
     ): InjectedTurn? {
         if (_promptQueue.value.isEmpty()) return null
         val queued = _promptQueue.value
-        _promptQueue.value = emptyList()
+        clearPromptQueue()
 
         // [T-android-queued-message-duplicated-on-inject] REMOVE the queued
         // placeholder bubbles (the ones enqueuePrompt added with
@@ -6354,7 +6445,7 @@ class ChatViewModel(
     ) {
         while (_promptQueue.value.isNotEmpty()) {
             val queued = _promptQueue.value
-            _promptQueue.value = emptyList()
+            clearPromptQueue()
             Log.i(TAG, "📨[DRAIN] Draining ${queued.size} queued prompt(s): " +
                 queued.joinToString(", ") { "${it.id}=\"${it.text.take(20)}...\"" })
 
@@ -11847,7 +11938,7 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
             val initialProvider = currentProvider
             if (initialProvider == null) {
                 AppLogger.warning(TAG, "resumeQueueAfterCancel: no provider, dropping queue")
-                _promptQueue.value = emptyList()
+                clearPromptQueue()
                 _messages.value = _messages.value.filterNot { it.isQueued }
                 return@launch
             }

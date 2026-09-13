@@ -3449,7 +3449,13 @@ fun ChatScreen(
                                 // the stored text — and Retry covers "run this
                                 // again". Keeping both was two menu items that
                                 // looked the same and behaved differently.
-                                onEdit = null,
+                                // [T-queue-edit] Queued bubbles get an Edit
+                                // button: moves the text back to the input
+                                // field and removes the queued message, so the
+                                // user can modify and re-send.
+                                onEdit = if (item.message.isQueued) {
+                                    { safeMutate { viewModel.editQueuedMessage(item.message.id) } }
+                                } else null,
                                 onWithdraw = if (item.message.isQueued) {
                                     { safeMutate { viewModel.withdrawQueuedMessage(item.message.id) } }
                                 } else null,
