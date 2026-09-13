@@ -859,6 +859,30 @@ internal fun FloatingToolStatusBar(
     val toolAccent = toolAccentColor(block.toolName)
     val previewEnabled = LocalToolPreviewEnabled.current
 
+    // [T-mcp-progress-timer] Elapsed timer while a tool is running — gives
+    // the user a visible heartbeat so they can tell the process isn't
+    // stuck. Ticks every second; resets when the block id changes.
+    var elapsedSeconds by remember(block.id) { mutableStateOf(0) }
+    LaunchedEffect(block.id, isRunning) {
+        if (isRunning) {
+            elapsedSeconds = 0
+            while (true) {
+                kotlinx.coroutines.delay(1000)
+                elapsedSeconds++
+            }
+        } else {
+            // Freeze at final duration when done.
+            elapsedSeconds = (block.durationMs / 1000).toInt()
+        }
+    }
+    val timerText = if (isRunning && elapsedSeconds > 0) {
+        if (elapsedSeconds < 60) "${elapsedSeconds}s"
+        else "${elapsedSeconds / 60}m ${elapsedSeconds % 60}s"
+    } else if (!isRunning && block.durationMs > 0) {
+        val s = block.durationMs / 1000.0
+        if (s < 10) String.format("%.1fs", s) else String.format("%.0fs", s)
+    } else null
+
     // iOS layout: ZStack(alignment: .bottomLeading)
     // Thumbnail (100×65dp) floats ABOVE the status bar (38dp tall)
     val thumbnailWidth = 100.dp
@@ -925,6 +949,19 @@ internal fun FloatingToolStatusBar(
                     ) { onOpenCurrentDetail() },
                 overflow = TextOverflow.Ellipsis,
             )
+
+            // [T-mcp-progress-timer] Elapsed timer — visible heartbeat so
+            // the user can tell the tool is alive, not stuck.
+            if (timerText != null) {
+                Text(
+                    text = timerText,
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Medium,
+                    color = if (isRunning) toolAccent else ChatColors.tertiaryText,
+                    modifier = Modifier.padding(start = 6.dp),
+                )
+            }
 
             // Pagination
             if (toolBlocks.size > 1) {
