@@ -6279,20 +6279,48 @@ class ChatViewModel(
     }
 
     /**
-     * [T-queue-edit] Edit a queued message: move its text back to the input
-     * field and remove it from the queue. The user can then modify and re-send.
-     * If the input field already has text, the queued text is appended.
+     * [T-queue-edit] Text that was in the input field before the user
+     * pressed "Edit" on a queued message. Restored to the input after
+     * the next send, so the user doesn't lose what they were typing.
+     */
+    private var _preEditTextBackup: String? = null
+
+    /**
+     * [T-queue-edit] Edit a queued message: save the current input text,
+     * replace it with the queued message text. After the next send,
+     * the saved text is restored to the input field.
+     * User complaint: 'если был текст написан до этого, то он не пропадает,
+     * как мы только отправим текст измененый еще раз, мы снова'
      */
     fun editQueuedMessage(messageId: String) {
         val msg = _messages.value.firstOrNull { it.id == messageId } ?: return
         if (!msg.isQueued) return
         val pid = msg.queuedPromptId ?: return
+        // Save existing text for restoration after send.
         val existing = _inputText.value
-        _inputText.value = if (existing.isBlank()) msg.content else "$existing\n${msg.content}"
+        if (existing.isNotBlank()) {
+            _preEditTextBackup = existing
+        }
+        // Replace (not append) the input with the queued text.
+        _inputText.value = msg.content
         _promptQueue.value = _promptQueue.value.filterNot { it.id == pid }
         _messages.value = _messages.value.filterNot { it.id == messageId }
         persistPromptQueue()
-        Log.i(TAG, "Edited queued message → moved to input, queue=${_promptQueue.value.size}")
+        Log.i(TAG, "Edited queued message → moved to input (backup saved), queue=${_promptQueue.value.size}")
+    }
+
+    /**
+     * [T-queue-edit] Restore the text that was in the input field before the
+     * user pressed "Edit" on a queued message. Called after the next send.
+     */
+    fun restorePreEditText() {
+        _preEditTextBackup?.let { backup ->
+            if (backup.isNotBlank() && _inputText.value.isBlank()) {
+                _inputText.value = backup
+                Log.i(TAG, "Restored pre-edit text backup (${backup.length} chars)")
+            }
+            _preEditTextBackup = null
+        }
     }
 
     /**

@@ -1276,6 +1276,7 @@ fun ChatScreen(
     val performSendOrEnqueue: (String) -> Unit = handler@{ rawText ->
         if (viewModel.tryExecuteInputAsSlashCommand(rawText)) {
             viewModel.setInputText("")
+            viewModel.restorePreEditText()
             keyboardController?.hide()
             focusManager.clearFocus()
             return@handler
@@ -1285,6 +1286,8 @@ fun ChatScreen(
         keyboardController?.hide()
         focusManager.clearFocus()
         viewModel.sendMessage(rawText)
+        // [T-queue-edit] Restore pre-edit text backup after send.
+        viewModel.restorePreEditText()
         noteSendForInputModePref()
         userScrolledAway = false
         coroutineScope.launch {
