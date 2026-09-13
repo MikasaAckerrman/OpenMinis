@@ -31,3 +31,22 @@
   - RequestBudget wire-size accounting
   - AutoResumePolicy, TransientRetryBudget, TransportErrorClassifier
   - Stream durability (partial turns)
+
+## Не собрано — 8 коммитов на fix/preview-position (2026-09-13, без APK)
+
+Несобранные правки — ждут CI сборки:
+
+1. `5b8b14d` — Build Tracking: BuildConfig GIT_SHA/GIT_BRANCH/CI_RUN_ID/BUILD_DATE + InstallHistory.kt + debug.installHistory
+2. `8d6a585` — keepScreenOn: ScreenDimOverlay не вызывал view.keepScreenOn → экран засыпал → Doze → дисконнект
+3. `8bab5f1` — AgentGraphRunner: mutableMapOf → ConcurrentHashMap (race condition FIXED)
+4. `3b2c286` — Auto-resume: NetworkError теперь триггерит auto-resume (stream was reset: CANCEL FIXED)
+5. `c0a96c7` — Ghost message: немедленное удаление из _messages.value перед async reload
+6. `74bdfb2` — Error diagnostics: formatErrorForUser — 📱 сеть / 🔌 соединение / ⏱️ сервер / 🖥️ шлюз
+7. `01b76b5` — RU i18n: thinking_level_xhigh (Сверхвысокое), thinking_level_ultra (Ультра)
+8. `a4088fd` — Delete dialog: preview содержимого сообщения в подтверждении
+
+**Известные проблемы ИСПРАВЛЕННЫЕ в этих коммитах:**
+- ✅ AgentGraphRunner race condition — БЫЛ известной проблемой выше, ТЕПЕРЬ fixed
+- ✅ keepScreenOn — экран не засыпал при "не гасить экран"
+- ✅ Auto-resume — "stream was reset: CANCEL" не ретраился
+- ✅ Ghost message — удалённое сообщение висело как призрак
