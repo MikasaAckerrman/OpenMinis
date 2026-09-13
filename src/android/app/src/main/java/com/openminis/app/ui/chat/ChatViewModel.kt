@@ -4636,6 +4636,15 @@ class ChatViewModel(
                 // [T-queue-persist] Restore any queued prompts that survived
                 // a process restart.
                 restorePromptQueue()
+                // [T-queue-edit] Restore pre-edit backup if it was persisted
+                // before a process death.
+                val preEditSid = realSessionId.ifEmpty { sessionId }
+                if (preEditSid.isNotEmpty()) {
+                    val backup = com.openminis.app.data.DraftStore.loadDraft(context, preEditSid + "_preedit")
+                    if (backup.isNotBlank()) {
+                        _preEditTextBackup = backup
+                    }
+                }
                 // [T-HANG-DIAG] total time spent in loadSession from ENTER to
                 // either successful completion or early return. tHangDiagStart
                 // was captured just inside `try` so this covers the whole
@@ -6300,6 +6309,11 @@ class ChatViewModel(
         val existing = _inputText.value
         if (existing.isNotBlank()) {
             _preEditTextBackup = existing
+            // [T-queue-edit] Persist backup so it survives process death.
+            val sid = realSessionId.ifEmpty { sessionId }
+            if (sid.isNotEmpty()) {
+                com.openminis.app.data.DraftStore.saveDraft(context, sid + "_preedit", existing)
+            }
         }
         // Replace (not append) the input with the queued text.
         _inputText.value = msg.content
@@ -6320,6 +6334,11 @@ class ChatViewModel(
                 Log.i(TAG, "Restored pre-edit text backup (${backup.length} chars)")
             }
             _preEditTextBackup = null
+            // [T-queue-edit] Clear persisted backup.
+            val sid = realSessionId.ifEmpty { sessionId }
+            if (sid.isNotEmpty()) {
+                com.openminis.app.data.DraftStore.saveDraft(context, sid + "_preedit", "")
+            }
         }
     }
 
@@ -6375,6 +6394,12 @@ class ChatViewModel(
             }
             if (prompts.isEmpty()) return
             _promptQueue.value = prompts
+            // [T-queue-persist] Clear persisted queue after restoring —
+            // prevents duplicates if loadSession runs again.
+            val sid2 = realSessionId.ifEmpty { sessionId }
+            if (sid2.isNotEmpty()) {
+                com.openminis.app.data.DraftStore.clearQueue(context, sid2)
+            }
             // Reconstruct queued ChatMessages
             val queuedMsgs = prompts.map { p ->
                 ChatMessage(
