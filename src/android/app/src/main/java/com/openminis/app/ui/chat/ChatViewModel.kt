@@ -949,6 +949,37 @@ class ChatViewModel(
     private val _isCompacting = MutableStateFlow(false)
     val isCompacting: StateFlow<Boolean> = _isCompacting.asStateFlow()
 
+    /**
+     * [T-compact-progress] Live compact progress card state: phase, percent,
+     * timer, model, route notes — or null when no compact is running and
+     * nothing failed. A failure stays until the user retries or dismisses it.
+     */
+    private val _compactProgress =
+        MutableStateFlow<com.openminis.app.data.CompactProgress?>(null)
+    val compactProgress: StateFlow<com.openminis.app.data.CompactProgress?> =
+        _compactProgress.asStateFlow()
+
+    /** Hide the compact card (dismiss a failure or a lingering state). */
+    fun dismissCompactCard() {
+        _compactProgress.value = null
+    }
+
+    /**
+     * [T-compact-progress] Terminal card state for guard rejections. Shows
+     * the actual reason in the progress card instead of a generic "не удалось
+     * сжать" — so the user knows WHY compaction was rejected.
+     */
+    private fun setCompactCardTerminal(reason: String) {
+        _compactProgress.value = com.openminis.app.data.CompactProgress(
+            startMs = System.currentTimeMillis(),
+            phase = com.openminis.app.data.CompactPhase.DONE,
+            failure = com.openminis.app.data.CompactFailure(
+                attempts = emptyList(),
+                terminal = reason,
+            ),
+        )
+    }
+
     /** Current auto-retry attempt number (0 = not retrying, 1..MAX = nth retry in flight). */
     private val _autoRetryAttempt = MutableStateFlow(0)
     val autoRetryAttempt: StateFlow<Int> = _autoRetryAttempt.asStateFlow()
@@ -1818,27 +1849,21 @@ class ChatViewModel(
         AppLogger.info(TAG, "[Compact] compactAll() invoked origin=$origin streaming=${_isStreaming.value} compacting=${_isCompacting.value} historySize=${agentHistory.size} anchorOverride=$anchorIdxOverride")
         if (_isStreaming.value) {
             AppLogger.info(TAG, "[Compact] aborted: stream in progress")
-            appendSystemInfo(
-                text = "Cannot compact while a turn is in progress. Stop the current response first.",
-                iconKind = "compact",
-            )
+            setCompactCardTerminal("Cannot compact while a turn is in progress. Stop the current response first.")
             return
         }
         if (_isCompacting.value) {
             AppLogger.info(TAG, "[Compact] aborted: another compact already in flight")
-            appendSystemInfo(
-                text = "A compact is already in progress. Please wait for it to finish.",
-                iconKind = "compact",
-            )
+            setCompactCardTerminal("A compact is already in progress. Please wait for it to finish.")
             return
         }
         val provider = currentProvider ?: run {
-            appendSystemInfo("No provider configured. Cannot compact.", "compact")
+            setCompactCardTerminal("No provider configured. Cannot compact.")
             return
         }
         val history = agentHistory.toList()
         if (history.isEmpty()) {
-            appendSystemInfo("Nothing to compact — the session is empty.", "compact")
+            setCompactCardTerminal("Nothing to compact — the session is empty.")
             return
         }
         // ─── v2 unified anchor model ───────────────────────────────────
@@ -1931,10 +1956,16 @@ class ChatViewModel(
         }
         val toCompact = history.subList(effectiveStartIdx, anchorIdx + 1)
         if (toCompact.isEmpty()) {
-            appendSystemInfo("Nothing to compact.", "compact")
+            setCompactCardTerminal("Nothing to compact.")
             return
         }
         _isCompacting.value = true
+        // [T-compact-progress] Live card state for the whole run.
+        val compactStartedMs = System.currentTimeMillis()
+        _compactProgress.value = com.openminis.app.data.CompactProgress(
+            startMs = compactStartedMs,
+            phase = com.openminis.app.data.CompactPhase.PREPARING,
+        )
         maintenanceJob = viewModelScope.launch(Dispatchers.IO) {
             // [T-android-compact-queued-drain] Only a SUCCESSFUL compact kicks
             // the queued-prompt drain below; failure/cancel/empty-summary paths
@@ -2123,16 +2154,15 @@ class ChatViewModel(
                     )
                 }
                 compactSucceeded = true
+                // [T-compact-progress] Mark DONE on success.
+                _compactProgress.value = com.openminis.app.data.CompactProgress(
+                    startMs = compactStartedMs,
+                    phase = com.openminis.app.data.CompactPhase.DONE,
+                    percent = 100,
+                )
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                // [T-remove-local-compaction] Every failure path (including
-                // "all model routes refused", which CompactRoute now maps to
-                // Step.Surface) lands here. There is NO on-device digest
-                // fallback anymore: compaction runs only through a model, so
-                // when it can't, the session is left fully intact and the user
-                // is told why. They can add a working model / retry later —
-                // the app never silently degrades the history behind a refusal.
                 Log.w(TAG, "Compact failed", e)
                 withContext(Dispatchers.Main) {
                     appendSystemInfo(
@@ -2140,6 +2170,8 @@ class ChatViewModel(
                         iconKind = "compact",
                     )
                 }
+                // [T-compact-progress] Show the failure in the card.
+                setCompactCardTerminal(e.message ?: e.javaClass.simpleName)
             } finally {
                 _isCompacting.value = false
             }

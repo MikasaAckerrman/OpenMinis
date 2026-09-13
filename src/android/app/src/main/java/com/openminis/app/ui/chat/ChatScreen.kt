@@ -438,6 +438,7 @@ fun ChatScreen(
     val messages by viewModel.uiMessages.collectAsState()
     val hasOlderMessages by viewModel.hasOlderMessages.collectAsState()
     val isStreaming by viewModel.isStreaming.collectAsState()
+    val compactProgress by viewModel.compactProgress.collectAsState()
     // [T-auto-resume] Hoisted here (same scope as isStreaming) so the banner
     // can read them inside LazyListScope (which is not a composable scope).
     val autoResumeCountdown by viewModel.autoResumeCountdown.collectAsState()
@@ -4440,6 +4441,17 @@ fun ChatScreen(
                             }
                         }
                     }
+                }
+
+                // [T-compact-progress] Live compact card right above the
+                // composer: progress bar, percent, elapsed timer, route notes
+                // — or the specific failure with a retry button.
+                compactProgress?.let { cp ->
+                    CompactProgressCard(
+                        progress = cp,
+                        onRetry = { viewModel.runCompactNow() },
+                        onDismiss = { viewModel.dismissCompactCard() },
+                    )
                 }
 
                 // Input box: iOS-style floating card — no visible border, separated

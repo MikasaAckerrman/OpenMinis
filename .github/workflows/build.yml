@@ -99,6 +99,7 @@ jobs:
             --tests 'com.openminis.app.data.MessageSurgeryMergedTurnTest' \
             --tests 'com.openminis.app.data.ProtectedTailTest' \
             --tests 'com.openminis.app.data.CompactQualityTest' \
+            --tests 'com.openminis.app.data.CompactProgressTest' \
             --tests 'com.openminis.app.data.TransportErrorClassifierTest' \
             --tests 'com.openminis.app.data.ContextPressureTest' \
             --tests 'com.openminis.app.data.MessageTimestampTest' \
