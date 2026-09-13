@@ -157,6 +157,10 @@ data class ChatMessage(
     // Restored-from-DB rows read entity.created_at / entity.updated_at.
     val createdAtMs: Long = System.currentTimeMillis(),
     val finishedAtMs: Long? = null,
+    // [T-deleted-placeholder] Marks a deleted message's position so the UI
+    // can show a minimal separator instead of letting neighbours glue
+    // together. Replaced in deleteMessage, removed on reloadSessionFromDb.
+    val isDeletedPlaceholder: Boolean = false,
 ) {
     /**
      * [T-bridge-message-ui-leak-android] True when this UI message is the

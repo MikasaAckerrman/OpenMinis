@@ -2430,9 +2430,18 @@ class ChatViewModel(
                     // loadSession() to rebuild _messages from the DB, and a
                     // second delete attempt shows "Этого сообщения больше нет
                     // в сессии" even though it's still on screen.
+                    // [T-deleted-placeholder] Replace the deleted message with
+                    // a minimal placeholder instead of removing it entirely —
+                    // this shows a thin separator so the user sees that
+                    // messages were NOT originally adjacent. The placeholder
+                    // disappears on reloadSessionFromDb (it's not in the DB).
                     val deletedIdSet = plan.deleteIds.toSet()
-                    _messages.value = _messages.value.filterNot { m ->
-                        m.id in deletedIdSet || m.sourceDbIds.any { it in deletedIdSet }
+                    _messages.value = _messages.value.map { m ->
+                        if (m.id in deletedIdSet || m.sourceDbIds.any { it in deletedIdSet }) {
+                            m.copy(isDeletedPlaceholder = true, content = "", toolBlocks = emptyList())
+                        } else {
+                            m
+                        }
                     }
                     revokeMemoryWritesInDeletedMessages(deletedUi)
                     reloadSessionFromDb()

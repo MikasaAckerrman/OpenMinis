@@ -3044,6 +3044,7 @@ fun ChatScreen(
                     // Live progress card is never part of persisted history, so
                     // a compact marker can't gray it.
                     is FlatChatItem.AgentRunCard -> false
+                    is FlatChatItem.DeletedPlaceholder -> false
                     is FlatChatItem.AssistantError -> grayedMap[originalMessageId(messageId)] == true
                     is FlatChatItem.AssistantLegacyContent -> grayedMap[originalMessageId(messageId)] == true
                 }
@@ -3710,6 +3711,28 @@ fun ChatScreen(
                                 } else null,
                             )
                             is FlatChatItem.AssistantTyping -> TypingIndicator()
+                            // [T-deleted-placeholder] Minimalist separator:
+                            // a single short grey rule, centered, with small
+                            // vertical padding. No text, no icon — just enough
+                            // to show the gap without straining the eyes.
+                            is FlatChatItem.DeletedPlaceholder -> {
+                                androidx.compose.foundation.layout.Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 8.dp),
+                                    contentAlignment = androidx.compose.ui.Alignment.Center,
+                                ) {
+                                    androidx.compose.foundation.layout.Box(
+                                        modifier = Modifier
+                                            .width(32.dp)
+                                            .height(2.dp)
+                                            .background(
+                                                ChatColors.separator.copy(alpha = 0.4f),
+                                                androidx.compose.foundation.shape.RoundedCornerShape(1.dp),
+                                            )
+                                    )
+                                }
+                            }
                             is FlatChatItem.AgentRunCard -> {
                                 // Subscribed here, not in the flat list, so a node
                                 // state change repaints just this card instead of
