@@ -657,7 +657,7 @@ class ChatViewModel(
     // Global (not per-session) — it's a user preference about how much
     // detail to keep, not a per-chat setting. Stored as the ordinal of
     // CompactLevel in SharedPreferences "compact_prefs" → key "level".
-    private val _compactLevel = MutableStateFlow(
+    internal val _compactLevel = MutableStateFlow(
         CompactLevel.fromOrdinalSafe(
             context.getSharedPreferences("compact_prefs", Context.MODE_PRIVATE)
                 .getInt("level", CompactLevel.AUTO.ordinal)
