@@ -3442,11 +3442,29 @@ class ChatViewModel(
             val mid = messages.size / 2
             val firstHalf = messages.subList(0, mid).toList()
             val secondHalf = messages.subList(mid, messages.size).toList()
+            // [T-compact-progress] Report split so the card shows
+            // "Сжимаю часть 1/2" / "Сжимаю часть 2/2".
+            _compactProgress.value = (_compactProgress.value ?: com.openminis.app.data.CompactProgress(
+                startMs = System.currentTimeMillis()
+            )).copy(
+                phase = com.openminis.app.data.CompactPhase.SUMMARIZING,
+                chunkCount = 2,
+                chunkIndex = 1,
+                percent = 0,
+            )
             AppLogger.info(
                 TAG,
                 "[Compact] Splitting ${messages.size} messages into ${firstHalf.size} + ${secondHalf.size} (depth=$depth)",
             )
             val summary1 = generateCompactSummaryWithSplitting(firstHalf, null, depth + 1)
+            // [T-compact-progress] Update chunk index for the second half.
+            _compactProgress.value = (_compactProgress.value ?: com.openminis.app.data.CompactProgress(
+                startMs = System.currentTimeMillis()
+            )).copy(
+                phase = com.openminis.app.data.CompactPhase.SUMMARIZING,
+                chunkIndex = 2,
+                percent = 50,
+            )
             val summary2 = generateCompactSummaryWithSplitting(secondHalf, null, depth + 1)
             val mergeInput = buildString {
                 append("Merge these partial summaries into a single cohesive context summary. ")
@@ -3496,7 +3514,22 @@ class ChatViewModel(
         val model = currentModel
         val contextWindow = model?.contextWindow ?: 128_000
         val estimatedInput = userMessage.length / 4
-        val startMaxOut = maxOf(1024, minOf(8192, contextWindow - estimatedInput))
+        // [T-compact-level] Adjust max output tokens based on the user's
+        // chosen compression level. LIGHT allows larger summaries (more
+        // detail preserved), ULTRA is very aggressive. AUTO lets the
+        // context size decide — short sessions get generous output, long
+        // ones get aggressive compression.
+        val levelMaxOut = when (_compactLevel.value) {
+            CompactLevel.LIGHT -> minOf(contextWindow / 4, 16_384)
+            CompactLevel.MEDIUM -> minOf(contextWindow / 8, 8_192)
+            CompactLevel.ULTRA -> minOf(contextWindow / 16, 4_096)
+            CompactLevel.AUTO -> when {
+                estimatedInput < 30_000 -> minOf(contextWindow / 4, 16_384)
+                estimatedInput < 100_000 -> minOf(contextWindow / 8, 8_192)
+                else -> minOf(contextWindow / 16, 4_096)
+            }
+        }
+        val startMaxOut = maxOf(1024, minOf(levelMaxOut, contextWindow - estimatedInput))
         val primary = currentProvider
             ?: throw IllegalStateException("No LLM provider available for compaction")
 
@@ -3514,6 +3547,16 @@ class ChatViewModel(
         var maxOut = startMaxOut
         var shrinkSteps = 0
         var lastError: Exception? = null
+
+        // [T-compact-progress] Report SUMMARIZING phase + model label so the
+        // progress card shows "Модель пишет резюме · <model>" instead of being
+        // stuck at 0% / "Подготовка…" for the entire LLM call duration.
+        _compactProgress.value = (_compactProgress.value ?: com.openminis.app.data.CompactProgress(
+            startMs = System.currentTimeMillis()
+        )).copy(
+            phase = com.openminis.app.data.CompactPhase.SUMMARIZING,
+            modelLabel = model?.id ?: provider.providerId,
+        )
 
         while (true) {
             try {

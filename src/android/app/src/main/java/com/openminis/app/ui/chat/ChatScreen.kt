@@ -4483,7 +4483,14 @@ fun ChatScreen(
                 // [T-compact-progress] Live compact card right above the
                 // composer: progress bar, percent, elapsed timer, route notes
                 // — or the specific failure with a retry button.
+                // Auto-dismiss 3s after DONE so the card doesn't linger.
                 compactProgress?.let { cp ->
+                    LaunchedEffect(cp.phase) {
+                        if (cp.phase == com.openminis.app.data.CompactPhase.DONE) {
+                            kotlinx.coroutines.delay(3_000)
+                            viewModel.dismissCompactCard()
+                        }
+                    }
                     CompactProgressCard(
                         progress = cp,
                         onRetry = { viewModel.runCompactNow() },
