@@ -57,7 +57,7 @@ android {
         buildConfigField("String", "GIT_SHA", "\"${System.getenv("GITHUB_SHA")?.take(7) ?: "local"}\"")
         buildConfigField("String", "GIT_BRANCH", "\"${System.getenv("GITHUB_REF_NAME") ?: "local"}\"")
         buildConfigField("String", "CI_RUN_ID", "\"${System.getenv("GITHUB_RUN_ID") ?: "local"}\"")
-        buildConfigField("String", "BUILD_DATE", "\"${System.getenv("BUILD_DATE") ?: java.time.Instant.now().toString()}\"")
+        buildConfigField("String", "BUILD_DATE", "\"${System.getenv("BUILD_DATE") ?: java.util.Date().toString()}\"")
 
         ndk {
             abiFilters += listOf("arm64-v8a")
