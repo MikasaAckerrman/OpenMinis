@@ -38,6 +38,13 @@ object TransportErrorClassifier {
         // Russian gateway phrasings observed live.
         "отклонен шлюзом", "отклонён шлюзом", "отклонено шлюзом",
         "отклонен сервером", "отклонён сервером",
+        // Generic gateway / upstream / relay errors. The live 2026-09-14 case
+        // was "compaction failed: provider error: the gat" — the English
+        // word "gateway" was in the error, NONE of the size or vague
+        // markers matched, so the split-retry path never ran and every retry
+        // resent the same doomed body. Treat any gateway-shaped error as
+        // potentially size-filtered and worth splitting.
+        "gateway", "the gat", "relay", "upstream", "bad gateway",
     )
 
     /** Errors that halving the input can NEVER fix — auth, quota, billing. */
