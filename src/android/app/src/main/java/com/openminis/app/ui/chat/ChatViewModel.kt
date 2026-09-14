@@ -3433,6 +3433,11 @@ class ChatViewModel(
             // halving can reach sessions where one chunk still trips the
             // gateway. Each level halves the per-call input — depth 6 gives
             // up to 64 leaves, each ≪ the original size.
+            // [T-compact-safe-split] ALSO need safe boundaries — never cut
+            // inside a tool_call/tool_result pair, otherwise the next chunk
+            // opens with an orphan tool_result the summary model can't make
+            // sense of, and the produced summaries come out "twitchy" when
+            // re-glued for the merge. findSafeSplitPoints below enforces this.
             if (!worthSplitting || messages.size < 2 || depth >= 6) {
                 throw e
             }
@@ -3443,52 +3448,218 @@ class ChatViewModel(
                     "contentFilteredWhenSplittable=$contentFilteredWhenSplittable " +
                     "depth=$depth msg=${msg.take(120)}",
             )
-            val mid = messages.size / 2
-            val firstHalf = messages.subList(0, mid).toList()
-            val secondHalf = messages.subList(mid, messages.size).toList()
-            // [T-compact-progress] Report split so the card shows
-            // "Сжимаю часть 1/2" / "Сжимаю часть 2/2".
+            // [T-compact-safe-split] N-way split at safe user-turn boundaries,
+            // not a blind `mid = size/2` cut. N grows with the input so a
+            // 10-MB transcript doesn't arrive as two 5-MB halves — it arrives
+            // as four 2.5-MB quarters, six 1.6-MB sixths, etc.
+            val n = calculateSafeChunkCount(messages)
+            val chunks = splitAtSafeUserTurns(messages, n)
+            // Fallback: if the safe-points search finds NO usable boundary
+            // (extremely pathological — one giant user message followed by
+            // nothing) we have to choose between the old mid-cut (might
+            // split mid-tool_result pair) and giving up. Give up — the old
+            // mid-cut created the twitchy-context bug we are fixing.
+            if (chunks.size <= 1) {
+                AppLogger.warn(TAG, "[Compact] No safe split points found at depth=$depth; cannot split further without creating orphan tool_results. Re-throwing.")
+                throw e
+            }
+            AppLogger.info(
+                TAG,
+                "[Compact] Splitting ${messages.size} messages into ${chunks.size} chunks at safe user-turn boundaries (depth=$depth)",
+            )
+            // [T-compact-progress] Report chunk count for "Сжимаю часть 1/N".
             _compactProgress.value = (_compactProgress.value ?: com.openminis.app.data.CompactProgress(
                 startMs = System.currentTimeMillis()
             )).copy(
                 phase = com.openminis.app.data.CompactPhase.SUMMARIZING,
-                chunkCount = 2,
+                chunkCount = chunks.size,
                 chunkIndex = 1,
                 percent = 0,
             )
-            AppLogger.info(
-                TAG,
-                "[Compact] Splitting ${messages.size} messages into ${firstHalf.size} + ${secondHalf.size} (depth=$depth)",
-            )
-            val summary1 = generateCompactSummaryWithSplitting(firstHalf, null, depth + 1)
-            // [T-compact-progress] Update chunk index for the second half.
-            _compactProgress.value = (_compactProgress.value ?: com.openminis.app.data.CompactProgress(
-                startMs = System.currentTimeMillis()
-            )).copy(
-                phase = com.openminis.app.data.CompactPhase.SUMMARIZING,
-                chunkIndex = 2,
-                percent = 50,
-            )
-            val summary2 = generateCompactSummaryWithSplitting(secondHalf, null, depth + 1)
+            // Summarize each chunk sequentially. Each chunk ends exactly
+            // ON a safe boundary (user-turn start of the NEXT chunk) — so no
+            // orphan tool_calls, no orphan tool_results, the summarizer sees
+            // a complete conversation fragment every time.
+            val chunkSummaries = mutableListOf<String>()
+            for ((idx, chunk) in chunks.withIndex()) {
+                if (chunk.isEmpty()) continue
+                _compactProgress.value = (_compactProgress.value ?: com.openminis.app.data.CompactProgress(
+                    startMs = System.currentTimeMillis()
+                )).copy(
+                    phase = com.openminis.app.data.CompactPhase.SUMMARIZING,
+                    chunkIndex = idx + 1,
+                    percent = idx * 100 / chunks.size,
+                )
+                AppLogger.info(TAG, "[Compact] Summarizing chunk ${idx + 1}/${chunks.size} (${chunk.size} msgs)")
+                val s = generateCompactSummaryWithSplitting(chunk, null, depth + 1)
+                if (s.isBlank()) {
+                    AppLogger.warn(TAG, "[Compact] Empty summary for chunk ${idx + 1}; aborting split")
+                    throw e
+                }
+                chunkSummaries.add(s)
+            }
+            // Merge all chunk summaries into one final summary.
             val mergeInput = buildString {
                 append("Merge these partial summaries into a single cohesive context summary. ")
                 append("Frame everything as past events (what was asked, what was done) rather than as ")
                 append("ongoing goals or todos — the user's next message will set the current task.\n\n")
                 append("MUST PRESERVE:\n")
                 append("- What was done and what was tried, with outcomes (record as past events)\n")
-                append("- Concrete work products from BOTH parts: files created/edited (path + what changed), commits, tests run and results, artifacts built — never collapse real work into a vague phrase or drop it as \"nothing was done\"\n")
+                append("- Concrete work products from ALL parts: files created/edited (path + what changed), commits, tests run and results, artifacts built — never collapse real work into a vague phrase or drop it as \"nothing was done\"\n")
                 append("- The last thing the user requested in this conversation, and how it was handled\n")
                 append("- All file paths, identifiers, URLs — copy verbatim\n")
                 append("- Decisions made and their rationale\n")
                 append("- Constraints, rules, and user preferences mentioned\n\n")
                 append("Do NOT carry forward \"pending\" or \"todo\" lists that imply standing work — if the user ")
                 append("still wants those, they will say so in their next message.\n\n")
-                append("PRIORITIZE Part 2 (more recent) over Part 1 (older) when space is tight — but completed work from Part 1 is a fact that must survive the merge, not filler to trim.\n\n")
-                append("Part 1:\n").append(summary1).append("\n\n")
-                append("Part 2:\n").append(summary2)
+                append("PRIORITIZE the LATEST chunk (most recent) over earlier chunks when space is tight — but completed work from earlier chunks is a fact that must survive the merge, not filler to trim.\n\n")
+                for ((idx, s) in chunkSummaries.withIndex()) {
+                    append("Part ${idx + 1}:\n").append(s).append("\n\n")
+                }
             }
             generateCompactSummary(mergeInput)
         }
+    }
+
+    /**
+     * [T-compact-safe-split] Estimate the conversation size in characters.
+     * Counts `content` + every text-bearing content part. Image/audio bytes
+     * are estimated as a small fixed cost because they get elided to a
+     * placeholder string by the image budget before reaching the compact
+     * transcript builder.
+     */
+    private fun estimateChatChars(messages: List<LLMMessage>): Long {
+        var total = 0L
+        for (msg in messages) {
+            total += msg.content.length
+            for (part in msg.contentParts) {
+                total += when (part) {
+                    is com.openminis.app.data.model.AgentContentPart.Text -> part.text.length
+                    is com.openminis.app.data.model.AgentContentPart.ToolUse -> part.input.toString().length + 100
+                    is com.openminis.app.data.model.AgentContentPart.ToolResult -> part.content.length + 100
+                    is com.openminis.app.data.model.AgentContentPart.ImageData -> 1000
+                }
+            }
+            total += msg.imageParts.size * 1000L
+            total += msg.audioParts.size * 500L
+            total += 50  // role + tag overhead
+        }
+        return total
+    }
+
+    /**
+     * [T-compact-safe-split] Decide how many chunks the transcript needs.
+     * Target: ~60 KB (≈15K tokens) per chunk — safely below every relay
+     * limit. Capped at 2 (no point splitting below half) and 8 (more than
+     * 8 means the chunks would be too small to summarize meaningfully).
+     */
+    private fun calculateSafeChunkCount(messages: List<LLMMessage>): Int {
+        val totalChars = estimateChatChars(messages)
+        val target = 60_000L
+        val n = (totalChars / target).toInt() + 1
+        return n.coerceIn(2, 8)
+    }
+
+    /**
+     * [T-compact-safe-split] Whether [msg] is a "real" user turn a split can
+     * land BEFORE — i.e., an actual user instruction, not a tool_result
+     * carrier. A USER-typed message whose contentParts are ALL ToolResult
+     * (with no Text part) is just the agent loop wrapping up a tool call
+     * — it's context the summarizer already saw, not a fresh user
+     * instruction. Splitting before it leaves the previous chunk ending
+     * on a tool_call and the next one opening on an orphan tool_result;
+     * the produced summaries come out "twitchy" when re-glued for the
+     * merge. Live failure 2026-09-14 was exactly this.
+     */
+
+    internal fun isRealUserTurn(msg: LLMMessage): Boolean {
+        if (msg.role != LLMMessage.Role.USER) return false
+        val parts = msg.contentParts
+        // All parts are ToolResult → not a real user turn, it's the agent
+        // loop wrapping a tool response. Empty parts list means "no
+        // structure" — fall through to the content check.
+        if (parts.isNotEmpty() && parts.all { it is com.openminis.app.data.model.AgentContentPart.ToolResult }) {
+            return false
+        }
+        // Any non-ToolResult part (or text content) marks a real user turn.
+        return msg.content.isNotBlank() ||
+            parts.any { it is com.openminis.app.data.model.AgentContentPart.Text }
+    }
+
+    /**
+     * [T-compact-safe-split] Indices in [messages] that are SAFE cut points.
+     * A safe cut is BEFORE a real user turn — after the previous tool result
+     * / assistant response has fully resolved. Cutting here never orphans a
+     * tool_call or tool_result: the previous chunk ends with a complete
+     * assistant turn (or a properly-paired tool result), the next chunk
+     * starts with the user's new instruction.
+     *
+     * Index 0 is always safe (start of the conversation). If the entire
+     * conversation has NO real user turn between the start and end, the
+     * caller must give up — splitting mid-tool-call is the bug we're fixing.
+     */
+
+    internal fun findSafeSplitPoints(messages: List<LLMMessage>): List<Int> {
+        val safe = mutableListOf<Int>()
+        safe.add(0)
+        for (i in 1 until messages.size) {
+            if (isRealUserTurn(messages[i])) safe.add(i)
+        }
+        return safe
+    }
+
+    /**
+     * [T-compact-safe-split] Distribute the conversation into [n] chunks
+     * separated ONLY at safe user-turn boundaries. Falls back to fewer
+     * chunks if the safe-points search doesn't yield enough boundaries for
+     * the requested split count — better to give up the extra chunks than
+     * to create a twitchy cut mid-tool-call. Never produces a 1-chunk
+     * fallback on a multi-message input unless every message is in the
+     * middle of a tool sequence (the caller already excludes this).
+     */
+
+    internal fun splitAtSafeUserTurns(
+        messages: List<LLMMessage>,
+        n: Int,
+    ): List<List<LLMMessage>> {
+        if (n <= 1) return listOf(messages)
+        if (messages.size < n * 2) {
+            // Not enough messages for a meaningful n-way split — fall back
+            // to fewer chunks (at most messages/2).
+            val adjustedN = (messages.size / 2).coerceAtLeast(2)
+            return splitAtSafeUserTurns(messages, adjustedN)
+        }
+        val safePoints = findSafeSplitPoints(messages)
+        // safePoints.length includes 0; safe cut points between chunks = safePoints.length - 1
+        if (safePoints.size < n + 1) {
+            // Not enough safe boundaries for a clean n-way split. Reduce n
+            // to whatever we can do safely.
+            val adjustedN = (safePoints.size - 1).coerceAtLeast(2)
+            return splitAtSafeUserTurns(messages, adjustedN)
+        }
+        // Pick n-1 split points evenly distributed across safePoints[1..last].
+        val boundaryCount = n - 1
+        val splits = mutableListOf<Int>()
+        for (i in 1..boundaryCount) {
+            // Pick safe point roughly at position (i / (boundaryCount+1)) of the range
+            val safeIdx = ((i.toDouble() / (boundaryCount + 1)) * (safePoints.size - 1)).toInt() + 1
+            val actualIdx = safeIdx.coerceIn(1, safePoints.size - 1)
+            splits.add(safePoints[actualIdx])
+        }
+        val chunks = mutableListOf<List<LLMMessage>>()
+        var start = 0
+        for (splitIdx in splits) {
+            if (splitIdx > start && splitIdx <= messages.size) {
+                chunks.add(messages.subList(start, splitIdx).toList())
+                start = splitIdx
+            }
+        }
+        // Tail chunk
+        if (start < messages.size) {
+            chunks.add(messages.subList(start, messages.size).toList())
+        }
+        // Deduplicate empty chunks from defensive safeIdx coercion
+        return chunks.filter { it.isNotEmpty() }
     }
 
     /**
