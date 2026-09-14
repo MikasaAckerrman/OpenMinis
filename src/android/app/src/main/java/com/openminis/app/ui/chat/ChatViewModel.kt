@@ -3460,7 +3460,7 @@ class ChatViewModel(
             // split mid-tool_result pair) and giving up. Give up — the old
             // mid-cut created the twitchy-context bug we are fixing.
             if (chunks.size <= 1) {
-                AppLogger.warn(TAG, "[Compact] No safe split points found at depth=$depth; cannot split further without creating orphan tool_results. Re-throwing.")
+                AppLogger.warning(TAG, "[Compact] No safe split points found at depth=$depth; cannot split further without creating orphan tool_results. Re-throwing.")
                 throw e
             }
             AppLogger.info(
@@ -3493,7 +3493,7 @@ class ChatViewModel(
                 AppLogger.info(TAG, "[Compact] Summarizing chunk ${idx + 1}/${chunks.size} (${chunk.size} msgs)")
                 val s = generateCompactSummaryWithSplitting(chunk, null, depth + 1)
                 if (s.isBlank()) {
-                    AppLogger.warn(TAG, "[Compact] Empty summary for chunk ${idx + 1}; aborting split")
+                    AppLogger.warning(TAG, "[Compact] Empty summary for chunk ${idx + 1}; aborting split")
                     throw e
                 }
                 chunkSummaries.add(s)
