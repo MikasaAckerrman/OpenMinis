@@ -3427,7 +3427,7 @@ class ChatViewModel(
                 com.openminis.app.provider.ContentFilterDetection.isContentFilterRejection(msg) &&
                     messages.size >= 2
             val worthSplitting = isContextTooLargeError(e) ||
-                TransportErrorClassifier.isVagueTransportFailure(msg) ||
+                com.openminis.app.data.TransportErrorClassifier.isVagueTransportFailure(msg) ||
                 contentFilteredWhenSplittable
             // [T-compact-sequence-2] Depth was 3; raised to 6 so the recursive
             // halving can reach sessions where one chunk still trips the
