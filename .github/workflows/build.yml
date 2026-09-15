@@ -45,9 +45,20 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
-          api-level: 36
-          ndk-version: r28c
-          build-tools: 36.0.0
+          # setup-android@v3 has NO api-level / ndk-version / build-tools inputs
+          # — those three lines were silently ignored since the day they were
+          # added (the "Unexpected input(s)" warning predates this change). The
+          # step's only real effect was installing its default
+          # `packages: tools platform-tools`. Google has since pulled the legacy
+          # `tools` package from the SDK repository, so `sdkmanager tools` now
+          # hard-fails with "Failed to find package 'tools'" and the whole job
+          # died BEFORE the unit-test gate could even run.
+          #
+          # Pin the package list to platform-tools (which still exists). AGP
+          # auto-provisions platforms;android-XX, build-tools and the NDK during
+          # :app:assemble — exactly as it already did on every previously green
+          # run, which never had ndk/build-tools in `packages` either.
+          packages: platform-tools
 
       - name: Cache Gradle
         uses: actions/cache@v4
