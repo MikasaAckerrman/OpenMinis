@@ -2880,6 +2880,16 @@ class OpenAIProvider private constructor(
                     com.openminis.app.provider.QuotaErrorDetection.describe(body)
                 )
             }
+            // [T-gateway-downtime-as-transient] A 401 whose body blames the
+            // GATEWAY ("temporarily unavailable"), not the key, is the relay's
+            // upstream dying — retryable, not a credential problem.
+            // See GatewayDowntimeDetection.
+            if (com.openminis.app.provider.GatewayDowntimeDetection.isDowntimeFailure(body)) {
+                return LLMError.TransientError(
+                    "Сервис временно недоступен (не из-за ключа): " +
+                        com.openminis.app.provider.GatewayDowntimeDetection.describe(body)
+                )
+            }
             return LLMError.InvalidApiKey()
         }
         if (statusCode == 429) {

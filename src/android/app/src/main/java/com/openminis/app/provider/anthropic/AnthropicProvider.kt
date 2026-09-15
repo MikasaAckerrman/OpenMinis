@@ -1121,6 +1121,17 @@ class AnthropicProvider(
                     com.openminis.app.provider.QuotaErrorDetection.describe(body)
                 )
             }
+            // [T-gateway-downtime-as-transient] A 401 whose body blames the
+            // GATEWAY ("temporarily unavailable"), not the key, is the relay's
+            // upstream dying — not the user's credential. Surface it as a
+            // retryable TransientError so Minis does not tell them to fix a key
+            // that works. See GatewayDowntimeDetection.
+            if (com.openminis.app.provider.GatewayDowntimeDetection.isDowntimeFailure(body)) {
+                return LLMError.TransientError(
+                    "Сервис временно недоступен (не из-за ключа): " +
+                        com.openminis.app.provider.GatewayDowntimeDetection.describe(body)
+                )
+            }
             return LLMError.InvalidApiKey()
         }
         if (statusCode == 429) {

@@ -127,6 +127,7 @@ jobs:
             --tests 'com.openminis.app.ui.chat.ResidentEvictionPolicyTest' \
             --tests 'com.openminis.app.ui.chat.VmCacheLruTest' \
             --tests 'com.openminis.app.provider.QuotaErrorDetectionTest' \
+            --tests 'com.openminis.app.provider.GatewayDowntimeDetectionTest' \
             --tests 'com.openminis.app.provider.AnthropicProviderTest' \
             --tests 'com.openminis.app.provider.ContentFilterDetectionTest' \
             --tests 'com.openminis.app.tools.AgentSystemPromptStoreTest' \
