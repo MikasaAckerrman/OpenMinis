@@ -623,4 +623,23 @@ class AnthropicProviderTest {
         // Sanity: the OAuth mimicry betas we DO expect are still present.
         assertTrue("oauth beta present", beta.contains("oauth-2025-04-20"))
     }
+
+    // -- [T-anthropic-oauth-prompt-guard] ------------------------------------
+
+    @Test
+    fun `API-key request never reads the OAuth identifier prompt`() {
+        // The public mirror builds with an EMPTY ANTHROPIC_OAUTH_IDENTIFIER_PROMPT
+        // and the getter throws on read by design. `resolveSystemPrompt` used to
+        // read it before branching on isOAuth, so every API-key Anthropic request
+        // (including custom-base relays) died with
+        // "ANTHROPIC_OAUTH_IDENTIFIER_PROMPT is not configured". The provider in
+        // setUp() is isOAuth=false, so this call must not throw and must carry
+        // only the user's own system block.
+        val system = provider.resolveSystemPrompt("You are helpful")
+
+        assertNotNull("API-key path must still emit the user system block", system)
+        assertEquals(1, system!!.length())
+        assertEquals("You are helpful", system.getJSONObject(0).getString("text"))
+        assertNull(provider.resolveSystemPrompt(null))
+    }
 }

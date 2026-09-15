@@ -335,8 +335,17 @@ class AnthropicProvider(
      *   Returns null when the prompt is null/empty (iOS parity — no empty `system` field).
      */
     internal fun resolveSystemPrompt(userPrompt: String?): JSONArray? {
-        val claudeCodePrefix = com.openminis.app.auth.ClaudeOAuthManager.ANTHROPIC_OAUTH_IDENTIFIER_PROMPT
+        // [T-anthropic-oauth-prompt-guard] The OAuth identifier getter THROWS when
+        // the build was not customized (public mirror ships an empty
+        // ANTHROPIC_OAUTH_IDENTIFIER_PROMPT), so it may only be read on the path
+        // that actually needs it. Reading it eagerly here — before the isOAuth
+        // branch — aborted EVERY Anthropic request built from a mirror APK,
+        // including plain API-key providers on a custom base URL (any relay): the
+        // throw escaped `sendMessage`, surfaced as an LLMError and killed both
+        // chat sends and `minis-model-use`. The five ChatViewModel call sites
+        // already guard behind `isOAuth == true`; this was the one that did not.
         if (isOAuth) {
+            val claudeCodePrefix = com.openminis.app.auth.ClaudeOAuthManager.ANTHROPIC_OAUTH_IDENTIFIER_PROMPT
             // Strip the prefix if the caller already prepended it; the tail is the real user prompt.
             val tail = when {
                 userPrompt == null -> ""
