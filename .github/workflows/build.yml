@@ -3,7 +3,12 @@ name: Build APK
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    # `actions:write` is not granted to the PAT that drives this repo, so
+    # workflow_dispatch cannot be called from tooling — a push is the only way
+    # to get a tree in front of the unit-test gate. Fix branches therefore
+    # trigger the same gate as main. The job still self-limits via the
+    # `[quick]` marker below, so quiet branches stay quiet.
+    branches: [main, 'fix/**', 'feat/**']
     # Trigger on [quick] marker in commit message
     #
     # NOTE: `paths-ignore` also filters out commits that touch NO files at all,
@@ -70,9 +75,6 @@ jobs:
       #
       # Scoped to the agent/offload suites on purpose. Turning the gate on
       # revealed 39 tests that were already red before this step existed:
-      #   AnthropicProviderTest  24 — every case dies in resolveSystemPrompt on
-      #       "ANTHROPIC_OAUTH_IDENTIFIER_PROMPT is not configured", because
-      #       app/provider-customization.properties is gitignored and absent in CI
       #   OpenAIProviderTest     11 — TransientError "Server returned an empty
       #       response" against MockWebServer
       #   TerminalSanitizerTest   4 — real behaviour gap: CR folding drops the
@@ -114,6 +116,7 @@ jobs:
             --tests 'com.openminis.app.ui.chat.ResidentEvictionPolicyTest' \
             --tests 'com.openminis.app.ui.chat.VmCacheLruTest' \
             --tests 'com.openminis.app.provider.QuotaErrorDetectionTest' \
+            --tests 'com.openminis.app.provider.AnthropicProviderTest' \
             --tests 'com.openminis.app.provider.ContentFilterDetectionTest' \
             --tests 'com.openminis.app.tools.AgentSystemPromptStoreTest' \
             --tests 'com.openminis.app.tools.AgentWorkerPromptTest' \
