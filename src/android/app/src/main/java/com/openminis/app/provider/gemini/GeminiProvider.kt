@@ -45,6 +45,8 @@ import com.openminis.app.provider.failOnSilentEmptyCompletion
 // latency and large agent-history uploads, breaking turns.
 private const val GEMINI_STREAM_TTFB_TIMEOUT_MS = 120_000L
 
+private const val REQUEST_BUDGET_PROTECT_TURNS = 24
+
 class GeminiProvider(
     private val apiKey: String,
     override var model: LLMModel = LLMModel.gemini25Flash,
@@ -246,11 +248,45 @@ class GeminiProvider(
         // LLMProvider.streamMessage/sendMessage before reaching here.
         thinkingLevel: ThinkingLevel = ThinkingLevel.OFF,
     ): JSONObject {
+        // [T-gemini-request-budget] The Gemini path had NO byte gates at all —
+        // no RequestBudget elision, no ImageBudget ladder — while the OpenAI
+        // and Anthropic paths grew both. A Gemini-native model (the compaction
+        // ladder includes gemini-flash; any user model routed here) sent
+        // unlimited bodies: inline b64 screenshots, fat tool_results, oversized
+        // transcripts — the exact «запрос отклонен шлюзом» /
+        // sensitive_words-in-disguise failure fixed elsewhere on 2026-09-09.
+        // Same two-layer gate here now: elision pass + compression ladder.
+        // [T-overhead-visible] systemInstruction + tool schemas + legacy
+        // imageParts share this body — they count against the ceiling too.
+        val overhead = com.openminis.app.data.RequestBudget.estimateOverheadBytes(
+            systemPrompt = systemPrompt,
+            toolsJsonBytes = tools.sumOf { it.toGeminiJson().toString().toByteArray().size },
+            legacyImageParts = imageParts,
+        )
+        val budgeted = com.openminis.app.data.RequestBudget.plan(
+            messages = messages,
+            protectRecentUserTextTurns = REQUEST_BUDGET_PROTECT_TURNS,
+            overheadBytes = overhead,
+        )
+        if (budgeted.elidedToolResultCount > 0 || budgeted.elidedImageCount > 0) {
+            com.openminis.app.logging.AppLogger.info(
+                "GeminiProvider",
+                "[RequestBudget] elided ${budgeted.elidedToolResultCount} oversize tool_result(s) + " +
+                    "${budgeted.elidedImageCount} old image(s): " +
+                    "${budgeted.bytesBefore}B + ${overhead}B overhead → ${budgeted.bytesAfter}B + overhead " +
+                    "(ceiling ${com.openminis.app.data.RequestBudget.DEFAULT_MAX_BODY_BYTES}B)",
+            )
+        }
+        val safeMessages = if (budgeted.totalAfter > com.openminis.app.data.RequestBudget.DEFAULT_MAX_BODY_BYTES) {
+            com.openminis.app.provider.ImageBudget.compressHistoryImagesUnderBudget(budgeted.messages)
+        } else {
+            budgeted.messages
+        }
         val body = JSONObject()
 
         val contents = JSONArray()
-        val lastUserIndex = messages.indexOfLast { it.role == LLMMessage.Role.USER }
-        for ((index, msg) in messages.withIndex()) {
+        val lastUserIndex = safeMessages.indexOfLast { it.role == LLMMessage.Role.USER }
+        for ((index, msg) in safeMessages.withIndex()) {
             val role = if (msg.role == LLMMessage.Role.USER) "user" else "model"
             val content = JSONObject()
             content.put("role", role)
