@@ -234,7 +234,13 @@ class RequestBudgetTest {
         val r = RequestBudget.plan(msgs, protectRecentUserTextTurns = 6, maxBodyBytes = 300_000)
         assertTrue("fixture over ceiling", before > 300_000)
         assertTrue("an image was elided", r.elidedImageCount > 0)
-        assertTrue("body fits after elision", r.bytesAfter <= 300_000)
+        // The shielded current image + shielded pad tool_result legitimately
+        // remain — the provider's compression ladder finishes those. What the
+        // gate OWNS here is reclaiming the old image's ~667 KB of b64.
+        assertTrue(
+            "old image reclaimed (before=$before after=${r.bytesAfter})",
+            before - r.bytesAfter > 600_000,
+        )
         // The current-turn image (inside the image shield) is untouched.
         val currentImages = r.messages.last().contentParts
             .filterIsInstance<AgentContentPart.ImageData>()
@@ -272,12 +278,15 @@ class RequestBudgetTest {
     fun `image inside the freshest 3 turns is never elided even when huge`() {
         val bigPng = ByteArray(800_000) { 'w'.code.toByte() }
         val msgs = ArrayList<LLMMessage>()
+        // old fat tool_result, then ENOUGH fresh turns that the 6-turn tool
+        // shield boundary lands BEFORE it (fewer turns than the shield would
+        // protect everything — documented semantics).
+        msgs.add(user("q")); msgs.add(asstToolUse("t0")); msgs.add(userToolResult("t0", 400_000))
+        for (n in 1..4) msgs.add(user("filler $n"))
         for (n in 1..2) msgs.add(user("fresh $n"))
         // current turn carries a fat image
         msgs.add(LLMMessage(LLMMessage.Role.USER, "see", contentParts =
             listOf(AgentContentPart.ImageData(bigPng, "image/png"))))
-        // old fat tool_result to force the gate open
-        msgs.add(0, user("q")); msgs.add(1, asstToolUse("t0")); msgs.add(2, userToolResult("t0", 400_000))
 
         val r = RequestBudget.plan(msgs, protectRecentUserTextTurns = 6, maxBodyBytes = 300_000)
         assertEquals("current image not elided", 0, r.elidedImageCount)
@@ -285,5 +294,67 @@ class RequestBudgetTest {
             .filterIsInstance<AgentContentPart.ImageData>()
         assertEquals("image bytes still inline", 1, kept.size)
         assertTrue("old tool result was elided instead", r.elidedToolResultCount > 0)
+    }
+
+    // ── [T-overhead-visible] system prompt + tools + legacy parts count ────
+
+    /**
+     * A 60 KB system prompt made the old "fits" verdict a lie: parts could
+     * pass 900 KB alone while the REAL body (parts + systemInstruction +
+     * tool schemas) blew the relay limit. The ceiling must cover the whole
+     * body.
+     */
+    @Test
+    fun `overhead pushes an otherwise-fitting body over and forces elision`() {
+        val msgs = ArrayList<LLMMessage>()
+        msgs.add(user("q")); msgs.add(asstToolUse("t0"))
+        msgs.add(userToolResult("t0", 800_000)) // 800 KB parts — fits alone
+        for (n in 1..7) msgs.add(user("fresh $n"))
+
+        val alone = RequestBudget.plan(msgs, protectRecentUserTextTurns = 6, maxBodyBytes = 900_000)
+        assertEquals("parts alone fit: no elision", 0, alone.elidedToolResultCount)
+
+        val withOverhead = RequestBudget.plan(
+            msgs, protectRecentUserTextTurns = 6, maxBodyBytes = 900_000,
+            overheadBytes = 200_000, // system prompt + schemas
+        )
+        assertTrue("overhead forces elision", withOverhead.elidedToolResultCount > 0)
+        assertTrue(
+            "parts now fit under ceiling-minus-overhead",
+            withOverhead.bytesAfter + 200_000 <= 900_000,
+        )
+        assertEquals("totalAfter = parts + overhead", withOverhead.bytesAfter + 200_000, withOverhead.totalAfter)
+    }
+
+    @Test
+    fun `overhead larger than ceiling floors the target instead of no-op`() {
+        val msgs = ArrayList<LLMMessage>()
+        msgs.add(user("q")); msgs.add(asstToolUse("t0"))
+        msgs.add(userToolResult("t0", 400_000))
+        for (n in 1..7) msgs.add(user("fresh $n"))
+
+        val r = RequestBudget.plan(
+            msgs, protectRecentUserTextTurns = 6, maxBodyBytes = 900_000,
+            overheadBytes = 950_000, // system prompt ALONE exceeds the ceiling
+        )
+        // Elision still ran toward the 64 KB floor — it must not silently
+        // give up because (ceiling - overhead) went negative.
+        assertTrue("elision still reclaims", r.elidedToolResultCount > 0)
+        assertTrue(
+            "parts squeezed to the floor",
+            r.bytesAfter <= RequestBudget.MIN_EFFECTIVE_BODY_BYTES + 10_000,
+        )
+    }
+
+    @Test
+    fun `small overhead does not disturb a fitting body`() {
+        val msgs = ArrayList<LLMMessage>()
+        msgs.add(user("q")); msgs.add(userToolResult("t0", 5_000)); msgs.add(user("fresh"))
+        val r = RequestBudget.plan(
+            msgs, protectRecentUserTextTurns = 6, maxBodyBytes = 900_000,
+            overheadBytes = 20_000,
+        )
+        assertEquals("no elision needed", 0, r.elidedToolResultCount)
+        assertEquals("bytes echoed", r.bytesAfter + 20_000, r.totalAfter)
     }
 }
