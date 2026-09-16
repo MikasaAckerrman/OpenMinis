@@ -11,6 +11,7 @@ import com.openminis.app.data.model.LLMResponse
 import com.openminis.app.data.model.LLMStreamChunk
 import com.openminis.app.data.model.LLMUsage
 import com.openminis.app.data.model.ThinkingLevel
+import com.openminis.app.provider.ImageBudget
 import com.openminis.app.provider.LLMProvider
 import com.openminis.app.provider.applyUserAgentOverride
 import com.openminis.app.provider.safeOptString
@@ -2464,12 +2465,12 @@ class OpenAIProvider private constructor(
         // [T-request-byte-budget] Same provider-boundary byte gate as
         // buildRequestBody — the Responses API path serializes the same history
         // and is just as exposed to oversize tool_result bloat.
-        // [T-overhead-visible] system prompt + tool schemas + legacy imageParts
-        // share this body — they count against the ceiling too.
+        // [T-overhead-visible] system prompt + tool schemas share this body —
+        // they count against the ceiling too. (This path has no legacy
+        // imageParts parameter — attachments ride in contentParts here.)
         val overhead = com.openminis.app.data.RequestBudget.estimateOverheadBytes(
             systemPrompt = systemPrompt,
             toolsJsonBytes = tools.sumOf { it.toOpenAIJson().toString().toByteArray().size },
-            legacyImageParts = imageParts,
         )
         val budgeted = com.openminis.app.data.RequestBudget.plan(
             messages = messages,
