@@ -72,6 +72,8 @@ fun MCPIntegrationsScreen(
     // "insert app var" picker ($$VAR references resolve at runtime in PRoot).
     // Null when the caller hasn't wired it — the picker affordance hides.
     envVarRepository: com.openminis.app.data.repository.EnvVarRepository? = null,
+    /** Optional nav to Telegram MCP access-control screen. Restored from 7a6d233. */
+    onTelegramAccessControl: (() -> Unit)? = null,
 ) {
     val servers by mcpRepository.servers.collectAsState()
 
