@@ -27,6 +27,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -35,8 +36,6 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -54,6 +53,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.openminis.app.R
 import com.openminis.app.data.repository.MCPRepository
+import com.openminis.app.data.repository.MCPPresets
 import com.openminis.app.ui.components.DialogTextField
 import com.openminis.app.ui.components.MinisTextButton
 
@@ -72,9 +72,6 @@ fun MCPIntegrationsScreen(
     // "insert app var" picker ($$VAR references resolve at runtime in PRoot).
     // Null when the caller hasn't wired it — the picker affordance hides.
     envVarRepository: com.openminis.app.data.repository.EnvVarRepository? = null,
-    // [T-tg-whitelist] Navigation to Telegram access-control screen.
-    // Shown only when editing a server with id == "telegram".
-    onTelegramAccessControl: (() -> Unit)? = null,
 ) {
     val servers by mcpRepository.servers.collectAsState()
 
@@ -185,7 +182,6 @@ fun MCPIntegrationsScreen(
                 editServer = null
                 deleteId = server.id
             },
-            onTelegramAccessControl = onTelegramAccessControl,
         )
     }
 
@@ -223,7 +219,6 @@ private fun MCPAddSheet(
     editServer: MCPRepository.MCPServerConfig?,
     onDismiss: () -> Unit,
     onRequestDelete: () -> Unit,
-    onTelegramAccessControl: (() -> Unit)? = null,
 ) {
     // [T-android-mcp-sheet-ime-occlusion] GH#44: skipPartiallyExpanded so the
     // sheet opens full-height — at half-height the soft keyboard left no room
@@ -261,20 +256,6 @@ private fun MCPAddSheet(
                         Text(stringResource(R.string.mcp_tab_import), modifier = Modifier.padding(12.dp))
                     }
                 }
-            }
-
-            // [T-tg-whitelist] Telegram access-control entry point.
-            if (isEdit && editServer?.id == "telegram" && onTelegramAccessControl != null) {
-                TextButton(
-                    onClick = {
-                        onDismiss()
-                        onTelegramAccessControl()
-                    },
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                ) {
-                    Text(stringResource(R.string.tg_whitelist_access_control))
-                }
-                HorizontalDivider()
             }
 
             if (isEdit || selectedTab == 0) {
@@ -1000,4 +981,86 @@ private fun parseKeyValueLines(text: String, sep: Char): Map<String, String> {
         if (key.isNotEmpty()) out[key] = value
     }
     return out
+
+
+/**
+ * Bottom sheet listing built-in MCP presets (Google Workspace, Notion, etc.).
+ * Tapping a preset returns it via [onPick] — the caller fills the form with
+ * preset.command/args/auth endpoints; user only provides client_id/secret.
+ *
+ * Shown only when [editServer] is null (creating a new entry).
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MCPPresetPicker(
+    onPick: (MCPPresets.Preset) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 8.dp)
+                .padding(bottom = 32.dp)
+                .navigationBarsPadding(),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                "Готовые пресеты",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
+            Text(
+                "Один тап — подставятся command, args и OAuth endpoints. Останется ввести client_id и secret.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 12.dp),
+            )
+            MCPPresets.all.forEach { preset ->
+                Surface(
+                    onClick = {
+                        onPick(preset)
+                        onDismiss()
+                    },
+                    shape = MaterialTheme.shapes.medium,
+                    tonalElevation = 1.dp,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                preset.displayName,
+                                style = MaterialTheme.typography.bodyLarge,
+                                modifier = Modifier.weight(1f),
+                            )
+                            if (preset.url == null && preset.command != null) {
+                                Icon(
+                                    Icons.Outlined.Terminal,
+                                    contentDescription = "STDIO",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(14.dp),
+                                )
+                            } else if (preset.url != null) {
+                                Icon(
+                                    Icons.Outlined.Language,
+                                    contentDescription = "HTTP",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(14.dp),
+                                )
+                            }
+                        }
+                        Text(
+                            preset.description,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
 }
