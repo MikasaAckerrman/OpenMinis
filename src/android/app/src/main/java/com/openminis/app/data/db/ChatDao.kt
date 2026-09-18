@@ -6,6 +6,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.RawQuery
+import androidx.room.Transaction
 import androidx.sqlite.db.SupportSQLiteQuery
 import kotlinx.coroutines.flow.Flow
 
@@ -151,6 +152,25 @@ interface ChatDao {
     suspend fun insertMessage(message: MessageEntity)
 
     /**
+     * [T-deleted-archive-rpc] Bulk insert used by archive restore. IGNORE (not
+     * REPLACE) on conflict: a live row with the same id is newer than any
+     * archive copy of it and must win, so restoring an old batch can never
+     * clobber current history.
+     */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertMessages(messages: List<MessageEntity>)
+
+    /**
+     * Ids only — no parts_json. Used by the archive-restore path to decide which
+     * archived rows are already live. `loadMessages` would pull every blob into
+     * the CursorWindow just to read the id column, which is precisely the query
+     * shape that throws SQLiteBlobTooBigException on the sessions most likely to
+     * need a restore.
+     */
+    @Query("SELECT id FROM messages WHERE session_id = :sessionId")
+    suspend fun messageIdsForSession(sessionId: String): List<String>
+
+    /**
      * [T-android-voice-correction] User messages newer than [since] (epoch ms),
      * across every session, for typed-vocabulary mining.
      *
@@ -173,17 +193,147 @@ interface ChatDao {
     @Query("DELETE FROM messages WHERE session_id = :sessionId AND sort_order >= :keepCount")
     suspend fun deleteMessagesAfter(sessionId: String, keepCount: Int)
 
+    // ─── [T-no-destructive-retry] archive-then-delete ─────────────────────
+    //
+    // Retry / edit / rerun used to call deleteMessagesAfter directly and the
+    // truncated tail was gone forever — that is what wiped the HUD session's
+    // 17–22 Aug work when a retry anchored on a 16 Aug message. These three
+    // members turn that destructive primitive into a recoverable one WITHOUT
+    // changing what the live session sees: the rows still leave `messages`
+    // (so all 30 loadMessages readers behave exactly as before), but a
+    // verbatim copy lands in `deleted_messages` first, in the SAME
+    // transaction, so a crash between copy and delete can't lose or
+    // half-delete anything.
+
+    /** Rows that [deleteMessagesAfter] would remove — read them before the delete. */
+    @Query("SELECT * FROM messages WHERE session_id = :sessionId AND sort_order >= :keepCount ORDER BY sort_order ASC")
+    suspend fun selectMessagesAtOrAfter(sessionId: String, keepCount: Int): List<MessageEntity>
+
     /**
-     * [session-longpress-compress] Delete every message row of a session whose
-     * sort_order is STRICTLY LESS than [beforeSortOrder]. Used to permanently
-     * shrink a compacted session: after a rescue digest is written, the folded
-     * rows are no longer sent to the model (the digest replaces them), so
-     * keeping them only bloats the DB and slows session open. The anchor row
-     * itself (sort_order == beforeSortOrder) is preserved so the compact
-     * marker's boundary still resolves and the last exchange stays visible.
+     * Paged variant of [selectMessagesAtOrAfter]. Used by the archive path so a
+     * session holding an oversized tool_result cannot blow the CursorWindow
+     * mid-archive — see [archiveAndDeleteAllMessages] for the same reasoning.
      */
-    @Query("DELETE FROM messages WHERE session_id = :sessionId AND sort_order < :beforeSortOrder")
-    suspend fun deleteMessagesBefore(sessionId: String, beforeSortOrder: Int): Int
+    @Query(
+        "SELECT * FROM messages WHERE session_id = :sessionId AND sort_order >= :keepCount " +
+            "ORDER BY sort_order ASC LIMIT :limit OFFSET :offset",
+    )
+    suspend fun selectMessagesAtOrAfterPage(
+        sessionId: String,
+        keepCount: Int,
+        offset: Int,
+        limit: Int,
+    ): List<MessageEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertDeletedMessages(rows: List<DeletedMessageEntity>)
+
+    /**
+     * Archive-then-truncate: copy every row at/after [keepCount] into
+     * `deleted_messages`, then delete them from `messages`. One transaction —
+     * either both happen or neither. [reason] records which caller triggered
+     * it ("retry" | "edit" | "rerun" | "retryLast") for later restore UI.
+     *
+     * Default method (not @Query) so the two statements share a transaction;
+     * Room supports @Transaction on interface default methods.
+     */
+    @Transaction
+    suspend fun archiveAndDeleteMessagesAfter(
+        sessionId: String,
+        keepCount: Int,
+        deletedAt: Long,
+        reason: String,
+    ) {
+        // Paged for the same reason as archiveAndDeleteAllMessages: a single
+        // SELECT * over a tool-heavy tail can exceed the 2 MB CursorWindow and
+        // throw, and a throw here means the truncation silently does nothing.
+        var offset = 0
+        val page = 200
+        while (true) {
+            val batch = selectMessagesAtOrAfterPage(sessionId, keepCount, offset, page)
+            if (batch.isEmpty()) break
+            insertDeletedMessages(
+                batch.map { m -> DeletedMessageEntity.fromMessage(m, deletedAt, reason) }
+            )
+            offset += batch.size
+            if (batch.size < page) break
+        }
+        deleteMessagesAfter(sessionId, keepCount)
+    }
+
+    /**
+     * [T-archive-every-delete] Archive-then-wipe for the WHOLE session.
+     *
+     * The audit that followed the 2c7ae861 loss found three delete paths with
+     * no archive at all: clearChat, deleteSession, and single-row surgery. All
+     * three are user-confirmed, so they are legitimate — but "the user
+     * confirmed a dialog" is not the same as "the user understood that eleven
+     * days of work would become unrecoverable", and a mis-tap or a confirm on
+     * the wrong session is exactly as final as the bug was.
+     *
+     * So every row removal now leaves a recoverable copy. The archive is not a
+     * foreign-key child of `sessions`, so it deliberately OUTLIVES a session
+     * delete — that is the whole point.
+     */
+    @Transaction
+    suspend fun archiveAndDeleteAllMessages(
+        sessionId: String,
+        deletedAt: Long,
+        reason: String,
+    ) {
+        // Paged, NOT `loadMessages(sessionId)`. That raw SELECT * is exactly the
+        // query that trips SQLiteBlobTooBigException / CursorWindow on a session
+        // holding a large tool_result — the reason ChatRepository has a paginated
+        // loader at all. Inside a transaction that throw would roll the whole
+        // thing back (rows survive, which is the safe direction) but the wipe
+        // would then fail silently. Paging keeps each read small enough to
+        // succeed, so the archive is actually written.
+        var offset = 0
+        val page = 200
+        while (true) {
+            val batch = loadMessagesPage(sessionId, offset, page)
+            if (batch.isEmpty()) break
+            insertDeletedMessages(
+                batch.map { m -> DeletedMessageEntity.fromMessage(m, deletedAt, reason) }
+            )
+            offset += batch.size
+            if (batch.size < page) break
+        }
+        deleteMessages(sessionId)
+    }
+
+    /**
+     * [T-archive-every-delete] Archive-then-delete ONE row (message surgery).
+     *
+     * Returns rows removed, mirroring [deleteMessageById]. The copy is written
+     * first inside the same transaction, so a crash between the two statements
+     * cannot lose the row.
+     */
+    @Transaction
+    suspend fun archiveAndDeleteMessageById(
+        sessionId: String,
+        messageId: String,
+        deletedAt: Long,
+        reason: String,
+    ): Int {
+        val row = messageByIdInSession(sessionId, messageId)
+        if (row != null) {
+            insertDeletedMessages(listOf(DeletedMessageEntity.fromMessage(row, deletedAt, reason)))
+        }
+        return deleteMessageById(sessionId, messageId)
+    }
+
+    /** Single row lookup used by [archiveAndDeleteMessageById]. */
+    @Query("SELECT * FROM messages WHERE session_id = :sessionId AND id = :messageId LIMIT 1")
+    suspend fun messageByIdInSession(sessionId: String, messageId: String): MessageEntity?
+
+    /** Archived rows for a session, newest deletion first — backs restore UI. */
+    @Query("SELECT * FROM deleted_messages WHERE session_id = :sessionId ORDER BY deleted_at DESC, sort_order ASC")
+    suspend fun loadDeletedMessages(sessionId: String): List<DeletedMessageEntity>
+
+    /** How many archived rows a session has (cheap badge/count for restore UI). */
+    @Query("SELECT COUNT(*) FROM deleted_messages WHERE session_id = :sessionId")
+    suspend fun deletedMessageCount(sessionId: String): Int
 
     /**
      * [T-message-surgery] Delete ONE message row, leaving everything after it

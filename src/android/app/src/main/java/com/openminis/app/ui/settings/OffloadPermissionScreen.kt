@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Accessibility
+import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenuItem
@@ -143,6 +144,77 @@ fun OffloadPermissionScreen(
             // the setup walkthrough even after the manager is already ready.
             onStatusRowClick = onOpenPrivilegedBackend,
         )
+
+        // [T-browser-camera-gate] Browser camera toggle: getUserMedia()
+        // support for the built-in browser (liveness/identity checks).
+        // Video only — audio capture is never granted to a page. Both
+        // gates must hold: this toggle AND the OS CAMERA permission,
+        // requested at toggle-on time (never from a page callback).
+        // Lives HERE (not SystemPermissionsScreen) because this is the
+        // reachable "Разрешения" screen (minis://settings/permissions);
+        // the SYSTEM_PERMISSIONS route is not linked from any UI.
+        var cameraToggle by remember {
+            mutableStateOf(com.openminis.app.browser.BrowserCameraGate.isEnabled(context))
+        }
+        var cameraOsGranted by remember {
+            mutableStateOf(com.openminis.app.browser.BrowserCameraGate.hasOsPermission(context))
+        }
+        val cameraPermLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+            androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
+        ) { grants ->
+            cameraOsGranted = grants[android.Manifest.permission.CAMERA] == true ||
+                com.openminis.app.browser.BrowserCameraGate.hasOsPermission(context)
+            if (cameraOsGranted) {
+                // OS grant arrived: flip the in-app toggle on (this was a
+                // toggle-on attempt that had to stop for the OS dialog).
+                cameraToggle = true
+                com.openminis.app.browser.BrowserCameraGate.setEnabled(context, true)
+            } else {
+                android.widget.Toast.makeText(
+                    context,
+                    context.getString(R.string.browser_camera_os_denied),
+                    android.widget.Toast.LENGTH_LONG,
+                ).show()
+            }
+        }
+        SettingsSection(
+            header = stringResource(R.string.browser_camera_section),
+            footer = stringResource(R.string.browser_camera_footer),
+        ) {
+            SettingsSwitchRow(
+                icon = Icons.Outlined.PhotoCamera,
+                title = stringResource(R.string.browser_camera_toggle),
+                subtitle = stringResource(R.string.browser_camera_warning),
+                checked = cameraToggle,
+                onCheckedChange = { on ->
+                    if (!on) {
+                        cameraToggle = false
+                        com.openminis.app.browser.BrowserCameraGate.setEnabled(context, false)
+                        return@SettingsSwitchRow
+                    }
+                    // Toggle ON: needs the OS permissions too. Ask once for
+                    // camera + microphone together — liveness checks request
+                    // both (paired-audio gate); the launcher above finishes
+                    // enabling. Mic grant is optional: camera alone still
+                    // enables the toggle.
+                    if (com.openminis.app.browser.BrowserCameraGate.hasOsPermission(context)) {
+                        cameraToggle = true
+                        com.openminis.app.browser.BrowserCameraGate.setEnabled(context, true)
+                        // Camera granted but mic missing → ask for the mic
+                        // once so liveness checks don't blank out later.
+                        if (!com.openminis.app.browser.BrowserCameraGate.hasOsAudioPermission(context)) {
+                            cameraPermLauncher.launch(arrayOf(android.Manifest.permission.RECORD_AUDIO))
+                        }
+                    } else {
+                        cameraPermLauncher.launch(arrayOf(
+                            android.Manifest.permission.CAMERA,
+                            android.Manifest.permission.RECORD_AUDIO,
+                        ))
+                    }
+                },
+                showDivider = false,
+            )
+        }
 
         Spacer(Modifier.height(16.dp))
     }

@@ -157,6 +157,15 @@ class WebViewHolder(
             override fun onReceivedIcon(view: WebView?, icon: Bitmap?) {
                 if (icon != null) pageFavicon = icon
             }
+
+            // [T-browser-camera-gate] getUserMedia() support: without this
+            // override a page's camera request (liveness/identity checks)
+            // dies silently. Gate: toggle in Settings → Permissions + OS
+            // CAMERA permission; grants VIDEO only, never audio.
+            override fun onPermissionRequest(request: android.webkit.PermissionRequest?) {
+                if (request == null) return
+                com.openminis.app.browser.BrowserCameraGate.handle(request, appContext)
+            }
         }
         // T-htmlpreview-resize: sheet→fullscreen toggle, IME open/close,
         // and rotation all change the WebView's height after the page is

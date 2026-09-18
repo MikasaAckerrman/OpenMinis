@@ -39,10 +39,18 @@ object CompactRoute {
         /** Move to the next provider in the group (index into the fallback list). */
         data class NextProvider(val index: Int) : Step()
 
-        /** No LLM route left — build the summary on-device instead. */
-        object LocalDigest : Step()
-
-        /** Not a routing failure (e.g. bad request): surface it. */
+        /**
+         * No LLM route left. Surface the failure to the user instead of
+         * silently degrading to an on-device digest.
+         *
+         * [T-remove-local-compaction] The local digest used to be the terminal
+         * step here (and content-filter-with-no-backup). It was removed: a
+         * dumb on-device summary drops detail the user cannot afford to lose,
+         * and doing it silently behind a model refusal degraded sessions
+         * without consent. When every model route refuses, compaction now does
+         * NOT happen — the session stays full and the user is told which
+         * failure stranded it, so they can add a working model / retry later.
+         */
         data class Surface(val reason: String) : Step()
     }
 
@@ -56,6 +64,83 @@ object CompactRoute {
         "rate limit", "rate_limit", "429", "too many requests",
         "请求过于频繁", "请求频率",
     )
+
+    /**
+     * [T-compact-route-auth] Credential rejection: the key itself is refused,
+     * so NO request size is affordable on this provider — shrinking the
+     * summary (the quota ladder) cannot help, only a different provider with
+     * a working credential can.
+     *
+     * ## The failure this fixes
+     *
+     * Observed live: "Compaction failed: Invalid API key" stranded an
+     * oversized session even though the model group held two more models
+     * with valid keys. The send path already treats InvalidApiKey as
+     * fallbackable ([com.openminis.app.data.model.LLMError.isFallbackable]),
+     * but the compaction ladder routed it to Surface — the one tool that
+     * must not die had the weakest error handling. Relay detail: a 403 with
+     * a balance body is a QUOTA failure (see QuotaErrorDetection), while
+     * our provider mappers normalise true credential failures to
+     * "Invalid API key[: detail]" — matching that classified text (plus the
+     * raw relay spellings that leak through unmapped) is collision-free.
+     * Bare "401"/"403" substrings are deliberately NOT matched: quota
+     * pre-charge rejections share those status codes.
+     */
+    private val AUTH_MARKERS = listOf(
+        "invalid api key",
+        "invalid_api_key",
+        "incorrect api key",
+        "api key not valid",
+        "invalid x-api-key",
+        "unauthorized",
+        "not authenticated",
+        "authentication required",
+        "invalid token",
+        "token is invalid",
+    )
+
+    fun isAuthFailure(message: String): Boolean {
+        val m = message.lowercase()
+        return AUTH_MARKERS.any { m.contains(it) }
+    }
+
+    /**
+     * [T-compact-route-400] The model entry is dead on the relay: retrying the
+     * SAME id anywhere (or with a smaller budget) cannot help — only another
+     * group member can. Compaction sends just model+messages+max_tokens, so
+     * "does not exist" in this path is the model, not a stray field.
+     */
+    private val MODEL_GONE_MARKERS = listOf(
+        "model not found", "no such model", "does not exist",
+        "no longer exists", "model has been deprecated",
+        "invalid model", "unknown model", "model_deprecated",
+    )
+
+    fun isModelGone(message: String): Boolean {
+        val m = message.lowercase()
+        return MODEL_GONE_MARKERS.any { m.contains(it) }
+    }
+
+    /**
+     * [T-compact-route-400] The max_tokens VALUE was rejected as invalid for
+     * this model ("max_tokens must be at most 4096"). Semantically the same
+     * response as quota: request a smaller budget on the same model — that is
+     * exactly what the shrink ladder does. The compaction call sites used to
+     * let this 400 fall into Surface because it matched no class, killing
+     * compaction on models whose output cap is below the computed 8192.
+     */
+    private val MAX_TOKENS_VALUE_MARKERS = listOf(
+        "max_tokens must be", "max_tokens cannot", "max_tokens should be",
+        "max_tokens is greater", "max_tokens exceeds", "max_tokens: ",
+        "max_completion_tokens must be", "max_completion_tokens cannot",
+        "max_completion_tokens: ", "exceeds the maximum value",
+        "greater than the maximum",
+    )
+
+    fun isMaxTokensValueRejected(message: String): Boolean {
+        val m = message.lowercase()
+        return MAX_TOKENS_VALUE_MARKERS.any { m.contains(it) }
+    }
 
     fun isRateLimit(message: String): Boolean {
         val m = message.lowercase()
@@ -103,9 +188,26 @@ object CompactRoute {
         val rateLimited = isRateLimit(errorMessage)
         val contentFiltered = com.openminis.app.provider.ContentFilterDetection
             .isContentFilterRejection(errorMessage)
-        if (!quota && !rateLimited && !contentFiltered) return Step.Surface(errorMessage)
-        if (contentFiltered) {
-            return nextProviderIndex?.let { Step.NextProvider(it) } ?: Step.LocalDigest
+        val authRejected = isAuthFailure(errorMessage)
+        val modelGone = isModelGone(errorMessage)
+        val maxTokensRejected = isMaxTokensValueRejected(errorMessage)
+        if (!quota && !rateLimited && !contentFiltered && !authRejected &&
+            !modelGone && !maxTokensRejected
+        ) return Step.Surface(errorMessage)
+        // [T-compact-route-auth] Auth, content-filter and dead-model
+        // rejections share a route: none gets cheaper with a smaller request,
+        // so skip the shrink ladder and go straight to the next provider.
+        // Surface only when every provider has refused — the session stays
+        // intact and the user is told which failure stranded it.
+        if (contentFiltered || authRejected || modelGone) {
+            return nextProviderIndex?.let { Step.NextProvider(it) }
+                ?: Step.Surface(errorMessage)
+        }
+        // [T-compact-route-400] A rejected max_tokens VALUE is a quota-class
+        // failure: the affordable response is a smaller budget on the SAME
+        // model (shrink), then the next provider when the floor is hit.
+        if (maxTokensRejected && !rateLimited && shrinkStepsUsed < MAX_SHRINK_STEPS) {
+            shrink(currentMaxTokens)?.let { return Step.RetrySmaller(it) }
         }
 
         // Quota only: a smaller request may be affordable. Rate limit: it
@@ -114,6 +216,10 @@ object CompactRoute {
             shrink(currentMaxTokens)?.let { return Step.RetrySmaller(it) }
         }
         nextProviderIndex?.let { return Step.NextProvider(it) }
-        return Step.LocalDigest
+        // [T-remove-local-compaction] Every LLM route refused. Previously this
+        // fell back to Step.LocalDigest (an on-device summary). That fallback
+        // was removed — compaction only ever runs through a model now, so a
+        // total refusal is surfaced and the session is left intact.
+        return Step.Surface(errorMessage)
     }
 }

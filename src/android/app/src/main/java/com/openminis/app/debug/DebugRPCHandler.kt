@@ -158,6 +158,17 @@ class DebugRPCHandler(private val context: Context) {
             "chat.compact.revert" -> ChatMutationMethods.compactRevert(context, params)
             "chat.session.rescue" -> ChatMutationMethods.sessionRescue(context, params)
 
+            // [T-deleted-archive-rpc] Archive of rows removed by retry/edit.
+            "chat.deleted.list" -> DeletedMessagesMethods.list(context, params)
+            "chat.deleted.restore" -> DeletedMessagesMethods.restore(context, params)
+            // [T-mutation-journal] Always-on record of destructive DB operations.
+            "chat.journal.read" -> MutationJournalMethods.read(context, params)
+            // [T-network-journal] Always-on record of transient network failures
+            // WITH their context (concurrent streams, screen state, connectivity)
+            // and the retry outcome — the file that answers "why did the session
+            // stop with a network error".
+            "chat.network.journal" -> MutationJournalMethods.readNetwork(context, params)
+
             // Debug-only: direct CLI / offload-handler invocation (T344).
             // Registered solely on DEBUG builds so release APKs cannot expose it.
             "debug.shizuku.exec" -> {

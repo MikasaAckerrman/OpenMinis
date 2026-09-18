@@ -212,6 +212,12 @@ fun SystemPermissionsScreen(onBack: () -> Unit) {
                     },
                 )
             }
+
+            // NOTE [T-browser-camera-gate-relocation]: the browser camera
+            // toggle lives in OffloadPermissionScreen (the reachable
+            // "Разрешения" screen behind minis://settings/permissions). This
+            // screen's route (SYSTEM_PERMISSIONS) is not linked from any UI,
+            // so anything placed here is unreachable.
         }
     }
 }

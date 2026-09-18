@@ -1973,6 +1973,56 @@ class ProviderRepository(private val context: Context) {
      * - Auto-renames on label conflict
      * - Decodes base64-encoded API key (falls back to plain text)
      */
+    /**
+     * [T-provider-ux] Duplicate an existing provider instance.
+     *
+     * Implemented as export → re-import rather than a hand-written field copy.
+     * That is deliberate: the export/import pair already carries every field
+     * that matters (endpoint, appendV1, custom UA, folder, the full model list
+     * with overrides, the API key, OAuth credentials), and it is exercised by
+     * the share/import path. A separate copy routine would be a second
+     * definition of "what a provider consists of" and would silently miss any
+     * field added later — exactly the drift that makes duplicated providers
+     * behave subtly differently from the original.
+     *
+     * The API KEY is copied too. That is the point of the feature (one gateway
+     * key, several endpoint/model setups), but it means the copy is a live
+     * credential — the UI says so before asking for confirmation.
+     *
+     * @return the new instance's resolved label, or null when [instanceId] does
+     *   not exist or the round-trip failed.
+     */
+    fun duplicateInstance(instanceId: String): String? {
+        ensureConfigLoaded()
+        val json = exportInstanceJSON(instanceId) ?: return null
+        val source = instance(instanceId) ?: return null
+        // Give the copy a distinct label up front. Without this the importer's
+        // conflict resolver would produce "Label (2)", which reads like an
+        // import artifact rather than a deliberate duplicate.
+        val patched = try {
+            JSONObject(json).apply { put("label", "${source.label} copy") }.toString()
+        } catch (_: Exception) {
+            return null
+        }
+        val idsBefore = _config.value.instances.map { it.id }.toSet()
+        val newLabel = importInstanceJSON(patched) ?: return null
+        // The export format carries no `isEnabled` flag (an exported bundle is
+        // meant to arrive usable), so a copy of a DISABLED provider would come
+        // back enabled and silently start serving requests. Carry the flag over
+        // explicitly — a duplicate should differ from its source only in id and
+        // label.
+        //
+        // The new instance is identified by set difference on ids rather than by
+        // matching the label: labels are user-editable text, and resolving "which
+        // row did I just create" by comparing display strings is the kind of
+        // ordinal-style guess that caused the message-loss incident.
+        if (!source.isEnabled) {
+            val copy = _config.value.instances.firstOrNull { it.id !in idsBefore }
+            if (copy != null) updateInstance(copy.copy(isEnabled = false))
+        }
+        return newLabel
+    }
+
     fun importInstanceJSON(jsonStr: String): String? {
         ensureConfigLoaded()
         val dict = try { JSONObject(jsonStr) } catch (_: Exception) { return null }

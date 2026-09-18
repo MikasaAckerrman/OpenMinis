@@ -1,0 +1,34 @@
+name: desktop-only
+description: Оставить только десктопные карты, отбросить Ti/M/ноутбук/сервис
+rules:
+  hard_exclude_title:
+  - (?i)\b(3070|3060|4060|4070|5060|5070)\s*ti\b
+  - (?i)\b(3070|4060|5060)\s*m\b
+  - (?i)laptop
+  - (?i)ноутбук
+  - (?i)майнинг
+  - (?i)на запчасти
+  - (?i)реболл
+  - (?i)без видеовыход
+  - (?i)не работает
+  - (?i)для ремонта
+  soft_warn_title:
+  - (?i)майнинг
+  - (?i)reball
+  - (?i)для восстановления
+  price_is_range:
+    pattern: (\d[\d\s]*)\s*[\-—–]\s*(\d[\d\s]*)\s*₽
+    action: exclude
+  price_with_discount:
+    pattern: (\d[\d\s]*)\s*₽\s*(\d[\d\s]*)\s*₽\s*[−\-]\s*(\d+)\s*%
+    action: keep
+    fields:
+    - old_price
+    - new_price
+    - discount_pct
+  require_title:
+  - (?i)rtx[\s/]*\d{4}
+  - (?i)gtx[\s/]*\d{4}
+  - (?i)geforce
+  - (?i)видеокарт
+  - (?i)radeon

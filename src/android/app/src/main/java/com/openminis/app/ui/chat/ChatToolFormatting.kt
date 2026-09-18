@@ -50,6 +50,36 @@ internal fun formatStepDuration(seconds: Long, stillRunning: Boolean): String {
     return if (stillRunning) "$base…" else base
 }
 
+// [T-msg-timestamps] Wall-clock "HH:mm:ss" for the message send/finish stamps
+// shown under user bubbles and under the assistant message (IDE-agent style).
+// Seconds included on purpose — turn latency is often sub-minute, so "11:32"
+// hid the very thing the stamp is for. Device locale drives 12h/24h layout via
+// the default; the formatter is cheap to build per call (short-lived) and
+// avoids the shared mutable SimpleDateFormat threading trap.
+internal fun formatWallClock(epochMs: Long): String =
+    java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
+        .format(java.util.Date(epochMs))
+
+// [T-msg-timestamps] Pure decision for the assistant-turn FINISH stamp shown
+// under the message, split out of the composable so the branching is unit-
+// testable. Contract:
+//   finishedAtMs <= 0                 → null  (unknown; hide the stamp)
+//   duration <= 0 (restored / skew)   → "HH:mm:ss"            (finish time only)
+//   real positive live-turn duration  → "HH:mm:ss · <dur>"    (finish · elapsed)
+// The clock half is the FINISH time (when the turn ended), not the start.
+// Restored-from-DB rows have created_at written at turn END, so their computed
+// duration is ~0 → they correctly fall back to the bare finish time.
+internal fun assistantTurnFinishedLabel(createdAtMs: Long, finishedAtMs: Long): String? {
+    if (finishedAtMs <= 0L) return null
+    val finishClock = formatWallClock(finishedAtMs)
+    val durSec = if (createdAtMs > 0L) (finishedAtMs - createdAtMs) / 1000L else -1L
+    return if (durSec > 0L) {
+        "$finishClock · ${formatStepDuration(durSec, stillRunning = false)}"
+    } else {
+        finishClock
+    }
+}
+
 // Helper: tool accent color
 internal fun toolAccentColor(toolName: String): Color = when (toolName) {
     "shell_execute" -> Color(0xFF34C759)

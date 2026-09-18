@@ -19,7 +19,6 @@ import androidx.compose.material.icons.filled.Compress
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.Psychology
-import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.Extension
 import com.openminis.app.data.BPETokenizer
 import com.openminis.app.data.ContextOffload
@@ -44,6 +43,7 @@ import com.openminis.app.provider.LLMProvider
 import com.openminis.app.provider.ProviderFactory
 import com.openminis.app.provider.catalogMaxThinkingLevel
 import com.openminis.app.provider.effectiveMaxThinkingLevel
+import com.openminis.app.provider.failOnSilentEmptyCompletion
 import com.openminis.app.agent.shell.BashismDetector
 import com.openminis.app.agent.shell.BashismReminder
 import com.openminis.app.agent.shell.OnDemandBash
@@ -278,14 +278,31 @@ class ChatViewModel(
         // valve. At 6 the live thread the model saw was a summary of the
         // session's START plus six turns, with the middle hollowed out — the
         // model then answered from the summary, i.e. "as if from the beginning
-        // of the conversation". 24 keeps the working thread intact; the byte
-        // gate at the provider boundary still bounds the payload.
-        private const val COMPACT_KEEP_RECENT_USER_TURNS = 24
+        // of the conversation". The last 6 user turns (with their agent
+        // replies) stay verbatim; everything older is folded into the summary
+        // with a recency-weighted detail gradient. The byte gate at the
+        // provider boundary still bounds the payload.
+        // [T-compact-tail-vs-window] COMPACT_KEEP_RECENT_USER_TURNS removed:
+        // the protected tail is now sized per-model-window by
+        // ProtectedTail.protectedTurnsForWindow() (see compactAll and
+        // effectiveAgentHistory).
         /// Max per-tool-call retained `accumulated` JSON snapshots from
         /// `ToolInputDelta`. Drained on preflight failure for diagnosis.
         private const val TOOL_INPUT_CHUNK_RING_MAX = 10
         /** Auto-retry backoff schedule (seconds). Mirrors iOS retryDelays, scaled to task spec: 1s → 2s → 4s. */
         private val AUTO_RETRY_DELAYS_SEC = intArrayOf(1, 2, 4)
+
+        /**
+         * [T-android-dns-await] How long to wait for connectivity to return
+         * before retrying a name-resolution failure.
+         *
+         * 20s covers the realistic case this exists for — the radio waking from
+         * Doze, or a cellular/Wi-Fi handover — while still bounding a genuinely
+         * offline device so the user gets an answer instead of a hang. It is
+         * spent only on resolve failures, so ordinary transient errors keep
+         * their fast 1/2/4s ladder.
+         */
+        private const val DNS_RETRY_NETWORK_WAIT_MS = 20_000L
 
         /**
          * Max times a 429 is retried on the SAME provider (Retry-After aware)
@@ -356,7 +373,26 @@ class ChatViewModel(
 
     /** Load the previous DB page and rebuild the materialized window. */
     fun loadOlderMessages() {
-        if (!fullHistoryReady.value) {
+        // [T-send-gate-deadlock] Читает страницу из БД напрямую и НЕ зависит от
+        // полноты agentHistory.
+        // [T-load-older-degraded] Раньше здесь стояло `if (!fullHistoryReady)
+        // { requireFullSessionHistory(); return }`, и это ломало кнопку
+        // НАСОВСЕМ в состоянии DEGRADED: `fullHistoryReady` в нём остаётся
+        // false навсегда (см. loadSession — при сбое загрузки выставляется
+        // historyDegraded, а не ready), ViewModel переживает переоткрытие чата,
+        // поэтому «загрузить старые сообщения» просто ничего не делала — ни
+        // страницы, ни ошибки после первого раза. Именно то поведение, на
+        // которое жаловался пользователь.
+        //
+        // Пагинация — операция ЧТЕНИЯ: она ничего не удаляет и не считает
+        // якорей по памяти, ей нужен только `messages` в БД. Поэтому блокируем
+        // её только пока история честно ЗАГРУЖАЕТСЯ; в DEGRADED она наоборот
+        // единственный способ показать пользователю старую часть переписки.
+        val historyState = com.openminis.app.data.SendGatePolicy.stateOf(
+            fullHistoryReady = fullHistoryReady.value,
+            degraded = historyDegraded.value,
+        )
+        if (historyState == com.openminis.app.data.SendGatePolicy.HistoryState.LOADING) {
             requireFullSessionHistory()
             return
         }
@@ -390,6 +426,9 @@ class ChatViewModel(
                     rawMessages = rows,
                     historyDbIds = agentHistory.mapNotNullTo(mutableSetOf()) { it.dbMessageId },
                     allowMarkerSelfHeal = false,
+                    // [T-compact-divider-count] The divider must describe the
+                    // window we are installing, not the one still in the field.
+                    windowFromIndex = page.fromIndex,
                 )
             }
             withContext(Dispatchers.Main) {
@@ -473,6 +512,47 @@ class ChatViewModel(
         val drop = streamFlushStates.keys.filter { it !in keptIds }
         for (id in drop) streamFlushStates.remove(id)?.trailingJob?.cancel()
     }
+
+    // ─── [T-partial-turn-durability] loop → terminator export ────────────────
+    //
+    // A streamed reply used to exist ONLY in memory until the round completed
+    // (persistAssistantTurn runs at round end). Any mid-round termination —
+    // provider error, user Stop, OOM, process death — lost the whole text:
+    // a 5-minute reasoning phase followed by a 15k-line answer vanished on a
+    // single transport error because it fired before the round closed.
+    //
+    // Export points, all maintained by runAgentLoop:
+    //  - liveTurnTextSb  → the CURRENT round's StringBuilder (full fidelity;
+    //                      error finalize reads it from the SAME coroutine,
+    //                      so no torn reads; cancel falls back to snapshot)
+    //  - liveStreamTurnText → throttled String snapshot (cancel-race fallback)
+    //  - liveStreamId    → keys the crash journal file (StreamHeartbeat)
+    // Cleared at EVERY round-persist site, so "non-empty" always means
+    // "current round not yet persisted" — the exact text a terminator must
+    // commit. Earlier rounds are already their own rows; re-committing them
+    // duplicated content.
+    @Volatile private var liveTurnTextSb: StringBuilder? = null
+    @Volatile private var liveStreamTurnText: String = ""
+    @Volatile private var liveStreamId: String? = null
+
+    /** Latest current-round text for a terminator (error/cancel path). */
+    private fun currentLiveTurnText(): String =
+        runCatching { liveTurnTextSb?.toString() }.getOrNull()?.takeIf { it.isNotEmpty() }
+            ?: liveStreamTurnText
+
+    /** Crash-journal dir for the ACTIVE session (see StreamHeartbeat). */
+    private fun streamHeartbeatDir(): java.io.File = com.openminis.app.data.StreamHeartbeat.dirFor(
+        context.filesDir,
+        activeSessionId.ifEmpty { sessionId },
+    )
+
+    /** Marker appended to a turn persisted by a terminator (not round end). */
+    private val STREAM_INTERRUPTED_REMINDER =
+        "<system-reminder>The response was interrupted (error/stop). Content may be incomplete.</system-reminder>"
+
+    /** Marker for rows recovered from the crash journal after process death. */
+    private val STREAM_CRASH_RECOVERED_REMINDER =
+        "<system-reminder>The app was interrupted while this response was streaming; recovered partially from the durability journal. Content may be incomplete.</system-reminder>"
 
     // Dual-path flush thresholds — ported from iOS. Time tiers scale with total
     // length; the newline fast-path flushes immediately on a line break once
@@ -629,13 +709,93 @@ class ChatViewModel(
      *  default model name for one frame before the persisted binding settles. */
     private val sessionLoaded = MutableStateFlow(false)
     private val fullHistoryReady = MutableStateFlow(sessionId.startsWith("__new__"))
-    private fun requireFullSessionHistory(): Boolean {
-        if (fullHistoryReady.value) return true
-        appendSystemInfo(
-            text = context.getString(R.string.chat_history_still_loading),
-            iconKind = "info",
+
+    /**
+     * [T-send-gate-deadlock] Загрузка истории провалилась или была пропущена
+     * (сессия не найдена в БД, исключение, safe-mode). Отдельный флаг от
+     * [fullHistoryReady], потому что булев «готово/не готово» не различает
+     * «жди, сейчас догрузится» и «полной истории не будет никогда». Первое
+     * обязано блокировать отправку, второе — обязано её разрешить, иначе
+     * сессия становится мёртвой навсегда: ViewModel живёт в
+     * [ChatViewModelStore], и переоткрытие чата отдаёт ЭТОТ же экземпляр с
+     * закрытым гейтом, поэтому перезапуск приложения не лечил.
+     */
+    private val historyDegraded = MutableStateFlow(false)
+
+    /** Предупреждение о неполном контексте показываем один раз на сессию. */
+    private var degradedWarningShown = false
+
+    /**
+     * [T-send-gate-deadlock] Решение принимает чистая [SendGatePolicy] —
+     * см. её doc-комментарий про четыре пути в мёртвое состояние и про то,
+     * почему состояний три, а не два.
+     */
+    private fun requireFullSessionHistory(
+        operation: com.openminis.app.data.SendGatePolicy.Operation =
+            com.openminis.app.data.SendGatePolicy.Operation.SEND,
+    ): Boolean {
+        val state = com.openminis.app.data.SendGatePolicy.stateOf(
+            fullHistoryReady = fullHistoryReady.value,
+            degraded = historyDegraded.value,
         )
-        return false
+        return when (com.openminis.app.data.SendGatePolicy.decide(
+            state, degradedWarningShown, operation,
+        )) {
+            com.openminis.app.data.SendGatePolicy.Decision.ALLOW -> true
+            com.openminis.app.data.SendGatePolicy.Decision.ALLOW_WITH_WARNING -> {
+                degradedWarningShown = true
+                AppLogger.warning(
+                    TAG,
+                    "[SendGate] история сессии не загрузилась полностью — " +
+                        "отправка разрешена с неполным контекстом (сессия не блокируется)",
+                )
+                appendSystemInfo(
+                    text = context.getString(R.string.chat_history_partial_warning),
+                    iconKind = "info",
+                )
+                true
+            }
+            com.openminis.app.data.SendGatePolicy.Decision.BLOCK_UNSAFE_REWRITE -> {
+                // История неполная, а операция удаляет строки из БД по якорю,
+                // посчитанному в памяти → безвозвратная потеря. Ожидание не
+                // поможет: сообщаем это отдельным текстом, а не «загружается».
+                AppLogger.warning(
+                    TAG,
+                    "[SendGate] перезапись истории отклонена: история неполная " +
+                        "(degraded) — compact удалил бы сообщения, " +
+                        "которых нет в памяти",
+                )
+                appendSystemInfo(
+                    text = context.getString(R.string.chat_history_rewrite_unsafe),
+                    iconKind = "compact",
+                )
+                false
+            }
+            com.openminis.app.data.SendGatePolicy.Decision.BLOCK_LOADING -> {
+                // [T-send-gate-deadlock] ДИАГНОСТИКА: если баг «сообщение не
+                // отправляется» повторится, в логе будет видно ИМЕННО эту
+                // строку с флагами. Их три исхода:
+                //   1) есть эта строка и НЕТ "гейт открыт (READY)" → загрузка
+                //      не дошла до конца: причина в loadSession (наш диагноз);
+                //   2) есть "гейт открыт (READY)", а потом эта строка → гейт
+                //      закрылся ПОСЛЕ загрузки: причина в другом месте (напр.
+                //      повторный loadSession), наш диагноз неполон;
+                //   3) этой строки НЕТ вовсе, а сообщение не ушло → блокировка
+                //      не здесь: искать в send() выше гейта или в UI.
+                AppLogger.warning(
+                    TAG,
+                    "[SendGate] ОТПРАВКА ОТБИТА (история грузится) " +
+                        "session=$sessionId fullHistoryReady=${fullHistoryReady.value} " +
+                        "degraded=${historyDegraded.value} sessionLoaded=${sessionLoaded.value} " +
+                        "isDraft=$isDraft историяРазмер=${agentHistory.size}",
+                )
+                appendSystemInfo(
+                    text = context.getString(R.string.chat_history_still_loading),
+                    iconKind = "info",
+                )
+                false
+            }
+        }
     }
 
     private val _sessionTitle = MutableStateFlow("New Chat")
@@ -816,6 +976,55 @@ class ChatViewModel(
         _activeEntryId.value = entryId
         refreshAttributedContextUsage(reason)
     }
+
+    /**
+     * [T-switch-context-fit] Warn at model-switch time when the session's
+     * context no longer fits the newly selected model's window.
+     *
+     * ## The failure this fixes
+     *
+     * User report: switch model → type message → send → provider rejects with
+     * "context too large" → manual /compact → (pre-fix) compaction could die
+     * on "Invalid API key" → session stranded. The user found out about the
+     * mismatch only AFTER wasting a send. Auto-compaction is a deliberate
+     * product no (see [checkContextBeforeSend]: compaction is manual only),
+     * so the fix within that contract is timing: surface the mismatch at the
+     * moment of the switch, with concrete numbers, BEFORE the next send.
+     *
+     * Called only from user-driven switches (selectEntry / selectGroup /
+     * selectGroupEntry) — session-restore and runtime-fallback activations
+     * stay silent so app start doesn't spam warnings for oversized sessions.
+     * Reuses [ContextPolicy] tiers so the thresholds match the send-time
+     * warning exactly.
+     */
+    private fun warnContextFitAfterSwitch() {
+        val window = effectiveContextWindowTokens() ?: return
+        // Fast path: a valid provider usage sample (refreshAttributedContextUsage
+        // already zeroed it on route mismatch) is authoritative — skip the
+        // char-walk estimate, which is heavy enough to jank the UI thread this
+        // runs on. Same semantics as ContextPressure.resolve(usage, estimate):
+        // estimate is only consulted when no usage is available.
+        val usage = _lastTurnContextTokens.value
+        val tokens = if (usage > 0) usage else estimateContextTokens()
+        if (tokens <= 0) return
+        val policy = ContextPolicy.forContextWindow(window)
+        val modelName = currentModel?.displayName?.ifBlank { currentModel?.id } ?: "модель"
+        when (policy.check(tokens, window)) {
+            ContextPolicy.CheckResult.OK -> Unit
+            ContextPolicy.CheckResult.NEEDS_COMPACT -> appendSystemInfo(
+                text = "Модель переключена на $modelName. Контекст сессии ~$tokens ток. " +
+                    "при окне $window — выше порога сжатия. Следующий запрос может не уйти: " +
+                    "выполни /compact до отправки.",
+                iconKind = "compact",
+            )
+            ContextPolicy.CheckResult.EXHAUSTED -> appendSystemInfo(
+                text = "Модель переключена на $modelName. Контекст ~$tokens ток. превышает " +
+                    "окно $window, и окно слишком мало для сжатия. Начни новый чат или верни " +
+                    "модель с большим окном.",
+                iconKind = "compact",
+            )
+        }
+    }
     val lastTurnContextTokens: StateFlow<Int> = _lastTurnContextTokens.asStateFlow()
 
     /**
@@ -834,6 +1043,68 @@ class ChatViewModel(
     private val _isCompacting = MutableStateFlow(false)
     val isCompacting: StateFlow<Boolean> = _isCompacting.asStateFlow()
 
+    /**
+     * [T-compact-progress] Live state for the running/failed compact, shown
+     * as a minimal card above the composer: percent, elapsed timer, current
+     * model, route notes — and on failure the SPECIFIC error (which model
+     * answered what) with a retry button, instead of a silent wait followed
+     * by a generic "не удалось сжать". Null = no compact running and nothing
+     * failed; a failure stays until the user retries or dismisses it.
+     */
+    private val _compactProgress =
+        MutableStateFlow<com.openminis.app.data.CompactProgress?>(null)
+    val compactProgress: StateFlow<com.openminis.app.data.CompactProgress?> =
+        _compactProgress.asStateFlow()
+
+    /** Hide the compact card (dismiss a failure or a lingering state). */
+    fun dismissCompactCard() {
+        _compactProgress.value = null
+    }
+
+    /**
+     * [T-compact-progress] Terminal card state for guard rejections. The
+     * live bug: every early-return guard in compactAll() ran BEFORE the
+     * progress card was reset, so a PREVIOUS failure ("запрос отклонен
+     * шлюзом") stayed on screen while "Повторить" silently did nothing — the
+     * user read the stale error as "retry failed again". Every guard now
+     * replaces the card with the actual reason instead of leaving a lie.
+     */
+    private fun setCompactCardTerminal(reason: String) {
+        _compactProgress.value = com.openminis.app.data.CompactProgress(
+            startMs = System.currentTimeMillis(),
+            phase = com.openminis.app.data.CompactPhase.DONE,
+            percent = 100,
+            failure = com.openminis.app.data.CompactFailure(
+                attempts = emptyList(),
+                terminal = reason,
+            ),
+        )
+    }
+
+    /**
+     * [T-tail-rescue] Does this slice actually threaten the request? Two
+     * independent gates, either is enough:
+     *  - BYTES: serialized body (b64 images at wire size) approaching the
+     *    relay ceiling — the «запрос отклонен шлюзом» case;
+     *  - TOKENS: payload-honest tokens approaching the model window — the
+     *    "context window exceeded" case.
+     * [windowTokenBudget] is the ACTIVE model's window; the caller passes a
+     * derate so a tail that alone eats most of the window counts as oversized
+     * even when it technically fits.
+     */
+    private fun isHistoryOversized(
+        slice: List<LLMMessage>,
+        windowTokenBudget: Int,
+    ): Boolean {
+        if (slice.isEmpty()) return false
+        val bytes = com.openminis.app.data.RequestBudget.estimateBytes(slice)
+        if (bytes > com.openminis.app.data.RequestBudget.DEFAULT_MAX_BODY_BYTES * 9 / 10) {
+            return true
+        }
+        val tokens = slice.sumOf { estimatePayloadTokens(it) }
+        return tokens > windowTokenBudget.coerceAtLeast(1)
+    }
+
     /** Current auto-retry attempt number (0 = not retrying, 1..MAX = nth retry in flight). */
     private val _autoRetryAttempt = MutableStateFlow(0)
     val autoRetryAttempt: StateFlow<Int> = _autoRetryAttempt.asStateFlow()
@@ -841,6 +1112,14 @@ class ChatViewModel(
     /** Seconds remaining in the current auto-retry countdown (0 = not counting down). */
     private val _autoRetryCountdown = MutableStateFlow(0)
     val autoRetryCountdown: StateFlow<Int> = _autoRetryCountdown.asStateFlow()
+
+    /** [T-auto-resume] Auto-resume attempt number (0 = not resuming). */
+    private val _autoResumeAttempt = MutableStateFlow(0)
+    val autoResumeAttempt: StateFlow<Int> = _autoResumeAttempt.asStateFlow()
+
+    /** [T-auto-resume] Seconds remaining in the auto-resume countdown. */
+    private val _autoResumeCountdown = MutableStateFlow(0)
+    val autoResumeCountdown: StateFlow<Int> = _autoResumeCountdown.asStateFlow()
 
     // [T-android-stale-streamjob-clears-isstreaming] @Volatile so cross-coroutine
     // reads (the orphaned previous streamJob's tail block running on a different
@@ -1411,16 +1690,6 @@ class ChatViewModel(
             title = "Compact",
             subtitle = "",
         ),
-        // [T-session-rescue] Local hard compaction — the repair path for a
-        // session too large to reach the model at all (where /compact, being
-        // an LLM call itself, also fails). Wrench icon = repair; Compress is
-        // already taken by the normal LLM compact.
-        SlashCommand(
-            id = "rescue",
-            icon = Icons.Outlined.Build,
-            title = "Rescue",
-            subtitle = "",
-        ),
         SlashCommand(
             id = "memory",
             icon = Icons.Default.Psychology,
@@ -1491,7 +1760,6 @@ class ChatViewModel(
 
         when (cmd.id) {
             "compact" -> runCompactNow()
-            "rescue" -> rescueCompactNow()
             "memory" -> toggleMemoryEnabled()
             "thinking" -> toggleThinking()
             "clear" -> _clearChatConfirmRequested.value = true
@@ -1669,7 +1937,7 @@ class ChatViewModel(
      * back to compactAll() behaviour so the user's gesture isn't lost.
      */
     fun compactBefore(dbMessageId: String, includesBoundary: Boolean = false) {
-        if (!requireFullSessionHistory()) return
+        if (!requireFullSessionHistory(com.openminis.app.data.SendGatePolicy.Operation.REWRITE_HISTORY)) return
         AppLogger.info(
             TAG,
             "[Compact] compactBefore() id=${dbMessageId.take(8)} includesBoundary=$includesBoundary " +
@@ -1694,471 +1962,6 @@ class ChatViewModel(
         )
     }
 
-    /**
-     * [T-session-rescue] Hard, LOCAL compaction for a session that can no
-     * longer talk to the model — the "broken session" repair path.
-     *
-     * Why a separate path from [compactAll]: compactAll summarises via an LLM
-     * call whose input derives from the oversized history. Once a session is
-     * big enough to break, that call breaks too — and often not with a clean
-     * "context length exceeded" but with a dead connection or the TTFB
-     * watchdog ("no response from server"), because the request body never
-     * finishes being accepted. So the recovery tool must not need the network
-     * at all. [RescueDigest] builds the summary on-device from agentHistory.
-     *
-     * What it does:
-     *   1. builds a dense digest (user intent verbatim-ish, one-line tool
-     *      ledger, verbatim paths/URLs/hashes/errors, verbatim last exchange);
-     *   2. force-offloads every large tool payload to disk, so the bytes are
-     *      still reachable via file_read but out of the prompt;
-     *   3. writes a v2 compact marker anchored at the last persisted message,
-     *      so the existing [effectiveAgentHistory] machinery sends the digest
-     *      instead of the history — and [revertCompact] can undo it.
-     *
-     * Runs while streaming is stopped only (same guard as compactAll), but
-     * unlike compactAll it works with no provider configured and cannot fail
-     * on a network error.
-     */
-    fun rescueCompactNow() {
-        rescueCompact(
-            origin = com.openminis.app.data.CompactionLaunchPolicy.Origin.EXPLICIT_USER,
-        )
-    }
-
-    private fun rescueCompact(
-        origin: com.openminis.app.data.CompactionLaunchPolicy.Origin,
-    ) {
-        if (!com.openminis.app.data.CompactionLaunchPolicy.mayRewrite(origin)) {
-            AppLogger.warning(TAG, "[Rescue] blocked non-explicit launch origin=$origin")
-            return
-        }
-        if (!requireFullSessionHistory()) return
-        AppLogger.info(
-            TAG,
-            "[Rescue] rescueCompactNow() streaming=${_isStreaming.value} compacting=${_isCompacting.value} historySize=${agentHistory.size}",
-        )
-        if (_isStreaming.value) {
-            appendSystemInfo(
-                text = context.getString(R.string.rescue_busy_streaming),
-                iconKind = "compact",
-            )
-            return
-        }
-        if (_isCompacting.value) {
-            appendSystemInfo(
-                text = context.getString(R.string.rescue_busy_compacting),
-                iconKind = "compact",
-            )
-            return
-        }
-        val history = agentHistory.toList()
-        if (history.isEmpty()) {
-            appendSystemInfo(
-                text = context.getString(R.string.rescue_empty_session),
-                iconKind = "compact",
-            )
-            return
-        }
-        // [T-protected-tail] Anchor BEFORE the protected recent tail, exactly
-        // like compactAll — even the emergency rescue path must not fold the
-        // last N user turns into the digest. `effectiveAgentHistory` sends the
-        // postAnchor tail verbatim; the digest stands in only for the older
-        // history. Falls back to the last persisted entry when the whole
-        // session is within the protected tail (there is nothing older to
-        // digest, but rescue still force-offloads big payloads below).
-        val ptEntries = history.map { m ->
-            com.openminis.app.data.ProtectedTail.Entry(
-                isUser = m.role == LLMMessage.Role.USER,
-                hasDbId = !m.dbMessageId.isNullOrEmpty(),
-            )
-        }
-        var anchorIdx = com.openminis.app.data.ProtectedTail.anchorIndex(
-            entries = ptEntries,
-            protectedUserTurns = COMPACT_KEEP_RECENT_USER_TURNS,
-        )
-        if (anchorIdx < 0) {
-            // Whole history is within the protected tail — digest nothing,
-            // anchor at the last persisted entry so the marker still resolves.
-            anchorIdx = history.lastIndex
-            while (anchorIdx >= 0 && history[anchorIdx].dbMessageId.isNullOrEmpty()) anchorIdx -= 1
-        }
-        if (anchorIdx < 0) {
-            appendSystemInfo(
-                text = context.getString(R.string.rescue_no_persisted_messages),
-                iconKind = "compact",
-            )
-            return
-        }
-
-        val digestBudget = com.openminis.app.data.RescueDigestPrefs.maxChars(context)
-        // [T-protected-tail] Digest ONLY the pre-anchor (older) range. The
-        // protected tail (history[anchorIdx+1 ..]) is sent verbatim by
-        // effectiveAgentHistory, so folding it into the digest too would both
-        // duplicate it and risk losing the freshest turns to summarisation.
-        val toDigest = history.subList(0, (anchorIdx + 1).coerceIn(0, history.size))
-        val digest = com.openminis.app.data.RescueDigest.build(
-            turns = rescueTurnsFrom(toDigest),
-            maxChars = digestBudget,
-        )
-        if (digest.isBlank()) {
-            appendSystemInfo(
-                text = context.getString(R.string.rescue_nothing_to_digest),
-                iconKind = "compact",
-            )
-            return
-        }
-
-        val beforeTokens = estimateRawHistoryTokens()
-        _isCompacting.value = true
-        maintenanceJob = viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val sid = realSessionId.ifEmpty { sessionId }
-                // Force-offload every eligible large payload. Lossless: the
-                // bytes go to /var/minis/offloads/tools/ and the history keeps
-                // a file_read-able stub. Passing force=true ignores the
-                // policy threshold — we are already past "too big".
-                val window = effectiveContextWindowTokens()?.takeIf { it > 0 } ?: 128_000
-                runCatching {
-                    offloadContextIfNeeded(
-                        contextWindow = window,
-                        lastContextTokens = beforeTokens,
-                        force = true,
-                    )
-                }.onFailure { AppLogger.warning(TAG, "[Rescue] force offload failed: ${it.message}") }
-
-                // Verify the anchor is really in the messages table before
-                // writing the marker (same belt-and-braces check compactAll
-                // does — an in-memory dbMessageId can outrun the DB write).
-                val rawDbIds: Set<String> = try {
-                    chatRepository.dao.loadMessages(sid).map { it.id }.toSet()
-                } catch (e: Exception) {
-                    AppLogger.warning(TAG, "[Rescue] loadMessages verify failed: ${e.message}")
-                    emptySet()
-                }
-                var verifiedIdx = anchorIdx
-                if (rawDbIds.isNotEmpty()) {
-                    while (verifiedIdx >= 0) {
-                        val id = history[verifiedIdx].dbMessageId
-                        if (!id.isNullOrEmpty() && id in rawDbIds) break
-                        verifiedIdx -= 1
-                    }
-                }
-                if (verifiedIdx < 0) {
-                    withContext(Dispatchers.Main) {
-                        appendSystemInfo(
-                            text = context.getString(R.string.rescue_no_persisted_messages),
-                            iconKind = "compact",
-                        )
-                    }
-                    return@launch
-                }
-                val anchorDbId = history[verifiedIdx].dbMessageId ?: run {
-                    withContext(Dispatchers.Main) {
-                        appendSystemInfo(
-                            text = context.getString(R.string.rescue_no_persisted_messages),
-                            iconKind = "compact",
-                        )
-                    }
-                    return@launch
-                }
-
-                val marker = com.openminis.app.data.db.CompactMarkerEntity(
-                    id = java.util.UUID.randomUUID().toString(),
-                    sessionId = sid,
-                    summary = digest,
-                    firstKeptSortOrder = Int.MAX_VALUE,
-                    compactedCount = verifiedIdx + 1,
-                    createdAt = System.currentTimeMillis(),
-                    uiBoundarySortOrder = null,
-                    boundaryMessageId = null,
-                    firstKeptMessageId = null,
-                    lastCompactedMessageId = anchorDbId,
-                    version = 2,
-                )
-                runCatching { chatRepository.dao.insertCompactMarker(marker) }
-                    .onFailure { AppLogger.warning(TAG, "[Rescue] persist marker failed: ${it.message}") }
-                _compactSummary.value = digest
-                _cachedLatestMarker = marker
-                invalidateContextPressure("rescue digest written")
-
-                val afterTokens = estimateRawHistoryTokens()
-                // What the next request actually carries is the DIGEST (plus
-                // an empty post-anchor tail), not the stubbed history — so
-                // report that, otherwise the number understates the win and
-                // confuses anyone comparing it against the context indicator.
-                val digestTokens = (digest.length + 3) / 4
-                AppLogger.info(
-                    TAG,
-                    "[Rescue] done: digestChars=${digest.length} (~$digestTokens tokens) " +
-                        "anchorIdx=$verifiedIdx/${history.lastIndex} " +
-                        "estHistoryTokens $beforeTokens → $afterTokens after force-offload (window=$window)",
-                )
-
-                withContext(Dispatchers.Main) {
-                    // Gray the compacted range and drop older dividers —
-                    // same UI contract as compactAll.
-                    val cleaned = _messages.value
-                        .filterNot { msg ->
-                            msg.role == "system" &&
-                                msg.toolBlocks.firstOrNull()?.toolName == "compact"
-                        }
-                        .let { list ->
-                            var passed = false
-                            list.map { msg ->
-                                if (msg.role == "system" || passed) msg
-                                else {
-                                    val grayed = if (msg.isCompactedHistory) msg
-                                        else msg.copy(isCompactedHistory = true)
-                                    if (msg.id == anchorDbId || anchorDbId in msg.sourceDbIds) passed = true
-                                    grayed
-                                }
-                            }
-                        }
-                    _messages.value = cleaned
-                    appendSystemInfo(
-                        text = context.getString(
-                            R.string.rescue_done,
-                            beforeTokens,
-                            digestTokens,
-                            digest.length,
-                        ),
-                        iconKind = "compact",
-                        payload = digest,
-                    )
-                }
-
-                // ── Stage 2: optional LLM refinement ──────────────────────
-                //
-                // The session is ALREADY usable at this point (local digest
-                // written above). Now try to make the summary better written
-                // by handing the digest — not the history — to the model. The
-                // input is a few thousand tokens by construction, so this call
-                // is small even on a session that was completely unsendable.
-                // Any failure, or a result that drops a verbatim fact, leaves
-                // the local digest in place.
-                if (com.openminis.app.data.RescueRefinementPrefs.isEnabled(context)) {
-                    refineRescueDigest(marker, digest, digestBudget)
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                AppLogger.warning(TAG, "[Rescue] failed: ${e.message}")
-                withContext(Dispatchers.Main) {
-                    appendSystemInfo(
-                        text = context.getString(
-                            R.string.rescue_failed,
-                            e.message ?: e.javaClass.simpleName,
-                        ),
-                        iconKind = "compact",
-                    )
-                }
-            } finally {
-                _isCompacting.value = false
-            }
-        }
-    }
-
-    /**
-     * [T-session-rescue-refine] Stage 2 of rescue: ask the model to rewrite
-     * the local digest, and accept the result only if it survives
-     * [RescueRefinement.verify].
-     *
-     * Failure is not an error path here — it is the expected outcome whenever
-     * the provider is unreachable (the very situation rescue exists for). So
-     * every failure is logged and swallowed, and the already-written local
-     * digest stays as the marker's summary. The user is told which of the two
-     * they ended up with, because "the model rewrote it" and "your device
-     * built it" are different quality levels and they should know which.
-     */
-    private suspend fun refineRescueDigest(
-        marker: com.openminis.app.data.db.CompactMarkerEntity,
-        digest: String,
-        budget: Int,
-    ) {
-        val primary = currentProvider
-        if (primary == null) {
-            AppLogger.info(TAG, "[Rescue] refinement skipped: no provider configured")
-            return
-        }
-        // [T-compact-route] The bound model being rate limited is one of the
-        // main reasons a user reaches for /rescue in the first place, so try
-        // the other models in the group before giving up on refinement. No
-        // shrink ladder here: the digest is already small, so a quota refusal
-        // on it is about the account, not the request size.
-        val candidates = buildList {
-            add(primary)
-            addAll(runCatching { buildFallbackProviders(primary) }.getOrDefault(emptyList()))
-        }
-        var refined: String? = null
-        var lastFailure: String? = null
-        for ((idx, provider) in candidates.withIndex()) {
-            try {
-                val response = provider.sendMessage(
-                    messages = listOf(
-                        LLMMessage(
-                            role = LLMMessage.Role.USER,
-                            content = com.openminis.app.data.RescueRefinement.buildUserMessage(digest),
-                        )
-                    ),
-                    systemPrompt = com.openminis.app.data.RescueRefinement.SYSTEM_PROMPT,
-                    // The output must be SMALLER than the digest; leaving the cap
-                    // generous just invites the model to pad.
-                    maxTokens = maxOf(1024, (budget / 3)),
-                    temperature = null,
-                    imageParts = emptyList(),
-                    tools = emptyList(),
-                    thinkingLevel = ThinkingLevel.OFF,
-                )
-                refined = response.text
-                if (idx > 0) {
-                    AppLogger.info(
-                        TAG,
-                        "[Rescue] refinement served by fallback #$idx ${provider.model.id}",
-                    )
-                }
-                break
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                val msg = e.message ?: e.toString()
-                lastFailure = msg
-                val worthNextModel = com.openminis.app.data.CompactRoute.isRateLimit(msg) ||
-                    com.openminis.app.data.CompactRoute.isQuota(msg)
-                AppLogger.info(
-                    TAG,
-                    "[Rescue] refinement on ${provider.model.id} failed: ${msg.take(120)} " +
-                        "(tryNextModel=$worthNextModel)",
-                )
-                if (!worthNextModel) break
-            }
-        }
-        if (refined == null) {
-            AppLogger.info(
-                TAG,
-                "[Rescue] refinement unavailable, keeping local digest: ${lastFailure?.take(160)}",
-            )
-            withContext(Dispatchers.Main) {
-                appendSystemInfo(
-                    text = context.getString(R.string.rescue_refine_unavailable),
-                    iconKind = "compact",
-                )
-            }
-            return
-        }
-
-        when (val verdict = com.openminis.app.data.RescueRefinement.verify(digest, refined, budget)) {
-            is com.openminis.app.data.RescueRefinement.Verdict.Rejected -> {
-                AppLogger.warning(
-                    TAG,
-                    "[Rescue] refinement REJECTED (keeping local digest): ${verdict.reason}",
-                )
-                withContext(Dispatchers.Main) {
-                    appendSystemInfo(
-                        text = context.getString(R.string.rescue_refine_rejected),
-                        iconKind = "compact",
-                    )
-                }
-            }
-            is com.openminis.app.data.RescueRefinement.Verdict.Accepted -> {
-                val updated = marker.copy(summary = verdict.text)
-                runCatching { chatRepository.dao.updateCompactMarker(updated) }
-                    .onFailure {
-                        AppLogger.warning(TAG, "[Rescue] refinement marker update failed: ${it.message}")
-                    }
-                _compactSummary.value = verdict.text
-                _cachedLatestMarker = updated
-                invalidateContextPressure("rescue digest refined by model")
-                val savedPct = 100 - (verdict.text.length * 100 / digest.length.coerceAtLeast(1))
-                AppLogger.info(
-                    TAG,
-                    "[Rescue] refinement ACCEPTED: ${digest.length} → ${verdict.text.length} chars (-$savedPct%)",
-                )
-                withContext(Dispatchers.Main) {
-                    appendSystemInfo(
-                        text = context.getString(
-                            R.string.rescue_refine_done,
-                            verdict.text.length,
-                            (verdict.text.length + 3) / 4,
-                        ),
-                        iconKind = "compact",
-                        payload = verdict.text,
-                    )
-                }
-            }
-        }
-    }
-
-    /**
-     * Flatten [history] into [RescueDigest.RescueTurn]s: pair each tool_use
-     * with the tool_result carrying the same id (results arrive in the NEXT
-     * history entry, so the pairing is done across the whole list first),
-     * and pull the identifying argument out of the tool input.
-     */
-    private fun rescueTurnsFrom(history: List<LLMMessage>): List<com.openminis.app.data.RescueDigest.RescueTurn> {
-        // id → result, collected first so a tool_use can find its outcome
-        // regardless of which later message carried it.
-        val results = HashMap<String, AgentContentPart.ToolResult>()
-        for (msg in history) {
-            for (part in msg.contentParts) {
-                if (part is AgentContentPart.ToolResult) results[part.id] = part
-            }
-        }
-        val turns = mutableListOf<com.openminis.app.data.RescueDigest.RescueTurn>()
-        for (msg in history) {
-            val textSb = StringBuilder(msg.content)
-            val calls = mutableListOf<com.openminis.app.data.RescueDigest.RescueToolCall>()
-            for (part in msg.contentParts) {
-                when (part) {
-                    is AgentContentPart.Text -> {
-                        if (textSb.isNotEmpty()) textSb.append('\n')
-                        textSb.append(part.text)
-                    }
-                    is AgentContentPart.ToolUse -> {
-                        val res = results[part.id]
-                        calls.add(
-                            com.openminis.app.data.RescueDigest.RescueToolCall(
-                                name = part.name,
-                                argsPreview = rescueArgsPreview(part.input),
-                                result = res?.content ?: "",
-                                isError = res?.isError == true,
-                            )
-                        )
-                    }
-                    // Results are attached to their tool_use above; bare
-                    // images carry no text worth digesting.
-                    is AgentContentPart.ToolResult, is AgentContentPart.ImageData -> Unit
-                }
-            }
-            if (textSb.isBlank() && calls.isEmpty()) continue
-            turns.add(
-                com.openminis.app.data.RescueDigest.RescueTurn(
-                    role = when (msg.role) {
-                        LLMMessage.Role.USER -> com.openminis.app.data.RescueDigest.RescueTurn.Role.USER
-                        LLMMessage.Role.ASSISTANT -> com.openminis.app.data.RescueDigest.RescueTurn.Role.ASSISTANT
-                    },
-                    text = textSb.toString(),
-                    tools = calls,
-                )
-            )
-        }
-        return turns
-    }
-
-    /**
-     * The one argument that identifies a tool call in the ledger. Ordered by
-     * how much it tells a reader: the shell command, then the file path, then
-     * a URL/query. Falls back to a short raw-JSON preview so an unknown tool
-     * still produces a recognisable row.
-     */
-    private fun rescueArgsPreview(input: org.json.JSONObject): String {
-        for (key in listOf("command", "path", "url", "query", "keywords", "selector", "text")) {
-            val v = input.optString(key, "")
-            if (v.isNotBlank()) return if (key == "command") v else "$key=$v"
-        }
-        val raw = input.toString()
-        return if (raw.length <= 2) "" else raw
-    }
-
     private fun compactAll(
         origin: com.openminis.app.data.CompactionLaunchPolicy.Origin,
         anchorIdxOverride: Int? = null,
@@ -2167,10 +1970,14 @@ class ChatViewModel(
             AppLogger.warning(TAG, "[Compact] blocked non-explicit launch origin=$origin")
             return
         }
-        if (!requireFullSessionHistory()) return
+        if (!requireFullSessionHistory(com.openminis.app.data.SendGatePolicy.Operation.REWRITE_HISTORY)) {
+            setCompactCardTerminal("История сессии недоступна для перезаписи — попробуй ещё раз")
+            return
+        }
         AppLogger.info(TAG, "[Compact] compactAll() invoked origin=$origin streaming=${_isStreaming.value} compacting=${_isCompacting.value} historySize=${agentHistory.size} anchorOverride=$anchorIdxOverride")
         if (_isStreaming.value) {
             AppLogger.info(TAG, "[Compact] aborted: stream in progress")
+            setCompactCardTerminal("Идёт генерация ответа — останови её, затем сжимай сессию")
             appendSystemInfo(
                 text = "Cannot compact while a turn is in progress. Stop the current response first.",
                 iconKind = "compact",
@@ -2179,6 +1986,7 @@ class ChatViewModel(
         }
         if (_isCompacting.value) {
             AppLogger.info(TAG, "[Compact] aborted: another compact already in flight")
+            // Card legitimately shows the LIVE run — leave it alone.
             appendSystemInfo(
                 text = "A compact is already in progress. Please wait for it to finish.",
                 iconKind = "compact",
@@ -2186,11 +1994,13 @@ class ChatViewModel(
             return
         }
         val provider = currentProvider ?: run {
+            setCompactCardTerminal("Не настроен ни один провайдер — сжатие невозможно")
             appendSystemInfo("No provider configured. Cannot compact.", "compact")
             return
         }
         val history = agentHistory.toList()
         if (history.isEmpty()) {
+            setCompactCardTerminal("Сессия пуста — сжимать нечего")
             appendSystemInfo("Nothing to compact — the session is empty.", "compact")
             return
         }
@@ -2222,14 +2032,30 @@ class ChatViewModel(
         // the summary — they stay in postAnchor, sent verbatim and shown active.
         // Compaction squeezes only the older, settled part of the history.
         // Build the pure-logic view once and delegate the decision.
-        val protectedTurns = COMPACT_KEEP_RECENT_USER_TURNS
+        // [T-compact-tail-vs-window] N is sized by the ACTIVE model's window,
+        // not a fixed 6: on a small-context model a 6-turn verbatim tail can
+        // outweigh the whole window and make compaction mathematically
+        // unable to fit the session (the "compacted but still too big" trap).
+        val protectedTurns = com.openminis.app.data.ProtectedTail.protectedTurnsForWindow(
+            effectiveContextWindowTokens() ?: 128_000,
+        )
+        // [T-tail-token-budget] Second, token-based limit on the SAME tail:
+        // turn counts alone cannot see a fat tool-heavy turn that outweighs
+        // the whole window. Both limits apply together (min of the two).
+        val tailTokenBudget = com.openminis.app.data.ProtectedTail.tailBudgetTokens(
+            effectiveContextWindowTokens() ?: 128_000,
+        )
         val ptEntries = history.map { m ->
             com.openminis.app.data.ProtectedTail.Entry(
                 isUser = m.role == LLMMessage.Role.USER,
                 hasDbId = !m.dbMessageId.isNullOrEmpty(),
+                // [T-image-bytes-visible] payload-honest tokens: inline b64
+                // images must weigh on the tail budget what they weigh on the
+                // wire, not their ~2k visual tokens.
+                tokens = estimatePayloadTokens(m),
             )
         }
-        val anchorIdx: Int = if (anchorIdxOverride != null) {
+        var anchorIdx: Int = if (anchorIdxOverride != null) {
             // compactBefore() supplied a specific anchor — respect it as an
             // upper bound but still never cross into the protected tail, so a
             // manual "compact before X" gesture can't sacrifice a fresh turn.
@@ -2237,12 +2063,14 @@ class ChatViewModel(
                 entries = ptEntries,
                 protectedUserTurns = protectedTurns,
                 anchorCeiling = anchorIdxOverride.coerceIn(0, history.lastIndex),
+                tokenBudget = tailTokenBudget,
             )
         } else {
             // compactAll() — anchor just below the protected recent tail.
             com.openminis.app.data.ProtectedTail.anchorIndex(
                 entries = ptEntries,
                 protectedUserTurns = protectedTurns,
+                tokenBudget = tailTokenBudget,
             )
         }
         if (anchorIdx < 0) {
@@ -2250,11 +2078,40 @@ class ChatViewModel(
             // persisted below it). Nothing OLD enough to compact — that is
             // success, not an error: a small/fresh session keeps its verbatim
             // history intact, which is exactly the invariant we want.
-            appendSystemInfo(
-                "Nothing to compact yet — recent messages are kept in full.",
-                "compact",
-            )
-            return
+            // [T-tail-rescue] UNLESS the "small" history is actually OVERSIZED
+            // (a handful of turns carrying big inline images / tool dumps can
+            // outweigh the window and the relay body limit). Then compaction
+            // MUST shrink the tail itself: retry the anchor with the minimal
+            // protection (1 verbatim turn) so the older part of the tail
+            // becomes compactable. This is the "any model must be able to
+            // compact" contract — the button may never strand an oversize
+            // session behind a protection rule.
+            if (isHistoryOversized(history, windowTokenBudget = tailTokenBudget * 4)) {
+                val rescueAnchor = com.openminis.app.data.ProtectedTail.anchorIndex(
+                    entries = ptEntries,
+                    protectedUserTurns = 1,
+                    tokenBudget = (tailTokenBudget / 2)
+                        .coerceAtLeast(com.openminis.app.data.ProtectedTail.TAIL_BUDGET_MIN_TOKENS),
+                )
+                if (rescueAnchor >= 0) {
+                    AppLogger.info(
+                        TAG,
+                        "[Compact] tail rescue (all-fresh): history oversized, " +
+                            "re-anchoring with 1 protected turn (anchor=$rescueAnchor)",
+                    )
+                    anchorIdx = rescueAnchor
+                }
+            }
+            if (anchorIdx < 0) {
+                setCompactCardTerminal(
+                    "Сессия маленькая или свежая — сжимать нечего, переполнения нет.",
+                )
+                appendSystemInfo(
+                    "Nothing to compact yet — recent messages are kept in full.",
+                    "compact",
+                )
+                return
+            }
         }
 
         // Slice to compact = (prev marker's anchor + 1) … anchorIdx inclusive.
@@ -2279,57 +2136,180 @@ class ChatViewModel(
             else prevIdx
         }
         if (effectiveStartIdx > anchorIdx) {
-            appendSystemInfo("Already compacted up to this point.", "compact")
-            return
+            // [T-compact-progress] The old text ("Already compacted up to
+            // this point.") confused the user into thinking the button was
+            // broken while a STALE gateway error stayed on the card. Explain
+            // the actual mechanics: everything before the anchor is already
+            // a summary, and the newest turns are deliberately protected.
+            //
+            // [T-tail-rescue] But the contradiction the user hit live is
+            // REAL: "nothing to compact" AND "request rejected by the
+            // gateway" at the same time. When that happens, the oversized
+            // part is the PROTECTED TAIL itself (inline b64 screenshots, fat
+            // tool rounds) — and a protection rule must never strand an
+            // oversize session. So: when the post-marker tail is oversized,
+            // re-anchor with the minimal protection (1 verbatim turn) and
+            // compact the older part of the tail. The CURRENT turn always
+            // survives verbatim; the rest becomes a summary + verbatim tail.
+            val tailSlice = history.subList(effectiveStartIdx, history.size)
+            if (isHistoryOversized(tailSlice, windowTokenBudget = tailTokenBudget * 4)) {
+                val rescueAnchor = com.openminis.app.data.ProtectedTail.anchorIndex(
+                    entries = ptEntries,
+                    protectedUserTurns = 1,
+                    tokenBudget = (tailTokenBudget / 2)
+                        .coerceAtLeast(com.openminis.app.data.ProtectedTail.TAIL_BUDGET_MIN_TOKENS),
+                )
+                if (rescueAnchor >= effectiveStartIdx) {
+                    AppLogger.info(
+                        TAG,
+                        "[Compact] tail rescue (already-compacted): post-marker tail oversized, " +
+                            "re-anchoring into the tail (anchor=$rescueAnchor, was=$anchorIdx)",
+                    )
+                    anchorIdx = rescueAnchor
+                } else {
+                    setCompactCardTerminal(
+                        "Хвост сессии раздут (${tailSlice.size} сообщений), но сжимать внутри " +
+                            "него нечего: всё до последнего маркера уже резюме, а последний ход " +
+                            "защищён. Добавь сообщение или сжатие хвоста будет доступно позже.",
+                    )
+                    appendSystemInfo("Already compacted up to this point.", "compact")
+                    return
+                }
+            } else {
+                setCompactCardTerminal(
+                    "Нечего сжимать: всё до последнего маркера уже свёрнуто в резюме, " +
+                        "а последние ходы защищены от сжатия. Пиши дальше — новые сообщения " +
+                        "станут доступны для сжатия.",
+                )
+                appendSystemInfo("Already compacted up to this point.", "compact")
+                return
+            }
         }
         val toCompact = history.subList(effectiveStartIdx, anchorIdx + 1)
         if (toCompact.isEmpty()) {
+            setCompactCardTerminal("Диапазон сжатия пуст — сжимать нечего")
             appendSystemInfo("Nothing to compact.", "compact")
             return
         }
         _isCompacting.value = true
+        // [T-compact-progress] Live card state for the whole run.
+        val compactStartedMs = System.currentTimeMillis()
+        val reporter = com.openminis.app.data.CompactRunReporter(compactStartedMs) { p ->
+            _compactProgress.value = p
+        }
+        _compactProgress.value = com.openminis.app.data.CompactProgress(
+            startMs = compactStartedMs,
+        )
         maintenanceJob = viewModelScope.launch(Dispatchers.IO) {
+            // [T-canon-persistence] Pre-compact flush. The LLM summary below
+            // is lossy: an unpinned "запомни X" spoken inside the compacted
+            // range would survive only as a paraphrase. Pin every explicit
+            // memory signal found in the compacted slice + protected tail to
+            // CANON.md FIRST, then compact — the pinned fact is re-injected
+            // verbatim on every turn from now on. Skipped silently when the
+            // memory toggle is off (the user opted out of persistence).
+            try {
+                if (_memoryEnabled.value) {
+                    reporter.phase(com.openminis.app.data.CompactPhase.PINNING)
+                    val flushSources = (toCompact + history.subList(
+                        (anchorIdx + 1).coerceAtMost(history.size), history.size,
+                    )).mapNotNull { m ->
+                        if (m.role == LLMMessage.Role.USER && m.content.isNotBlank()) m.content else null
+                    }
+                    val pinnedFacts = memoryRepository?.flushCanonFromMessages(flushSources).orEmpty()
+                    if (pinnedFacts.isNotEmpty()) {
+                        AppLogger.info(TAG, "[Compact] canon flush pinned ${pinnedFacts.size} fact(s) before summary")
+                        withContext(Dispatchers.Main) {
+                            appendSystemInfo(
+                                text = "Pinned ${pinnedFacts.size} fact(s) to canon before compaction: " +
+                                    pinnedFacts.joinToString("; ") { it.take(60) },
+                                iconKind = "compact",
+                            )
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                AppLogger.warning(TAG, "[Compact] canon flush failed (continuing): ${e.message}")
+            }
             // [T-android-compact-queued-drain] Only a SUCCESSFUL compact kicks
             // the queued-prompt drain below; failure/cancel/empty-summary paths
             // keep today's behavior (queued bubbles stay pending + cancellable).
             var compactSucceeded = false
-            // [T-compact-route] Set when every LLM route refused; consumed
-            // after the finally block to hand off to the local digest.
-            var localFallbackReason: String? = null
             try {
                 val existing = _compactSummary.value
-                // Mirrors iOS `generateCompactSummaryWithSplitting` — when the
-                // joined transcript exceeds the model's context window, halve
-                // the message list and summarize each half independently, then
-                // merge. depth cap=3 prevents pathological recursion.
-                val rawSummary = generateCompactSummaryWithSplitting(
-                    messages = toCompact,
-                    previousSummary = existing,
-                    depth = 0,
-                ).trim()
-                // [T-context-maintenance] Post-process before storing. A
-                // summarisation model reliably adds filler ("Sure, here is
-                // the summary...") and paraphrases exact strings — the first
-                // wastes the context the summary was meant to save, the second
-                // destroys its only irreplaceable content. Filler is stripped;
-                // any identifier the model dropped is re-appended verbatim
-                // from the transcript. Never worse than what came back.
-                val summary = com.openminis.app.data.CompactQuality.polish(
-                    transcript = buildConversationTextForSummary(toCompact),
-                    summary = rawSummary,
-                ).trim()
-                if (summary.length != rawSummary.length) {
-                    AppLogger.info(
-                        TAG,
-                        "[Compact] polish: ${rawSummary.length} → ${summary.length} chars " +
-                            "(filler stripped / exact refs restored)",
-                    )
-                }
-                if (summary.isEmpty()) {
-                    withContext(Dispatchers.Main) {
-                        appendSystemInfo("Compaction produced no output — try again later.", "compact")
+                // [T-compact-progress] Route failure detail for the card/notice.
+                var routeFailure: CompactRouteFailure? = null
+                val modelSummary: String? = try {
+                    reporter.phase(com.openminis.app.data.CompactPhase.SUMMARIZING)
+                    val rawSummary = generateCompactSummaryWithSplitting(
+                        messages = toCompact,
+                        previousSummary = existing,
+                        reporter = reporter,
+                    ).trim()
+                    // [T-context-maintenance] Post-process before storing.
+                    // (filler stripped, exact refs restored — never worse)
+                    reporter.phase(com.openminis.app.data.CompactPhase.POLISHING)
+                    val polished = com.openminis.app.data.CompactQuality.polish(
+                        transcript = buildConversationTextForSummary(toCompact),
+                        summary = rawSummary,
+                    ).trim()
+                    if (polished.length != rawSummary.length) {
+                        AppLogger.info(
+                            TAG,
+                            "[Compact] polish: ${rawSummary.length} → ${polished.length} chars " +
+                                "(filler stripped / exact refs restored)",
+                        )
                     }
-                    return@launch
+                    polished.takeIf { it.isNotEmpty() }
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (e: Exception) {
+                    if (e is CompactRouteFailure) routeFailure = e
+                    Log.w(TAG, "[Compact] model summary failed; using mechanical digest", e)
+                    null
+                }
+                val summary: String = modelSummary ?: run {
+                    val digest = com.openminis.app.data.MechanicalCompact.buildDigest(
+                        turns = toCompact.map { m ->
+                            com.openminis.app.data.MechanicalCompact.Turn(
+                                isUser = m.role == LLMMessage.Role.USER,
+                                text = m.content,
+                            )
+                        },
+                        // [T-tail-token-budget] Scale the mechanical digest to
+                        // the ACTIVE window — a flat 6000-char digest can
+                        // overflow the small-context model it rescues.
+                        charBudget = com.openminis.app.data.MechanicalCompact.digestCharBudget(
+                            effectiveContextWindowTokens() ?: 128_000,
+                        ),
+                    )
+                    if (digest.isBlank()) {
+                        // [T-compact-progress] Total failure — keep the card up
+                        // with the SPECIFIC reason every model route refused.
+                        _compactProgress.value = reporter.snapshot().copy(
+                            failure = com.openminis.app.data.CompactFailure(
+                                attempts = routeFailure?.attempts.orEmpty(),
+                                terminal = routeFailure?.message
+                                    ?: "локальный дайджест пуст — сжатие не выполнено",
+                            ),
+                        )
+                        withContext(Dispatchers.Main) {
+                            appendSystemInfo(
+                                "Compaction failed and nothing was preserved mechanically.",
+                                "compact",
+                            )
+                        }
+                        return@launch
+                    }
+                    withContext(Dispatchers.Main) {
+                        appendSystemInfo(
+                            text = "Сжато без ИИ (механически): ${routeFailure?.shortSummary ?: "модель недоступна"}. " +
+                                "Ваши сообщения сохранены дословно, детальный пересказ пропущен. " +
+                                "Откат — кнопкой отмены последнего сжатия.",
+                            iconKind = "compact",
+                        )
+                    }
+                    digest
                 }
 
                 val sid = realSessionId.ifEmpty { sessionId }
@@ -2366,6 +2346,12 @@ class ChatViewModel(
                 }
                 if (verifiedAnchorIdx < 0) {
                     Log.w(TAG, "[Compact] No agentHistory entry has a DB-persisted dbMessageId; aborting")
+                    _compactProgress.value = reporter.snapshot().copy(
+                        failure = com.openminis.app.data.CompactFailure(
+                            attempts = emptyList(),
+                            terminal = "нет якоря к сохранённому сообщению — сжатие отменено",
+                        ),
+                    )
                     withContext(Dispatchers.Main) {
                         appendSystemInfo("Compact failed: could not anchor to a persisted message.", "compact")
                     }
@@ -2381,11 +2367,18 @@ class ChatViewModel(
                 val lastCompactedDbId = history[verifiedAnchorIdx].dbMessageId
                     ?: run {
                         Log.w(TAG, "[Compact] verified anchor at idx=$verifiedAnchorIdx lost dbMessageId; aborting")
+                        _compactProgress.value = reporter.snapshot().copy(
+                            failure = com.openminis.app.data.CompactFailure(
+                                attempts = emptyList(),
+                                terminal = "якорь сжатия потерял id — сжатие отменено",
+                            ),
+                        )
                         withContext(Dispatchers.Main) {
                             appendSystemInfo("Compact failed: anchor message id unavailable.", "compact")
                         }
                         return@launch
                     }
+                reporter.phase(com.openminis.app.data.CompactPhase.WRITING)
                 val marker = CompactMarkerEntity(
                     id = java.util.UUID.randomUUID().toString(),
                     sessionId = sid,
@@ -2403,6 +2396,17 @@ class ChatViewModel(
                     .onFailure {
                         Log.w(TAG, "Failed to persist compact marker: ${it.message}")
                     }
+                // [T-mutation-journal] Compaction folds context; it must NEVER
+                // remove rows. Journalling it makes that verifiable: a COMPACT
+                // line with no adjacent DELETE line is proof the messages stayed
+                // on disk. The reverse (rows vanishing around a compact) would
+                // show up immediately.
+                com.openminis.app.data.MutationJournal.recordCompact(
+                    sessionId = sid,
+                    anchorMessageId = lastCompactedDbId,
+                    compactedCount = toCompact.size,
+                    summaryLength = summary.length,
+                )
                 _compactSummary.value = summary
                 // Keep the marker in memory so effectiveAgentHistory() can
                 // resolve the boundary on the very next outgoing turn.
@@ -2461,26 +2465,43 @@ class ChatViewModel(
                     }
                     _messages.value = cleaned
                     AppLogger.info(TAG, "[Compact] divider: $compactedUICount UI bubbles compacted (history entries: ${toCompact.size})")
+                    // [T-compact-progress] Rich but minimal divider text:
+                    // count, token reduction and elapsed time in one glance.
+                    val tokensBefore = toCompact.sumOf { estimateMessageTokens(it) }
+                    val tokensAfter = summary.length / 4
+                    val elapsedMs = System.currentTimeMillis() - compactStartedMs
                     appendSystemInfo(
-                        text = "$compactedUICount messages compacted",
+                        text = "$compactedUICount сжато · " +
+                            "${com.openminis.app.data.CompactMath.formatTokens(tokensBefore)}→" +
+                            "${com.openminis.app.data.CompactMath.formatTokens(tokensAfter)} ток · " +
+                            com.openminis.app.data.CompactMath.formatElapsed(elapsedMs),
                         iconKind = "compact",
                         payload = summary,
                     )
+                    // Success: the divider IS the result — hide the progress card.
+                    _compactProgress.value = null
                 }
                 compactSucceeded = true
             } catch (e: CancellationException) {
                 throw e
-            } catch (e: CompactRoutesExhausted) {
-                // [T-compact-route] Every LLM route refused (rate limit /
-                // quota on the bound model and on all group fallbacks). The
-                // session still has to shrink, or the user is left with a chat
-                // that can neither send nor compact — the exact dead end this
-                // whole line of work is about. Fall back to the local digest,
-                // which needs no provider and cannot be rate limited.
-                AppLogger.warning(TAG, "[Compact] all routes refused → local digest: ${e.lastMessage.take(160)}")
-                localFallbackReason = e.lastMessage
             } catch (e: Exception) {
+                // [T-remove-local-compaction] Every failure path (including
+                // "all model routes refused", which CompactRoute now maps to
+                // Step.Surface) lands here. There is NO on-device digest
+                // fallback anymore: compaction runs only through a model, so
+                // when it can't, the session is left fully intact and the user
+                // is told why. They can add a working model / retry later —
+                // the app never silently degrades the history behind a refusal.
                 Log.w(TAG, "Compact failed", e)
+                // [T-compact-progress] Keep the card up with the SPECIFIC
+                // error (models tried + what each answered) and a retry
+                // button — the user must see WHY, not "не удалось сжать".
+                _compactProgress.value = reporter.snapshot().copy(
+                    failure = com.openminis.app.data.CompactFailure(
+                        attempts = (e as? CompactRouteFailure)?.attempts.orEmpty(),
+                        terminal = e.message ?: e.javaClass.simpleName,
+                    ),
+                )
                 withContext(Dispatchers.Main) {
                     appendSystemInfo(
                         text = "Compaction failed: ${e.message ?: e.javaClass.simpleName}",
@@ -2489,22 +2510,6 @@ class ChatViewModel(
                 }
             } finally {
                 _isCompacting.value = false
-            }
-            // [T-compact-route] Runs AFTER the finally that clears
-            // _isCompacting — rescueCompactNow refuses to start while a
-            // compaction is in flight, so kicking it from inside the catch
-            // would silently no-op.
-            localFallbackReason?.let { reason ->
-                withContext(Dispatchers.Main) {
-                    appendSystemInfo(
-                        text = context.getString(
-                            R.string.compact_all_routes_refused,
-                            reason.take(160),
-                        ),
-                        iconKind = "compact",
-                    )
-                    rescueCompactNow()
-                }
             }
             // [T-android-compact-queued-drain] A successful compact must let
             // any queued prompts proceed — previously nothing re-triggered the
@@ -2698,8 +2703,21 @@ class ChatViewModel(
                 }
                 var removed = 0
                 for (id in plan.deleteIds) {
-                    removed += runCatching { chatRepository.dao.deleteMessageById(sid, id) }.getOrDefault(0)
+                    // [T-archive-every-delete] Surgery was the last delete path
+                    // with no archive. It is a deliberate single-turn removal,
+                    // but "deliberate" and "unrecoverable" are different things —
+                    // the row is copied into deleted_messages first.
+                    removed += runCatching {
+                        chatRepository.archiveAndDeleteMessageById(sid, id, "surgery")
+                    }.getOrDefault(0)
                 }
+                // [T-mutation-journal] Journal it so it can never be confused
+                // with rows vanishing on their own.
+                com.openminis.app.data.MutationJournal.recordWipe(
+                    sessionId = sid,
+                    op = "surgery-delete(${plan.deleteIds.size}→$removed)",
+                    totalRows = surgical.size,
+                )
 
                 // [T-delete-attachment-bytes] Drop the attachment FILES of every
                 // row we just removed. Nothing else can reference them —
@@ -3128,10 +3146,26 @@ class ChatViewModel(
      *   log volume itself becomes a cost.
      */
     private fun effectiveAgentHistory(verbose: Boolean): List<LLMMessage> {
-        val summary = _compactSummary.value
+        val rawSummary = _compactSummary.value
         val marker = _cachedLatestMarker
         // No compact in play → return full history untouched.
-        if (summary.isNullOrBlank() || marker == null) return agentHistory.toList()
+        if (rawSummary.isNullOrBlank() || marker == null) return agentHistory.toList()
+
+        // [T-summary-budget] Bound the stored summary to the CURRENT model's
+        // window before it is inlined. The summary was sized by the model that
+        // WROTE it (possibly a large fallback, or an older build before the
+        // write-side cap) — on a smaller reader it could alone outweigh the
+        // whole window with no guard. The full text stays in the session DB;
+        // only the wire copy is clamped. See SummaryBudget.
+        val summaryWindow = effectiveContextWindowTokens() ?: 128_000
+        val summary = com.openminis.app.data.SummaryBudget.clamp(rawSummary, summaryWindow)
+        if (summary.length != rawSummary.length && verbose) {
+            AppLogger.info(
+                TAG,
+                "[Compact] summary clamped to reader window: ${rawSummary.length} → " +
+                    "${summary.length} chars (window=$summaryWindow)",
+            )
+        }
 
         val summaryWrappedText = "<context-summary>\n" +
             "The following is a summary of the earlier conversation that was compacted to save context space.\n" +
@@ -3142,8 +3176,9 @@ class ChatViewModel(
         // ─── v2 markers (id-only anchor model) ─────────────────────────
         //
         // anchor = lastCompactedMessageId. What we send to the model:
-        //   1. last [COMPACT_KEEP_RECENT_USER_TURNS] user-text turns BEFORE
-        //      anchor (inclusive of anchor) — recent verbatim warm-up
+        //   1. last N user-text turns BEFORE
+        //      anchor (inclusive of anchor) — recent verbatim warm-up, N sized
+        //      by the model's window (ProtectedTail.protectedTurnsForWindow)
         //   2. the summary, INLINED as a `<context-summary>` text part
         //      prepended to the first user message AFTER anchor (preserves
         //      strict role alternation — no synthetic standalone user turn)
@@ -3173,31 +3208,34 @@ class ChatViewModel(
                 return degradedHistoryWithSummary(summaryWrappedText, summary, verbose)
             }
 
-            // [T-session-rescue] Historically a rescue digest REPLACED the
-            // whole history (keepN=0) — the digest folded even the freshest
-            // turns, which is exactly what lost the user's recent plan. Under
-            // [T-protected-tail] the write side now anchors rescue BEFORE the
-            // protected recent tail, so the digest covers only the older
-            // history and the protected tail is preserved here verbatim, the
-            // same as a normal compact. Rescue markers are still recognised by
-            // the digest's own opening tag (no schema change needed).
-            // [T-protected-tail] A rescue digest now covers ONLY the pre-anchor
+            // [T-protected-tail] The summary covers ONLY the pre-anchor
             // (older) history — the compaction anchor was placed before the
-            // protected recent tail on the write side. So the read side must
-            // still send that protected tail verbatim, exactly like a normal
-            // compact. Previously rescue used keepN=0 (digest replaces
-            // everything), which is what folded the freshest turns away and
-            // lost them. Keep the same protected count for both paths.
-            val isRescueMarker = summary.startsWith(com.openminis.app.data.RescueDigest.OPEN_TAG)
-            val keepN = COMPACT_KEEP_RECENT_USER_TURNS
-            if (isRescueMarker) {
-                if (verbose) AppLogger.info(
-                    TAG,
-                    "[Rescue] effectiveAgentHistory: rescue marker ${marker.id.take(8)} — " +
-                        "protected tail kept verbatim (keepN=$keepN), digestChars=${summary.length}",
-                )
-            }
-
+            // protected recent tail on the write side. So the read side sends
+            // that protected tail verbatim.
+            //
+            // Back-compat: sessions compacted by the removed local "rescue"
+            // path stored their digest the same way (a v2 marker anchored
+            // before the protected tail). They are read here as ordinary
+            // summaries — no special-casing needed, the tail handling is
+            // identical, so those old sessions keep opening correctly.
+            // [T-compact-tail-vs-window] Read side mirrors the write side:
+            // the tail is sized by the CURRENT model's window, so a session
+            // compacted on a large model and reopened on a small one sends a
+            // smaller verbatim tail (and vice versa — walkBack just finds
+            // fewer turns than asked). This is what makes /compact able to
+            // actually FIT a session after switching to a small-context model.
+            val keepN = com.openminis.app.data.ProtectedTail.protectedTurnsForWindow(
+                effectiveContextWindowTokens() ?: 128_000,
+            )
+            // [T-tail-token-budget] Read side mirrors the WRITE side's token
+            // gate: the verbatim pre-anchor tail must fit the CURRENT model's
+            // window in tokens, not just in turn count — a tool-heavy turn
+            // can outweigh a small window by itself. Same formula as the
+            // write side, so the tail a session SENDS never exceeds the tail
+            // the compaction reserved.
+            val tailTokenBudget = com.openminis.app.data.ProtectedTail.tailBudgetTokens(
+                effectiveContextWindowTokens() ?: 128_000,
+            )
             // Step 1: walk back from anchor collecting user-text turns. Stop
             // when EITHER we've collected N user-text turns OR including the
             // next turn would push preAnchor over 100 messages. Decisions
@@ -3211,6 +3249,7 @@ class ChatViewModel(
                 anchorIdx = anchorIdx,
                 maxUserTextTurns = keepN,
                 maxMessages = preAnchorCap,
+                tokenBudget = tailTokenBudget,
             )
             val priorIdxResolved: Int? = walkBack.priorIdx
             val priorIdx = walkBack.priorIdx ?: (anchorIdx + 1) // empty preAnchor sentinel
@@ -3402,8 +3441,12 @@ class ChatViewModel(
                 chars += when (part) {
                     is AgentContentPart.Text -> part.text.length
                     is AgentContentPart.ToolUse -> part.input.toString().length
-                    is AgentContentPart.ToolResult -> part.content.length
-                    is AgentContentPart.ImageData -> 0
+                    is AgentContentPart.ToolResult ->
+                        part.content.length + (part.imageData?.size ?: 0) / 2
+                    // [T-image-bytes-visible] raw image bytes charge the
+                    // degraded-tail budget (they used to cost 0 — the exact
+                    // hole that let a screenshot tail blow the body to 1.3 MB).
+                    is AgentContentPart.ImageData -> part.data.size / 2
                 }
             }
             com.openminis.app.data.HistoryTailBudget.Candidate(
@@ -3484,6 +3527,7 @@ class ChatViewModel(
         anchorIdx: Int,
         maxUserTextTurns: Int,
         maxMessages: Int,
+        tokenBudget: Int = Int.MAX_VALUE,
     ): WalkBackResult {
         if (anchorIdx < 0 || anchorIdx >= agentHistory.size) {
             return WalkBackResult(null, 0, 0, "invalidAnchor")
@@ -3499,6 +3543,14 @@ class ChatViewModel(
         var acceptedPriorIdx: Int? = null
         var acceptedUserTextTurns = 0
         var acceptedMessageCount = 0
+        // [T-tail-token-budget] Tokens of the currently accepted verbatim
+        // slice [acceptedPriorIdx .. anchorIdx]. The budget is checked BEFORE
+        // accepting a further user turn: once one turn is protected and the
+        // next would push the slice over budget, we stop and keep what we
+        // have. The FIRST user turn is accepted unconditionally (a tail of
+        // zero turns blinds the model to everything after the summary);
+        // Int.MAX_VALUE (default) disables the gate for count-only callers.
+        var acceptedTokens = 0
 
         var i = anchorIdx
         while (i >= 0) {
@@ -3516,7 +3568,35 @@ class ChatViewModel(
                     stopReason = "messageCapWouldExceed",
                 )
             }
+            if (tokenBudget != Int.MAX_VALUE && acceptedUserTextTurns >= 1) {
+                // Tokens of messages (i .. acceptedPriorIdx-1) — the part of
+                // this turn the slice does not include yet. The gate above
+                // guarantees acceptedPriorIdx != null (a text turn was
+                // accepted); copy to a val for smart-cast.
+                val priorIdx = acceptedPriorIdx
+                if (priorIdx != null) {
+                    var addTokens = 0
+                    // [T-image-bytes-visible] payload-honest estimate: the
+                    // tail budget must see inline images at their b64 wire
+                    // cost, or a screenshot tail slips through as "2k tokens".
+                    for (j in i until priorIdx) addTokens += estimatePayloadTokens(agentHistory[j])
+                    if (acceptedTokens + addTokens > tokenBudget) {
+                        return WalkBackResult(
+                            priorIdx = acceptedPriorIdx,
+                            userTextTurnsFound = acceptedUserTextTurns,
+                            messageCount = acceptedMessageCount,
+                            stopReason = "tokenBudgetExhausted",
+                        )
+                    }
+                    acceptedTokens += addTokens
+                }
+            }
             // Accept this user as the new tentative priorIdx.
+            if (acceptedPriorIdx == null) {
+                var firstTurnTokens = 0
+                for (j in i..anchorIdx) firstTurnTokens += estimatePayloadTokens(agentHistory[j])
+                acceptedTokens = firstTurnTokens
+            }
             acceptedPriorIdx = i
             acceptedMessageCount = candidateMessageCount
             val hasText = msg.content.isNotBlank() ||
@@ -3544,33 +3624,61 @@ class ChatViewModel(
 
     /**
      * Format the agent history as a plain-text transcript for the
-     * summarisation LLM. Keeps role prefixes and truncates long tool arg /
-     * output bodies so we stay well under any context window. Mirrors iOS
+     * summarisation LLM. Structured as `### Turn N` blocks (a new turn starts
+     * at each user message) with parts indented under their turn, so the
+     * summariser has a stable recency spine to weight against instead of a
+     * flat wall of role-prefixed lines. Long bodies are shortened with
+     * [summarizeBody], which truncates at a token boundary and re-appends any
+     * critical identifiers (paths / URLs / hashes) found past the cut — so a
+     * path buried at char 900 of a tool output survives into the transcript
+     * that [com.openminis.app.data.CompactQuality.polish] later scans, instead
+     * of being silently dropped by a blind `take()`. Mirrors iOS
      * `buildConversationTextForSummary`.
      */
     private fun buildConversationTextForSummary(history: List<LLMMessage>): String = buildString {
+        var turn = 0
         for (msg in history) {
             val role = msg.role.name.lowercase()
-            val text = msg.content.take(500)
+            // A new turn starts only on a GENUINE user message. Tool results
+            // are persisted as USER-role carriers (content="", parts=all
+            // ToolResult — see persistToolResultMessage / agentHistory.add at
+            // the tool-loop tail), so counting every USER message would emit a
+            // fresh "### Turn" header for each tool round-trip and wildly
+            // inflate the count — destroying the recency signal the header
+            // exists to give. Gate on real user text / non-tool-result parts.
+            val isRealUserTurn = msg.role == LLMMessage.Role.USER &&
+                (msg.content.isNotBlank() ||
+                    msg.contentParts.any { it !is AgentContentPart.ToolResult })
+            if (isRealUserTurn) {
+                turn += 1
+                append("\n### Turn ").append(turn).append('\n')
+            }
+            val text = msg.content
             if (text.isNotEmpty()) {
-                append(role).append(": ").append(text).append('\n')
+                append(role).append(": ").append(summarizeBody(text, 600)).append('\n')
             }
             for (part in msg.contentParts) {
                 when (part) {
                     is AgentContentPart.Text -> {
-                        append(role).append(": ").append(part.text.take(500)).append('\n')
+                        append("  ").append(role).append(": ")
+                            .append(summarizeBody(part.text, 600)).append('\n')
                     }
                     is AgentContentPart.ToolUse -> {
-                        val preview = part.input.toString().take(200)
-                        append(role).append(" [tool:").append(part.name).append("]: ")
-                            .append(preview).append('\n')
+                        append("  ").append(role).append(" [tool:").append(part.name).append("]: ")
+                            .append(summarizeBody(part.input.toString(), 300)).append('\n')
                     }
                     is AgentContentPart.ToolResult -> {
-                        append(role).append(" [result:").append(part.name).append("]: ")
-                            .append(part.content.take(500)).append('\n')
+                        // Errors are tagged distinctly ("result!") so the
+                        // summariser lists them individually rather than
+                        // folding them into a success run — failures are what
+                        // stop the agent repeating a mistake.
+                        val tag = if (part.isError) "result!" else "result"
+                        append("  ").append(role).append(" [").append(tag).append(':')
+                            .append(part.name).append("]: ")
+                            .append(summarizeBody(part.content, 600)).append('\n')
                     }
                     is AgentContentPart.ImageData -> {
-                        append(role).append(" [image: ").append(part.mimeType).append("]\n")
+                        append("  ").append(role).append(" [image: ").append(part.mimeType).append("]\n")
                     }
                 }
             }
@@ -3578,111 +3686,168 @@ class ChatViewModel(
     }
 
     /**
-     * Summarize [messages], recursively halving and merging when the input
-     * exceeds the model's context window. Mirrors iOS
-     * `generateCompactSummaryWithSplitting` (AIChatViewModel+Compaction.swift:820).
+     * Shorten [body] to roughly [headLimit] chars WITHOUT slicing through a
+     * path, URL, or identifier, and without losing the irreplaceable ones.
      *
-     * Depth cap = 3 (matches iOS) so a pathologically large conversation
-     * still terminates instead of fanning out indefinitely. At each split we
-     * halve by message count, summarize each half independently, then ask the
-     * LLM to merge the two partial summaries into one — prioritizing Part 2
-     * (more recent) when space is tight, again matching iOS behavior.
-     *
-     * [T-session-rescue-refine] The split trigger also fires on a VAGUE
-     * transport failure, not just an explicit size error. An upstream that
-     * stops reading an oversized body produces a dropped connection or a TTFB
-     * timeout, never "context length exceeded" — and the old condition
-     * rethrew on exactly those, so `/compact` gave up without ever trying a
-     * smaller input. That is the failure the user hit as "no response from
-     * server". Split-and-retry is cheap and bounded (depth 3), so treating an
-     * ambiguous failure as "maybe too big" costs at most a couple of small
-     * calls, while the previous behaviour cost the whole session.
+     * A blind `body.take(500)` fails the compaction job twice: it can cut
+     * `/var/minis/shared/x/app.apk` into `/var/minis/shared/x/ap`, and it
+     * silently drops every path/URL/hash that happens to sit past char 500 of
+     * a long tool output — the one class of content a resuming agent cannot
+     * re-derive. So: keep the head cut at a whitespace/newline boundary, then
+     * append (compactly) any critical identifiers that appear AFTER the cut.
      */
-    private suspend fun generateCompactSummaryWithSplitting(
-        messages: List<LLMMessage>,
-        previousSummary: String? = null,
-        depth: Int = 0,
-    ): String {
-        val transcript = buildConversationTextForSummary(messages)
-        val conversationText = if (previousSummary.isNullOrBlank()) {
-            transcript
-        } else {
-            "Previous context summary:\n$previousSummary\n\n" +
-                "New conversation to merge:\n$transcript"
-        }
-        return try {
-            generateCompactSummary(conversationText)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: CompactRoutesExhausted) {
-            // [T-compact-route] Every model refused. Splitting the input can't
-            // change that (the refusal is about quota/rate, not size), and the
-            // caller needs this type intact to route to the local digest — so
-            // it must not be swallowed by the split heuristic below.
-            throw e
-        } catch (e: Exception) {
-            val msg = e.message ?: e.toString()
-            // [model-compaction] A gateway content-filter / "content-blocked"
-            // rejection on the compaction request itself is almost always a
-            // SIZE filter, not real moderation: the input is a transcript of an
-            // oversized history, and the relay rejects big bodies before the
-            // model. The screenshot report ("Compaction failed: the gateway's
-            // content filter rejected this request") is exactly this. So treat
-            // it like a too-large error — split smaller and retry — instead of
-            // giving up. Bounded by the same depth cap, so a genuine moderation
-            // hit (which survives every split) still terminates and surfaces.
-            val contentFilteredWhenSplittable =
-                com.openminis.app.provider.ContentFilterDetection.isContentFilterRejection(msg) &&
-                    messages.size >= 2
-            val worthSplitting = isContextTooLargeError(e) ||
-                com.openminis.app.data.RescueAdvisor.isVagueTransportFailure(msg) ||
-                contentFilteredWhenSplittable
-            if (!worthSplitting || messages.size < 2 || depth >= 3) {
-                throw e
+    private fun summarizeBody(body: String, headLimit: Int): String {
+        if (body.length <= headLimit) return body
+        val head = truncateAtTokenBoundary(body, headLimit)
+        val omitted = body.length - head.length
+        val tailRefs = com.openminis.app.data.CompactQuality
+            .criticalFacts(body.substring(head.length), limit = 8)
+            .filterNot { head.contains(it) }
+        return buildString {
+            append(head)
+            append(" …[+").append(omitted).append(" chars]")
+            if (tailRefs.isNotEmpty()) {
+                append(" refs: ").append(tailRefs.joinToString(" "))
             }
-            AppLogger.info(
-                TAG,
-                "[Compact] split trigger: explicitSize=${isContextTooLargeError(e)} " +
-                    "vagueTransport=${com.openminis.app.data.RescueAdvisor.isVagueTransportFailure(msg)} " +
-                    "contentFilteredWhenSplittable=$contentFilteredWhenSplittable " +
-                    "depth=$depth msg=${msg.take(120)}",
-            )
-            val mid = messages.size / 2
-            val firstHalf = messages.subList(0, mid).toList()
-            val secondHalf = messages.subList(mid, messages.size).toList()
-            AppLogger.info(
-                TAG,
-                "[Compact] Splitting ${messages.size} messages into ${firstHalf.size} + ${secondHalf.size} (depth=$depth)",
-            )
-            val summary1 = generateCompactSummaryWithSplitting(firstHalf, null, depth + 1)
-            val summary2 = generateCompactSummaryWithSplitting(secondHalf, null, depth + 1)
-            val mergeInput = buildString {
-                append("Merge these partial summaries into a single cohesive context summary. ")
-                append("Frame everything as past events (what was asked, what was done) rather than as ")
-                append("ongoing goals or todos — the user's next message will set the current task.\n\n")
-                append("MUST PRESERVE:\n")
-                append("- What was done and what was tried, with outcomes (record as past events)\n")
-                append("- Concrete work products from BOTH parts: files created/edited (path + what changed), commits, tests run and results, artifacts built — never collapse real work into a vague phrase or drop it as \"nothing was done\"\n")
-                append("- The last thing the user requested in this conversation, and how it was handled\n")
-                append("- All file paths, identifiers, URLs — copy verbatim\n")
-                append("- Decisions made and their rationale\n")
-                append("- Constraints, rules, and user preferences mentioned\n\n")
-                append("Do NOT carry forward \"pending\" or \"todo\" lists that imply standing work — if the user ")
-                append("still wants those, they will say so in their next message.\n\n")
-                append("PRIORITIZE Part 2 (more recent) over Part 1 (older) when space is tight — but completed work from Part 1 is a fact that must survive the merge, not filler to trim.\n\n")
-                append("Part 1:\n").append(summary1).append("\n\n")
-                append("Part 2:\n").append(summary2)
-            }
-            generateCompactSummary(mergeInput)
         }
     }
 
     /**
-     * Single-shot LLM call that turns [conversationText] into a structured
-     * summary. Throws on provider error so the splitter above can detect
-     * context-too-large failures and retry with halved input.
+     * Return the longest prefix of [s] no longer than [limit] that ends on a
+     * newline or space boundary (within an 80-char lookback), so truncation
+     * never splits a token. Falls back to a hard cut only when the last 80
+     * chars contain no boundary at all (e.g. one enormous unbroken string).
      */
-    private suspend fun generateCompactSummary(conversationText: String): String {
+    private fun truncateAtTokenBoundary(s: String, limit: Int): String {
+        if (s.length <= limit) return s
+        val window = 80
+        val hard = s.substring(0, limit)
+        val nl = hard.lastIndexOf('\n')
+        if (nl >= limit - window) return s.substring(0, nl)
+        val sp = hard.lastIndexOf(' ')
+        if (sp >= limit - window) return s.substring(0, sp)
+        return hard
+    }
+
+    /**
+     * Summarize [messages] with a GUARANTEED-FIT request size.
+     *
+     * [T-compact-window-packing] Replaces the iOS-mirrored "halve by message
+     * count, depth cap 3, merge halves" strategy. That strategy failed live
+     * (2026-09-09, "запрос отклонен шлюзом" loop): it triggered splitting
+     * only when the error text matched English/Chinese size markers — a
+     * Russian-speaking relay matched nothing, so the first rejection surfaced
+     * raw and every retry resent the identical oversized body. Halving by
+     * message count also cannot shrink a skewed transcript, and the depth
+     * cap stranded whatever still did not fit.
+     *
+     * The new contract: control flow is driven by SIZE, never by error
+     * wording. The transcript is packed into windows that fit the per-call
+     * budget (model window AND relay body cap) BEFORE any request is sent,
+     * then summarized by rolling reduce — each call sees the running summary
+     * plus ONE small window, so any session size compacts through any model,
+     * including a tiny-context one. Wordings still surface in the failure
+     * card (display) and gate the bounded halving safety net below, but
+     * nothing about the happy path depends on them.
+     */
+    private suspend fun generateCompactSummaryWithSplitting(
+        messages: List<LLMMessage>,
+        previousSummary: String? = null,
+        reporter: com.openminis.app.data.CompactRunReporter? = null,
+    ): String {
+        val transcript = buildConversationTextForSummary(messages)
+        val windowTokens = currentModel?.contextWindow ?: 128_000
+        val capChars = com.openminis.app.data.CompactChunking.perCallInputCapChars(windowTokens)
+        var windows = com.openminis.app.data.CompactChunking.packWindows(transcript, capChars)
+        if (windows.isEmpty()) return previousSummary.orEmpty().trim()
+        AppLogger.info(
+            TAG,
+            "[Compact] rolling reduce: transcript ${transcript.length} chars → ${windows.size} window(s) " +
+                "of ≤$capChars chars (window=$windowTokens tok)${if (!previousSummary.isNullOrBlank()) ", seeded with previous summary" else ""}",
+        )
+        var summary: String? = previousSummary?.takeIf { it.isNotBlank() }
+        var idx = 0
+        // [T-compact-window-packing] Adaptive cap: starts at the model/relay
+        // budget; ANY rejection whose wording is not clearly auth/quota
+        // halves it and RE-PACKS all pending material. This converges
+        // geometrically (≤ ~5 rejections from 96k to the 4k floor) and never
+        // burns a retry budget on a cascade — the first halving already
+        // applies to every pending window, not just the rejected one.
+        var capNow = capChars
+        while (idx < windows.size) {
+            val w = windows[idx]
+            val input = if (summary == null) {
+                w
+            } else {
+                "Previous context summary:\n$summary\n\n" +
+                    "Next portion of the conversation (older material is already summarized above):\n$w"
+            }
+            try {
+                val out = generateCompactSummary(input, reporter, idx + 1, windows.size).trim()
+                if (out.isNotEmpty()) summary = out
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                val msg = e.message ?: e.toString()
+                // Auth/quota/billing: a smaller body cannot help — surface.
+                if (com.openminis.app.data.TransportErrorClassifier.isDefinitelyNotSizeRelated(msg)) throw e
+                val newCap = w.length / 2
+                // Below the floor a rejection is not about size — surface.
+                if (newCap < com.openminis.app.data.CompactChunking.MIN_HALVABLE_CHARS) throw e
+                AppLogger.info(
+                    TAG,
+                    "[Compact] window ${idx + 1}/${windows.size} rejected (${msg.take(120)}) — " +
+                        "adaptive cap $capNow → $newCap, repacking pending ${windows.size - idx} window(s)",
+                )
+                reporter?.note("Шлюз отклонил часть — режу мельче и продолжаю")
+                capNow = newCap
+                val repacked = com.openminis.app.data.CompactChunking.packWindows(
+                    windows.subList(idx, windows.size).joinToString("\n"),
+                    capNow,
+                )
+                if (repacked.isEmpty()) {
+                    // Whitespace-only pending — skip forward.
+                    idx += 1
+                    continue
+                }
+                windows = windows.subList(0, idx) + repacked
+                // idx stays: the first repacked window takes the rejected slot.
+                continue
+            }
+            idx += 1
+        }
+        return summary.orEmpty()
+    }
+
+    /**
+     * Single-shot LLM call that turns [conversationText] into a structured
+     * summary. STREAMED (not a blocking sendMessage) so the progress card
+     * gets real token-by-token feedback — the user sees movement within the
+     * first second instead of a frozen UI for the whole call. Throws on
+     * provider error so the splitter above can detect context-too-large
+     * failures and retry with halved input.
+     *
+     * [T-compact-progress] Ladder failures are reported to [reporter] as
+     * route notes and accumulated into a [CompactRouteFailure] so the UI can
+     * name the exact culprit instead of a generic "не удалось сжать".
+     */
+    private class CompactRouteFailure(
+        val attempts: List<com.openminis.app.data.CompactRouteAttempt>,
+        cause: Exception,
+    ) : Exception(
+        attempts.joinToString(" · ") { "${it.modelId}: ${it.message.take(90)}" },
+        cause,
+    ) {
+        val shortSummary: String
+            get() = attempts.joinToString(" · ") { "${it.modelId}: ${it.message.take(60)}" }
+    }
+
+    private suspend fun generateCompactSummary(
+        conversationText: String,
+        reporter: com.openminis.app.data.CompactRunReporter? = null,
+        chunkIndex: Int = 1,
+        chunkCount: Int = 1,
+    ): String {
         // Wrap the transcript in explicit BEGIN/END framing so the model
         // treats it as material to summarize rather than as a chat turn to
         // continue. Mirrors iOS AIChatViewModel+Compaction.swift
@@ -3705,8 +3870,25 @@ class ChatViewModel(
         val contextWindow = model?.contextWindow ?: 128_000
         val estimatedInput = userMessage.length / 4
         val startMaxOut = maxOf(1024, minOf(8192, contextWindow - estimatedInput))
+        // [T-summary-budget] The summary is written ONCE but read on EVERY
+        // subsequent request — by the model the user is on when it is read,
+        // which is the CURRENT model, not necessarily the (possibly larger)
+        // fallback that ends up writing it. Size the output budget by the
+        // READER's window (window/8, floor 512) so the stored summary is born
+        // fitting the session's own model. See SummaryBudget.
+        val summaryBudgetCap = com.openminis.app.data.SummaryBudget.maxTokens(contextWindow)
+        val budgetedStartMaxOut = minOf(startMaxOut, summaryBudgetCap)
+        // [T-compact-maxout-clamp] Providers pass maxTokens through to the
+        // request body UNCLAMPED, so a computed 8192 on a model whose output
+        // cap is 4096 is a guaranteed HTTP 400 ("max_tokens must be at most
+        // 4096") that no ladder could recover from (splitting halves the
+        // INPUT, not the budget). Clamp to the model's declared cap up front.
         val primary = currentProvider
             ?: throw IllegalStateException("No LLM provider available for compaction")
+        fun clampToModelCap(m: com.openminis.app.data.model.LLMModel?, desired: Int): Int {
+            val cap = m?.maxOutputTokens ?: return desired
+            return desired.coerceAtMost(cap).coerceAtLeast(256)
+        }
 
         // [T-compact-route] Compaction used to be a single call on the bound
         // model: a 429 or a 403-quota killed it, leaving the session too big to
@@ -3719,13 +3901,25 @@ class ChatViewModel(
         val fallbacks = runCatching { buildFallbackProviders(primary) }.getOrDefault(emptyList())
         var provider: LLMProvider = primary
         var providerIdx = -1  // -1 = primary, >=0 = index into fallbacks
-        var maxOut = startMaxOut
+        var maxOut = clampToModelCap(primary.model, budgetedStartMaxOut)
         var shrinkSteps = 0
-        var lastError: Exception? = null
+        // [T-compact-progress] Every refused attempt, for the failure card.
+        val attempts = mutableListOf<com.openminis.app.data.CompactRouteAttempt>()
 
         while (true) {
+            // Progress: chars target for THIS attempt (maxOut tokens ≈ 4
+            // chars each). Recomputed per iteration — the shrink ladder
+            // lowers maxOut, and the bar must track the CURRENT budget.
+            val targetChars = maxOut * 4
             try {
-                val response = provider.sendMessage(
+                val modelLabel = provider.model.displayName.ifBlank { provider.model.id }
+                reporter?.callStart(modelLabel, chunkIndex, chunkCount)
+                // [T-compact-stream] Stream instead of blocking: the card
+                // shows live token progress. Empty completions fail loudly
+                // via failOnSilentEmptyCompletion (reasoning-only output is
+                // NOT a usable summary).
+                val sb = StringBuilder()
+                provider.streamMessage(
                     messages = listOf(
                         LLMMessage(role = LLMMessage.Role.USER, content = userMessage)
                     ),
@@ -3740,20 +3934,30 @@ class ChatViewModel(
                     imageParts = emptyList(),
                     tools = emptyList(),
                     thinkingLevel = ThinkingLevel.OFF,
-                )
-                if (providerIdx >= 0 || maxOut != startMaxOut) {
+                ).failOnSilentEmptyCompletion(provider.name).collect { chunk ->
+                    if (chunk is com.openminis.app.data.model.LLMStreamChunk.Text) {
+                        sb.append(chunk.text)
+                        reporter?.callChars(chunkIndex, sb.length, targetChars)
+                    }
+                }
+                if (providerIdx >= 0 || maxOut != budgetedStartMaxOut) {
                     AppLogger.info(
                         TAG,
                         "[Compact] summary produced by ${provider.model.id} maxTokens=$maxOut " +
                             "(after ${if (providerIdx >= 0) "fallback #$providerIdx" else "shrink"})",
                     )
                 }
-                return response.text
+                return sb.toString()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                lastError = e
                 val msg = e.message ?: e.toString()
+                attempts.add(
+                    com.openminis.app.data.CompactRouteAttempt(
+                        modelId = provider.model.id,
+                        message = msg.take(160),
+                    ),
+                )
                 val nextIdx = (providerIdx + 1).takeIf { it < fallbacks.size }
                 val step = com.openminis.app.data.CompactRoute.next(
                     errorMessage = msg,
@@ -3770,53 +3974,30 @@ class ChatViewModel(
                     is com.openminis.app.data.CompactRoute.Step.RetrySmaller -> {
                         shrinkSteps += 1
                         maxOut = step.maxTokens
-                        withContext(Dispatchers.Main) {
-                            appendSystemInfo(
-                                text = context.getString(
-                                    R.string.compact_retry_smaller,
-                                    step.maxTokens,
-                                ),
-                                iconKind = "compact",
-                            )
-                        }
+                        // [T-compact-progress] Route changes surface in the
+                        // progress card, not as extra chat rows.
+                        reporter?.note("Уменьшаю бюджет ответа до ${step.maxTokens} токенов")
                     }
                     is com.openminis.app.data.CompactRoute.Step.NextProvider -> {
                         providerIdx = step.index
-                        provider = fallbacks[step.index]
+                        provider = fallbacks[step.index].provider
                         shrinkSteps = 0
-                        maxOut = startMaxOut
-                        withContext(Dispatchers.Main) {
-                            appendSystemInfo(
-                                text = context.getString(
-                                    R.string.compact_switching_model,
-                                    provider.model.displayName.ifBlank { provider.model.id },
-                                ),
-                                iconKind = "compact",
-                            )
-                        }
+                        // [T-compact-maxout-clamp] Re-clamp for the fallback
+                        // model: its output cap can be lower than the primary's
+                        // (startMaxOut was computed for the primary's window).
+                        maxOut = clampToModelCap(provider.model, budgetedStartMaxOut)
+                        reporter?.note(
+                            "Переключаюсь на ${provider.model.displayName.ifBlank { provider.model.id }}",
+                        )
                     }
-                    // Signal to the caller that no LLM route worked. A dedicated
-                    // exception type (not the provider's own error) so the
-                    // compactAll catch can tell "every model refused" apart from
-                    // "this one call failed" and go local instead of giving up.
-                    is com.openminis.app.data.CompactRoute.Step.LocalDigest ->
-                        throw CompactRoutesExhausted(msg, e)
-                    is com.openminis.app.data.CompactRoute.Step.Surface -> throw e
+                    is com.openminis.app.data.CompactRoute.Step.Surface ->
+                        // [T-compact-progress] Carry the FULL attempt list so
+                        // the failure card can name every culprit.
+                        throw CompactRouteFailure(attempts.toList(), e)
                 }
             }
         }
     }
-
-    /**
-     * [T-compact-route] Raised when every LLM route for compaction refused
-     * (rate limit / quota on the bound model and on every group fallback).
-     * The caller answers by building the local digest, so the session shrinks
-     * regardless.
-     */
-    private class CompactRoutesExhausted(
-        val lastMessage: String,
-        cause: Throwable?,
-    ) : Exception("All compaction routes refused: $lastMessage", cause)
 
     /**
      * Match provider error text against the substring set iOS
@@ -3834,16 +4015,27 @@ class ChatViewModel(
             desc.contains("prompt is too long") ||
             desc.contains("token limit") ||
             desc.contains("context window") ||
-            // [T-recover-context-full-mid-loop] Observed live from a relay,
-            // Chinese first with an English parenthetical: "请精简对话历史或缩小
-            // 工具/文件输出后重试。(Context window is full — reduce conversation
-            // history, tool/file output, or system prompt.)" The English half
-            // matches "context window" above, but relays localise freely and
-            // some send only the Chinese, so match that independently.
+            // [T-compact-route-400] Relay spellings seen in the wild that the
+            // original set missed — each one previously fell through to
+            // Surface and killed /compact on a 400:
+            desc.contains("maximum context length") ||
+            desc.contains("input is too long") ||
+            desc.contains("input length and max_tokens exceed") ||
+            desc.contains("too many input tokens") ||
+            desc.contains("reduce the length") ||
+            desc.contains("reduce the input") ||
+            desc.contains("exceeds the context") ||
             desc.contains("请精简对话历史") ||
             desc.contains("对话历史") ||
             desc.contains("context is full") ||
-            desc.contains("context window is full")
+            desc.contains("context window is full") ||
+            // -- Russian relays (live case 2026-09-09: "запрос отклонен
+            //    шлюзом" on the compact request) --
+            desc.contains("превышен размер") ||
+            desc.contains("превышает размер") ||
+            desc.contains("размер запроса") ||
+            desc.contains("слишком больш") ||
+            desc.contains("лимит запроса")
     }
 
     /**
@@ -3885,7 +4077,7 @@ class ChatViewModel(
                 appendSystemInfo(
                     text = "Контекст почти у предела модели ($tokens / $window токенов). " +
                         "Автоматическое сжатие не запускается. Начни новый чат либо явно " +
-                        "выполни /compact или /rescue.",
+                        "выполни /compact.",
                     iconKind = "compact",
                 )
                 true
@@ -3917,20 +4109,11 @@ class ChatViewModel(
         2. Then a concise narrative of what happened, preserving technical details.
         3. End with a "What had been done so far" section listing completed work concretely — every file/module touched with what changed, every command/test run with its outcome. This is NOT a "todo" or "pending" list. Do not invent ongoing objectives or carry-over tasks from old turns; if the user wants to continue, they will say so in their next message.
 
-        NEVER UNDER-REPORT WORK. If the conversation contains substantial completed work (edits, commits, builds, investigations), the summary MUST reflect it in the "What had been done so far" section. Never compress real work down to "nothing was accomplished", "no changes were made", or a similarly empty statement — that erases the session's actual progress and is a factual error. Only state that nothing was done if the transcript genuinely contains no completed work.
-
-        PRIORITIZE recent context over older history — recent decisions and recent file/path references are most useful for continuity.
-
-        Do NOT translate or alter code snippets, file paths, identifiers, or error messages. Be concise but never lose information the agent needs.
-
-        NO FILLER. Your output is machine context, not a reply to a person. Do not open with "Sure", "Certainly" or "Here is the summary". Do not describe what you are about to do, do not comment on these instructions, and do not close with an offer to help. Do not hedge ("it appears that", "possibly"): state what happened. Every sentence must carry a fact the agent could act on — if a sentence could be deleted without losing information, delete it yourself.
-
-        Merge repetition instead of listing it: forty successful build steps are one sentence ("ran 40 build steps, all succeeded"), not forty lines. But never merge a FAILURE into a success summary — failures are listed individually with their exact error text, because they are what stops the agent repeating a mistake.
-
-        STRUCTURE:
-        1. Start with a one-line description of what the conversation was about (use past tense — "User asked X, agent did Y", NOT "Goal: X").
-        2. Then a concise narrative of what happened, preserving technical details.
-        3. End with a "What had been done so far" section listing completed work concretely — every file/module touched with what changed, every command/test run with its outcome. This is NOT a "todo" or "pending" list. Do not invent ongoing objectives or carry-over tasks from old turns; if the user wants to continue, they will say so in their next message.
+        PROTECTED SECTIONS — these four carry the state a resuming agent would otherwise re-derive by re-reading everything. Emit a section ONLY when the transcript actually contains such content; never invent one to fill a heading, and never fold these facts into the narrative where they blur together:
+        - "Active session rules": standing constraints the user set that still apply — coding conventions, forbidden operations, tools/versions to use or avoid, output-format demands, language. Copy each verbatim; these override the agent's defaults and must survive intact.
+        - "In progress at compaction time": work that was demonstrably mid-flight — a multi-step edit partially applied, a build/test running, a file opened for a change not yet finished. State exactly where it stopped and what the next concrete step was, using exact paths/line numbers. (This is the ONE forward-looking exception to the no-todo rule above: report only genuinely unfinished work, never re-derived goals.)
+        - "Pitfalls — do not repeat": approaches already tried and REJECTED, with the reason. Each failed command, wrong assumption, or dead end with its exact error, so the agent does not waste a turn re-attempting it. This is the highest-value content in the summary — a lost pitfall costs a repeated failure.
+        - "Latest known state": the current, authoritative value of anything that changed over the conversation and whose LATEST value matters — a file's final content region, a config value as last set, which branch/commit is checked out, what the last successful build produced. When earlier and later turns disagree, the later value wins; say so explicitly.
 
         NEVER UNDER-REPORT WORK. If the conversation contains substantial completed work (edits, commits, builds, investigations), the summary MUST reflect it in the "What had been done so far" section. Never compress real work down to "nothing was accomplished", "no changes were made", or a similarly empty statement — that erases the session's actual progress and is a factual error. Only state that nothing was done if the transcript genuinely contains no completed work.
 
@@ -4342,7 +4525,11 @@ class ChatViewModel(
     }.getOrDefault(false)
 
     private fun loadSession() {
-        if (!isDraft) fullHistoryReady.value = false
+        if (!isDraft) {
+            fullHistoryReady.value = false
+            // [T-send-gate-deadlock] новая попытка загрузки снимает «сломано»
+            historyDegraded.value = false
+        }
         olderHistoryLoadJob?.cancel()
         olderHistoryLoadJob = null
         // T-android-crash-detected-halt: when CrashFrequencyDetector
@@ -4354,10 +4541,15 @@ class ChatViewModel(
         // cancel) — see CrashFrequencyDetector.maybeShowOnActivity.
         if (com.openminis.app.crash.CrashFrequencyDetector.isSafeMode()) {
             android.util.Log.w(TAG, "loadSession: safe-mode active, skipping session restore")
-            // [T-android-perf-logging] Surface the skip on the Perf timeline
-            // too — when a crash_or_stall recovery loop is suspected, this
-            // distinguishes "loadSession ran and was slow" from "loadSession
-            // was skipped (safe-mode), so the stall is elsewhere".
+            // [T-send-gate-deadlock] ПУТЬ 3 в мёртвое состояние: этот `return`
+            // стоит ДО `viewModelScope.launch`, поэтому ни `finally`, ни любая
+            // строка внутри корутины не выполняется — раньше здесь не
+            // открывался НИ ОДИН гейт, и сессия молча отказывалась отправлять
+            // до конца жизни процесса. Открываем оба флага до выхода: истории
+            // не будет (её загрузку мы намеренно пропустили), значит состояние
+            // DEGRADED — отправка разрешена с предупреждением, а не запрещена.
+            historyDegraded.value = true
+            sessionLoaded.value = true
             com.openminis.app.diagnostics.PerfLongCtx.step(
                 sessionId,
                 "loadSession.skipped",
@@ -4404,10 +4596,53 @@ class ChatViewModel(
             }
 
             // Existing session: load from DB
-            val session = chatRepository.getSession(sessionId) ?: return@launch
+            val session = chatRepository.getSession(sessionId) ?: run {
+                // [T-send-gate-deadlock] ПУТЬ 1: строки сессии в БД нет →
+                // ранний выход. `finally` откроет только sessionLoaded, поэтому
+                // помечаем историю как degraded здесь — иначе гейт отправки
+                // остался бы закрыт навсегда.
+                AppLogger.warning(
+                    TAG,
+                    "loadSession: сессия $sessionId не найдена в БД — " +
+                        "история degraded, отправка остаётся возможной",
+                )
+                historyDegraded.value = true
+                return@launch
+            }
             _sessionTitle.value = session.title ?: "New Chat"
             _sessionCategory.value = session.category
             _memoryEnabled.value = session.memoryEnabled != 0
+            // [T-compact-progress] A compact card belongs to the session it
+            // ran in — never leak a failure/progress state across a switch.
+            _compactProgress.value = null
+            // [T-partial-turn-durability] Recover streams that died with the
+            // process: append-only journals under minis-sessions/<sid>/
+            // stream-heartbeat hold round text that never reached a row.
+            // Materialize each as an assistant row (text + marker) BEFORE
+            // the message load so it lands in natural sort order; the normal
+            // load path then picks it up like any other row. The DB sees one
+            // INSERT per recovered stream — the journal itself never touched
+            // Room while streaming.
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    val orphans = com.openminis.app.data.StreamHeartbeat.recoverOrphans(
+                        com.openminis.app.data.StreamHeartbeat.dirFor(context.filesDir, sessionId),
+                    )
+                    for (o in orphans) {
+                        val parts = listOf(
+                            AgentContentPart.Text(o.text),
+                            AgentContentPart.Text(STREAM_CRASH_RECOVERED_REMINDER),
+                        )
+                        chatRepository.appendMessage(sessionId, "assistant", buildAssistantPartsJson(parts))
+                        AppLogger.info(
+                            TAG,
+                            "[StreamDurability] recovered ${o.text.length} chars from stream ${o.streamId.take(12)} after process death",
+                        )
+                    }
+                }.onFailure {
+                    AppLogger.warning(TAG, "[StreamDurability] recovery failed: ${it.message}")
+                }
+            }
             // T239: hydrate persisted thinking-mode override. null = unset
             // (use OFF as the legacy default); non-null = explicit user
             // choice persisted across cold-start. runCatching guards against
@@ -4671,7 +4906,16 @@ class ChatViewModel(
                         m.dbMessageId?.takeIf { it.isNotEmpty() }?.let { add(it) }
                     }
                 }
-                applyCompactMarkerGraying(ordered, marker, loaded.messages, historyDbIds)
+                applyCompactMarkerGraying(
+                    ordered,
+                    marker,
+                    loaded.messages,
+                    historyDbIds,
+                    // [T-compact-divider-count] `loadedHistoryFromIndex` was
+                    // already set to loaded.uiFromIndex a few lines above, but
+                    // pass it explicitly so the dependency is visible.
+                    windowFromIndex = loaded.uiFromIndex,
+                )
             }
 
             // Cold-start interrupt detection: an agent loop that was killed by
@@ -4689,8 +4933,8 @@ class ChatViewModel(
             //           reminder text — text-cancel handler committed it
             //           but [resume] never re-entered the agent loop.
             val lastEntry = agentHistory.lastOrNull()
-            if (lastEntry != null && !_isStreaming.value) {
-                val isInterrupted = when (lastEntry.role) {
+            if (lastEntry != null) {
+                val lastRowLooksInterrupted = when (lastEntry.role) {
                     LLMMessage.Role.USER -> {
                         val parts = lastEntry.contentParts
                         val allToolResults = parts.isNotEmpty() &&
@@ -4705,12 +4949,59 @@ class ChatViewModel(
                     }
                     else -> false
                 }
-                if (isInterrupted) {
+                // [T-resume-banner-false-stopped] The local `_isStreaming` flag is
+                // NOT sufficient here. It belongs to one ViewModel instance, while
+                // SessionActivityTracker is the process-wide truth maintained by
+                // the streamJob itself. Mid-agent-loop the last persisted row IS
+                // an assistant turn with a pending tool_use — indistinguishable
+                // from a genuinely interrupted loop — so a ViewModel that does not
+                // own the running stream used to declare the session stopped while
+                // it was still working. A run of 502s widens that window, which is
+                // why the user saw it right after them.
+                val streamingProcessWide = com.openminis.app.service
+                    .SessionActivityTracker.activeSessions.value
+                    .contains(realSessionId.ifEmpty { sessionId })
+                if (com.openminis.app.data.ResumeVisibilityPolicy.canClaimInterrupted(
+                        localStreaming = _isStreaming.value,
+                        sessionStreamingProcessWide = streamingProcessWide,
+                        lastRowLooksInterrupted = lastRowLooksInterrupted,
+                    )
+                ) {
                     _canResume.value = true
                     Log.i(TAG, "loadSession: detected interrupted agent loop, canResume=true (lastRole=${lastEntry.role})")
+                } else if (lastRowLooksInterrupted) {
+                    Log.i(
+                        TAG,
+                        "loadSession: last row looks interrupted but the session is streaming " +
+                            "(local=${_isStreaming.value} process=$streamingProcessWide) — no Resume",
+                    )
                 }
             }
             fullHistoryReady.value = true
+            AppLogger.info(
+                TAG,
+                "[SendGate] история загружена ПОЛНОСТЬЮ session=$sessionId " +
+                    "историяРазмер=${agentHistory.size} → гейт открыт (READY)",
+            )
+            } catch (ce: kotlinx.coroutines.CancellationException) {
+                // Отмена — не сбой: ViewModel уходит, гейты трогать не нужно.
+                throw ce
+            } catch (t: Throwable) {
+                // [T-send-gate-deadlock] ПУТЬ 2: раньше `catch` тут не было
+                // вовсе — любое исключение вне двух известных шаблонов
+                // (SQLiteBlobTooBigException / CursorWindow-IllegalState)
+                // пролетало наружу, `fullHistoryReady` навсегда оставался
+                // false, и сессия молча перестала отправлять. Теперь
+                // неизвестный сбой переводит историю в DEGRADED: контекст
+                // неполный, но пользователь может писать и получит
+                // предупреждение один раз.
+                AppLogger.error(
+                    TAG,
+                    "loadSession: загрузка истории провалилась " +
+                        "(${t.javaClass.simpleName}: ${t.message}) — " +
+                        "история degraded, отправка остаётся возможной",
+                )
+                historyDegraded.value = true
             } finally {
                 // T201: open the gate even on early `return@launch` (draft path,
                 // missing-session path) and on exception, so the init-time
@@ -4799,6 +5090,10 @@ class ChatViewModel(
         rawMessages: List<com.openminis.app.data.db.MessageEntity>,
         historyDbIds: Set<String>,
         allowMarkerSelfHeal: Boolean = true,
+        // [T-compact-divider-count] Index of the first loaded row inside the
+        // session. Callers pass the window they are ABOUT to install, because
+        // `loadedHistoryFromIndex` is only assigned after this returns.
+        windowFromIndex: Int = loadedHistoryFromIndex,
     ): List<ChatMessage> {
         // Some legacy rows have empty-string boundaries instead of NULL —
         // treat both as "no boundary" so the compactAll path below kicks in.
@@ -4939,9 +5234,22 @@ class ChatViewModel(
         // above the divider, not marker.compactedCount (which counts raw
         // agentHistory entries — tool_use/tool_result pairs that never
         // appear as their own UI bubble).
+        // [T-compact-divider-count] …but ONLY when the whole session is
+        // materialised. With a history window the bubbles above the divider are
+        // just the loaded ones, which is how "2 messages compacted" appeared for
+        // a summary of several hundred. See CompactDividerCount.
         val compactedUICount = (0 until insertIdx.coerceIn(0, grayed.size))
             .count { grayed[it].role != "system" }
-        val dividerLabel = "$compactedUICount messages compacted"
+        val dividerCount = com.openminis.app.data.CompactDividerCount.resolve(
+            visibleBubblesAbove = compactedUICount,
+            windowFromIndex = windowFromIndex,
+            markerCompactedCount = marker.compactedCount,
+        )
+        val dividerLabel = if (dividerCount.approximate) {
+            "≈${dividerCount.count} messages compacted"
+        } else {
+            "${dividerCount.count} messages compacted"
+        }
         val markerForDivider = healedMarker ?: marker
         val dividerBlock = AssistantBlock(
             id = "compact-divider-${markerForDivider.id}",
@@ -5081,6 +5389,7 @@ class ChatViewModel(
         if (resolved) {
             persistBinding("""{"type":"group","groupId":"$groupId"}""")
             applyGroupSessionDefaults(groupId)
+            warnContextFitAfterSwitch()
         }
     }
 
@@ -5092,6 +5401,7 @@ class ChatViewModel(
         if (resolved) {
             persistBinding("""{"type":"group","groupId":"$groupId","lastEntryId":"$entryId"}""")
             applyGroupSessionDefaults(groupId)
+            warnContextFitAfterSwitch()
             // [T-newchat-default-model-fallback-android] Record the actually-
             // resolved active entry as last-used (resolveProviderFromGroup may
             // fall back off a disabled member, so _activeEntryId is the truth).
@@ -5219,6 +5529,7 @@ class ChatViewModel(
         _selectedGroupId.value = null
         _selectedGroupName.value = ""
         activateModel(entry.model, entry.id, "user selected model entry")
+        warnContextFitAfterSwitch()
         _modelName.value = entry.model.displayName
         _providerName.value = instance.label.ifEmpty { entry.model.provider }
         currentProvider = ProviderFactory.create(instance, apiKey, entry.model, context)
@@ -5247,30 +5558,73 @@ class ChatViewModel(
      * This ensures that models already tried (before the primary) are at the end,
      * not the beginning — so retry doesn't re-trigger the same fallback chain.
      */
-    private fun buildFallbackProviders(primaryProvider: LLMProvider): List<LLMProvider> {
-        val groupId = _selectedGroupId.value ?: return emptyList()
+    private data class FallbackCandidate(
+        val entryId: String,
+        val provider: LLMProvider,
+    )
+
+    private fun buildFallbackProviders(primaryProvider: LLMProvider): List<FallbackCandidate> {
+        val groupId = _selectedGroupId.value
         val config = providerRepository.config.value
-        val group = config.modelGroups.find { it.id == groupId } ?: return emptyList()
-        val members = group.memberEntryIds
-        // Find current provider's position in the group
-        val currentIdx = members.indexOfFirst { entryId ->
-            config.modelEntries.find { it.id == entryId }?.model?.id == primaryProvider.model.id
+        if (groupId != null) {
+            val group = config.modelGroups.find { it.id == groupId }
+            if (group != null) {
+                val members = group.memberEntryIds
+                // Route identity is (model id + endpoint host), NOT model id alone.
+                // A relay content filter is endpoint-specific: the same model through
+                // another provider instance is a valid fallback and must remain
+                // reachable. Preserve the exact entry id together with the provider:
+                // after a same-model endpoint switch there is no safe way to recover
+                // it by model id alone (and two instances can normalize to one host).
+                val routes = members.map { entryId ->
+                    val entry = config.modelEntries.find { it.id == entryId }
+                    val instance = entry?.let { e -> config.instances.find { it.id == e.providerInstanceId } }
+                    com.openminis.app.data.ProviderFallbackIdentity.Route(
+                        modelId = entry?.model?.id.orEmpty(),
+                        throttleKey = instance?.effectiveBaseURL?.let {
+                            com.openminis.app.provider.LlmDispatchGate.keyForUrl(it)
+                        }.orEmpty(),
+                    )
+                }
+                val candidateIndices = com.openminis.app.data.ProviderFallbackIdentity
+                    .orderedCandidates(
+                        routes = routes,
+                        values = members,
+                        currentModelId = primaryProvider.model.id,
+                        currentThrottleKey = primaryProvider.throttleKey,
+                    )
+                val result = mutableListOf<FallbackCandidate>()
+                // Iterate starting from the entry AFTER the exact primary route,
+                // cycling around. Duplicate entries for the same model+endpoint are
+                // skipped; same-model DIFFERENT-endpoint entries are preserved.
+                for (candidate in candidateIndices) {
+                    val entryId = candidate.value
+                    val entry = config.modelEntries.find { it.id == entryId } ?: continue
+                    val instance = config.instances.find { it.id == entry.providerInstanceId } ?: continue
+                    if (!instance.isEnabled) continue
+                    val apiKey = providerRepository.loadApiKey(instance.id) ?: continue
+                    val p = try {
+                        ProviderFactory.create(instance, apiKey, entry.model, context)
+                    } catch (_: Exception) { continue }
+                    if (!com.openminis.app.data.ProviderFallbackIdentity.isUsableFallback(
+                            currentModelId = primaryProvider.model.id,
+                            currentThrottleKey = primaryProvider.throttleKey,
+                            nextModelId = p.model.id,
+                            nextThrottleKey = p.throttleKey,
+                        )
+                    ) continue
+                    result.add(FallbackCandidate(entryId = entry.id, provider = p))
+                }
+                return result
+            }
         }
-        val result = mutableListOf<LLMProvider>()
-        // Iterate starting from the entry AFTER the primary, cycling around
-        for (offset in 1 until members.size) {
-            val idx = if (currentIdx >= 0) (currentIdx + offset) % members.size else offset
-            val entryId = members[idx]
-            val entry = config.modelEntries.find { it.id == entryId } ?: continue
-            val instance = config.instances.find { it.id == entry.providerInstanceId } ?: continue
-            if (!instance.isEnabled) continue
-            val apiKey = providerRepository.loadApiKey(instance.id) ?: continue
-            val p = try {
-                ProviderFactory.create(instance, apiKey, entry.model, context)
-            } catch (_: Exception) { continue }
-            result.add(p)
-        }
-        return result
+        // No group selected — single-entry session. Silent cross-instance
+        // fallback was tried here before and caused the chat to jump to a
+        // different provider on content-filter / quota errors, which the user
+        // did not request. The chat stays bound to the model the user picked;
+        // payload size is governed by ProtectedTail + RequestBudget +
+        // walkBackUserTurnsBounded.
+        return emptyList<FallbackCandidate>()
     }
 
     /**
@@ -5346,6 +5700,8 @@ class ChatViewModel(
     fun clearChat() {
         if (_isStreaming.value) cancelStream()
         val sid = activeSessionId
+        // [T-compact-progress] No compact state may survive a wipe.
+        _compactProgress.value = null
         // T-streaming-side-channel: ensure no stale stream delta survives a
         // session wipe; the messages list is about to be cleared, so any
         // pending key would be orphaned.
@@ -5376,12 +5732,29 @@ class ChatViewModel(
         runCatching {
             java.io.File(context.filesDir, "browser_tabs/$sid.json").delete()
         }
+        // [T-partial-turn-durability] the wipe clears in-flight journals too —
+        // their rows would never exist now.
+        runCatching {
+            com.openminis.app.data.StreamHeartbeat.deleteAll(
+                com.openminis.app.data.StreamHeartbeat.dirFor(context.filesDir, sid),
+            )
+        }
         // Persist: drop messages + compact markers. Files (workspace,
         // attachments, offloads) intentionally retained.
         viewModelScope.launch {
-            chatRepository.dao.deleteMessages(sid)
+            // [T-archive-every-delete] clearChat is user-confirmed, but a
+            // mis-tap is exactly as final as the retry bug was — so the rows
+            // are archived into deleted_messages before the wipe and can be
+            // brought back with chat.deleted.restore. The journal line is
+            // written by the repository.
+            val wiped = runCatching {
+                chatRepository.archiveAndDeleteAllMessages(sid, "clearChat")
+            }.getOrElse { e ->
+                Log.w(TAG, "clearChat: archive+wipe failed: ${e.message}")
+                -1
+            }
             chatRepository.dao.deleteCompactMarkers(sid)
-            Log.i(TAG, "clearChat: session=$sid wiped (files preserved)")
+            Log.i(TAG, "clearChat: session=$sid wiped rows=$wiped (archived, files preserved)")
         }
     }
 
@@ -5609,7 +5982,20 @@ class ChatViewModel(
                     // above normally catches this, but a merged-bubble layout
                     // could route a first-in-row tool_use here; handle it so we
                     // never persist a phantom empty assistant message.
-                    chatRepository.deleteMessagesAfter(sid, row.sortOrder)
+                    // [T-truncation-chokepoint] A refusal here means the anchor
+                    // row's sort_order is implausibly early — abort instead of
+                    // rewriting parts against a history that was NOT truncated.
+                    if (chatRepository.archiveAndDeleteMessagesAfter(sid, row.sortOrder, "rerun") < 0) {
+                        Log.w(TAG, "rerunFromToolBlock: chokepoint refused keepCount=${row.sortOrder} — aborting")
+                        withContext(Dispatchers.Main) {
+                            appendSystemInfo(
+                                text = context.getString(R.string.chat_cutoff_implausible),
+                                iconKind = "info",
+                            )
+                            reloadSessionFromDb()
+                        }
+                        return@launch
+                    }
                     Log.i(TAG, "rerunFromToolBlock cut at row start (empty trim) tuId=${targetToolUseId.take(12)} keepCount=${row.sortOrder} row=${row.id.take(8)}")
                 } else {
                     // Delete every row after the trimmed assistant row, then
@@ -5617,7 +6003,17 @@ class ChatViewModel(
                     // keeps rows with sort_order < keepCount, so keepCount =
                     // thisRow.sortOrder + 1 drops the following tool_result row
                     // + all later turns while keeping (then overwriting) this one.
-                    chatRepository.deleteMessagesAfter(sid, row.sortOrder + 1)
+                    if (chatRepository.archiveAndDeleteMessagesAfter(sid, row.sortOrder + 1, "rerun") < 0) {
+                        Log.w(TAG, "rerunFromToolBlock: chokepoint refused keepCount=${row.sortOrder + 1} — aborting")
+                        withContext(Dispatchers.Main) {
+                            appendSystemInfo(
+                                text = context.getString(R.string.chat_cutoff_implausible),
+                                iconKind = "info",
+                            )
+                            reloadSessionFromDb()
+                        }
+                        return@launch
+                    }
                     chatRepository.updateMessageParts(row.id, keptArr.toString())
                     Log.i(TAG, "rerunFromToolBlock sub-message cut tuId=${targetToolUseId.take(12)} keepCount=${row.sortOrder + 1} partIdx=$cutPartIdx trimmedRow=${row.id.take(8)}")
                 }
@@ -5689,22 +6085,31 @@ class ChatViewModel(
      * Retry from a specific user message: truncate all messages after it
      * (including the assistant response), rebuild agent history, and resend.
      * Mirrors iOS's edit/retry behavior — no duplicate user messages.
+     *
+     * Returns `true` when the retry was ACCEPTED and its streaming coroutine
+     * launched, `false` when it was rejected up front (already streaming, the
+     * id isn't a visible user bubble in `_messages`, or no provider). The UI
+     * ignores the result (it only ever passes ids of real bubbles), but the
+     * headless harness needs it: a silent `return` used to be reported as a
+     * successful "Completed" retry, so automation could not tell a real run
+     * from a no-op. `true` means "launched", NOT "regeneration finished" —
+     * callers that need the outcome must observe the DB / streaming state.
      */
-    fun retryFromMessage(messageId: String) {
-        if (_isStreaming.value) return
+    fun retryFromMessage(messageId: String): Boolean {
+        if (_isStreaming.value) return false
         _canResume.value = false
         val messages = _messages.value
         val index = messages.indexOfFirst { it.id == messageId }
-        if (index < 0) return
+        if (index < 0) return false
         val message = messages[index]
         // [T-android-tool-autoscroll] Start-of-turn snap — see resume().
         _forceScrollToBottom.tryEmit(Unit)
-        if (message.role != "user" || message.content.isBlank()) return
+        if (message.role != "user" || message.content.isBlank()) return false
 
         val initialProvider = currentProvider
         if (initialProvider == null) {
             _error.value = "No provider configured"
-            return
+            return false
         }
         val provider: LLMProvider = initialProvider
         _error.value = null
@@ -5712,6 +6117,14 @@ class ChatViewModel(
         // T149: snapshot messages about to be truncated so we can revoke any
         // memory_write tool blocks they contain. Without this, a retry leaves
         // the on-disk daily log with entries the user has just rewound past.
+        //
+        // [T-window-safe-cutoff] The snapshot is taken here, but the REVOCATION
+        // now happens only after the DB cutoff is resolved and applied. Revoking
+        // first was wrong: the cutoff can refuse (unresolved / implausible
+        // anchor), and a refused retry that had already rewritten the memory log
+        // leaves an irreversible side effect behind an operation that officially
+        // "changed nothing". The UI trim above is recoverable via
+        // reloadSessionFromDb(); a memory edit on disk is not.
         val deletedMessages = messages.subList(index + 1, messages.size).toList()
 
         // Truncate UI messages: keep up to and including this user message.
@@ -5737,7 +6150,8 @@ class ChatViewModel(
             _streamingById.value = _streamingById.value.filterKeys { it in keptIds }
         }
 
-        revokeMemoryWritesInDeletedMessages(deletedMessages)
+        // [T-window-safe-cutoff] revokeMemoryWritesInDeletedMessages moved
+        // below the DB cutoff — see the snapshot comment above.
 
         // T145: claim the streaming flag SYNCHRONOUSLY so a rapid second tap
         // (or any concurrent send/retry attempt) is rejected by the entry
@@ -5757,44 +6171,98 @@ class ChatViewModel(
             try {
             val sid = realSessionId.takeIf { it.isNotEmpty() } ?: sessionId
 
-            // Find the DB sort_order cutoff for this user message.
-            // UI visible user messages are the N-th user msg with actual text content.
-            // Count which visible user message this is (0-based).
-            val visibleUserIndex = messages.subList(0, index + 1).count { it.role == "user" } - 1
+            // [T-window-safe-cutoff] Resolve the DB cutoff from the bubble's OWN
+            // row ids, never from its ordinal among visible user bubbles.
+            //
+            // The ordinal path this replaces was correct only while `_messages`
+            // held the whole session. Since ChatHistoryWindow a long session
+            // opens with a 120-row window, so "2nd visible user bubble on screen"
+            // resolved to "2nd visible user row of the entire session" — a
+            // message from days earlier — and the retry deleted everything after
+            // it. That is how session 2c7ae861 lost 11 days of history to one
+            // tap, leaving 66 compact markers anchored at rows that no longer
+            // existed. See com.openminis.app.data.MessageCutoff.
             val dbMessages = chatRepository.loadMessages(sid)
-            // Walk DB rows, counting visible user messages (those with non-toolResult text)
-            var visibleUserCount = 0
-            var cutoffSortOrder = -1
-            for (entity in dbMessages) {
-                if (entity.role == "user") {
-                    // Check if this user message has visible text (not toolResult-only).
-                    // [T-ios-retry-anchor-synthetic-user] Synthetic user rows the
-                    // agent loop persists WITHOUT a UI bubble — resume()'s
-                    // stop-continue "<system-reminder>" message — must not count,
-                    // or the cutoff anchors one user message too early and the
-                    // retried bubble (plus the whole last turn) is silently
-                    // dropped from the rebuilt history (mirrors the iOS fix).
-                    val hasText = try {
-                        val arr = org.json.JSONArray(entity.partsJson)
-                        (0 until arr.length()).any { i ->
-                            val o = arr.getJSONObject(i)
-                            val v = o.optString("value", "")
-                            o.optString("type") == "text" && v.isNotBlank() &&
-                                !v.trimStart().startsWith("<system-reminder>")
-                        }
-                    } catch (_: Exception) { true }
-                    if (hasText) {
-                        if (visibleUserCount == visibleUserIndex) {
-                            cutoffSortOrder = entity.sortOrder + 1
-                            break
-                        }
-                        visibleUserCount++
-                    }
+            val cutoffRows = dbMessages.map {
+                com.openminis.app.data.MessageCutoff.Row(it.id, it.sortOrder)
+            }
+            val anchorIds = com.openminis.app.data.MessageCutoff.candidateIds(
+                sourceDbIds = message.sourceDbIds,
+                bubbleId = message.id,
+            )
+            val cutoffSortOrder = com.openminis.app.data.MessageCutoff
+                .retryKeepCount(anchorIds, cutoffRows) ?: -1
+            // Refuse rather than guess. A wrong anchor destroys history; a
+            // refused retry costs the user one tap. The UI was already trimmed
+            // above (synchronously, so a double-tap is rejected), so restore it
+            // from disk — the DB is still untouched at this point.
+            if (cutoffSortOrder < 0) {
+                AppLogger.warning(
+                    TAG,
+                    "[Retry] отказ: пузырь ${messageId.take(8)} не сопоставлен ни с одной " +
+                        "строкой БД (sourceDbIds=${message.sourceDbIds.size}, rows=${cutoffRows.size}) — " +
+                        "история НЕ изменена",
+                )
+                com.openminis.app.data.MutationJournal.recordRefusal(
+                    sessionId = sid,
+                    op = "retry",
+                    keepCount = -1,
+                    totalRows = cutoffRows.size,
+                    reason = "anchor-unresolved",
+                )
+                withContext(Dispatchers.Main) {
+                    appendSystemInfo(
+                        text = context.getString(R.string.chat_cutoff_unresolved),
+                        iconKind = "info",
+                    )
+                    reloadSessionFromDb()
                 }
+                return@launch
             }
-            if (cutoffSortOrder >= 0) {
-                chatRepository.deleteMessagesAfter(sid, cutoffSortOrder)
+            if (!com.openminis.app.data.MessageCutoff.isPlausible(cutoffSortOrder, cutoffRows.size)) {
+                AppLogger.warning(
+                    TAG,
+                    "[Retry] отказ: cutoff=$cutoffSortOrder удалил бы " +
+                        "${cutoffRows.size - cutoffSortOrder} из ${cutoffRows.size} строк — " +
+                        "якорь заведомо неверный, история НЕ изменена",
+                )
+                com.openminis.app.data.MutationJournal.recordRefusal(
+                    sessionId = sid,
+                    op = "retry",
+                    keepCount = cutoffSortOrder,
+                    totalRows = cutoffRows.size,
+                    reason = "implausible",
+                )
+                withContext(Dispatchers.Main) {
+                    appendSystemInfo(
+                        text = context.getString(R.string.chat_cutoff_implausible),
+                        iconKind = "info",
+                    )
+                    reloadSessionFromDb()
+                }
+                return@launch
             }
+            val archived = chatRepository.archiveAndDeleteMessagesAfter(sid, cutoffSortOrder, "retry")
+            if (archived < 0) {
+                // [T-truncation-chokepoint] The repository refused the shape.
+                // Nothing was deleted, so leave the memory log alone too and put
+                // the UI back in sync with disk.
+                AppLogger.warning(
+                    TAG,
+                    "[Retry] chokepoint отказал в обрезке cutoff=$cutoffSortOrder — история НЕ изменена",
+                )
+                withContext(Dispatchers.Main) {
+                    appendSystemInfo(
+                        text = context.getString(R.string.chat_cutoff_implausible),
+                        iconKind = "info",
+                    )
+                    reloadSessionFromDb()
+                }
+                return@launch
+            }
+            // Only now that the truncation actually happened may the memory log
+            // be rewound — see the snapshot comment at the top of this function.
+            revokeMemoryWritesInDeletedMessages(deletedMessages)
 
             // Rebuild agentHistory from remaining DB messages
             agentHistory.clear()
@@ -5812,6 +6280,11 @@ class ChatViewModel(
                 }
             }
         }
+        // The retry was accepted and its coroutine launched. This is NOT a
+        // guarantee that regeneration finished — the coroutine may still abort
+        // on provider resolve inside runRerunStreamTail — but it distinguishes
+        // an accepted retry from the early-return rejections above.
+        return true
     }
 
     /**
@@ -5890,7 +6363,112 @@ class ChatViewModel(
                 } catch (e: Exception) {
                     AppLogger.error(TAG_STREAM, "$label runAgentLoop EXCEPTION ${e.javaClass.simpleName}: ${e.message}")
                     Log.e(TAG, "Agent loop error ($label)", e)
+                    // [T-partial-turn-durability] Loop died mid-round: commit
+                    // the text it had already produced BEFORE the error banner
+                    // replaces the bubble — the streamed answer must survive a
+                    // transport failure. Same coroutine as the dead loop → the
+                    // exported StringBuilder is quiescent → full fidelity.
+                    runCatching { persistPartialStreamTurn() }
+                        .onFailure { Log.w(TAG, "partial-turn persist failed: ${it.message}") }
                     setInlineError(e.message ?: "Unknown error")
+                    
+                    // [T-auto-resume] Decide whether to resume automatically.
+                    // Only transport faults may be resumed, and only when the user
+                    // has not moved on. The policy is pure: it decides, the VM
+                    // executes (timer + resume call).
+                    val isTransient = e is com.openminis.app.data.model.LLMError.TransientError
+                    val cause = com.openminis.app.data.AutoResumePolicy.classify(e.message, isTransient)
+                    val lastAssistantMsg = _messages.value.lastOrNull { it.role == "assistant" }
+                    val hasPartialAnswer = lastAssistantMsg?.let {
+                        it.content.isNotBlank() || it.toolBlocks.isNotEmpty()
+                    } ?: false
+                    // The user cancelled or sent a new message DURING the failed
+                    // attempt if the prompt queue gained an entry. Check it before
+                    // deciding — a fresh prompt means the user has moved on.
+                    val userSentNewMessage = _promptQueue.value.isNotEmpty()
+                    val decision = com.openminis.app.data.AutoResumePolicy.decide(
+                        cause = cause,
+                        attemptsUsed = _autoResumeAttempt.value,
+                        userCancelled = false,  // cancel kills the job, never reaches here
+                        userSentNewMessage = userSentNewMessage,
+                        hasPartialAnswer = hasPartialAnswer,
+                    )
+                    
+                    when (decision) {
+                        is com.openminis.app.data.AutoResumePolicy.Decision.Resume -> {
+                            AppLogger.info(
+                                TAG_STREAM,
+                                "$label auto-resume attempt ${decision.attempt}/${com.openminis.app.data.AutoResumePolicy.MAX_ATTEMPTS} after ${decision.delaySec}s for $cause",
+                            )
+                            _autoResumeAttempt.value = decision.attempt
+                            com.openminis.app.data.NetworkJournal.recordAutoResume(
+                                sessionId = activeSessionId,
+                                cause = cause.name,
+                                attempt = decision.attempt,
+                                delaySec = decision.delaySec,
+                            )
+                            // Wait for connectivity if DNS failed; otherwise just delay.
+                            if (com.openminis.app.data.AutoResumePolicy.awaitsConnectivity(cause)) {
+                                com.openminis.app.network.NetworkMonitor.awaitConnectivity(timeoutMs = 30_000L)
+                            }
+                            // Countdown with 1s ticks so the UI can show progress.
+                            try {
+                                var remaining = decision.delaySec
+                                while (remaining > 0) {
+                                    _autoResumeCountdown.value = remaining
+                                    kotlinx.coroutines.delay(1_000L)
+                                    remaining -= 1
+                                }
+                            } finally {
+                                _autoResumeCountdown.value = 0
+                            }
+                            // Clear the inline error from the failed attempt before
+                            // resuming, so the user does not see "Transient error"
+                            // flash above a successfully-resumed turn.
+                            withContext(Dispatchers.Main) { clearInlineError() }
+                            // Resume from the partial answer. Mirrors the manual
+                            // Resume button path: continue from where we left off.
+                            // DO NOT pass through `resume()` — it checks canResume
+                            // and re-appends a system reminder, both wrong here.
+                            // Instead, just call runAgentLoop again with the same
+                            // provider (no fallback — the policy decided to retry
+                            // the same endpoint). History is already in place from
+                            // the failed attempt; the fresh stream continues it.
+                            try {
+                                AppLogger.info(TAG_STREAM, "$label auto-resume runAgentLoop CALL")
+                                runAgentLoop(
+                                    provider = launchedProvider,
+                                    systemPrompt = systemPrompt,
+                                    fallbackProviders = fallbackProviders,
+                                    fallbackStrategy = activeFallbackStrategy,
+                                )
+                                // Success: clear the attempt counter so the next
+                                // error (if any) starts fresh.
+                                _autoResumeAttempt.value = 0
+                                AppLogger.info(TAG_STREAM, "$label auto-resume SUCCESS")
+                            } catch (resumeEx: Exception) {
+                                // The resumed attempt also failed. Log it but do NOT
+                                // recurse — let it fall through to the regular error
+                                // path (markStreamError + finally) so the user sees
+                                // the failure. The next manual retry or auto-resume
+                                // will count as attempt+1.
+                                AppLogger.error(
+                                    TAG_STREAM,
+                                    "$label auto-resume FAILED attempt=${decision.attempt}: ${resumeEx.message}",
+                                )
+                                // [T-partial-turn-durability] Same contract as the
+                                // primary catch: the resumed round's text survives.
+                                runCatching { persistPartialStreamTurn() }
+                                    .onFailure { Log.w(TAG, "partial-turn persist failed: ${it.message}") }
+                                setInlineError(resumeEx.message ?: "Unknown error")
+                            }
+                        }
+                        is com.openminis.app.data.AutoResumePolicy.Decision.Stop -> {
+                            AppLogger.info(TAG_STREAM, "$label auto-resume STOP: ${decision.reason}")
+                            _autoResumeAttempt.value = 0
+                        }
+                    }
+                    
                     // T298: flag the upcoming setInactive() so the
                     // background completion notifier renders the ❌
                     // variant instead of a clean success.
@@ -5996,14 +6574,17 @@ class ChatViewModel(
      * T187: drop the message at [messageId] *and* every later message
      * (in UI, in agentHistory, and on disk) so the new sendMessage()
      * call below this can persist the edited text as a fresh user
-     * turn at the same position. Reuses the cutoff-search machinery
-     * from retryFromMessage but offsets by `entity.sortOrder` (not
-     * +1) — retry preserves the original turn, edit replaces it.
+     * turn at the same position.
+     *
+     * [T-window-safe-cutoff] Returns false when the edited bubble could NOT be
+     * anchored to a persisted row. The caller must then abandon the send: if it
+     * carried on, the edited text would be appended as a NEW turn while the
+     * original stayed on disk — a silent duplicate instead of a replacement.
      */
-    private suspend fun truncateBeforeEdit(messageId: String) {
+    private suspend fun truncateBeforeEdit(messageId: String): Boolean {
         val messages = _messages.value
         val index = messages.indexOfFirst { it.id == messageId }
-        if (index < 0) return
+        if (index < 0) return false
 
         val deletedMessages = messages.subList(index, messages.size).toList()
         val kept = messages.subList(0, index)
@@ -6013,53 +6594,63 @@ class ChatViewModel(
             retainStreamFlushStates(keptIds)
             _streamingById.value = _streamingById.value.filterKeys { it in keptIds }
         }
-        revokeMemoryWritesInDeletedMessages(deletedMessages)
+        // [T-window-safe-cutoff] Memory revocation waits for the DB cutoff to
+        // succeed — a refused edit must not leave a rewritten memory log behind.
 
         val sid = realSessionId.takeIf { it.isNotEmpty() } ?: sessionId
-        // Visible-user index of the *edited* message — count user turns
-        // strictly before `index`, which is the 0-based ordinal of the
-        // edited turn itself.
-        val visibleUserIndex = messages.subList(0, index).count { it.role == "user" }
+        // [T-window-safe-cutoff] Same id-based anchor as retryFromMessage — see
+        // MessageCutoff. Edit semantics differ only in which end of the bubble
+        // decides: the edited turn is being rewritten, so it goes too.
+        val edited = messages[index]
         val dbMessages = chatRepository.loadMessages(sid)
-        var visibleUserCount = 0
-        var cutoffSortOrder = -1
-        for (entity in dbMessages) {
-            if (entity.role == "user") {
-                val hasText = try {
-                    val arr = org.json.JSONArray(entity.partsJson)
-                    (0 until arr.length()).any { i ->
-                        val o = arr.getJSONObject(i)
-                        // [T-android-retry-attachment-loss] Exclude the now-
-                        // persisted <user-attached-files> XML text part so this
-                        // "is this a visible user bubble?" count stays identical
-                        // to pre-XML-persistence behaviour. An attachments-only
-                        // turn must NOT flip to hasText just because the XML
-                        // inventory is now a text part — that would shift the
-                        // retry/edit cutoff onto the wrong message.
-                        // [T-ios-retry-anchor-synthetic-user] Likewise exclude
-                        // resume()'s synthetic stop-continue <system-reminder>
-                        // user row — it has no UI bubble, so counting it shifts
-                        // the cutoff one user message too early.
-                        o.optString("type") == "text" &&
-                            stripAttachedFilesXml(o.optString("value", "")).isNotBlank() &&
-                            !o.optString("value", "").trimStart().startsWith("<system-reminder>")
-                    }
-                } catch (_: Exception) { true }
-                if (hasText) {
-                    if (visibleUserCount == visibleUserIndex) {
-                        // ChatDao.deleteMessagesAfter is `sort_order >= keepCount`
-                        // → passing this row's sortOrder deletes IT and everything
-                        // after, which is exactly what edit semantics want.
-                        cutoffSortOrder = entity.sortOrder
-                        break
-                    }
-                    visibleUserCount++
-                }
-            }
+        val cutoffRows = dbMessages.map {
+            com.openminis.app.data.MessageCutoff.Row(it.id, it.sortOrder)
         }
-        if (cutoffSortOrder >= 0) {
-            chatRepository.deleteMessagesAfter(sid, cutoffSortOrder)
+        val anchorIds = com.openminis.app.data.MessageCutoff.candidateIds(
+            sourceDbIds = edited.sourceDbIds,
+            bubbleId = edited.id,
+        )
+        val cutoffSortOrder = com.openminis.app.data.MessageCutoff
+            .editKeepCount(anchorIds, cutoffRows) ?: -1
+        if (cutoffSortOrder < 0 ||
+            !com.openminis.app.data.MessageCutoff.isPlausible(cutoffSortOrder, cutoffRows.size)
+        ) {
+            // Refuse: leave the persisted history exactly as it is and put the
+            // UI back in sync with disk. The composer keeps the user's text, so
+            // nothing they typed is lost — they can send it as a new turn.
+            AppLogger.warning(
+                TAG,
+                "[Edit] отказ: cutoff=$cutoffSortOrder rows=${cutoffRows.size} " +
+                    "sourceDbIds=${edited.sourceDbIds.size} — история НЕ изменена",
+            )
+            com.openminis.app.data.MutationJournal.recordRefusal(
+                sessionId = sid,
+                op = "edit",
+                keepCount = cutoffSortOrder,
+                totalRows = cutoffRows.size,
+                reason = if (cutoffSortOrder < 0) "anchor-unresolved" else "implausible",
+            )
+            appendSystemInfo(
+                text = context.getString(R.string.chat_cutoff_unresolved),
+                iconKind = "info",
+            )
+            reloadSessionFromDb()
+            return false
         }
+        val archived = chatRepository.archiveAndDeleteMessagesAfter(sid, cutoffSortOrder, "edit")
+        if (archived < 0) {
+            AppLogger.warning(
+                TAG,
+                "[Edit] chokepoint отказал в обрезке cutoff=$cutoffSortOrder — история НЕ изменена",
+            )
+            appendSystemInfo(
+                text = context.getString(R.string.chat_cutoff_implausible),
+                iconKind = "info",
+            )
+            reloadSessionFromDb()
+            return false
+        }
+        revokeMemoryWritesInDeletedMessages(deletedMessages)
         agentHistory.clear()
         toolLoopDetector.reset()
         val remaining = chatRepository.loadMessages(sid)
@@ -6070,6 +6661,7 @@ class ChatViewModel(
             TAG_STREAM,
             "✏️ truncateBeforeEdit cutoffSortOrder=$cutoffSortOrder remaining=${remaining.size}"
         )
+        return true
     }
 
     /**
@@ -6296,7 +6888,7 @@ class ChatViewModel(
     private suspend fun drainQueuedPrompts(
         provider: LLMProvider,
         systemPrompt: String?,
-        fallbackProviders: List<LLMProvider>,
+        fallbackProviders: List<FallbackCandidate>,
         fallbackStrategy: com.openminis.app.data.model.FallbackStrategy,
     ) {
         while (_promptQueue.value.isNotEmpty()) {
@@ -6503,7 +7095,14 @@ class ChatViewModel(
             val activeSessionId = ensureSession()
 
             if (editingId != null) {
-                truncateBeforeEdit(editingId)
+                // [T-window-safe-cutoff] Anchor unresolved ⇒ the original turn is
+                // still on disk. Sending now would duplicate it instead of
+                // replacing it, so abort the send; truncateBeforeEdit already
+                // told the user and restored the list from disk.
+                if (!truncateBeforeEdit(editingId)) {
+                    _editingMessageId.value = null
+                    return@launch
+                }
             }
 
             val prepared = prepareUserAttachments(currentAttachments, activeSessionId)
@@ -7011,6 +7610,8 @@ class ChatViewModel(
                     isStreaming = false,
                     isAwaitingModelResponse = false,
                     sourceDbIds = listOf(persisted.id),
+                    // [T-msg-timestamps] Terminal drain of the persisted turn.
+                    finishedAtMs = msg.finishedAtMs ?: System.currentTimeMillis(),
                 )
             } else {
                 msg
@@ -7026,26 +7627,31 @@ class ChatViewModel(
      *  on screen even though streaming is over. The flag is per-message and
      *  is not implicitly cleared by isStreaming=false. */
     /**
-     * [T-session-rescue] Append a "/rescue" pointer when the failure looks
-     * size-related. Without this the user sees "no response from server" on a
-     * session that is actually just too big, concludes the network or provider
-     * is broken, and has no way to know a local repair exists — which is
-     * exactly the report that motivated the rescue path.
+     * Append a "/compact" pointer when the failure looks size-related. Without
+     * this the user sees "no response from server" on a session that is
+     * actually just too big, concludes the network or provider is broken, and
+     * has no way to know that compacting the session would fix it.
+     *
+     * (Formerly pointed at the local `/rescue` digest, which has been removed.
+     * The only supported repair is now AI compaction via `/compact`.)
      */
     private fun withRescueHint(errorText: String): String {
         val window = effectiveContextWindowTokens() ?: 0
-        // [T-context-pressure-blind] Same blindness as the maintenance gate:
-        // a failing session never reports usage, so the reported counter is 0
-        // and the advisor concluded "small session, must be the network" —
-        // suppressing the hint on exactly the errors it exists to explain.
+        // [T-context-pressure-blind] A failing session never reports usage, so
+        // the reported counter is 0; fall back to an estimate so the hint is
+        // not suppressed on exactly the errors it exists to explain.
         val tokens = com.openminis.app.data.ContextPressure.resolve(
             usageTokens = _lastTurnContextTokens.value,
             estimatedTokens = estimateContextTokens(),
         )
-        if (!com.openminis.app.data.RescueAdvisor.shouldSuggestRescue(errorText, tokens, window)) {
+        val sizeRelated = com.openminis.app.data.TransportErrorClassifier.isExplicitSizeError(errorText) ||
+            (window > 0 && tokens > 0 &&
+                tokens.toDouble() / window.toDouble() >= 0.6 &&
+                com.openminis.app.data.TransportErrorClassifier.isVagueTransportFailure(errorText))
+        if (!sizeRelated) {
             return errorText
         }
-        val suffix = context.getString(R.string.rescue_hint_suffix)
+        val suffix = context.getString(R.string.compact_hint_suffix)
         return if (errorText.contains(suffix)) errorText else "$errorText\n\n$suffix"
     }
 
@@ -7070,6 +7676,8 @@ class ChatViewModel(
                 error = safeError,
                 isStreaming = false,
                 isAwaitingModelResponse = false,
+                // [T-msg-timestamps] Error is a terminal state too — stamp it.
+                finishedAtMs = msg.finishedAtMs ?: System.currentTimeMillis(),
             )
             _messages.value = msgs
             // [T-error-persist-android] Persist the terminal error onto the
@@ -7262,11 +7870,25 @@ class ChatViewModel(
                 val trailingAssistantSortOrder = dbMessages
                     .lastOrNull { it.role == "assistant" }?.sortOrder
                 if (trailingAssistantSortOrder != null) {
-                    chatRepository.deleteMessagesAfter(sid, trailingAssistantSortOrder)
-                    AppLogger.info(
-                        TAG_STREAM,
-                        "retryLast: deleted trailing assistant row sortOrder=$trailingAssistantSortOrder, kept ${trailingAssistantSortOrder} prior rows",
+                    // [T-truncation-chokepoint] A negative/implausible keepCount
+                    // here would wipe the session; the chokepoint returns -1 and
+                    // we simply skip the cleanup (the stale partial row is a far
+                    // smaller problem than a deleted history).
+                    val archived = chatRepository.archiveAndDeleteMessagesAfter(
+                        sid, trailingAssistantSortOrder, "retryLast",
                     )
+                    if (archived < 0) {
+                        AppLogger.warning(
+                            TAG_STREAM,
+                            "retryLast: chokepoint отказал keepCount=$trailingAssistantSortOrder — " +
+                                "строки НЕ удалены",
+                        )
+                    } else {
+                        AppLogger.info(
+                            TAG_STREAM,
+                            "retryLast: deleted trailing assistant row sortOrder=$trailingAssistantSortOrder, kept ${trailingAssistantSortOrder} prior rows",
+                        )
+                    }
                 }
             } else {
                 AppLogger.info(
@@ -7476,8 +8098,21 @@ class ChatViewModel(
      *
      * @param provider The current LLM provider (carries defaultMaxTokens).
      * @param lastContextTokens API-reported input token count from the last call (0 = first call).
+     * @param systemPrompt the system prompt actually sent this turn. Its cost
+     *   is part of the request input but was never counted here — the history
+     *   estimate alone under-reported input, so the output budget was
+     *   over-allocated and input+max_tokens could exceed the window on small
+     *   models (the exact 400 this function exists to prevent). Char-based
+     *   estimate, same 3.5 ratio as [estimateContextTokens].
+     * @param tools the tool definitions sent this turn — schema bytes ride on
+     *   every request with tools enabled and are similarly uncounted.
      */
-    private fun dynamicMaxTokens(provider: LLMProvider, lastContextTokens: Int = 0): Int {
+    private fun dynamicMaxTokens(
+        provider: LLMProvider,
+        lastContextTokens: Int = 0,
+        systemPrompt: String? = null,
+        tools: List<com.openminis.app.data.model.AgentToolDefinition> = emptyList(),
+    ): Int {
         val sessionCap = com.openminis.app.tools.AgentRuntimePolicyStore
             .maxOutputTokensFor(realSessionId.ifEmpty { sessionId })
         val model = provider.model
@@ -7508,11 +8143,26 @@ class ChatViewModel(
             usageTokens = lastContextTokens,
             estimatedTokens = estimateContextTokens(),
         )
-        val remaining = contextWindow - inputTokens
+        // [T-request-overhead-counted] The system prompt and tool schemas are
+        // request input the history estimate never saw. On a small window
+        // (8-32k) a few thousand tokens of overhead is the difference between
+        // a request that lands and input+max_tokens > window → 400. When the
+        // API has already reported usage, the reported number ALREADY includes
+        // them — only add the overhead to the local-estimate branch, or we
+        // would double-count on every healthy turn.
+        val overheadChars = (systemPrompt?.length ?: 0) + tools.sumOf { t ->
+            t.name.length + t.description.length + t.parameters.size * 48 + t.required.size * 16
+        }
+        val countedInput = if (lastContextTokens > 0) {
+            inputTokens
+        } else {
+            inputTokens + (overheadChars / 3.5).toInt()
+        }
+        val remaining = contextWindow - countedInput
         val clamped = maxOf(remaining, MIN_MAX_TOKENS)
         val result = minOf(maxOutputCeiling, clamped)
         if (result < maxOutputCeiling) {
-            android.util.Log.i(TAG, "dynamicMaxTokens: $result (remaining=$remaining, ceiling=$maxOutputCeiling, window=$contextWindow, input=$inputTokens, model=${model.id})")
+            android.util.Log.i(TAG, "dynamicMaxTokens: $result (remaining=$remaining, ceiling=$maxOutputCeiling, window=$contextWindow, input=$countedInput, model=${model.id})")
         }
         return result
     }
@@ -7623,24 +8273,57 @@ class ChatViewModel(
     }
 
     /**
-     * [model-compaction] True when the raw history is large enough that a
-     * gateway "content-blocked" rejection is plausibly a SIZE filter rather
-     * than a genuine moderation hit. Used to decide whether a mid-loop
-     * content-filter rejection is worth a shrink-and-retry (big payload) or
-     * should surface / fall back immediately (small payload → really moderation,
-     * shrinking won't help). The threshold is a fraction of the model's context
-     * window so it scales with the model; falls back to a conservative absolute
-     * floor when the window is unknown.
+     * [T-effective-size-honesty] Token estimate of the EFFECTIVE payload —
+     * the messages that will actually be serialized into the next request
+     * (summary + live tail), not the raw DB history.
+     *
+     * estimateRawHistoryTokens() counts the whole in-memory history, which
+     * stays huge after /compact (compaction adds a marker; it does not delete
+     * rows). Sizing the "is the payload big" decision on raw made an
+     * already-compacted session (339k raw → 1.2k effective) look "too big"
+     * to the content-filter diagnostic, so the app advised the user to run
+     * /compact on a session they had JUST compacted — masking the real
+     * cause (a relay-side filter rejecting even small bodies).
+     *
+     * Wire-honest image costing mirrors [estimateMessageTokensWire]: an
+     * inline b64 image costs its encoded size (~4/3 × bytes) on the wire,
+     * which is what a relay body filter actually sees.
      */
-    private fun isRawHistoryLarge(): Boolean {
-        val tokens = estimateRawHistoryTokens()
-        val window = effectiveContextWindowTokens()?.takeIf { it > 0 }
-        // Half the window is "large enough that size is a credible cause".
-        // Absolute floor 24k covers unknown-window relays where a big payload
-        // still trips a size filter well before any real context limit.
-        val threshold = window?.let { it / 2 } ?: 24_000
-        return tokens >= minOf(threshold, 24_000).coerceAtLeast(8_000)
+    private fun estimateEffectiveHistoryTokens(): Int {
+        var totalChars = 0
+        var imageBytes = 0
+        for (msg in effectiveAgentHistory(verbose = false)) {
+            totalChars += msg.reasoningContent?.length ?: 0
+            totalChars += msg.content.length
+            for (part in msg.contentParts) {
+                when (part) {
+                    is AgentContentPart.Text -> totalChars += part.text.length
+                    is AgentContentPart.ToolUse -> totalChars += part.input.toString().length
+                    is AgentContentPart.ToolResult -> {
+                        totalChars += part.content.length
+                        part.imageData?.let { imageBytes += it.size }
+                    }
+                    is AgentContentPart.ImageData -> imageBytes += part.data.size
+                }
+            }
+        }
+        // 4/3 b64 inflation ≈ tokens at ~3.5 chars per token for the wire.
+        val imageWireTokens = (imageBytes * 4 / 3) / 3_500
+        return (totalChars / 3.5).toInt() + imageWireTokens
     }
+
+    /**
+     * [model-compaction] True when the EFFECTIVE payload is large enough that
+     * a gateway "content-blocked" rejection is plausibly a SIZE filter rather
+     * than a genuine moderation hit. Decision logic lives in
+     * [com.openminis.app.data.HistorySizeGate] (unit-tested there); this
+     * supplies the effective token count and the model's window.
+     */
+    private fun isEffectiveHistoryLarge(): Boolean =
+        com.openminis.app.data.HistorySizeGate.isLarge(
+            effectiveTokens = estimateEffectiveHistoryTokens(),
+            contextWindowTokens = effectiveContextWindowTokens(),
+        )
 
     /**
      * Approximate token count for a single agent content part. Used to rank
@@ -7655,6 +8338,44 @@ class ChatViewModel(
                 (part.imageData?.let { BPETokenizer.countImageTokens(it) } ?: 0)
         }
         is AgentContentPart.ImageData -> BPETokenizer.countImageTokens(part.data)
+    }
+
+    /**
+     * [T-tail-token-budget] Approximate payload cost of a whole message —
+     * body text + all parts. Feeds ProtectedTail.Entry.tokens and the
+     * token-budgeted walk-back so the protected tail is sized in TOKENS
+     * proportional to the model's window, not in message/turn counts (a
+     * single tool-heavy turn can outweigh a 32k window on its own).
+     */
+    private fun estimateMessageTokens(msg: LLMMessage): Int =
+        BPETokenizer.countTokens(msg.content) + msg.contentParts.sumOf { countPartTokens(it) }
+
+    /**
+     * [T-image-bytes-visible] PAYLOAD-honest token estimate for TAIL BUDGETS.
+     * estimateMessageTokens charges images their VISUAL tokens (~1-4k), but
+     * on the wire an inline image costs its base64 size (~4/3 × bytes), which
+     * a 600 KB screenshot turns into ~200k payload-token equivalents — the
+     * live 2026-09-09 session sent a 1.31 MB body while every tail budget
+     * believed it was "32k, fits". Tail budgets (write-side anchor entries,
+     * read-side walk-back) must size the tail by what the relay will actually
+     * receive, or the protected tail alone can exceed the whole window.
+     */
+    private fun estimatePayloadTokens(msg: LLMMessage): Int {
+        var tokens = BPETokenizer.countTokens(msg.content)
+        for (part in msg.contentParts) {
+            tokens += when (part) {
+                is AgentContentPart.Text -> BPETokenizer.countTokens(part.text)
+                is AgentContentPart.ToolUse -> BPETokenizer.countTokens(part.input.toString())
+                is AgentContentPart.ToolResult ->
+                    BPETokenizer.countTokens(part.content) +
+                        (part.imageData?.let {
+                            com.openminis.app.data.RequestBudget.inlineImageBytes(it) / 4
+                        } ?: 0)
+                is AgentContentPart.ImageData ->
+                    com.openminis.app.data.RequestBudget.inlineImageBytes(part.data) / 4
+            }
+        }
+        return tokens
     }
 
     /**
@@ -7878,7 +8599,7 @@ class ChatViewModel(
     private suspend fun runAgentLoop(
         provider: LLMProvider,
         systemPrompt: String?,
-        fallbackProviders: List<LLMProvider> = emptyList(),
+        fallbackProviders: List<FallbackCandidate> = emptyList(),
         fallbackStrategy: com.openminis.app.data.model.FallbackStrategy = com.openminis.app.data.model.FallbackStrategy.default,
     ) {
         AppLogger.info(TAG_STREAM, "runAgentLoop ENTER provider=${provider.javaClass.simpleName} historySize=${agentHistory.size}")
@@ -7963,6 +8684,10 @@ class ChatViewModel(
         // creation so the renderer can hide Deep Thinking blocks for
         // turns the user explicitly asked not to surface, even when a
         // forced-reasoning model still streams reasoning_content.
+        // [T-partial-turn-durability] fresh run → no live round state.
+        liveTurnTextSb = null
+        liveStreamTurnText = ""
+        liveStreamId = assistantId
         val turnThinkingLevel = _thinkingLevel.value
         withContext(Dispatchers.Main) {
             _messages.value = _messages.value + ChatMessage(
@@ -7987,14 +8712,36 @@ class ChatViewModel(
         // we surface a real error instead of a silent blank bubble. Mirrors iOS
         // AIChatViewModel.didInjectEmptyToolReminderThisRun.
         var didInjectEmptyToolReminder = false
-        // Context mutations are deliberately absent from this loop. Pressure,
-        // provider errors, and model changes may surface /compact or /rescue
-        // hints, but only an explicit user/operator command may rewrite the
-        // payload or write a compact marker.
+        // Context REWRITING is deliberately absent from this loop. Pressure,
+        // provider errors, and model changes may surface a /compact hint, but
+        // only an explicit user/operator command may rewrite the payload or
+        // write a compact marker. (Lossless tool-output offload is not a
+        // rewrite — it runs per-turn above.)
         var didReportOversize = false
         for (turn in 0 until MAX_AGENT_TURNS) {
             // Sanitize history before each API call (mirrors iOS pre-API validation)
             sanitizeAgentHistory()
+
+            // [A1-restore-offload] Lossless context-window management: when this
+            // model's window is filling up, move large tool outputs from OLDER
+            // messages to disk (per-session `offloads/tools/<tool>_<id>.<ext>`)
+            // and leave a `[CONTEXT OFFLOADED] … <path>` stub the model can
+            // file_read on demand. This is NOT summarisation — no bytes are lost
+            // and nothing is rewritten by a model — so it is independent of the
+            // removed local-compaction/rescue stack. Threshold-gated inside
+            // (force=false), so on a small session this is a cheap no-op.
+            // Live window read per turn — a stale snapshot inside a long agent
+            // turn is the iOS fcc22b66 item-3 bug.
+            effectiveContextWindowTokens()?.takeIf { it > 0 }?.let { window ->
+                runCatching {
+                    offloadContextIfNeeded(
+                        contextWindow = window,
+                        lastContextTokens = _lastTurnContextTokens.value,
+                    )
+                }.onFailure {
+                    AppLogger.warning(TAG, "[Offload] per-turn pass failed: ${it.message}")
+                }
+            }
 
             // Mark where this turn's blocks start in allToolBlocks so we can persist
             // only the NEW parts from this turn (not the full accumulated history).
@@ -8009,6 +8756,13 @@ class ChatViewModel(
             // interrupts the text run).
             val turnTextSb = StringBuilder()
             var currentTextBlockSb: StringBuilder? = null
+            // [T-partial-turn-durability] Export THIS round's accumulator so a
+            // mid-round terminator (error/cancel/crash) can commit it, and
+            // reset the crash-journal heartbeat counters for the new round.
+            liveTurnTextSb = turnTextSb
+            liveStreamTurnText = ""
+            var hbLastMs = 0L
+            var hbLastLen = 0
             // [T-android-tool-splits-reply-fix] Index (into allToolBlocks) of
             // THIS turn's single text block, used only when the provider's
             // streamed content is monolithic (streamTextIsMonolithic — OpenAI
@@ -8048,7 +8802,12 @@ class ChatViewModel(
                 modelId = currentProvider.model.id,
                 effectiveWindow = effectiveContextWindowFor(currentProvider.model),
             )
-            val maxTokens = dynamicMaxTokens(currentProvider, currentUsageTokens)
+            val maxTokens = dynamicMaxTokens(
+                currentProvider,
+                currentUsageTokens,
+                systemPrompt = systemPrompt,
+                tools = agentTools,
+            )
             val toolCalls = mutableListOf<Triple<String, String, JSONObject>>() // id, name, args
 
             // [T-dedupe-toolcallid 03fbcbfd] Per-turn dedupe of tool_call_id.
@@ -8097,6 +8856,12 @@ class ChatViewModel(
             // so we catch at collect level and unwrap.
             var collectDone = false
             var retryAttempt = 0  // per-turn auto-retry counter (resets on each new turn)
+            // [T-network-journal] Error class of the most recent transient
+            // failure, so the recovery line can name WHICH class was survived.
+            // Nullable rather than defaulted to GENERIC: "no transient failure
+            // happened" and "a generic one did" are different facts, and the
+            // recovery line is only written when retryAttempt > 0 anyway.
+            var lastRetryKind: com.openminis.app.data.TransientRetryBudget.Kind? = null
             var rateLimitAttempt = 0  // per-turn 429 backoff counter (Retry-After aware)
             var quotaBackoffAttempt = 0
             while (!collectDone) {
@@ -8108,6 +8873,23 @@ class ChatViewModel(
                     // Non-Anthropic providers ignore it (cast fails silently).
                     (currentProvider as? com.openminis.app.provider.anthropic.AnthropicProvider)
                         ?.enhancedCache = _enhancedCacheEnabled.value
+                    // [T-android-stale-conn-proactive] Pre-flight defence
+                    // against writing into a NAT/proxy-reaped pooled socket.
+                    // If the shared LLM pool has sat idle past the stale
+                    // threshold (first turn after a pause / after compaction),
+                    // evict it so this attempt dials a FRESH socket rather than
+                    // hanging until the TTFB watchdog fires. Back-to-back
+                    // agent-loop turns stay under the threshold and reuse the
+                    // warm socket, so the hot path is untouched.
+                    if (com.openminis.app.network.NetworkMonitor
+                            .evictLLMConnectionsIfIdle(currentProvider.throttleKey)
+                    ) {
+                        AppLogger.info(
+                            TAG,
+                            "[T-android-stale-conn-proactive] evicted idle LLM pool before request " +
+                                "(stale-idle guard, host=${currentProvider.throttleKey})",
+                        )
+                    }
                     // Route through effectiveAgentHistory() so a populated
                     // [_compactSummary] is prepended as a `<context-summary>`
                     // user message. Falls through to the raw agentHistory when
@@ -8121,10 +8903,18 @@ class ChatViewModel(
                                 modelId = currentProvider.model.id,
                                 effectiveWindow = effectiveContextWindowFor(currentProvider.model),
                             ),
+                            systemPrompt = systemPrompt,
+                            tools = agentTools,
                         ),
                         tools = agentTools,
                         thinkingLevel = if (currentModelSupportsReasoning) _thinkingLevel.value else ThinkingLevel.OFF,
                     ).collect { chunk ->
+                // [T-android-stale-conn-proactive] Any byte from the provider
+                // proves the socket is live — stamp it so the next turn's
+                // pre-flight idle check (evictLLMConnectionsIfIdle) reuses this
+                // warm socket instead of needlessly dialing fresh.
+                com.openminis.app.network.NetworkMonitor
+                    .markLLMActivity(currentProvider.throttleKey)
                 when (chunk) {
                     is LLMStreamChunk.ThinkingDelta -> {
                         turnThinking.append(chunk.text)
@@ -8225,6 +9015,25 @@ class ChatViewModel(
                         // text lives in `pendingChunkSb` so the stream-end final
                         // flush at line ~3580 can drain it.
                         pendingChunkSb.append(chunk.text)
+                        // [T-partial-turn-durability] Crash journal: append the
+                        // text accumulated since the last accepted heartbeat.
+                        // FILE appends only — the DB is deliberately untouched
+                        // while streaming (a Room row rewritten per heartbeat
+                        // is O(n²) cumulative writes; see StreamHeartbeat KDoc).
+                        // Cadence is gated by StreamDurability, so this is a few
+                        // syscalls every 5-15s, amortised O(total text).
+                        val hbLen = turnTextSb.length
+                        val hbNow = System.currentTimeMillis()
+                        if (com.openminis.app.data.StreamDurability.shouldHeartbeat(hbNow, hbLastMs, hbLen, hbLastLen)) {
+                            hbLastMs = hbNow
+                            val hbFrom = hbLastLen
+                            hbLastLen = hbLen
+                            com.openminis.app.data.StreamHeartbeat.appendDelta(
+                                streamHeartbeatDir(),
+                                assistantId,
+                                turnTextSb.substring(hbFrom, hbLen),
+                            )
+                        }
                         val len = turnTextSb.length
                         val unflushed = len - lastFlushedLen
                         val throttle = textDeltaThrottleMs(len)
@@ -8241,6 +9050,7 @@ class ChatViewModel(
                             // (activeSb === currentTextBlockSb by construction.)
                             materializeActiveTextBlock()
                             val turnSnap = turnTextSb.toString()
+                            liveStreamTurnText = turnSnap
                             withContext(Dispatchers.Main) {
                                 updateAssistantMessage(assistantId, accumulatedText + turnSnap, true, allToolBlocks)
                             }
@@ -8286,6 +9096,7 @@ class ChatViewModel(
                                 currentTextBlockSb = null
                             }
                             val turnSnap = turnTextSb.toString()
+                            liveStreamTurnText = turnSnap
                             withContext(Dispatchers.Main) {
                                 updateAssistantMessage(assistantId, accumulatedText + turnSnap, true, allToolBlocks)
                             }
@@ -8464,6 +9275,18 @@ class ChatViewModel(
                     lastFileToolInputMs = 0L
                     lastOtherToolInputMs = 0L
                     collectDone = true
+                    // [T-network-journal] The turn recovered after N transient
+                    // failures. Recorded because a failure-only log makes every
+                    // survived hiccup look fatal — this line is what says the
+                    // per-class retry budget is doing its job in the field.
+                    if (retryAttempt > 0) {
+                        com.openminis.app.data.NetworkJournal.recordRecovery(
+                            sessionId = realSessionId.ifEmpty { sessionId },
+                            host = currentProvider.throttleKey,
+                            kind = lastRetryKind?.name ?: "GENERIC",
+                            attempts = retryAttempt,
+                        )
+                    }
                     // Stream completed without error — clear any lingering retry UI state.
                     if (_autoRetryAttempt.value != 0 || _autoRetryCountdown.value != 0) {
                         _autoRetryAttempt.value = 0
@@ -8525,16 +9348,94 @@ class ChatViewModel(
                         actual is com.openminis.app.data.model.LLMError.TransientError ||
                         is5xx
                     )
-                    if (isTransient && retryAttempt < AUTO_RETRY_DELAYS_SEC.size) {
-                        val delaySec = AUTO_RETRY_DELAYS_SEC[retryAttempt]
+                    // [T-offline-retry-budget] Budget depends on WHY the turn
+                    // failed. A parked radio ("Unable to resolve host") needs
+                    // tens of seconds and a real connectivity wait; a reaped
+                    // pooled socket ("connection closed") needs eviction plus
+                    // another attempt. One fixed 1/2/4 ladder served neither and
+                    // killed the turn while the fix was still pending.
+                    val retryKind = com.openminis.app.data.TransientRetryBudget
+                        .classify(actual.message)
+                    val maxAttempts = if (isTransient) {
+                        com.openminis.app.data.TransientRetryBudget.maxAttempts(retryKind)
+                    } else 0
+                    if (isTransient && retryAttempt >= maxAttempts) {
+                        AppLogger.warning(
+                            TAG,
+                            "[Retry] бюджет исчерпан: kind=$retryKind attempts=$retryAttempt " +
+                                "err=${actual.message?.take(120)}",
+                        )
+                        // [T-network-journal] The turn is about to fail for real.
+                        // This is the line the user's "session stopped with an
+                        // error" question needs: which class, which host, how
+                        // many attempts were spent, and the final message.
+                        com.openminis.app.data.NetworkJournal.recordGiveUp(
+                            sessionId = realSessionId.ifEmpty { sessionId },
+                            host = currentProvider.throttleKey,
+                            kind = retryKind.name,
+                            attempts = retryAttempt,
+                            message = actual.message,
+                        )
+                    }
+                    if (isTransient && retryAttempt < maxAttempts) {
+                        val delaySec = com.openminis.app.data.TransientRetryBudget
+                            .delaySecForAttempt(retryKind, retryAttempt)
                         retryAttempt += 1
+                        lastRetryKind = retryKind
                         val errDesc = actual.message ?: actual.javaClass.simpleName
-                        Log.w(TAG, "🔁 Transient error on ${currentProvider.model.displayName}, retry $retryAttempt/${AUTO_RETRY_DELAYS_SEC.size} in ${delaySec}s: $errDesc")
+                        // [T-network-journal] Failure WITH its context. The
+                        // context is the diagnostic part: concurrent streams
+                        // explain a NAT reaping the idle session's socket while a
+                        // busy one masks it, and screen-off explains a parked
+                        // radio. Without these fields every diagnosis of "why did
+                        // it stop" is a guess.
+                        com.openminis.app.data.NetworkJournal.recordFailure(
+                            sessionId = realSessionId.ifEmpty { sessionId },
+                            host = currentProvider.throttleKey,
+                            kind = retryKind.name,
+                            attempt = retryAttempt,
+                            maxAttempts = maxAttempts,
+                            ctx = com.openminis.app.data.NetworkJournal.FailureContext(
+                                concurrentStreams = com.openminis.app.service
+                                    .SessionActivityTracker.activeSessions.value.size,
+                                screenOn = runCatching {
+                                    (context.getSystemService(android.content.Context.POWER_SERVICE)
+                                        as? android.os.PowerManager)?.isInteractive
+                                }.getOrNull(),
+                                online = com.openminis.app.network.NetworkMonitor.isOnlineNow(),
+                            ),
+                            message = actual.message,
+                        )
+                        val retryWaitStartMs = System.currentTimeMillis()
+                        var evictedPoolThisRetry = false
+                        Log.w(TAG, "🔁 Transient error on ${currentProvider.model.displayName}, retry $retryAttempt/$maxAttempts (kind=$retryKind) in ${delaySec}s: $errDesc")
                         withContext(Dispatchers.Main) {
                             _autoRetryAttempt.value = retryAttempt
                             // Show the error inline on the streaming assistant message during countdown.
                             // Keeps isStreaming=true so the UI doesn't tear down the streaming state.
-                            setTransientInlineError("$errDesc — retrying ($retryAttempt/${AUTO_RETRY_DELAYS_SEC.size})…")
+                            setTransientInlineError(
+                                // [T-network-journal] Per-class wording. The raw
+                                // exception text is meaningless to a reader
+                                // ("connection closed" reads as if they did
+                                // something), and a bad gateway is specifically
+                                // NOT their problem — saying so stops them from
+                                // hunting their own key or network.
+                                when (retryKind) {
+                                    com.openminis.app.data.TransientRetryBudget.Kind.OFFLINE ->
+                                        context.getString(
+                                            R.string.chat_retry_offline, retryAttempt, maxAttempts,
+                                        )
+                                    com.openminis.app.data.TransientRetryBudget.Kind.BAD_GATEWAY ->
+                                        context.getString(
+                                            R.string.chat_retry_bad_gateway, retryAttempt, maxAttempts,
+                                        )
+                                    com.openminis.app.data.TransientRetryBudget.Kind.NO_RESPONSE ->
+                                        context.getString(
+                                            R.string.chat_retry_no_response, retryAttempt, maxAttempts,
+                                        )
+                                    else -> "$errDesc — retrying ($retryAttempt/$maxAttempts)…"
+                                },
+                            )
                         }
                         try {
                             for (remaining in delaySec downTo 1) {
@@ -8548,6 +9449,43 @@ class ChatViewModel(
                         withContext(Dispatchers.Main) {
                             clearInlineError()
                         }
+                        // [T-android-dns-await] A name-resolution failure
+                        // ("Unable to resolve host ...") means the request never
+                        // left the device: on Android this is overwhelmingly a
+                        // radio that Doze had parked or a link mid-handover, not
+                        // a dead endpoint. Retrying on the fixed 1s/2s/4s ladder
+                        // burns every attempt while the link is still down and
+                        // then reports failure — even though the request would
+                        // have succeeded a few seconds later. So for THIS error
+                        // class only, wait for connectivity to actually return
+                        // before retrying. Bounded so a genuinely offline device
+                        // still fails in reasonable time instead of hanging.
+                        if (com.openminis.app.data.TransientRetryBudget
+                                .awaitsConnectivity(retryKind)
+                        ) {
+                            withContext(Dispatchers.Main) {
+                                setTransientInlineError(
+                                    context.getString(R.string.chat_retry_waiting_network),
+                                )
+                            }
+                            val online = com.openminis.app.network.NetworkMonitor
+                                .awaitConnectivity(DNS_RETRY_NETWORK_WAIT_MS)
+                            AppLogger.warning(
+                                TAG,
+                                "[T-android-dns-await] resolve failure; " +
+                                    (
+                                        if (online) {
+                                            "network available, retrying"
+                                        } else {
+                                            "still offline after " +
+                                                "${DNS_RETRY_NETWORK_WAIT_MS}ms, retrying anyway"
+                                        }
+                                        ),
+                            )
+                            withContext(Dispatchers.Main) {
+                                clearInlineError()
+                            }
+                        }
                         // [T-android-stale-conn-retry-hang] If this was the TTFB
                         // stale-connection hang, drop the dead pooled sockets
                         // before retrying — otherwise the retry writes into the
@@ -8556,7 +9494,8 @@ class ChatViewModel(
                         // + DB writes left the chat socket idle long enough for a
                         // VPN/proxy to reap it. Other transient errors keep the
                         // pool (live sockets are still useful to them).
-                        if (com.openminis.app.data.StaleConnectionPolicy
+                        if (com.openminis.app.data.TransientRetryBudget.evictsPool(retryKind) ||
+                            com.openminis.app.data.StaleConnectionPolicy
                                 .shouldEvictBeforeRetry(actual.message)
                         ) {
                             AppLogger.warning(
@@ -8564,7 +9503,22 @@ class ChatViewModel(
                                 "[T-android-stale-conn-retry-hang] evicting shared LLM pool before retry",
                             )
                             com.openminis.app.network.NetworkMonitor.evictLLMConnectionsNow()
+                            evictedPoolThisRetry = true
                         }
+                        // [T-network-journal] Written AFTER the waits and the
+                        // eviction so `waited` is the real elapsed time, not the
+                        // planned backoff: for an OFFLINE retry the connectivity
+                        // await dominates, and the planned number would hide it.
+                        // That figure is what says whether the budget is enough.
+                        com.openminis.app.data.NetworkJournal.recordRetry(
+                            sessionId = realSessionId.ifEmpty { sessionId },
+                            host = currentProvider.throttleKey,
+                            kind = retryKind.name,
+                            attempt = retryAttempt,
+                            waitedMs = System.currentTimeMillis() - retryWaitStartMs,
+                            onlineNow = com.openminis.app.network.NetworkMonitor.isOnlineNow(),
+                            evictedPool = evictedPoolThisRetry,
+                        )
                         // Roll back partial blocks from the failed stream attempt so the retried
                         // stream's deltas don't double-append on top of stale content. Previous
                         // turns (everything before turnStartBlockIndex) are preserved.
@@ -8625,7 +9579,7 @@ class ChatViewModel(
                     // handling below intact, but surface the explicit recovery
                     // commands once per loop.
                     val isOversize = isContextTooLargeError(actual) ||
-                        (isContentFilter && isRawHistoryLarge())
+                        (isContentFilter && isEffectiveHistoryLarge())
                     if (isOversize && !didReportOversize) {
                         didReportOversize = true
                         AppLogger.warning(
@@ -8635,8 +9589,8 @@ class ChatViewModel(
                         withContext(Dispatchers.Main) {
                             appendSystemInfo(
                                 text = "Запрос не помещается или отклонён шлюзом как слишком большой. " +
-                                    "Сессия не будет сжата автоматически. Явно выполни /compact " +
-                                    "или /rescue, либо начни новый чат.",
+                                    "Сессия не будет сжата автоматически. Явно выполни /compact, " +
+                                    "либо начни новый чат.",
                                 iconKind = "compact",
                             )
                         }
@@ -8699,10 +9653,47 @@ class ChatViewModel(
                     }
                     val isEmptyResponse = com.openminis.app.provider.EmptyStreamPolicy
                         .isEmptyResponse(actual)
-                    val shouldFallback = isRateLimit || isContentFilter || is5xx || isEmptyResponse ||
-                        fallbackStrategy == com.openminis.app.data.model.FallbackStrategy.always
-                    val next = if (shouldFallback) remainingFallbacks.removeFirstOrNull() else null
-                    if (next != null) {
+                    // [T-exhausted-transient-falls-back] A transient class that
+                    // spent its whole budget on this provider must hand the turn
+                    // to the next one. Without this the turn simply FAILED, and
+                    // both errors the user kept seeing land here:
+                    //
+                    //   "Transient error: HTTP 502: error code: 502"
+                    //   "Transient error: no response from server (120s)"
+                    //
+                    // Both are LLMError.TransientError, because mapHttpError
+                    // routes 500/502/503/504/529 to TransientError and the TTFB
+                    // watchdog throws TransientError directly. But `is5xx` only
+                    // matches LLMError.ProviderError, so it was false for every
+                    // HTTP-status 5xx that came through mapHttpError — the exact
+                    // shape it was written for. shouldFallback therefore stayed
+                    // false under the `default` strategy, the group's other
+                    // members were never tried, and the same dead gateway got
+                    // retried until the budget ran out. That is why it read as
+                    // "always this error": one bad upstream, no escape hatch.
+                    //
+                    // Gated on the budget being SPENT, not merely on the error
+                    // being transient: retrying the same provider first is right
+                    // (a blip usually clears), and jumping on the first failure
+                    // would strand the healthy provider the user chose.
+                    val retriesExhausted = com.openminis.app.data.FallbackDecision
+                        .transientBudgetSpent(
+                            isTransient = isTransient,
+                            attemptsUsed = retryAttempt,
+                            maxAttempts = maxAttempts,
+                        )
+                    val shouldFallback = com.openminis.app.data.FallbackDecision.shouldFallback(
+                        isRateLimit = isRateLimit,
+                        isContentFilter = isContentFilter,
+                        isHttp5xxProviderError = is5xx,
+                        isEmptyResponse = isEmptyResponse,
+                        transientRetriesExhausted = retriesExhausted,
+                        strategyIsAlways = fallbackStrategy ==
+                            com.openminis.app.data.model.FallbackStrategy.always,
+                    )
+                    val nextCandidate = if (shouldFallback) remainingFallbacks.removeFirstOrNull() else null
+                    if (nextCandidate != null) {
+                        val next = nextCandidate.provider
                         val reason = when {
                             isRateLimit -> "Rate limited"
                             actual is com.openminis.app.data.model.LLMError.ProviderError -> actual.detail
@@ -8722,6 +9713,18 @@ class ChatViewModel(
                         val isRealModelChange = next.model.id != currentProvider.model.id
                         fallbackReasons.add("⚠️ ${currentProvider.model.displayName}: $reason")
                         Log.i(TAG, "🔀 $reason on ${currentProvider.model.displayName}, switching to ${next.model.displayName} (realModelChange=$isRealModelChange)")
+                        // [T-network-journal] Record the handover itself, so the
+                        // journal can distinguish "switched provider and
+                        // recovered" from "never had a candidate to switch to".
+                        // Diagnostic only — it does not decide anything.
+                        com.openminis.app.data.NetworkJournal.recordFallback(
+                            sessionId = realSessionId.ifEmpty { sessionId },
+                            fromHost = currentProvider.throttleKey,
+                            toHost = next.throttleKey,
+                            modelId = next.model.id,
+                            sameModel = !isRealModelChange,
+                            reason = reason,
+                        )
                         currentProvider = next
                         // Also update class-level provider so the next sendMessage() starts from here
                         this@ChatViewModel.currentProvider = next
@@ -8730,8 +9733,27 @@ class ChatViewModel(
                         // model name, but still keep activeEntryId / provider name
                         // in sync with the instance we actually used.)
                         _modelName.value = currentProvider.model.displayName
-                        // Update activeEntryId so model picker reflects the switch
-                        val newEntry = providerRepository.config.value.modelEntries.find {
+                        // Update activeEntryId so model picker reflects the switch.
+                        // Match the model AND the endpoint host: `find { it.model
+                        // .id == … }` alone returns the FIRST entry for that model,
+                        // and the user has dozens of entries per model — so it
+                        // named an arbitrary instance rather than the one actually
+                        // in use, mislabelling the provider in the top bar and the
+                        // picker.
+                        val newEntry = providerRepository.config.value.modelEntries
+                            .firstOrNull { it.id == nextCandidate.entryId }
+                            ?: providerRepository.config.value.modelEntries.firstOrNull { e ->
+                                e.model.id == currentProvider.model.id &&
+                                    providerRepository.instance(e.providerInstanceId)
+                                        ?.effectiveBaseURL
+                                        ?.let {
+                                            com.openminis.app.provider.LlmDispatchGate.keyForUrl(it)
+                                        }
+                                        ?.equals(currentProvider.throttleKey, ignoreCase = true) == true
+                            } ?: providerRepository.config.value.modelEntries.find {
+                            // Fallback to model-only matching: a built-in provider
+                            // has no customBaseURL, so host matching cannot apply
+                            // and the old behaviour is still correct there.
                             it.model.id == currentProvider.model.id
                         }
                         if (newEntry != null) {
@@ -8804,6 +9826,10 @@ class ChatViewModel(
             // semantics — `turnText` participates in cross-turn accumulation
             // and gets persisted into agentHistory below.
             val turnText = turnTextSb.toString()
+            // [T-partial-turn-durability] Full-fidelity snapshot right before
+            // the tool-execution gap: a cancel/error during tool runs must
+            // commit exactly this round's complete text.
+            liveStreamTurnText = turnText
             // Accumulate text across turns
             accumulatedText += turnText
 
@@ -8856,6 +9882,11 @@ class ChatViewModel(
                 val turnParts = buildTurnParts(allToolBlocks, turnStartBlockIndex, toolInputMap)
                 val blockMeta = allToolBlocks.filter { it.kind == "tool_use" }.associateBy { it.id }
                 persistAssistantTurn(turnParts, lastUsage, turnReasoningContent, blockMeta)
+                // [T-partial-turn-durability] Round committed → the crash
+                // journal and the live-round export are obsolete.
+                liveTurnTextSb = null
+                liveStreamTurnText = ""
+                com.openminis.app.data.StreamHeartbeat.delete(streamHeartbeatDir(), assistantId)
                 // [T-error-persist-android] Empty-response hint: the model ended a
                 // turn (finish=stop/end_turn) with no visible text anywhere in the
                 // reply and no tool blocks — the user just sees a blank bubble.
@@ -9192,12 +10223,19 @@ class ChatViewModel(
             val turnParts = buildTurnParts(allToolBlocks, turnStartBlockIndex, toolInputMap)
             val blockMeta = allToolBlocks.filter { it.kind == "tool_use" }.associateBy { it.id }
             val assistantDbId = persistAssistantTurn(turnParts, lastUsage, turnReasoningContent, blockMeta)
+            // [T-partial-turn-durability] Round committed (this site runs after
+            // tool execution; the export stayed live through the tool gap so an
+            // error/cancel during execution could still commit the round text).
+            // Clear it now — a later terminator must NOT re-commit this round.
             if (assistantDbId != null) {
                 val lastIdx = agentHistory.indexOfLast { it.role == LLMMessage.Role.ASSISTANT && it.dbMessageId == null }
                 if (lastIdx >= 0) {
                     agentHistory[lastIdx] = agentHistory[lastIdx].copy(dbMessageId = assistantDbId)
                 }
             }
+            liveTurnTextSb = null
+            liveStreamTurnText = ""
+            com.openminis.app.data.StreamHeartbeat.delete(streamHeartbeatDir(), assistantId)
 
             // Persist tool results as user-role message (mirrors iOS)
             val toolResultDbId = persistToolResultMessage(resultParts)
@@ -9263,6 +10301,9 @@ class ChatViewModel(
                     // iteration top, so clearing means new turn's blocks
                     // span [0..size).
                     assistantId = handled.newAssistantId
+                    // [T-partial-turn-durability] journal key follows the new
+                    // bubble (old round's file was deleted at its persist).
+                    liveStreamId = handled.newAssistantId
                     accumulatedText = ""
                     allToolBlocks.clear()
                     allToolInputs.clear()
@@ -9328,6 +10369,12 @@ class ChatViewModel(
         if (_streamingById.value.containsKey(assistantId)) {
             _streamingById.value = _streamingById.value - assistantId
         }
+        // [T-partial-turn-durability] Loop ceiling hit: every completed round
+        // already persisted (and cleared the export), so this is defensive —
+        // no orphan journal may outlive the loop.
+        liveTurnTextSb = null
+        liveStreamTurnText = ""
+        com.openminis.app.data.StreamHeartbeat.delete(streamHeartbeatDir(), assistantId)
         setInlineError(
             "Stopped after $MAX_AGENT_TURNS agent turns to prevent runaway " +
             "tool use. The model kept calling tools without finishing — tap " +
@@ -9871,6 +10918,33 @@ class ChatViewModel(
             val msg = "Memory writes are disabled for this session (user toggled /memory off). Reads remain available."
             return ToolExecutionResult(msg, false, toolTitle = "Memory (disabled)")
         }
+        // [T-canon-persistence] Explicit-signal gate: when the user's own
+        // words in THIS tool call carry a memorize/rule signal ("запомни...",
+        // "always/never..."), the fact goes to CANON.md (pinned, injected as
+        // standing instructions every turn) instead of today's daily log
+        // (background framing, drops out of the 3-file window in days).
+        // Plain project notes keep the daily-log path unchanged.
+        val contentForGate = try {
+            JSONObject(argsJson).optString("content", "")
+        } catch (_: Exception) { "" }
+        if (contentForGate.isNotBlank() &&
+            com.openminis.app.data.MemoryCanon.isExplicitMemorySignal(contentForGate)
+        ) {
+            val fact = com.openminis.app.data.MemoryCanon.extractFactText(contentForGate)
+            if (fact.length >= 3) {
+                val canonResult = repo.appendCanonEntry(fact, type = "preference")
+                val canonSuccess = canonResult.startsWith("Canon pinned") ||
+                    canonResult.startsWith("Canon: already pinned")
+                _memoryToolRecords.value = _memoryToolRecords.value + MemoryToolRecord(
+                    title = "Canon: pin user rule",
+                    isWrite = true,
+                    preview = fact.take(100),
+                    output = canonResult,
+                    writtenContent = fact,
+                )
+                return ToolExecutionResult(canonResult, canonSuccess, toolTitle = "Canon pin")
+            }
+        }
         val result = MemoryTools.executeMemoryWrite(argsJson, repo)
         // Record for SessionMemorySheet
         val content = try {
@@ -10055,6 +11129,10 @@ class ChatViewModel(
             isStreaming = false,
             toolBlocks = toolBlocks.toList(),
             isAwaitingModelResponse = isAwaitingModelResponse,
+            // [T-msg-timestamps] Stamp completion once, on the first drain to
+            // a non-streaming state. Preserve an existing value so a late
+            // no-op re-drain can't bump the shown time forward.
+            finishedAtMs = current[idx].finishedAtMs ?: System.currentTimeMillis(),
         )
         _messages.value = updated
         if (_streamingById.value.containsKey(id)) {
@@ -10092,6 +11170,8 @@ class ChatViewModel(
                 isStreaming = false,
                 toolBlocks = delta.toolBlocks,
                 isAwaitingModelResponse = delta.isAwaitingModelResponse,
+                // [T-msg-timestamps] Single-message flush is a terminal drain.
+                finishedAtMs = current[idx].finishedAtMs ?: System.currentTimeMillis(),
             )
             _messages.value = updated
         }
@@ -10106,6 +11186,29 @@ class ChatViewModel(
 
     /** Drain ALL outstanding streaming deltas (called on global resets). */
     private fun flushAllStreamingDeltas() {
+        // [T-stream-flush-tail-loss] Publish any suppressed trailing delta
+        // BEFORE the state clear drops it. clearAllStreamFlushStates cancels
+        // the pending trailing job — and with it the pendingContent it was
+        // going to publish — so a delta caught inside the throttle window
+        // (up to 2s of text on long replies) silently vanished from every
+        // terminal drain: error banner, user cancel, turn limit. Publishing
+        // inline first makes the drain see the true latest content. The
+        // runCatching guards the pre-existing HashMap cross-thread access
+        // (Main writers vs IO error path) — a lost snapshot is exactly what
+        // the fallback in currentLiveTurnText() covers.
+        runCatching {
+            for ((flushId, st) in streamFlushStates.toList()) {
+                val pc = st.pendingContent ?: continue
+                _streamingById.value = _streamingById.value + (
+                    flushId to StreamingDelta(
+                        content = pc,
+                        toolBlocks = st.pendingBlocks,
+                        isAwaitingModelResponse = st.pendingAwaiting,
+                    )
+                )
+                st.pendingContent = null
+            }
+        }
         clearAllStreamFlushStates()
         val pending = _streamingById.value
         if (pending.isEmpty()) return
@@ -10119,6 +11222,8 @@ class ChatViewModel(
                 isStreaming = false,
                 toolBlocks = delta.toolBlocks,
                 isAwaitingModelResponse = delta.isAwaitingModelResponse,
+                // [T-msg-timestamps] Batched flush is a terminal drain too.
+                finishedAtMs = current[idx].finishedAtMs ?: System.currentTimeMillis(),
             )
             changed = true
         }
@@ -10224,6 +11329,49 @@ class ChatViewModel(
             reasoningContent = reasoningContent,
         )
         return entity.id
+    }
+
+    /**
+     * [T-partial-turn-durability] Commit the current round's streamed text
+     * when the agent loop died mid-round (provider error / auto-resume
+     * failure). The text lived only in memory before this existed — a
+     * transport error at 90% of a 15k-line answer destroyed all of it.
+     *
+     * Persists an assistant row (text + incompleteness marker) and appends it
+     * to agentHistory so retry/resume continues from it. Called INLINE
+     * (suspend, same coroutine as the dead loop) before [setInlineError], so
+     * the error sticker's "update last assistant row" lands on THIS row.
+     *
+     * No-op when the round was already committed (export cleared at both
+     * round-persist sites) or produced no text.
+     */
+    private suspend fun persistPartialStreamTurn(): Boolean {
+        val text = currentLiveTurnText()
+        val sid = realSessionId.ifEmpty { sessionId }
+        if (text.isEmpty() || sid.isEmpty()) return false
+        val parts = listOf(
+            AgentContentPart.Text(text),
+            AgentContentPart.Text(STREAM_INTERRUPTED_REMINDER),
+        )
+        agentHistory.add(
+            LLMMessage(
+                role = LLMMessage.Role.ASSISTANT,
+                content = text,
+                contentParts = parts,
+            )
+        )
+        withContext(Dispatchers.IO) {
+            runCatching {
+                chatRepository.appendMessage(sid, "assistant", buildAssistantPartsJson(parts))
+            }.onFailure {
+                Log.w(TAG, "[StreamDurability] partial-turn persist failed: ${it.message}")
+            }
+        }
+        liveTurnTextSb = null
+        liveStreamTurnText = ""
+        liveStreamId?.let { com.openminis.app.data.StreamHeartbeat.delete(streamHeartbeatDir(), it) }
+        AppLogger.info(TAG_STREAM, "[StreamDurability] committed partial round: ${text.length} chars after loop death")
+        return true
     }
 
     @Deprecated("Use persistAssistantTurn(parts, ...) for per-turn delta persistence")
@@ -10342,7 +11490,7 @@ class ChatViewModel(
 Memory system (currently ENABLED):
 - memory_write writes to today's daily log (YYYY-MM-DD.md) — use it for session notes, key facts, project context, things learned, and action items.
 - GLOBAL.md (/var/minis/memory/GLOBAL.md) stores persistent preferences, settings, and general-purpose conventions. To read it, use file_read (NOT memory_get). To update it, use file_read first then file_edit. If GLOBAL.md does not exist yet, use file_write to create it directly.
-- IMPORTANT: Only write to GLOBAL.md when the user explicitly asks (e.g. 'remember this globally', 'save to global memory'). Before editing, deduplicate and clean up — avoid ambiguity, repetition, or daily-log-style entries. GLOBAL.md should contain only concise, reusable knowledge (preferences, settings, conventions), NOT session logs or transient context.
+- IMPORTANT: Only write to GLOBAL.md when the user explicitly asks (e.g. 'remember this globally', 'save to global memory'). Before editing, file_read GLOBAL.md in full and DEDUPLICATE hard: if a fact is already present, edit that line in place instead of adding a second one; never append a near-duplicate that differs only in wording, and never restate something already covered. GLOBAL.md must stay a small, non-redundant set of concise, reusable knowledge (preferences, settings, conventions) — NOT session logs, task history, or transient context. If an entry is obsolete, replace it rather than stacking a correction beneath it.
 - Use memory_get to recall past knowledge before starting tasks — check if there are relevant memories that can help.
 - Proactively save memories (via memory_write to daily log) when you discover user preferences or important patterns — don't wait to be asked.
 - When the user says 'remember this' or similar, use memory_write to persist to the daily log. Only write to GLOBAL.md if the user specifically asks for global/persistent storage.
@@ -10447,7 +11595,9 @@ Environment variables:
 - Settings deep links: when you tell the user "go to Settings → X" or want to point them at a specific setting, prefer a Markdown link `[Label](minis://settings/<path>)` over plain prose. Available paths: providers (list), providers/<instanceId> (one provider), model-groups (incl. Agent Loop), model-groups/<groupId>, usage (token usage), skills, memory, storage, shared-folders (Shared Folders: /var/minis/{shared,skills,memory}), mount-external (Mount External Folders), logs, appearance, background, about, permissions, environments[?create_key=K&create_value=V[&create_note=N]], rootfs (also reachable as mirrors). Unknown paths fall back to Settings home, but prefer the exact path so users land where they want. These settings/action links are app deep links — render them as Markdown links in chat (same action-vs-resource rule as the minis:// section above: only /var/minis resource URLs may go to browser_use).
 - To check if a variable is set, use `[ -n "${'$'}VAR" ] && echo 'set' || echo 'not set'`. NEVER use echo ${'$'}VAR, printenv VAR, or any command that would output the actual value into the conversation context.${memorySystemSection}
 
-Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended, so in-app scheduled scripts may not run as expected. For recurring tasks that must fire while the app is backgrounded, use the native alarm tool (AlarmManager) or tell the user to set up a system-level schedule (Google Calendar event, Tasker automation, etc.). (Waiting or polling WITHIN the current turn is different — that is what shell_execute `delay` chains are for, per the shell_execute notes above.)"""
+Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended, so in-app scheduled scripts may not run as expected. For recurring tasks that must fire while the app is backgrounded, use the native alarm tool (AlarmManager) or tell the user to set up a system-level schedule (Google Calendar event, Tasker automation, etc.). (Waiting or polling WITHIN the current turn is different — that is what shell_execute `delay` chains are for, per the shell_execute notes above.)
+
+""" + com.openminis.app.agent.SystemPromptBuilder.ENGINEERING_DISCIPLINE
 
         // Match iOS order exactly: skills → global memory → recent daily memory.
         // See ios/Agent/Chat/AIChatViewModel.swift:4375-4387. Each fragment is
@@ -10473,6 +11623,12 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         // tool surface and SOUL.md is part of identity, both orthogonal
         // to the memory feature.
         val globalMemoryFragment = if (memoryOn) memoryRepository?.loadGlobalMemoryFragment() else null
+        // [T-canon-persistence] Pinned canon AFTER GLOBAL: both are the
+        // instruction tier, but canon is agent-written-through-gate and
+        // explicitly framed as standing instructions (the daily fragment
+        // below stays "background"). Order: laws (GLOBAL) → pinned canon →
+        // episode logs (daily).
+        val canonFragment = if (memoryOn) memoryRepository?.loadCanonFragment() else null
         // [T-memory-inject-budget] Total char budget for the auto-injected
         // daily logs — config key `memory.injectMaxChars` (prefs
         // `minis_memory_prefs`/`memory.inject.maxchars`). Default 8000 ≈
@@ -10485,6 +11641,31 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                 com.openminis.app.data.repository.MemoryRepository.DEFAULT_INJECT_CHARS_TOTAL,
             )
         val dailyMemoryFragment = if (memoryOn) memoryRepository?.loadRecentDailyMemoryFragment(memoryInjectBudget) else null
+
+        // [T-env-names-injection] Inject the NAMES (never the values) of the
+        // env vars the user has configured, so the agent stops asking the user
+        // to "set GITHUB_TOKEN" when a matching secret already exists — the
+        // reported failure mode. Names are non-secret (they show in Settings);
+        // values live in EncryptedSharedPreferences and are deliberately not
+        // read here. Sourced from the same repository the sandbox injects from
+        // (ExecutionCoordinator.envVarRepository), so the list is exactly what
+        // `$NAME` will resolve to in a shell_execute. Absent/empty → no
+        // section, so ordinary users see nothing new. Appended as a fragment
+        // (not folded into `base`) to keep the cacheable prefix byte-stable.
+        val envNamesFragment = try {
+            val names = com.openminis.app.sandbox.ExecutionCoordinator.envVarRepository
+                ?.entries?.value?.map { it.key }?.sorted().orEmpty()
+            if (names.isEmpty()) null else buildString {
+                append("Configured environment variables (NAMES only — values are secret and NOT shown):\n")
+                append(names.joinToString(", "))
+                append("\nThese are already set in the sandbox: reference them as `\$NAME` in shell_execute ")
+                append("(never echo/print their values). If a task needs one of these, USE it directly instead ")
+                append("of asking the user to provide it. Only ask the user to add a variable that is NOT in this list, ")
+                append("via [Set NAME](minis://settings/environments?create_key=NAME&create_value=).")
+            }
+        } catch (_: Exception) {
+            null
+        }
 
         val workerSessionId = realSessionId.ifEmpty { sessionId }
         val rolePrompt = com.openminis.app.tools.AgentSystemPromptStore.promptFor(workerSessionId)
@@ -10520,9 +11701,17 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                 append("\n\n")
                 append(globalMemoryFragment)
             }
+            if (canonFragment != null) {
+                append("\n\n")
+                append(canonFragment)
+            }
             if (dailyMemoryFragment != null) {
                 append("\n\n")
                 append(dailyMemoryFragment)
+            }
+            if (envNamesFragment != null) {
+                append("\n\n")
+                append(envNamesFragment)
             }
             // Runtime context goes last so the prefix above stays byte-stable
             // across requests within the same day. Keep ordering deterministic
@@ -10737,7 +11926,24 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
             "minis-sessions/$sessionId/attachments/uploads",
         ).apply { mkdirs() }
         // Metadata captured per attachment for the <user-attached-files> XML.
-        data class UploadMeta(val linuxPath: String, val size: Long, val modifiedIso: String)
+        // [T-attachment-numbering] `isImage` is recorded because this list is
+        // filled in the user's PICK order while the bubble renders images
+        // first. The XML must be numbered in the order the user sees, so the
+        // block below reorders by this flag; without it "picture 2" would name
+        // a different file on screen than in the payload.
+        //
+        // `imagePartIndex` is the slot this image takes in `imageParts` (null
+        // for files). Needed because a failed uploads-dir write skips the meta
+        // but still appends the image part, so the two lists can be
+        // same-ordered yet different-length — counting alone would then trim
+        // the wrong entry when ImageBudget tail-drops.
+        data class UploadMeta(
+            val linuxPath: String,
+            val size: Long,
+            val modifiedIso: String,
+            val isImage: Boolean,
+            val imagePartIndex: Int? = null,
+        )
         val metas = mutableListOf<UploadMeta>()
         val nowMs = System.currentTimeMillis()
         val isoFormatter = java.text.SimpleDateFormat(
@@ -10799,7 +12005,18 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                 val linuxPath = if (uploadOk) "/var/minis/attachments/uploads/$safeName" else null
                 if (linuxPath != null) {
                     imageUploadPaths.add(linuxPath)
-                    metas.add(UploadMeta(linuxPath = linuxPath, size = rawBytes.size.toLong(), modifiedIso = nowStr))
+                    metas.add(
+                        UploadMeta(
+                            linuxPath = linuxPath,
+                            size = rawBytes.size.toLong(),
+                            modifiedIso = nowStr,
+                            isImage = true,
+                            // Slot this image will occupy in imageParts — the
+                            // add happens right below, so the current size IS
+                            // the index.
+                            imagePartIndex = imageParts.size,
+                        )
+                    )
                 }
 
                 imageParts.add(LLMMessage.ImagePart(inferenceBytes, attachment.mimeType, linuxPath = linuxPath))
@@ -10859,7 +12076,14 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
             }
 
             val linuxPath = "/var/minis/attachments/uploads/$safeName"
-            metas.add(UploadMeta(linuxPath = linuxPath, size = dest.length(), modifiedIso = nowStr))
+            metas.add(
+                UploadMeta(
+                    linuxPath = linuxPath,
+                    size = dest.length(),
+                    modifiedIso = nowStr,
+                    isImage = false,
+                )
+            )
         }
 
         // T-imgsize: byte-level budget enforcement. The resizeImageBytes pass
@@ -10889,6 +12113,18 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
             while (imageNames.size > newSize) imageNames.removeAt(imageNames.size - 1)
             while (imageMediaRefPartsJson.size > newSize) imageMediaRefPartsJson.removeAt(imageMediaRefPartsJson.size - 1)
             while (imageUploadPaths.size > newSize) imageUploadPaths.removeAt(imageUploadPaths.size - 1)
+            // [T-attachment-numbering] `metas` is the other parallel list, and
+            // the symmetric tail-drop above missed it because it holds BOTH
+            // kinds and so does not look parallel. Left untrimmed, the XML
+            // would number an image the bubble no longer renders, and every
+            // file number after it would name a different tile than the user
+            // sees — the precise ambiguity the numbering exists to remove.
+            //
+            // Dropping by `imagePartIndex >= newSize` rather than by counting:
+            // an image whose uploads-dir write failed has no meta at all, so
+            // "the last N image metas" is not the same set as "the metas of the
+            // dropped image parts".
+            metas.removeAll { it.isImage && (it.imagePartIndex ?: 0) >= newSize }
             if (budgetResult.mutated) {
                 AppLogger.info(
                     TAG,
@@ -10902,11 +12138,20 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         // per attachment (image and non-image) that successfully landed in
         // the iSH uploads dir — gives the model a metadata-only inventory
         // it can resolve via shell tools when content is needed.
-        val xml = if (metas.isEmpty()) null else buildString {
+        //
+        // [T-attachment-numbering] `n="N"` is the number printed on the tile in
+        // the chat bubble, so the user can say "picture 2" and mean one exact
+        // file. Emission order is images-then-files to match
+        // UserAttachmentList's render order — `metas` itself is in pick order,
+        // which for a mixed pick is NOT the on-screen order.
+        val orderedMetas = metas.filter { it.isImage } + metas.filterNot { it.isImage }
+        val xml = if (orderedMetas.isEmpty()) null else buildString {
             append("<user-attached-files>\n")
-            for (m in metas) {
+            orderedMetas.forEachIndexed { idx, m ->
                 val urlPath = m.linuxPath.removePrefix("/var/minis/")
-                append("  <file path=\"")
+                append("  <file n=\"")
+                append(idx + 1)
+                append("\" path=\"")
                 append(m.linuxPath)
                 append("\" url=\"minis://")
                 append(urlPath)
@@ -11344,6 +12589,15 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         }
         handleUserCancelledCleanup()
 
+        // [T-partial-turn-durability] The cancel paths above committed the
+        // round text from memory (authoritative, full-fidelity) — the crash
+        // journal and the live-round export are obsolete. Clear AFTER
+        // handleUserCancelledCleanup, which reads them.
+        liveStreamId?.let { com.openminis.app.data.StreamHeartbeat.delete(streamHeartbeatDir(), it) }
+        liveTurnTextSb = null
+        liveStreamTurnText = ""
+        liveStreamId = null
+
         // T189: iOS parity (AIChatViewModel.swift L2592-2610). If the user
         // enqueued prompts during the cancelled stream, auto-resume the drain
         // instead of leaving them stuck as dashed bubbles waiting for a manual
@@ -11545,26 +12799,52 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                     isError = true,
                 )
             }
+            // [T-partial-turn-durability] The interrupted round's TEXT is
+            // still unpersisted — persistAssistantTurn runs only AFTER tool
+            // execution, which the cancel just cut short. Commit it before
+            // the cancelled tool results, in the SAME coroutine so the two
+            // rows cannot race on nextSortOrder. Text-only parts: tool_use
+            // inputs are not recoverable here (they live in the loop's
+            // allToolInputs) and the orphaned CANCELLED tool_results are
+            // already handled downstream by PayloadPairingGuard.
+            val roundText = currentLiveTurnText()
+            val textParts = roundText.takeIf { it.isNotEmpty() }?.let { rt ->
+                listOf(
+                    AgentContentPart.Text(rt),
+                    AgentContentPart.Text(STREAM_INTERRUPTED_REMINDER),
+                )
+            }
+            if (textParts != null) {
+                agentHistory.add(
+                    LLMMessage(
+                        role = LLMMessage.Role.ASSISTANT,
+                        content = roundText,
+                        contentParts = textParts,
+                    )
+                )
+            }
+            val sidNow = activeSessionId
             viewModelScope.launch(Dispatchers.IO) {
+                if (textParts != null) {
+                    runCatching {
+                        chatRepository.appendMessage(sidNow, "assistant", buildAssistantPartsJson(textParts))
+                    }
+                }
                 persistToolResultMessage(parts)
             }
             _canResume.value = true
             return
         }
 
-        // Case 2: cancel during text streaming. If partial assistant text
-        // exists and agentHistory does not already end with the assistant
-        // turn we're on, commit the partial text + truncation marker so the
-        // model sees an interrupted prior turn on the next call.
-        val partialText = buildString {
-            if (last.content.isNotEmpty()) append(last.content)
-            for (b in last.toolBlocks) {
-                if (b.kind == "text" && b.content.isNotEmpty()) {
-                    if (isNotEmpty()) append('\n')
-                    append(b.content)
-                }
-            }
-        }
+        // Case 2: cancel during text streaming. [T-partial-turn-durability]
+        // Commit the CURRENT ROUND's text (exported loop state), not the whole
+        // bubble: earlier rounds are already persisted as their own rows, and
+        // the old full-bubble persist DUPLICATED their text into a new row —
+        // the model then read the same text twice after a reload. Non-empty
+        // export always means "this round was never persisted" (cleared at
+        // both round-persist sites), so persisting it is duplicate-free in
+        // every ordering.
+        val partialText = currentLiveTurnText()
         val historyEndsWithAssistant =
             agentHistory.lastOrNull()?.role == LLMMessage.Role.ASSISTANT
 
@@ -11578,13 +12858,25 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         // a candidate WITH real text or any emitted tool_use is kept (handled
         // by Case 1 / Case 2 below); a thinking-only placeholder is not.
         val hasAnyToolUse = last.toolBlocks.any { it.kind == "tool_use" }
-        if (partialText.isEmpty() && !hasAnyToolUse && !historyEndsWithAssistant) {
+        // [T-partial-turn-durability] The drop test uses the BUBBLE's content
+        // (what the user saw), not the round-scoped export: after a completed
+        // round 1 the bubble carries real text even while the round-2 export
+        // is empty — dropping it would blank a turn whose rows are already
+        // in the DB. The export decides only what still needs PERSISTING
+        // (Case 2 below).
+        val bubbleHasContent = last.content.isNotBlank() || hasAnyToolUse ||
+            last.toolBlocks.any { it.kind == "text" && it.content.isNotBlank() }
+        if (!bubbleHasContent && !historyEndsWithAssistant) {
             msgs.removeAt(lastIdx)
             _messages.value = msgs
             return
         }
 
-        if (partialText.isNotEmpty() && !historyEndsWithAssistant) {
+        if (partialText.isNotEmpty()) {
+            // [T-partial-turn-durability] historyEndsWithAssistant no longer
+            // gates this: with round-scoped text there is no duplication
+            // either way, and the old skip lost the CURRENT round's text
+            // whenever an earlier round had already been persisted.
             val parts = listOf<AgentContentPart>(
                 AgentContentPart.Text(partialText),
                 AgentContentPart.Text(
@@ -12081,6 +13373,13 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                 // a non-null "" would render an empty banner. Defends against any
                 // legacy/other-writer "" row.
                 error = entity.errorInfo?.takeIf { it.isNotBlank() },
+                // [T-msg-timestamps] Restore wall-clock times from the row.
+                // created_at is the send/turn-start instant; updated_at is the
+                // last write to the row — for a finished assistant turn that is
+                // effectively its completion time. User rows leave finishedAtMs
+                // null (no "finished" concept for a user message).
+                createdAtMs = entity.createdAt,
+                finishedAtMs = if (entity.role == "assistant") entity.updatedAt else null,
             )
         }.let { messages ->
             // Merge consecutive assistant messages into one:
@@ -12119,6 +13418,11 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                         // to the LAST assistant row of the turn, so the later row
                         // (`msg`) wins; fall back to `prev` if only it carried one.
                         error = msg.error ?: prev.error,
+                        // [T-msg-timestamps] Merged turn spans prev(turn start)
+                        // → msg(last row). Keep the earliest creation and the
+                        // latest completion so the header shows the full turn.
+                        createdAtMs = minOf(prev.createdAtMs, msg.createdAtMs),
+                        finishedAtMs = msg.finishedAtMs ?: prev.finishedAtMs,
                     )
                 } else {
                     merged.add(msg)

@@ -56,10 +56,24 @@ object RequestBudget {
      * measured as small as 3.8 KB, so the model lost most of the live thread
      * and fell back on the compact summary — which describes the START of the
      * conversation. That produced the "it answers as if from the beginning of
-     * the session" symptom. 1 MB still sits below the only rejection ever
-     * measured (1.28 MB) while leaving 3.3x more working room.
+     * the session" symptom.
+     *
+     * [T-image-bytes-visible] Lowered 1 MB → 900 KB. A 2026-09-09 live log
+     * showed a 1.31 MB body accepted by one relay (AgentRouter) while the
+     * user's other relay answered «запрос отклонен шлюзом» — nginx-fronted
+     * gateways default to client_max_body_size 1m, and the JSON envelope
+     * (role fields, escaping) adds ~5-10% on top of the raw part bytes. 900 KB
+     * of part bytes keeps the serialized body under the strictest observed
+     * limit.
      */
-    const val DEFAULT_MAX_BODY_BYTES = 1_000_000
+    const val DEFAULT_MAX_BODY_BYTES = 900_000
+
+    /**
+     * Floor for the parts budget inside [plan] once [overheadBytes] is
+     * subtracted — if overhead alone eats the ceiling, elision still targets
+     * this floor instead of arithmetic nonsense (negative target).
+     */
+    const val MIN_EFFECTIVE_BODY_BYTES = 64_000
 
     /**
      * Tool results at or below this many chars are never worth eliding.
@@ -77,27 +91,84 @@ object RequestBudget {
     data class Report(
         val messages: List<LLMMessage>,
         val elidedToolResultCount: Int,
+        val elidedImageCount: Int,
         val bytesBefore: Int,
         val bytesAfter: Int,
-    )
+        /** overheadBytes echoed back so callers compare ONE number. */
+        val overheadBytes: Int = 0,
+    ) {
+        /** The honest "does the whole body fit" number: parts + overhead. */
+        val totalAfter: Int get() = bytesAfter + overheadBytes
+    }
 
     /**
      * @param messages the full message list about to be serialized (system
      *   prompt excluded — it is a separate field and never elided).
-     * @param protectRecentUserTextTurns trailing user-text turns kept verbatim.
+     * @param protectRecentUserTextTurns trailing user-text turns whose
+     *   tool_results are never elided (the live working context).
+     * @param overheadBytes serialized size of EVERYTHING that rides in the
+     *   same request body but is not a message part: the system prompt,
+     *   tool JSON schemas, legacy top-level imageParts. Until this parameter
+     *   existed the ceiling silently applied to parts only — a 60 KB system
+     *   prompt plus tool schemas meant the real body could exceed the relay
+     *   limit while the gate reported "fits".
      * @param maxBodyBytes ceiling on the estimated serialized body.
+     * @param imageProtectRecentUserTextTurns trailing user-text turns whose
+     *   IMAGES are never elided (smaller than the tool shield — old
+     *   screenshots are compactible dead weight; see
+     *   [DEFAULT_IMAGE_PROTECT_TURNS]).
      */
     fun plan(
         messages: List<LLMMessage>,
         protectRecentUserTextTurns: Int,
         maxBodyBytes: Int = DEFAULT_MAX_BODY_BYTES,
+        imageProtectRecentUserTextTurns: Int = DEFAULT_IMAGE_PROTECT_TURNS,
+        overheadBytes: Int = 0,
     ): Report {
         val bytesBefore = estimateBytes(messages)
-        if (messages.isEmpty() || bytesBefore <= maxBodyBytes) {
-            return Report(messages, 0, bytesBefore, bytesBefore)
+        val totalBefore = bytesBefore + overheadBytes
+        // Elision target: the PARTS must fit into (ceiling - overhead). A
+        // caller whose overhead alone exceeds the ceiling gets effectiveMax
+        // clamped to a small floor, so elision still reclaims everything it
+        // can instead of no-op'ing (messages can never fully "fit" then).
+        val effectiveMax = (maxBodyBytes - overheadBytes).coerceAtLeast(MIN_EFFECTIVE_BODY_BYTES)
+        if (messages.isEmpty() || totalBefore <= maxBodyBytes) {
+            return Report(messages, 0, 0, bytesBefore, bytesBefore, overheadBytes)
         }
 
         val protectedFromIdx = protectedBoundary(messages, protectRecentUserTextTurns)
+        val imageProtectedFromIdx = protectedBoundary(messages, imageProtectRecentUserTextTurns)
+
+        // [T-image-bytes-visible] Pass 0 — HISTORY IMAGES. Inline b64 images
+        // are the single largest body inflator (a 600 KB screenshot becomes
+        // an ~800 KB b64 string), and until this pass estimateBytes counted
+        // them as ZERO, so both this gate and PostAnchorPrune were blind
+        // while the body sailed past the 1 MB relay limit («запрос отклонен
+        // шлюзом» / the disguised `sensitive_words_detected` rejection).
+        // Elide the eldest oversized images OUTSIDE the small image shield
+        // FIRST — they reclaim the most bytes per edit; tool_results go after.
+        // ImageData becomes a Text stub; ToolResult keeps its text content and
+        // only loses the image bytes (with a re-fetch hint when the path is
+        // known). Images inside the freshest turns are left for the providers'
+        // ImageBudget compression ladder — never silently deleted.
+        data class ImageCandidate(val msgIdx: Int, val partIdx: Int, val bytes: Int)
+        val imageCandidates = ArrayList<ImageCandidate>()
+        for (mi in 0 until imageProtectedFromIdx) {
+            val parts = messages[mi].contentParts
+            for (pi in parts.indices) {
+                val p = parts[pi]
+                when (p) {
+                    is AgentContentPart.ImageData ->
+                        imageCandidates.add(ImageCandidate(mi, pi, inlineImageBytes(p.data)))
+                    is AgentContentPart.ToolResult ->
+                        p.imageData?.let {
+                            imageCandidates.add(ImageCandidate(mi, pi, inlineImageBytes(it)))
+                        }
+                    else -> Unit
+                }
+            }
+        }
+        imageCandidates.sortByDescending { it.bytes }
 
         // Collect elision candidates: (messageIdx, partIdx, contentLength),
         // only in the prunable head, skipping anything already reduced (offload
@@ -125,8 +196,8 @@ object RequestBudget {
                 }
             }
         }
-        if (big.isEmpty() && small.isEmpty()) {
-            return Report(messages, 0, bytesBefore, bytesBefore)
+        if (imageCandidates.isEmpty() && big.isEmpty() && small.isEmpty()) {
+            return Report(messages, 0, 0, bytesBefore, bytesBefore, overheadBytes)
         }
 
         // Largest first within each tier — reclaim the most bytes per elision so
@@ -139,8 +210,34 @@ object RequestBudget {
         val editedParts = HashMap<Int, MutableList<AgentContentPart>>()
         var running = bytesBefore
         var elided = 0
+        var elidedImages = 0
+
+        // Images first (biggest reclaim per edit).
+        for (c in imageCandidates) {
+            if (running <= effectiveMax) break
+            val partsList = editedParts.getOrPut(c.msgIdx) {
+                messages[c.msgIdx].contentParts.toMutableList()
+            }
+            val original = partsList[c.partIdx]
+            when (original) {
+                is AgentContentPart.ImageData -> {
+                    val stub = AgentContentPart.Text(imageElisionStub(original))
+                    partsList[c.partIdx] = stub
+                    running -= (c.bytes - utf8(stub.text))
+                    elidedImages += 1
+                }
+                is AgentContentPart.ToolResult -> {
+                    partsList[c.partIdx] = original.copy(imageData = null)
+                    running -= c.bytes
+                    elidedImages += 1
+                }
+                else -> Unit
+            }
+        }
+
+        // Then oversize tool_results.
         for (c in candidates) {
-            if (running <= maxBodyBytes) break
+            if (running <= effectiveMax) break
             val partsList = editedParts.getOrPut(c.msgIdx) {
                 messages[c.msgIdx].contentParts.toMutableList()
             }
@@ -152,7 +249,9 @@ object RequestBudget {
             elided += 1
         }
 
-        if (elided == 0) return Report(messages, 0, bytesBefore, bytesBefore)
+        if (elided == 0 && elidedImages == 0) {
+            return Report(messages, 0, 0, bytesBefore, bytesBefore, overheadBytes)
+        }
 
         val out = ArrayList<LLMMessage>(messages.size)
         for (i in messages.indices) {
@@ -160,7 +259,27 @@ object RequestBudget {
             if (edited == null) out.add(messages[i])
             else out.add(messages[i].copy(contentParts = edited))
         }
-        return Report(out, elided, bytesBefore, estimateBytes(out))
+        return Report(out, elided, elidedImages, bytesBefore, estimateBytes(out), overheadBytes)
+    }
+
+    /**
+     * [T-overhead-visible] Serialized size of everything that shares the
+     * request body with [plan]'s message parts: the system prompt, tool JSON
+     * schemas (already serialized by the caller — each provider has its own
+     * JSON dialect), and legacy top-level image attachments. Providers pass
+     * this in as [plan]'s overheadBytes so the ceiling covers the WHOLE body,
+     * not just the parts. Image bytes count at their base64 wire size (~4/3),
+     * matching [inlineImageBytes].
+     */
+    fun estimateOverheadBytes(
+        systemPrompt: String?,
+        toolsJsonBytes: Int = 0,
+        legacyImageParts: List<com.openminis.app.data.model.LLMMessage.ImagePart> = emptyList(),
+    ): Int {
+        var total = systemPrompt?.let { utf8(it) } ?: 0
+        total += toolsJsonBytes
+        for (p in legacyImageParts) total += inlineImageBytes(p.data)
+        return total
     }
 
     /**
@@ -191,6 +310,40 @@ object RequestBudget {
             (msg.content.isNotBlank() ||
                 msg.contentParts.any { it is AgentContentPart.Text && it.text.isNotBlank() })
 
+    /** Marker on an elided inline image so the model (and diagnostics) can see why. */
+    const val IMAGE_ELIDED_PREFIX = "[image elided to fit request budget"
+
+    /**
+     * [T-image-bytes-visible] Images are elidable outside the last N
+     * user-text turns — a MUCH smaller shield than [plan]'s
+     * protectRecentUserTextTurns for tool_results (24 at the provider
+     * boundary). Rationale: the text/tool shield exists to keep the live
+     * thread's WORKING CONTEXT verbatim; but a screenshot from 4+ turns ago
+     * is dead weight the model has already described in its own words, while
+     * the same 24-turn shield left every history image untouchable and the
+     * 1.31 MB body went out to be rejected as «sensitive words detected».
+     * The freshest 3 turns (typically: current question + its screenshots)
+     * stay inline verbatim — if even they overflow, the providers compress
+     * them via the ImageBudget ladder instead of eliding.
+     */
+    const val DEFAULT_IMAGE_PROTECT_TURNS = 3
+
+    /**
+     * [T-image-bytes-visible] Serialized size of inline image bytes: providers
+     * base64-inline them, so the wire cost is ~4/3 of the raw bytes — NOT the
+     * ~1-4k "visual tokens" the context bar charges. Until this constant
+     * existed, estimateBytes counted history images as ZERO and a 3-screenshot
+     * tail (measured live: 1.07 MB of JPEG → ~1.4 MB of b64) sailed past every
+     * byte gate into «запрос отклонен шлюзом».
+     */
+    fun inlineImageBytes(data: ByteArray): Int = (data.size * 4) / 3
+
+    private fun imageElisionStub(part: AgentContentPart.ImageData): String {
+        val kb = (inlineImageBytes(part.data) + 999) / 1000
+        val where = part.linuxPath?.let { " — re-fetch with read_image: $it" } ?: ""
+        return "$IMAGE_ELIDED_PREFIX — ${kb} KB inline image removed$where]"
+    }
+
     private fun isAlreadyReduced(content: String): Boolean =
         content.startsWith(ContextOffload.OFFLOADED_PREFIX) || content.startsWith(ELIDED_PREFIX)
 
@@ -201,7 +354,17 @@ object RequestBudget {
         return "$ELIDED_PREFIX — ${part.name}, $n chars$where]"
     }
 
-    /** Estimated serialized body size: UTF-8 bytes of every text-bearing field. */
+    /**
+     * Estimated serialized body size: UTF-8 bytes of every text-bearing field.
+     *
+     * [T-image-bytes-visible] Inline images count at their BASE64 wire size
+     * (~4/3 of raw bytes). They used to count as zero with a comment pointing
+     * at ImageBudget — but ImageBudget's request cap is 25 MB, an order of
+     * magnitude above the ~1 MB nginx `client_max_body_size` the relays
+     * actually enforce, so it never fired for the 3-screenshot tail that
+     * produced the live «запрос отклонен шлюзом» + 1.31 MB body. The body
+     * budget is measured HERE, at the boundary that owns it.
+     */
     fun estimateBytes(messages: List<LLMMessage>): Int {
         var total = 0
         for (msg in messages) {
@@ -211,8 +374,11 @@ object RequestBudget {
                 total += when (part) {
                     is AgentContentPart.Text -> utf8(part.text)
                     is AgentContentPart.ToolUse -> utf8(part.input.toString())
-                    is AgentContentPart.ToolResult -> utf8(part.content)
-                    is AgentContentPart.ImageData -> 0 // ImageBudget owns image bytes
+                    is AgentContentPart.ToolResult -> {
+                        utf8(part.content) +
+                            (part.imageData?.let { inlineImageBytes(it) } ?: 0)
+                    }
+                    is AgentContentPart.ImageData -> inlineImageBytes(part.data)
                 }
             }
         }

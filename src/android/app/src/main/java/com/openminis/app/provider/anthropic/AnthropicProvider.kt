@@ -18,8 +18,10 @@ import com.openminis.app.provider.safeOptString
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -84,6 +86,9 @@ class AnthropicProvider(
         // connection is detected in ~15s instead of hanging the TTFB watchdog.
         // See OpenAIProvider for the full rationale.
         .pingInterval(15, TimeUnit.SECONDS)
+        // [T-android-ttfb-relax] Pin default-true: OkHttp reconnects a stalled
+        // call on a fresh socket when the h2 PING proves the pooled one dead.
+        .retryOnConnectionFailure(true)
         // [T-android-stale-conn-retry-hang] Shared pool — see NetworkMonitor.
         // Network-transition eviction must reach provider connections.
         .connectionPool(com.openminis.app.network.NetworkMonitor.sharedLLMConnectionPool)
@@ -155,7 +160,37 @@ class AnthropicProvider(
             headerMap[name] = request.headers[name] ?: ""
         }
 
-        val response = client.newCall(request).execute()
+        val response = run {
+            val call = client.newCall(request)
+            // [T-android-stale-conn-proactive] TTFB watchdog — see companion
+            // STREAM_TTFB_TIMEOUT_MS. Bounds ONLY the header phase.
+            val ttfbTimedOut = java.util.concurrent.atomic.AtomicBoolean(false)
+            val headersArrived = java.util.concurrent.atomic.AtomicBoolean(false)
+            val ttfbWatchdog = launch {
+                delay(STREAM_TTFB_TIMEOUT_MS)
+                if (!headersArrived.get()) {
+                    ttfbTimedOut.set(true)
+                    android.util.Log.w(
+                        "AnthropicProvider",
+                        "[T-android-stale-conn-proactive] no response headers after ${STREAM_TTFB_TIMEOUT_MS / 1000}s — cancelling call (stale pooled connection?)",
+                    )
+                    call.cancel()
+                }
+            }
+            try {
+                call.execute()
+            } catch (e: java.io.IOException) {
+                if (ttfbTimedOut.get()) {
+                    throw LLMError.TransientError(
+                        "no response from server (${STREAM_TTFB_TIMEOUT_MS / 1000}s) — check network/proxy",
+                    )
+                }
+                throw e
+            } finally {
+                headersArrived.set(true)
+                ttfbWatchdog.cancel()
+            }
+        }
         val durationMs = System.currentTimeMillis() - startTime
 
         if (!response.isSuccessful) {
@@ -435,20 +470,36 @@ class AnthropicProvider(
         // placeholder) until the serialized body fits, keeping the freshest
         // working turns verbatim. ImageBudget caps image bytes; this caps text.
         // Full output stays in agentHistory / on disk, so nothing is lost.
+        // [T-overhead-visible] The Anthropic `system` field and tool schemas
+        // share this body — they count against the ceiling too.
+        val overhead = com.openminis.app.data.RequestBudget.estimateOverheadBytes(
+            systemPrompt = systemPrompt,
+            toolsJsonBytes = tools.sumOf { it.toAnthropicJson().toString().toByteArray().size },
+            legacyImageParts = imageParts,
+        )
         val budgeted = com.openminis.app.data.RequestBudget.plan(
             messages = messages,
             protectRecentUserTextTurns = REQUEST_BUDGET_PROTECT_TURNS,
+            overheadBytes = overhead,
         )
-        if (budgeted.elidedToolResultCount > 0) {
+        if (budgeted.elidedToolResultCount > 0 || budgeted.elidedImageCount > 0) {
             com.openminis.app.logging.AppLogger.info(
                 "AnthropicProvider",
-                "[RequestBudget] elided ${budgeted.elidedToolResultCount} oversize tool_result(s): " +
-                    "${budgeted.bytesBefore}B → ${budgeted.bytesAfter}B (ceiling ${com.openminis.app.data.RequestBudget.DEFAULT_MAX_BODY_BYTES}B)",
+                "[RequestBudget] elided ${budgeted.elidedToolResultCount} oversize tool_result(s) + " +
+                    "${budgeted.elidedImageCount} old image(s): " +
+                    "${budgeted.bytesBefore}B + ${overhead}B overhead → ${budgeted.bytesAfter}B + overhead (ceiling ${com.openminis.app.data.RequestBudget.DEFAULT_MAX_BODY_BYTES}B)",
             )
+        }
+        // [T-image-bytes-visible] Still over → compress the freshest inline
+        // images down the ladder (elision must not touch current-turn pics).
+        val budgetedMessages = if (budgeted.totalAfter > com.openminis.app.data.RequestBudget.DEFAULT_MAX_BODY_BYTES) {
+            ImageBudget.compressHistoryImagesUnderBudget(budgeted.messages)
+        } else {
+            budgeted.messages
         }
 
         // Build and merge messages
-        val rawMessages = buildMessages(budgeted.messages, imageParts)
+        val rawMessages = buildMessages(budgetedMessages, imageParts)
         val merged = mergeConsecutiveSameRole(rawMessages)
 
         // Inject cache_control on last 2 user messages
@@ -792,6 +843,24 @@ class AnthropicProvider(
     }
 
     companion object {
+        /**
+         * [T-android-stale-conn-proactive] Time-to-first-byte watchdog bound
+         * for the streaming header phase (mirrors OpenAIProvider). A request
+         * written into a NAT/proxy-reaped pooled socket yields no headers and
+         * no error until the 10-minute read timeout, so the UI hangs on
+         * "thinking" forever. If headers don't arrive within this window, the
+         * call is cancelled and surfaced as a retryable TransientError with
+         * the shared stale-connection marker, so the retry path evicts the
+         * pool and dials fresh. Once headers arrive the watchdog is cancelled
+         * and a flowing SSE stream has no total-duration limit.
+         */
+        // [T-android-ttfb-relax] Last-resort cap ONLY — see OpenAIProvider for
+        // the full rationale. Dead sockets are caught by pingInterval +
+        // retryOnConnectionFailure (which don't false-fire on a slow-but-alive
+        // server); a wall-clock TTFB at 15s killed legitimate reasoning
+        // first-token latency and large agent-history uploads, breaking turns.
+        private const val STREAM_TTFB_TIMEOUT_MS = 120_000L
+
         /**
          * [T-request-byte-budget] Trailing user-text turns kept verbatim by the
          * provider-boundary byte gate — matches ChatViewModel's

@@ -312,6 +312,22 @@ internal sealed class FlatChatItem {
     }
 
     /**
+     * [T-msg-timestamps] Finish stamp shown UNDER the assistant turn, IDE-agent
+     * style: when the turn completed, plus its duration when we have a real
+     * live-turn measurement. Emitted only once the turn is finished
+     * (finishedAtMs != null) and only for genuine assistant turns (never system
+     * dividers). createdAtMs is carried for the duration calc.
+     */
+    data class AssistantFooter(
+        val messageId: String,
+        val createdAtMs: Long,
+        val finishedAtMs: Long,
+    ) : FlatChatItem() {
+        override val key = "footer:$messageId"
+        override val contentType = "footer"
+    }
+
+    /**
      * Equality on this class previously compared every field including
      * `messageMarkdown` — a CONCATENATED markdown of the entire parent
      * assistant message — char-by-char. During streaming, LazyColumn called
@@ -555,6 +571,7 @@ internal fun buildFlatChatItems(
         return when (item) {
             is FlatChatItem.UserBubble -> FlatChatItem.UserBubble(item.message.copy(id = "${item.message.id}#$n"), item.precededByUser)
             is FlatChatItem.AssistantHeader -> item.copy(messageId = "${item.messageId}#$n")
+            is FlatChatItem.AssistantFooter -> item.copy(messageId = "${item.messageId}#$n")
             is FlatChatItem.AssistantText -> FlatChatItem.AssistantText(
                 messageId = "${item.messageId}#$n",
                 block = item.block,
@@ -785,6 +802,27 @@ internal fun buildFlatChatItems(
         // Inline error banner
         message.error?.let {
             out.add(dedupe(FlatChatItem.AssistantError(message.id, it)))
+        }
+
+        // [T-msg-timestamps] Finish stamp UNDER the assistant turn, IDE-agent
+        // style. Only for a genuine, finished assistant turn: system dividers
+        // (isSystem) never get one, and a still-streaming turn (finishedAtMs
+        // null) shows nothing until it completes. createdAtMs is passed through
+        // so the renderer can append the duration when it's a real live-turn
+        // measurement (see assistantTurnFinishedLabel).
+        if (!isSystem) {
+            val finished = message.finishedAtMs
+            if (finished != null && !message.isStreaming) {
+                out.add(
+                    dedupe(
+                        FlatChatItem.AssistantFooter(
+                            messageId = message.id,
+                            createdAtMs = message.createdAtMs,
+                            finishedAtMs = finished,
+                        )
+                    )
+                )
+            }
         }
     }
     return out

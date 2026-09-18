@@ -1,0 +1,55 @@
+# Синонимы для карт NVIDIA. Сканер разворачивает запрос во все варианты.
+brand: NVIDIA
+
+# Синонимы бренда (для полей вроде "RTX", "GeForce", "MSI Gaming Trio")
+brand_synonyms:
+  - "rtx"
+  - "r-t-x"
+  - "ар-ти-икс"
+  - "трикс"
+  - "geforce"
+  - "nvidia"
+
+# Модельные серии. Используются для exclude/include.
+series:
+  rtx_50: ["5070", "5080", "5090"]
+  rtx_40: ["4060", "4070", "4080", "4090"]
+  rtx_30: ["3060", "3070", "3080", "3090"]
+  rtx_20: ["2060", "2070", "2080"]
+  gtx_16: ["1650", "1660"]
+  gtx_10: ["1050", "1060", "1070", "1080"]
+
+# Ноутбучные/мобильные варианты — для фильтра "исключить мобильные"
+mobile_markers:
+  - "m "
+  - "laptop"
+  - "ноутбук"
+  - "max-q"
+  - "для ноутбука"
+
+# Маркеры родственных, но НЕ нужных моделей
+exclude_variants:
+  - "ti"
+  - "super"
+  - "ti super"
+
+# Бренды, выпускающие свои версии (для разбора "KFA2 SG", "MSI Gaming X Trio")
+board_partners:
+  - "asus"      # rog strix, tuf, dual
+  - "msi"       # gaming x trio, ventus, suprim
+  - "gigabyte"  # gaming oc, aorus, eagle
+  - "palit"     # gaming pro, jetstream
+  - "gainward"  # phoenix, ghost
+  - "kfa2"      # sg, ex, hof
+  - "inno3d"
+  - "zotac"
+  - "evga"
+  - "pny"
+  - "asrock"
+
+# Линейки партнёров (для ценовой оценки)
+partner_lines:
+  premium:   ["rog strix", "suprim", "aorus master", "hof", "kfa2 ex"]
+  gaming:    ["gaming x", "gaming pro", "gaming oc", "phoenix"]
+  mainstream: ["dual", "ventus", "eagle", "sg", "jetstream"]
+  budget:    ["phoenix gs", "palit dual"]

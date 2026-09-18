@@ -59,6 +59,13 @@ object ContentFilterDetection {
         "内容审核",
         "违规内容",
         "命中敏感",
+        // -- Russian relays: the live 2026-09-09 rejection was
+        //    "запрос отклонен шлюзом" (both е/ё spellings, all genders) --
+        "отклонен шлюзом",
+        "отклонён шлюзом",
+        "отклонено шлюзом",
+        "отклонен брандмауэром",
+        "отклонён брандмауэром",
     )
 
     /** True when [body] is a moderation rejection rather than a server fault. */

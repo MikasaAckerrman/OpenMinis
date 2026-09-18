@@ -11,6 +11,7 @@ import com.openminis.app.data.model.LLMResponse
 import com.openminis.app.data.model.LLMStreamChunk
 import com.openminis.app.data.model.LLMUsage
 import com.openminis.app.data.model.ThinkingLevel
+import com.openminis.app.provider.ImageBudget
 import com.openminis.app.provider.LLMProvider
 import com.openminis.app.provider.applyUserAgentOverride
 import com.openminis.app.provider.safeOptString
@@ -149,7 +150,17 @@ class OpenAIProvider private constructor(
          * budget: response HEADERS must arrive within this window. Does NOT
          * bound the SSE body — a flowing stream stays unlimited.
          */
-        private const val STREAM_TTFB_TIMEOUT_MS = 30_000L
+        // [T-android-ttfb-relax] Last-resort cap ONLY. Dead sockets are
+        // detected by pingInterval (h2 PING/PONG) + retryOnConnectionFailure,
+        // which — unlike a wall-clock timer — do NOT false-fire on a slow but
+        // alive server (reasoning models answer PINGs while thinking). A fixed
+        // TTFB budget conflated "dead socket" with "server still thinking /
+        // request still uploading": at 15-30s it killed legitimate reasoning
+        // first-token latency and multi-MB agent-history uploads on mobile,
+        // breaking every turn. 120s only guards the rare transparent-proxy
+        // stall (proxy PONGs but never forwards), capping it at 2min instead
+        // of the 10min readTimeout, without touching real slow-start traffic.
+        private const val STREAM_TTFB_TIMEOUT_MS = 120_000L
 
         /**
          * Factory for OAuth-bearer OpenAI-compatible providers that aren't
@@ -383,6 +394,12 @@ class OpenAIProvider private constructor(
         // reconnects, so a stale socket costs ~15s at worst instead of 30s, and
         // usually nothing because the ping kept it alive.
         .pingInterval(15, TimeUnit.SECONDS)
+        // [T-android-ttfb-relax] Explicit (default is true, pin it): when the
+        // h2 PING above marks a pooled socket dead, OkHttp transparently
+        // reconnects a stalled call on a FRESH socket instead of surfacing an
+        // error. This is the robust dead-socket recovery — it fires only on a
+        // proven-dead connection, never on a slow-but-alive one.
+        .retryOnConnectionFailure(true)
         // [T-android-stale-conn-retry-hang] Shared pool so NetworkMonitor's
         // network-transition eviction reaches THIS client's connections —
         // a per-client pool was never evicted, and a dead h2 tunnel through
@@ -789,10 +806,17 @@ class OpenAIProvider private constructor(
                         val tcLen = delta.optJSONArray("tool_calls")?.length() ?: 0
                         val role = delta.optString("role", "")
                         if (cLen + rcLen + rLen + tcLen > 0 || delta.has("role")) {
-                            com.openminis.app.logging.AppLogger.debug(
-                                "OpenAIProvider",
-                                "[T321] SSE delta: contentLen=$cLen rcLen=$rcLen rLen=$rLen toolCalls=$tcLen role='$role'"
-                            )
+                            // [T-sse-debug-hot-path] Per-token diagnostics: build
+                            // and emit ONLY when file logging is on. This loop
+                            // runs on the collecting (UI) thread at token rate —
+                            // the unconditional Log.d + string build was a real
+                            // source of streaming jank with logging off.
+                            if (com.openminis.app.logging.AppLogger.isDebugEnabled) {
+                                com.openminis.app.logging.AppLogger.debug(
+                                    "OpenAIProvider",
+                                    "[T321] SSE delta: contentLen=$cLen rcLen=$rcLen rLen=$rLen toolCalls=$tcLen role='$role'"
+                                )
+                            }
                         }
                         contentLen += cLen
                         reasoningLen += rcLen + rLen
@@ -801,10 +825,14 @@ class OpenAIProvider private constructor(
                         // Responses API event-typed diagnostics
                         val dLen = ev.optString("delta", "").length
                         if (type.contains("delta") || type == "response.completed" || type == "response.output_item.added" || type == "response.output_item.done") {
-                            com.openminis.app.logging.AppLogger.debug(
-                                "OpenAIProvider",
-                                "[T321] SSE responses type=$type deltaLen=$dLen"
-                            )
+                            // [T-sse-debug-hot-path] Same gate as the SSE delta
+                            // log above: per-event diagnostics, UI thread, token rate.
+                            if (com.openminis.app.logging.AppLogger.isDebugEnabled) {
+                                com.openminis.app.logging.AppLogger.debug(
+                                    "OpenAIProvider",
+                                    "[T321] SSE responses type=$type deltaLen=$dLen"
+                                )
+                            }
                         }
                         if (type == "response.output_text.delta") contentLen += dLen
                         if (type.startsWith("response.reasoning_")) reasoningLen += dLen
@@ -1471,18 +1499,39 @@ class OpenAIProvider private constructor(
         // fits, while the freshest working turns are always sent verbatim. The
         // full output stays in agentHistory (and on disk when offloaded), so
         // nothing is lost — the model can file_read it back.
+        // [T-overhead-visible] Everything riding in the SAME body but outside
+        // message parts must count against the ceiling: system prompt, tool
+        // schemas, legacy top-level imageParts. A 60 KB system prompt made the
+        // "fits" verdict a lie before this existed.
+        val overhead = com.openminis.app.data.RequestBudget.estimateOverheadBytes(
+            systemPrompt = systemPrompt,
+            toolsJsonBytes = tools.sumOf { it.toOpenAIJson().toString().toByteArray().size },
+            legacyImageParts = imageParts,
+        )
         val budgeted = com.openminis.app.data.RequestBudget.plan(
             messages = messages,
             protectRecentUserTextTurns = REQUEST_BUDGET_PROTECT_TURNS,
+            overheadBytes = overhead,
         )
-        if (budgeted.elidedToolResultCount > 0) {
+        if (budgeted.elidedToolResultCount > 0 || budgeted.elidedImageCount > 0) {
             com.openminis.app.logging.AppLogger.info(
                 "OpenAIProvider",
-                "[RequestBudget] elided ${budgeted.elidedToolResultCount} oversize tool_result(s): " +
-                    "${budgeted.bytesBefore}B → ${budgeted.bytesAfter}B (ceiling ${com.openminis.app.data.RequestBudget.DEFAULT_MAX_BODY_BYTES}B)",
+                "[RequestBudget] elided ${budgeted.elidedToolResultCount} oversize tool_result(s) + " +
+                    "${budgeted.elidedImageCount} old image(s): " +
+                    "${budgeted.bytesBefore}B + ${overhead}B overhead → ${budgeted.bytesAfter}B + overhead " +
+                    "(ceiling ${com.openminis.app.data.RequestBudget.DEFAULT_MAX_BODY_BYTES}B)",
             )
         }
-        val budgetedMessages = budgeted.messages
+        // [T-image-bytes-visible] Still over after elision → the weight is in
+        // the FRESHEST images (current-turn screenshots), which elision must
+        // not touch. Compress them down the ImageBudget ladder instead — a
+        // 1.3 MB body of 3 screenshots becomes a few hundred KB without
+        // losing the model's ability to see them.
+        val budgetedMessages = if (budgeted.totalAfter > com.openminis.app.data.RequestBudget.DEFAULT_MAX_BODY_BYTES) {
+            ImageBudget.compressHistoryImagesUnderBudget(budgeted.messages)
+        } else {
+            budgeted.messages
+        }
         // T264: cross-provider image sanitization, mirrors iOS
         // OpenAIAgentProvider.swift:744-768 / 900-918. When the target model
         // doesn't declare "image" in inputModalities (e.g. DeepSeek V4 after
@@ -2427,18 +2476,33 @@ class OpenAIProvider private constructor(
         // [T-request-byte-budget] Same provider-boundary byte gate as
         // buildRequestBody — the Responses API path serializes the same history
         // and is just as exposed to oversize tool_result bloat.
+        // [T-overhead-visible] system prompt + tool schemas share this body —
+        // they count against the ceiling too. (This path has no legacy
+        // imageParts parameter — attachments ride in contentParts here.)
+        val overhead = com.openminis.app.data.RequestBudget.estimateOverheadBytes(
+            systemPrompt = systemPrompt,
+            toolsJsonBytes = tools.sumOf { it.toOpenAIJson().toString().toByteArray().size },
+        )
         val budgeted = com.openminis.app.data.RequestBudget.plan(
             messages = messages,
             protectRecentUserTextTurns = REQUEST_BUDGET_PROTECT_TURNS,
+            overheadBytes = overhead,
         )
-        if (budgeted.elidedToolResultCount > 0) {
+        if (budgeted.elidedToolResultCount > 0 || budgeted.elidedImageCount > 0) {
             com.openminis.app.logging.AppLogger.info(
                 "OpenAIProvider",
-                "[RequestBudget/responses] elided ${budgeted.elidedToolResultCount} oversize tool_result(s): " +
-                    "${budgeted.bytesBefore}B → ${budgeted.bytesAfter}B",
+                "[RequestBudget/responses] elided ${budgeted.elidedToolResultCount} oversize tool_result(s) + " +
+                    "${budgeted.elidedImageCount} old image(s): " +
+                    "${budgeted.bytesBefore}B + ${overhead}B overhead → ${budgeted.bytesAfter}B + overhead",
             )
         }
-        val messages = budgeted.messages
+        // [T-image-bytes-visible] Same as buildRequestBody: still-over body →
+        // compress the freshest images down the ladder instead of failing.
+        val messages = if (budgeted.totalAfter > com.openminis.app.data.RequestBudget.DEFAULT_MAX_BODY_BYTES) {
+            ImageBudget.compressHistoryImagesUnderBudget(budgeted.messages)
+        } else {
+            budgeted.messages
+        }
         val body = JSONObject()
         body.put("model", model.id)
         body.put("stream", stream)

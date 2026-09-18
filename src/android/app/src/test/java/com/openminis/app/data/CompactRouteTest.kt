@@ -74,34 +74,41 @@ class CompactRouteTest {
     }
 
     @Test
-    fun `content filter with no backup repairs locally instead of stranding session`() {
+    fun `content filter with no backup surfaces instead of degrading locally`() {
+        // [T-remove-local-compaction] Previously this fell back to a local
+        // on-device digest. That silent degradation was removed — with no
+        // model left, the refusal is surfaced and the session stays intact.
         val step = CompactRoute.next(
             contentFiltered,
             currentMaxTokens = 8192,
             shrinkStepsUsed = 0,
             nextProviderIndex = null,
         )
-        assertEquals(CompactRoute.Step.LocalDigest, step)
+        assertTrue(step is CompactRoute.Step.Surface)
     }
 
     @Test
-    fun `exhausted providers fall back to the local digest`() {
+    fun `exhausted providers surface the refusal (no local fallback)`() {
+        // [T-remove-local-compaction] Compaction runs ONLY through a model
+        // now. When every route refuses there is no on-device digest to fall
+        // back to — the failure is surfaced so the user can add a working
+        // model / retry, and the history is left untouched.
         for (msg in listOf(quotaCn, rateLimited)) {
             val step = CompactRoute.next(
                 msg, currentMaxTokens = CompactRoute.MIN_MAX_TOKENS,
                 shrinkStepsUsed = CompactRoute.MAX_SHRINK_STEPS, nextProviderIndex = null,
             )
-            assertEquals(CompactRoute.Step.LocalDigest, step)
+            assertTrue("expected Surface for: $msg", step is CompactRoute.Step.Surface)
         }
     }
 
     @Test
-    fun `quota with no smaller budget left goes local when no provider remains`() {
+    fun `quota with no smaller budget left surfaces when no provider remains`() {
         val step = CompactRoute.next(
             quotaCn, currentMaxTokens = CompactRoute.MIN_MAX_TOKENS,
             shrinkStepsUsed = 0, nextProviderIndex = null,
         )
-        assertEquals(CompactRoute.Step.LocalDigest, step)
+        assertTrue(step is CompactRoute.Step.Surface)
     }
 
     @Test
@@ -130,5 +137,126 @@ class CompactRouteTest {
         val both = "429 rate limit reached; token quota is not enough"
         val step = CompactRoute.next(both, currentMaxTokens = 8192, shrinkStepsUsed = 0, nextProviderIndex = 3)
         assertEquals(CompactRoute.Step.NextProvider(3), step)
+    }
+
+    // [T-compact-route-auth] Observed live: "Compaction failed: Invalid API
+    // key" stranded an oversized session while the group held working
+    // fallbacks. The send path already falls over on InvalidApiKey
+    // (LLMError.isFallbackable); the compaction ladder must too.
+    private val authRejected = "Invalid API key: Incorrect API key provided: sk-abc***"
+
+    @Test
+    fun `auth failure routes to the next provider, never shrinks`() {
+        // A rejected credential does not get cheaper with a smaller summary —
+        // the quota shrink ladder must be skipped entirely.
+        val step = CompactRoute.next(
+            authRejected, currentMaxTokens = 8192, shrinkStepsUsed = 0, nextProviderIndex = 2,
+        )
+        assertEquals(CompactRoute.Step.NextProvider(2), step)
+    }
+
+    @Test
+    fun `auth failure skips shrink even after quota shrink steps were used`() {
+        // Ladder walked: quota → shrink → still failing on a bad key. The key
+        // rejection must not waste further shrinks; next provider directly.
+        val step = CompactRoute.next(
+            authRejected, currentMaxTokens = 4096, shrinkStepsUsed = 1, nextProviderIndex = 0,
+        )
+        assertEquals(CompactRoute.Step.NextProvider(0), step)
+    }
+
+    @Test
+    fun `auth failure with no provider left surfaces`() {
+        // Every credential refused — surface so the user knows exactly which
+        // failure stranded the session; history is left intact.
+        val step = CompactRoute.next(
+            authRejected, currentMaxTokens = 8192, shrinkStepsUsed = 0, nextProviderIndex = null,
+        )
+        assertTrue(step is CompactRoute.Step.Surface)
+    }
+
+    @Test
+    fun `auth detection covers relay spellings and the classified error text`() {
+        assertTrue(CompactRoute.isAuthFailure(authRejected))
+        assertTrue(CompactRoute.isAuthFailure("Invalid API key"))
+        assertTrue(CompactRoute.isAuthFailure("invalid_api_key"))
+        assertTrue(CompactRoute.isAuthFailure("HTTP 401 Unauthorized"))
+        assertTrue(CompactRoute.isAuthFailure("invalid x-api-key"))
+        assertTrue(CompactRoute.isAuthFailure("authentication required"))
+    }
+
+    @Test
+    fun `auth detection does not swallow unrelated 400s or quota bodies`() {
+        // "invalid role" is a malformed request, not a credential refusal —
+        // it must stay on the Surface path (existing behaviour).
+        assertFalse(CompactRoute.isAuthFailure("Provider error: [400] messages: invalid role"))
+        // A 403 with a balance body is a QUOTA failure, not auth — the
+        // provider mapper classifies it before CompactRoute sees it.
+        assertFalse(CompactRoute.isAuthFailure(quotaCn))
+        assertFalse(CompactRoute.isAuthFailure(rateLimited))
+    }
+
+    // [T-compact-route-400] max_tokens VALUE rejections and dead model entries
+    // are the two 400 classes that used to kill compaction outright: neither
+    // matched quota/rate/filter/auth, so Surface was the only route.
+
+    @Test
+    fun `max_tokens value rejection shrinks on the same model`() {
+        // "max_tokens must be at most 4096" — the affordable response is a
+        // smaller budget, exactly what the quota shrink ladder does.
+        val step = CompactRoute.next(
+            "Provider error: [400] max_tokens must be at most 4096",
+            currentMaxTokens = 8192, shrinkStepsUsed = 0, nextProviderIndex = 0,
+        )
+        assertEquals(CompactRoute.Step.RetrySmaller(4096), step)
+    }
+
+    @Test
+    fun `max_tokens value rejection with no shrink left moves to next provider`() {
+        // Budget already at the 1024 floor: shrink returns null → next provider.
+        val step = CompactRoute.next(
+            "max_completion_tokens must be at most 1024",
+            currentMaxTokens = 1024, shrinkStepsUsed = 0, nextProviderIndex = 2,
+        )
+        assertEquals(CompactRoute.Step.NextProvider(2), step)
+    }
+
+    @Test
+    fun `max_tokens value rejection with no provider left surfaces`() {
+        val step = CompactRoute.next(
+            "max_tokens: 8192 > 4096",
+            currentMaxTokens = 8192, shrinkStepsUsed = 2, nextProviderIndex = null,
+        )
+        assertTrue(step is CompactRoute.Step.Surface)
+    }
+
+    @Test
+    fun `dead model routes to next provider without shrinking`() {
+        // Retrying the same dead model id (even with a smaller budget) cannot
+        // help — skip the shrink ladder entirely.
+        val step = CompactRoute.next(
+            "Provider error: [404] model not found: deepseek-v4-flash",
+            currentMaxTokens = 8192, shrinkStepsUsed = 0, nextProviderIndex = 1,
+        )
+        assertEquals(CompactRoute.Step.NextProvider(1), step)
+    }
+
+    @Test
+    fun `dead model with no provider left surfaces`() {
+        val step = CompactRoute.next(
+            "Provider error: [400] The model `x` does not exist",
+            currentMaxTokens = 8192, shrinkStepsUsed = 0, nextProviderIndex = null,
+        )
+        assertTrue(step is CompactRoute.Step.Surface)
+    }
+
+    @Test
+    fun `new marker sets do not swallow the classic unrelated 400`() {
+        // Regression guard: the pre-existing "invalid role" case must remain
+        // Surface under the new classes too.
+        assertFalse(CompactRoute.isModelGone("Provider error: [400] messages: invalid role"))
+        assertFalse(CompactRoute.isMaxTokensValueRejected("Provider error: [400] messages: invalid role"))
+        assertFalse(CompactRoute.isModelGone(quotaCn))
+        assertFalse(CompactRoute.isMaxTokensValueRejected(rateLimited))
     }
 }

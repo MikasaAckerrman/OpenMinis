@@ -1,129 +1,174 @@
 #!/usr/bin/env python3
 """diff.py — измеренное сравнение ORIGINAL vs RENDER. Числа, не мнения.
 
-Отчёт:
-  1. глобальный MAE + MAE по НЕ-фоновым пикселям (фон 83% => глобальный врёт)
-  2. worst-1% вклад
-  3. поэлементный MAE по измеренным боксам (какой элемент виноват)
-  4. карта различий (diff.png) + список худших зон 32x32
+ОТЧЁТ
+  1. MAE глобально + MAE по не-фону (фон измеряется, не задаётся константой)
+  2. SSIM — структурное сходство: ловит то, что MAE почти не видит
+  3. доля пикселей выше порога заметности (dE76 > JND)
+  4. ПОЭЛЕМЕНТНО по боксам из boxes.json: кто виноват
+  5. НЕОТНЕСЁННАЯ ошибка: различия, под которыми нет ни одного элемента
+     => в оригинале есть то, чего в рендере нет
+  6. ВЫДУМАННЫЕ элементы: нарисовано там, где в оригинале фон
+  7. карта различий + худшие зоны сетки
+
+ЧТО БЫЛО СЛОМАНО ДО ЭТОЙ ВЕРСИИ (найдено чтением, не догадкой):
+  * список ELEMENTS был захардкожен 29 боксами диалога «Настройки» CS 1.6
+    ("btn OK": (638,607,775,642)). На любом другом скриншоте эти боксы
+    указывали в пустоту, а поэлементный отчёт печатал уверенные числа ни о чём.
+  * BG = (76,88,68) — оливковый фон CS 1.6. На другом скриншоте метрика
+    «MAE по не-фону» молча вырождалась в копию глобальной MAE под другим
+    именем. Это хуже отсутствия метрики: у неверного числа есть правильный
+    заголовок.
+Оба значения теперь измеряются. boxes.json пишет boxes.py.
 """
+import json
+import os
 import sys
-from PIL import Image, ImageChops
+
+import numpy as np
+from PIL import Image
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import metrics as M  # noqa: E402
 
 A = sys.argv[1] if len(sys.argv) > 1 else "ORIGINAL.png"
 B = sys.argv[2] if len(sys.argv) > 2 else "render_v1.png"
 OUT = sys.argv[3] if len(sys.argv) > 3 else "diff.png"
 
-a = Image.open(A).convert("RGB")
-b = Image.open(B).convert("RGB")
-if a.size != b.size:
-    print(f"!! РАЗНЫЙ РАЗМЕР {a.size} vs {b.size}")
+a_im = Image.open(A).convert("RGB")
+b_im = Image.open(B).convert("RGB")
+if a_im.size != b_im.size:
+    print("!! РАЗНЫЙ РАЗМЕР %s vs %s — сравнение невозможно" % (a_im.size, b_im.size))
     sys.exit(2)
-W, H = a.size
-pa, pb = a.load(), b.load()
-BG = (76, 88, 68)
 
+a = np.asarray(a_im)
+b = np.asarray(b_im)
+H, W = a.shape[:2]
 
-def dpix(x, y):
-    ca, cb = pa[x, y], pb[x, y]
-    return abs(ca[0] - cb[0]) + abs(ca[1] - cb[1]) + abs(ca[2] - cb[2])
+# ─── фон: измеряется ───
+BG, bg_frac = M.dominant_color(a)
+bgv = np.array(BG, dtype=np.int32)
+nonbg = np.abs(a.astype(np.int32) - bgv).sum(axis=2) > 14
 
+lab_a, lab_b = M.srgb_to_lab(a), M.srgb_to_lab(b)
+de = M.de76(lab_a, lab_b)
+mask = de > M.JND_DE76
 
-# --- глобально ---
-tot = 0
-diffs = []
-nonbg_tot = 0
-nonbg_n = 0
-for y in range(H):
-    for x in range(W):
-        d = dpix(x, y)
-        tot += d
-        diffs.append(d)
-        ca = pa[x, y]
-        if abs(ca[0] - BG[0]) + abs(ca[1] - BG[1]) + abs(ca[2] - BG[2]) > 14:
-            nonbg_tot += d
-            nonbg_n += 1
+l1 = np.abs(a.astype(np.int32) - b.astype(np.int32)).sum(axis=2)
+mae = float(l1.mean()) / 3.0
+mae_nonbg = float(l1[nonbg].mean()) / 3.0 if nonbg.any() else 0.0
+ssim = M.ssim(M.to_luma(a), M.to_luma(b))
 
-n = W * H
-mae = tot / (3.0 * n)
-nonbg_mae = nonbg_tot / (3.0 * nonbg_n) if nonbg_n else 0
-diffs.sort(reverse=True)
-worst1 = sum(diffs[:max(1, n // 100)])
-print(f"РАЗМЕР        {W}x{H}")
-print(f"MAE глобально {mae:.2f}")
-print(f"MAE по контенту (не-фон, {nonbg_n} px = {100.0*nonbg_n/n:.1f}%) {nonbg_mae:.2f}")
-print(f"worst-1% даёт {100.0*worst1/tot:.1f}% всей ошибки" if tot else "идентично")
-exact = sum(1 for d in diffs if d == 0)
-print(f"пикселей точно совпало: {exact} ({100.0*exact/n:.1f}%)")
-print(f"пикселей |d|<=12:       {sum(1 for d in diffs if d <= 12)} "
-      f"({100.0*sum(1 for d in diffs if d <= 12)/n:.1f}%)")
+print("РАЗМЕР            %dx%d" % (W, H))
+print("фон (измерен)     rgb%s, %.1f%% кадра" % (BG, 100.0 * bg_frac))
+if bg_frac < 0.25:
+    print("                  ВНИМАНИЕ: фон не доминирует — строка «по не-фону»")
+    print("                  почти совпадает с глобальной, читать как одну.")
+print("MAE глобально     %.2f   (0..255)" % mae)
+print("MAE по не-фону    %.2f   (%d px = %.1f%% кадра)"
+      % (mae_nonbg, int(nonbg.sum()), 100.0 * nonbg.mean()))
+print("SSIM              %.4f  (1.0 = структурно идентично)" % ssim)
+print("отличается > JND  %d px = %.2f%%  (dE76 > %.1f)"
+      % (int(mask.sum()), 100.0 * mask.mean(), M.JND_DE76))
+print("точно совпало     %d px = %.1f%%"
+      % (int((l1 == 0).sum()), 100.0 * float((l1 == 0).mean())))
+if mask.any():
+    print("макс dE76         %.1f в точке %s"
+          % (float(de.max()), tuple(int(v) for v in np.unravel_index(de.argmax(), de.shape)[::-1])))
 
-# --- по элементам (измеренные боксы) ---
-ELEMENTS = {
-    "внешний фон (полоса сверху)": (0, 0, 1097, 3),
-    "титульная полоса": (0, 3, 1097, 44),
-    "  иконка заголовка": (12, 10, 48, 38),
-    "  текст 'Настройки'": (53, 14, 200, 40),
-    "  крестик закрытия": (1047, 8, 1088, 41),
-    "полоса вкладок": (8, 44, 1090, 84),
-    "  tab active": (10, 44, 190, 84),
-    "  tab Клавиатура": (190, 44, 349, 84),
-    "  tab Система": (959, 44, 1086, 84),
-    "label Аватар": (85, 128, 140, 150),
-    "avatar asset": (85, 155, 207, 246),
-    "btn Загрузить...": (220, 154, 454, 189),
-    "combo cts_team": (220, 211, 454, 246),
-    "label Логотип": (85, 256, 140, 278),
-    "logo asset": (85, 285, 207, 376),
-    "combo lambda": (220, 285, 454, 320),
-    "btn Изменить цвет": (220, 341, 454, 376),
-    "disabled текст 2 строки": (85, 393, 510, 440),
-    "btn Дополнительно...": (85, 447, 312, 482),
-    "label Имя игрока": (537, 128, 670, 150),
-    "entry Имя игрока": (537, 155, 914, 189),
-    "label Пароль": (537, 256, 890, 280),
-    "entry Пароль + глаз": (537, 285, 914, 320),
-    "разделитель футера": (8, 596, 1090, 606),
-    "btn OK": (638, 607, 775, 642),
-    "btn Отмена": (788, 607, 925, 642),
-    "btn Применить": (938, 607, 1075, 642),
-    "пустая правая зона": (930, 100, 1080, 590),
-}
-print("\n=== ПОЭЛЕМЕНТНО (MAE, отсортировано по убыванию) ===")
-rows = []
-for name, (x0, y0, x1, y1) in ELEMENTS.items():
-    s = 0
-    cnt = 0
-    mx = 0
-    for y in range(max(0, y0), min(H, y1)):
-        for x in range(max(0, x0), min(W, x1)):
-            d = dpix(x, y)
-            s += d
-            mx = max(mx, d)
-            cnt += 1
-    rows.append((s / (3.0 * cnt) if cnt else 0, mx, name, (x0, y0, x1, y1)))
-rows.sort(reverse=True)
-for m, mx, name, box in rows:
-    flag = "  <<<" if m > 12 else ""
-    print(f"  {m:7.2f} max={mx:4d}  {name:30s} {box}{flag}")
+# ─── элементы: из boxes.json, не из хардкода ───
+box_path = os.path.join(os.path.dirname(os.path.abspath(A)), "boxes.json")
+elements = []
+if os.path.exists(box_path):
+    try:
+        data = json.load(open(box_path))
+        elements = [{"name": e["name"], "box": tuple(e["box"])}
+                    for e in data.get("elements", [])]
+    except Exception as exc:            # noqa: BLE001
+        print("\n!! boxes.json не читается (%s) — поэлементного отчёта не будет" % exc)
 
-# --- худшие зоны 32x32 ---
-print("\n=== ХУДШИЕ ЗОНЫ 32x32 ===")
-tiles = []
-for ty in range(0, H, 32):
-    for tx in range(0, W, 32):
-        s = 0
-        cnt = 0
-        for y in range(ty, min(ty + 32, H)):
-            for x in range(tx, min(tx + 32, W)):
-                s += dpix(x, y)
-                cnt += 1
-        tiles.append((s / (3.0 * cnt), tx, ty))
-tiles.sort(reverse=True)
-for m, tx, ty in tiles[:12]:
-    print(f"  MAE {m:7.2f}  зона ({tx},{ty})-({tx+32},{ty+32})")
+if not elements:
+    print("\n=== ПОЭЛЕМЕНТНО: нет boxes.json ===")
+    print("    Запусти `minis-uicopy boxes` — он измерит элементы и запишет")
+    print("    boxes.json. Без него ниже только сетка регионов.")
+else:
+    rows, unattributed = M.blame(mask, elements)
+    print("\n=== ПОЭЛЕМЕНТНО (по убыванию числа отличающихся пикселей) ===")
+    print("    %-28s %7s %7s %7s  %s" % ("элемент", "px", "своих%", "доля%", "dE цвета"))
+    for r in rows[:20]:
+        cd = M.element_color_delta(a, b, r["box"])
+        cdtxt = ""
+        if cd is not None:
+            dE, ca, cb = cd
+            cdtxt = "%.1f %s->%s" % (dE, ca, cb) if dE > 1.0 else "-"
+        flag = "  <<<" if r["own_pct"] > 20 else ""
+        print("    %-28s %7d %6.1f%% %6.1f%%  %s%s"
+              % (r["name"][:28], r["hits"], r["own_pct"], r["share_pct"], cdtxt, flag))
+    if len(rows) > 20:
+        print("    ... ещё %d элементов с различиями" % (len(rows) - 20))
 
-# --- карта ---
-dmap = ImageChops.difference(a, b).convert("L").point(lambda v: min(255, v * 4))
-dmap.save(OUT)
-print(f"\nкарта различий → {OUT}")
+    # НЕОТНЕСЁННАЯ ошибка — то, чего прежний поэлементный MAE показать не мог
+    print("\n=== НЕОТНЕСЁННАЯ ОШИБКА: %.1f%% различий ===" % (100.0 * unattributed))
+    if unattributed > 0.15:
+        print("    Больше 15%% различий лежит там, где НЕТ ни одного элемента.")
+        print("    Читается однозначно: в оригинале есть содержимое, которого")
+        print("    в рендере нет вообще. Искать пропущенный элемент, а не")
+        print("    подгонять цвета существующих.")
+    else:
+        print("    В норме: почти все различия отнесены к конкретным элементам.")
+
+    hall = M.hallucinated(mask, elements, a, BG)
+    if hall:
+        print("\n=== ВЫДУМАННЫЕ ЭЛЕМЕНТЫ (в оригинале там фон) ===")
+        for h in hall[:10]:
+            print("    %-28s %s  фон в оригинале %.0f%%, различий %d px"
+                  % (h["name"][:28], h["box"], 100.0 * h["bg_frac"], h["hits"]))
+
+# ─── сетка регионов ───
+grid = M.region_grid(mask, 8, 8)
+print("\n=== СЕТКА РЕГИОНОВ (%% различающихся пикселей в ячейке) ===")
+for r in range(8):
+    print("    " + "".join("%6.1f" % grid[r, c] for c in range(8)))
+hot = sorted(((grid[r, c], r, c) for r in range(8) for c in range(8)), reverse=True)[:3]
+if hot[0][0] > 0:
+    print("    худшие: " + " · ".join("r%dc%d=%.1f%%" % (r + 1, c + 1, v)
+                                      for v, r, c in hot if v > 0))
+
+# ─── карта различий: ДВА ЦВЕТА ───
+# Один цвет на всё был прямой причиной неверного вывода: 69% красного на
+# эталоне — форма букв недоступного шрифта, но по картинке это читалось как
+# «элементы не доделаны». Жёлтый = внешнее ограничение, красный = то, что
+# механизм обязан устранить. Маска глифов по ОБОИМ растрам (см. text_mask).
+glyph_els = [e for e in elements
+             if (e["box"][2] - e["box"][0]) * (e["box"][3] - e["box"][1]) < 0.5 * W * H]
+glyph = (M.text_mask(a, glyph_els, rend_rgb=b) if glyph_els
+         else np.zeros_like(mask))
+m_font = mask & glyph
+m_geo = mask & ~glyph
+heat = (a.astype(np.float64) * 0.30).astype(np.uint8)
+heat[m_font] = (255, 210, 40)
+heat[m_geo] = (255, 40, 40)
+
+# Легенда впечатывается в PNG: смысл цвета, живущий только в тексте вывода,
+# теряется в тот момент, когда картинку смотрят отдельно от лога.
+try:
+    from PIL import ImageDraw
+    im = Image.fromarray(heat)
+    d = ImageDraw.Draw(im)
+    bar = 22
+    d.rectangle([0, 0, im.width, bar], fill=(18, 18, 18))
+    d.rectangle([6, 6, 18, 16], fill=(255, 210, 40))
+    d.text((23, 7), "forma bukv (shrift nedostupen): %d px" % int(m_font.sum()),
+           fill=(230, 230, 230))
+    x2 = im.width // 2
+    d.rectangle([x2, 6, x2 + 12, 16], fill=(255, 40, 40))
+    d.text((x2 + 17, 7), "geometriya/cvet (chinitsya): %d px" % int(m_geo.sum()),
+           fill=(230, 230, 230))
+    im.save(OUT)
+except Exception:
+    Image.fromarray(heat).save(OUT)
+print("\nкарта различий: %s" % OUT)
+print("    жёлтое  = форма букв, шрифт недоступен: %d px (%.1f%% различий)"
+      % (int(m_font.sum()), 100.0 * m_font.sum() / max(1, mask.sum())))
+print("    красное = геометрия и цвет, ЭТО чинится: %d px (%.1f%%)"
+      % (int(m_geo.sum()), 100.0 * m_geo.sum() / max(1, mask.sum())))

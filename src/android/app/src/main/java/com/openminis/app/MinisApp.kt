@@ -24,6 +24,7 @@ import com.openminis.app.data.repository.MemoryRepository
 import com.openminis.app.data.repository.ProviderRepository
 import com.openminis.app.data.repository.WebAppShortcutRepository
 import com.openminis.app.data.repository.MCPRepository
+import com.openminis.app.data.repository.TelegramWhitelistRepository
 import com.openminis.app.data.repository.SkillRepository
 import com.openminis.app.notification.BackgroundTaskNotifier
 import com.openminis.app.logging.AppLogger
@@ -69,6 +70,7 @@ class MinisApp : Application(), ImageLoaderFactory {
     lateinit var skillRepository: SkillRepository
         private set
     lateinit var mcpRepository: MCPRepository
+    lateinit var telegramWhitelistRepository: TelegramWhitelistRepository
         private set
     lateinit var memoryRepository: MemoryRepository
         private set
@@ -266,6 +268,20 @@ class MinisApp : Application(), ImageLoaderFactory {
         // `LoggingManager.startIfEnabled()` (called from MinisApp.swift:143).
         AppLogger.init(this)
 
+        // [T-mutation-journal] Deliberately independent of AppLogger's on/off
+        // preference: AppLogger defaults to DISABLED, which is why the 2c7ae861
+        // history loss had zero app-side evidence. The journal is always on and
+        // records only destructive DB events, so it is both cheap and the one
+        // file that can answer "where did my messages go".
+        com.openminis.app.data.MutationJournal.init(this)
+
+        // [T-network-journal] Same reasoning, for the other class of event the
+        // user has to ask about after the fact: "the session stopped with a
+        // network error and I do not know why". Records the failure WITH its
+        // context (concurrent streams, screen state, connectivity) and the
+        // retry outcome, so a diagnosis does not have to be a guess.
+        com.openminis.app.data.NetworkJournal.init(this)
+
         // Bug 2 (MIUI silent kill) diagnostic: write a launch-cycle beacon
         // so a subsequent launch can observe whether the previous run
         // exited cleanly (onTerminate hit) or was force-killed by LMK /
@@ -296,6 +312,7 @@ class MinisApp : Application(), ImageLoaderFactory {
         providerRepository.setEnvVarRepository(envVarRepository)
         skillRepository = SkillRepository(this)
         mcpRepository = MCPRepository(this)
+        telegramWhitelistRepository = TelegramWhitelistRepository(this)
         memoryRepository = MemoryRepository(java.io.File(filesDir, "minis-global/memory"))
         webAppShortcutRepository = WebAppShortcutRepository(database.webAppShortcutDao())
 

@@ -625,12 +625,6 @@ data class SelectionToolbarActions(
     val resolveSelectionMarkdown: () -> String?,
     /** Append the currently-selected plain text to the chat composer. Null hides the button. */
     val onAddToInput: ((String) -> Unit)? = null,
-    /**
-     * [T-android-selection-readaloud] Speak the currently-selected plain text
-     * through Minis TTS. Null hides the button. Mirrors iOS's "Read Aloud /
-     * Read Selection" selection-menu action.
-     */
-    val onReadAloud: ((String) -> Unit)? = null,
 )
 
 @Composable
@@ -779,9 +773,10 @@ fun MinisSelectionToolbarHost(
                 val labelAddToInput = androidx.compose.ui.res.stringResource(com.openminis.app.R.string.selection_add_to_chat_input)
                 val labelCopyMarkdown = androidx.compose.ui.res.stringResource(com.openminis.app.R.string.selection_copy_markdown)
                 val labelCopyRichText = androidx.compose.ui.res.stringResource(com.openminis.app.R.string.selection_copy_rich_text)
-                val labelReadAloud = androidx.compose.ui.res.stringResource(com.openminis.app.R.string.selection_read_aloud)
+                val labelCopyWholeAnswer = androidx.compose.ui.res.stringResource(com.openminis.app.R.string.selection_copy_whole_answer)
                 val toastCopiedAsMarkdown = androidx.compose.ui.res.stringResource(com.openminis.app.R.string.selection_copied_as_markdown_toast)
                 val toastCopiedAsRichText = androidx.compose.ui.res.stringResource(com.openminis.app.R.string.selection_copied_as_rich_text_toast)
+                val toastCopiedWholeAnswer = androidx.compose.ui.res.stringResource(com.openminis.app.R.string.selection_copied_whole_answer_toast)
                 MinisToolbarButton(label = labelCopy) {
                     val text = controller.selectedPlainText()
                     if (text.isNotEmpty()) {
@@ -801,16 +796,26 @@ fun MinisSelectionToolbarHost(
                         controller.clearSelection()
                     }
                 }
-                // [T-android-selection-readaloud] Speak ONLY the selected
-                // substring (controller.selectedPlainText(), not the message's
-                // markdown source) through Minis TTS.
-                if (actions?.onReadAloud != null) {
-                    MinisToolbarDivider()
-                    MinisToolbarButton(label = labelReadAloud) {
-                        val text = controller.selectedPlainText()
-                        if (text.isNotEmpty()) actions.onReadAloud.invoke(text)
-                        controller.clearSelection()
+                // [T-android-selection-readaloud] REMOVED from this bar too, so
+                // both selection systems show the same actions. The Row here
+                // DOES have horizontalScroll, so width was not the reason —
+                // parity was: two bars that differ by one button make the menu
+                // look unpredictable depending on which selection path fired.
+                // The action itself remains in the voice panel.
+                // [T-copy-whole-answer] Whole message as readable plain text.
+                // Placed before Copy Markdown because it is what "copy the
+                // answer" means to a reader; the two markdown variants below
+                // are for pasting into an editor. Resolved lazily at click
+                // time, same as they are — see the note below on why.
+                MinisToolbarDivider()
+                MinisToolbarButton(label = labelCopyWholeAnswer) {
+                    val source = actions?.resolveSelectionMarkdown?.invoke()
+                        ?: controller.selectedPlainText()
+                    if (source.isNotEmpty()) {
+                        MarkdownClipboard.copyPlain(context, source)
+                        toast(toastCopiedWholeAnswer)
                     }
+                    controller.clearSelection()
                 }
                 // Copy Markdown / Copy Rich Text are ALWAYS shown when the
                 // selection contains rendered text. Earlier we gated them on

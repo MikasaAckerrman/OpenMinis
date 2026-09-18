@@ -17,8 +17,10 @@ import com.openminis.app.provider.safeOptString
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -30,6 +32,20 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.util.concurrent.TimeUnit
 import com.openminis.app.provider.failOnSilentEmptyCompletion
+
+/**
+ * [T-android-stale-conn-proactive] TTFB watchdog bound for the Gemini stream
+ * header phase (mirrors OpenAIProvider / AnthropicProvider). See those for the
+ * stale-pooled-socket rationale.
+ */
+// [T-android-ttfb-relax] Last-resort cap ONLY — see OpenAIProvider for the
+// full rationale. Dead sockets are caught by pingInterval +
+// retryOnConnectionFailure (which don't false-fire on a slow-but-alive
+// server); a wall-clock TTFB at 15s killed legitimate reasoning first-token
+// latency and large agent-history uploads, breaking turns.
+private const val GEMINI_STREAM_TTFB_TIMEOUT_MS = 120_000L
+
+private const val REQUEST_BUDGET_PROTECT_TURNS = 24
 
 class GeminiProvider(
     private val apiKey: String,
@@ -50,6 +66,9 @@ class GeminiProvider(
         // connection is detected in ~15s instead of hanging the TTFB watchdog.
         // See OpenAIProvider for the full rationale.
         .pingInterval(15, TimeUnit.SECONDS)
+        // [T-android-ttfb-relax] Pin default-true: OkHttp reconnects a stalled
+        // call on a fresh socket when the h2 PING proves the pooled one dead.
+        .retryOnConnectionFailure(true)
         // [T-android-stale-conn-retry-hang] Shared pool — see NetworkMonitor.
         // Network-transition eviction must reach provider connections.
         .connectionPool(com.openminis.app.network.NetworkMonitor.sharedLLMConnectionPool)
@@ -128,7 +147,37 @@ class GeminiProvider(
             .applyUserAgentOverride(null)
             .build()
 
-        val response = client.newCall(request).execute()
+        val response = run {
+            val call = client.newCall(request)
+            // [T-android-stale-conn-proactive] TTFB watchdog — bounds ONLY the
+            // header phase; see GEMINI_STREAM_TTFB_TIMEOUT_MS.
+            val ttfbTimedOut = java.util.concurrent.atomic.AtomicBoolean(false)
+            val headersArrived = java.util.concurrent.atomic.AtomicBoolean(false)
+            val ttfbWatchdog = launch {
+                delay(GEMINI_STREAM_TTFB_TIMEOUT_MS)
+                if (!headersArrived.get()) {
+                    ttfbTimedOut.set(true)
+                    android.util.Log.w(
+                        "GeminiProvider",
+                        "[T-android-stale-conn-proactive] no response headers after ${GEMINI_STREAM_TTFB_TIMEOUT_MS / 1000}s — cancelling call (stale pooled connection?)",
+                    )
+                    call.cancel()
+                }
+            }
+            try {
+                call.execute()
+            } catch (e: java.io.IOException) {
+                if (ttfbTimedOut.get()) {
+                    throw LLMError.TransientError(
+                        "no response from server (${GEMINI_STREAM_TTFB_TIMEOUT_MS / 1000}s) — check network/proxy",
+                    )
+                }
+                throw e
+            } finally {
+                headersArrived.set(true)
+                ttfbWatchdog.cancel()
+            }
+        }
         if (!response.isSuccessful) {
             val errorBody = response.body?.string() ?: ""
             response.close()
@@ -199,11 +248,45 @@ class GeminiProvider(
         // LLMProvider.streamMessage/sendMessage before reaching here.
         thinkingLevel: ThinkingLevel = ThinkingLevel.OFF,
     ): JSONObject {
+        // [T-gemini-request-budget] The Gemini path had NO byte gates at all —
+        // no RequestBudget elision, no ImageBudget ladder — while the OpenAI
+        // and Anthropic paths grew both. A Gemini-native model (the compaction
+        // ladder includes gemini-flash; any user model routed here) sent
+        // unlimited bodies: inline b64 screenshots, fat tool_results, oversized
+        // transcripts — the exact «запрос отклонен шлюзом» /
+        // sensitive_words-in-disguise failure fixed elsewhere on 2026-09-09.
+        // Same two-layer gate here now: elision pass + compression ladder.
+        // [T-overhead-visible] systemInstruction + tool schemas + legacy
+        // imageParts share this body — they count against the ceiling too.
+        val overhead = com.openminis.app.data.RequestBudget.estimateOverheadBytes(
+            systemPrompt = systemPrompt,
+            toolsJsonBytes = tools.sumOf { it.toGeminiJson().toString().toByteArray().size },
+            legacyImageParts = imageParts,
+        )
+        val budgeted = com.openminis.app.data.RequestBudget.plan(
+            messages = messages,
+            protectRecentUserTextTurns = REQUEST_BUDGET_PROTECT_TURNS,
+            overheadBytes = overhead,
+        )
+        if (budgeted.elidedToolResultCount > 0 || budgeted.elidedImageCount > 0) {
+            com.openminis.app.logging.AppLogger.info(
+                "GeminiProvider",
+                "[RequestBudget] elided ${budgeted.elidedToolResultCount} oversize tool_result(s) + " +
+                    "${budgeted.elidedImageCount} old image(s): " +
+                    "${budgeted.bytesBefore}B + ${overhead}B overhead → ${budgeted.bytesAfter}B + overhead " +
+                    "(ceiling ${com.openminis.app.data.RequestBudget.DEFAULT_MAX_BODY_BYTES}B)",
+            )
+        }
+        val safeMessages = if (budgeted.totalAfter > com.openminis.app.data.RequestBudget.DEFAULT_MAX_BODY_BYTES) {
+            com.openminis.app.provider.ImageBudget.compressHistoryImagesUnderBudget(budgeted.messages)
+        } else {
+            budgeted.messages
+        }
         val body = JSONObject()
 
         val contents = JSONArray()
-        val lastUserIndex = messages.indexOfLast { it.role == LLMMessage.Role.USER }
-        for ((index, msg) in messages.withIndex()) {
+        val lastUserIndex = safeMessages.indexOfLast { it.role == LLMMessage.Role.USER }
+        for ((index, msg) in safeMessages.withIndex()) {
             val role = if (msg.role == LLMMessage.Role.USER) "user" else "model"
             val content = JSONObject()
             content.put("role", role)

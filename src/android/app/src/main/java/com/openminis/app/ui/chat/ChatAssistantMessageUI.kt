@@ -279,6 +279,12 @@ import com.openminis.app.ui.components.MinisTextButton
 internal fun AssistantHeader(
     onRewrite: (() -> Unit)? = null,
     onDelete: (() -> Unit)? = null,
+    // [T-copy-whole-answer] Copy the prose of this whole turn. Lives on the
+    // header menu, not in the body: the body is a SelectionContainer where a
+    // long press starts text selection, and selection only ever yields the
+    // fragment the user managed to drag over — which is exactly the complaint
+    // this action answers ("some parts don't get copied").
+    onCopyAnswer: (() -> Unit)? = null,
 ) {
     // [T-soul-md] Identity header = locked ✨ sparkle gradient icon +
     // SOUL.md-driven `name`. The emoji-customization field was removed,
@@ -294,7 +300,7 @@ internal fun AssistantHeader(
     // and hijacking that would break copy — which users need far more often
     // than they need to delete a turn.
     var showMenu by remember { mutableStateOf(false) }
-    val hasActions = onRewrite != null || onDelete != null
+    val hasActions = onRewrite != null || onDelete != null || onCopyAnswer != null
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
@@ -305,7 +311,7 @@ internal fun AssistantHeader(
             .padding(top = 10.dp, bottom = 2.dp)
             .then(
                 if (hasActions) {
-                    Modifier.pointerInput(onRewrite, onDelete) {
+                    Modifier.pointerInput(onRewrite, onDelete, onCopyAnswer) {
                         detectTapGestures(onLongPress = { showMenu = true })
                     }
                 } else Modifier
@@ -335,6 +341,21 @@ internal fun AssistantHeader(
         )
         if (hasActions) {
             DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                // [T-copy-whole-answer] First item: it is the only
+                // non-destructive action here and the one reached most often.
+                if (onCopyAnswer != null) {
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.msg_longpress_copy_answer)) },
+                        onClick = { showMenu = false; onCopyAnswer() },
+                        leadingIcon = {
+                            Icon(
+                                Icons.Filled.ContentCopy,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        },
+                    )
+                }
                 if (onRewrite != null) {
                     DropdownMenuItem(
                         text = { Text(stringResource(R.string.msg_longpress_rewrite)) },

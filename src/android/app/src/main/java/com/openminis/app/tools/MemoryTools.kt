@@ -26,7 +26,7 @@ object MemoryTools {
 
         return JSONObject().apply {
             put("name", "memory_write")
-            put("description", "Write a memory entry to today's daily log (YYYY-MM-DD.md). Memories persist across all sessions. Each entry is prepended with a timestamp. Save: user preferences, recurring patterns, key facts, project conventions, reusable knowledge. Avoid saving passwords, API keys, tokens, or secrets unless the user explicitly confirms after being warned. Keep entries concise and general-purpose. GLOBAL.md is read-only (user-maintained via Settings).")
+            put("description", "Write a memory entry to today's daily log (YYYY-MM-DD.md). Memories persist across all sessions. Each entry is prepended with a timestamp. Save: user preferences, recurring patterns, key facts, project conventions, reusable knowledge. When the user's words contain an explicit memorize/rule signal (\"запомни...\", \"always/never ...\"), the fact is automatically pinned to CANON.md instead — a standing instruction injected on EVERY turn, not just the 3-day daily window. Avoid saving passwords, API keys, tokens, or secrets unless the user explicitly confirms after being warned. Keep entries concise and general-purpose. GLOBAL.md is read-only (user-maintained via Settings).")
             put("input_schema", JSONObject().apply {
                 put("type", "object")
                 put("properties", properties)

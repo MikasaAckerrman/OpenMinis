@@ -1,0 +1,81 @@
+#!/bin/sh
+# minis-avito — поиск и анализ объявлений Авито (встроенная копия, как minis-uicopy).
+#
+# Автономен: вся логика в /usr/local/lib/minis-avito, включая встроенный
+# движок web-deep (engine/). Обновление = пересборка из скилла
+# /var/minis/skills/avito (см. сборочный скрипт сессии разработки).
+#
+# Данные сессии: ${MINIS_DATA_ROOT:-/var/minis/shared/_data}/avito
+
+DIR="/usr/local/lib/minis-avito"
+ENGINE="$DIR/engine"
+DATA=${MINIS_DATA_ROOT:-/var/minis/shared/_data}/avito
+RAW=${AVITO_RAW:-$DATA/items.json}
+PORT=${AVITO_PORT:-8791}
+LOG=$DATA/sink.log
+
+mkdir -p "$DATA" 2>/dev/null || true
+
+case "$1" in
+  scan)   shift; exec python3 "$DIR/scan.py" "$@" ;;
+  render) shift; exec python3 "$DIR/render.py" "$@" ;;
+  report) shift; exec python3 "$DIR/report.py" "$@" ;;
+  qa)     shift; exec python3 "$DIR/humanize.py" "$@" ;;
+  chat)   shift; exec python3 "$DIR/chatread.py" "$@" ;;
+  chatui) exec python3 "$DIR/chatui.py" "$@" ;;
+  chats)  shift; exec python3 "$DIR/chats.py" "$@" ;;
+  watch)  shift; exec python3 "$DIR/watch.py" "$@" ;;
+  run)    shift; MINIS_SESSION="${MINIS_SESSION:-s0}" exec python3 "$DIR/run.py" "$@" ;;
+  links)  shift; exec python3 "$DIR/links.py" "$@" ;;
+  gpu)    shift; AVITO_RAW="$RAW" exec python3 "$DIR/gpu.py" "$@" ;;
+  cross)  shift; AVITO_RAW="$RAW" exec python3 "$DIR/cross.py" "$@" ;;
+  bridge) shift; exec python3 "$DIR/bridge.py" "$@" ;;
+  photo)  shift; AVITO_RAW="$RAW" exec python3 "$DIR/photo.py" "$@" ;;
+  preflight) shift; exec python3 "$DIR/preflight.py" "$@" ;;
+  sink)
+    # локальный sink (раздаёт crawl.js/details.js в браузер через POST)
+    shift; exec python3 "$DIR/sink.py" "$@" ;;
+  test)
+    shift
+    set -e
+    AVITO_RAW="$RAW" python3 "$DIR/selftest.py" "$@"
+    python3 "$DIR/selftest-preflight.py"
+    node "$DIR/selftest-preflight-browser.js"
+    python3 "$DIR/selftest-photo.py"
+    python3 "$DIR/selftest-chatread.py"
+    python3 "$DIR/selftest-scan.py"
+    python3 "$DIR/selftest-humanize.py"
+    python3 "$DIR/selftest-render.py"
+    python3 "$DIR/selftest-report.py"
+    ;;
+  doctor)
+    echo "dir:   $DIR ($(ls "$DIR"/*.py 2>/dev/null | wc -l) py)"
+    echo "engine: $(ls "$ENGINE" 2>/dev/null | tr '\n' ' ')"
+    echo "data:  $DATA ($(ls "$DATA" 2>/dev/null | wc -l) файлов)"
+    echo "python3: $(python3 --version 2>&1)"
+    node --version 2>/dev/null && echo "node: ok" || echo "node: НЕТ (js-тесты пропустятся)"
+    which tesseract >/dev/null 2>&1 && echo "tesseract: ok" || echo "tesseract: НЕТ (chat OCR не работает)"
+    ;;
+  *)
+    cat <<'EOF'
+minis-avito — объявления Авито: сбор, скоринг, карточки (встроено в Minis).
+
+  minis-avito scan <mission> [--url-only|--info] [--pmin N --pmax N --q Q]
+                                  миссии: config/missions/*.yaml
+  minis-avito render <scan.json> [--top N]   карточки для чата
+  minis-avito report <scan.json> [--n N]     ссылки + вопросы продавцу
+  minis-avito qa <context.json> [--mode select|one|bundle]
+  minis-avito chat <скриншот>               переписка из скриншота (OCR)
+  minis-avito chatui [--full]               чат с экрана (a11y), --full — вся история
+  minis-avito chats --list                  список чатов с экрана
+  minis-avito run <mission> [--n5]          лоты (b64 на stdin) -> скан+карточки
+  minis-avito watch save|diff|list          снимки во времени (снижение цены)
+  minis-avito links <scan.json>             проверенные ссылки (url+raw+price)
+  minis-avito gpu|cross|photo|preflight     (нужны данные сбора)
+  minis-avito test                          самопроверка на фикстурах
+  minis-avito doctor                        состояние окружения
+
+Данные: ${MINIS_DATA_ROOT:-/var/minis/shared/_data}/avito
+EOF
+    ;;
+esac

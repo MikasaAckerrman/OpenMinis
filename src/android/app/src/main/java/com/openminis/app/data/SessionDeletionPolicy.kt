@@ -98,10 +98,16 @@ object SessionDeletionPolicy {
      * Human-readable refusal, surfaced verbatim as the RPC error message so the
      * agent (and whoever reads the log) learns the boundary instead of retrying
      * with different params.
+     *
+     * Mentions only methods that actually exist on this branch: `chat.session.rescue`
+     * was removed when the local rescue digest was dropped, and naming a dead
+     * method in a refusal sends the reader looking for something that will
+     * itself refuse.
      */
     const val REFUSAL_MESSAGE: String =
         "Deleting sessions or messages is reserved for the user in the app UI. " +
-            "The agent may compact a session (chat.compact.before / " +
-            "chat.session.rescue), which keeps every message on disk and only " +
-            "shrinks what is sent to the model."
+            "The agent may compact a session (chat.compact.before), which keeps " +
+            "every message on disk and only shrinks what is sent to the model. " +
+            "Use chat.deleted.list / chat.journal.read to inspect rows a past " +
+            "truncation archived."
 }

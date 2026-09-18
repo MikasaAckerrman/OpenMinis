@@ -41,51 +41,12 @@ class ContextPressureTest {
         assertFalse(ContextPressure.isEstimated(0, 0))
     }
 
-    @Test
-    fun `maintenance now acts on a failing session instead of idling`() {
-        // Regression guard for the actual bug: before the fix this session
-        // reported tokens=0 and got LIGHT forever, so the oversized history
-        // kept being sent. With the estimate it escalates.
-        val window = 200_000
-        val estimated = 180_000
-        val blind = ContextMaintenance.decide(
-            userTurnsSinceFull = 9,
-            contextTokens = 0,                    // what the code used to see
-            contextWindow = window,
-            compactSupported = true,
-            isCompacting = false,
-            lastFullAtMs = 0L,
-            nowMs = 10_000_000L,
-        )
-        val sighted = ContextMaintenance.decide(
-            userTurnsSinceFull = 9,
-            contextTokens = ContextPressure.resolve(0, estimated),
-            contextWindow = window,
-            compactSupported = true,
-            isCompacting = false,
-            lastFullAtMs = 0L,
-            nowMs = 10_000_000L,
-        )
-        assertEquals(ContextMaintenance.Action.LIGHT, blind)
-        assertEquals(ContextMaintenance.Action.RESCUE, sighted)
-    }
-
-    @Test
-    fun `rescue hint now fires on a vague error in a big failing session`() {
-        val msg = "no response from server (30s) — check network/proxy"
-        val window = 200_000
-        assertFalse(
-            "blind: 0/200000 reads as a small session",
-            RescueAdvisor.shouldSuggestRescue(msg, contextTokens = 0, contextWindow = window),
-        )
-        assertTrue(
-            RescueAdvisor.shouldSuggestRescue(
-                msg,
-                contextTokens = ContextPressure.resolve(0, 180_000),
-                contextWindow = window,
-            ),
-        )
-    }
+    // NOTE: the former `maintenance now acts…` and `rescue hint now fires…`
+    // tests were removed together with ContextMaintenance.decide and
+    // RescueAdvisor — automatic maintenance and the local rescue digest no
+    // longer exist. The size-related error hint is now covered by
+    // TransportErrorClassifierTest; ContextPressure.resolve behaviour (the
+    // half that still matters) is fully covered by the tests above.
 }
 
 /**

@@ -1,0 +1,9 @@
+{
+ "serp-mfe": {
+  "source": "реальный SERP avito.ru, срез по полям парсера",
+  "items": 4,
+  "expect_rows": 4,
+  "expect_count": 1557,
+  "shape": "data-mfe-state -> loaderData.data.catalog.items[].value"
+ }
+}

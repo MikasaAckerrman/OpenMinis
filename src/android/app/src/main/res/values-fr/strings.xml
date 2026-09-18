@@ -807,7 +807,6 @@
     <string name="sessionlist_welcome_step_done">Terminé</string>
     <!-- T-selection-add-to-input — Action du menu de sélection sur appui long -->
     <string name="selection_add_to_chat_input">Ajouter au champ de saisie</string>
-    <string name="selection_read_aloud">Lire à voix haute</string>
     <!-- T-minis-textkit boutons du menu de sélection -->
     <string name="selection_copy">Copier</string>
     <string name="selection_copy_markdown">Copier en Markdown</string>
