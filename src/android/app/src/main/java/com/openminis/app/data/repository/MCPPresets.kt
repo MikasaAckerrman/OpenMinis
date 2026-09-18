@@ -120,4 +120,33 @@ object MCPPresets {
     )
 
     fun findById(id: String): Preset? = all.find { it.id == id }
+
+    /**
+     * Convert a preset to a [com.openminis.app.data.repository.MCPRepository.MCPServerConfig]
+     * ready for `mcpRepository.add()`. The user fills in client_id/secret
+     * afterwards (OAuth) or the API key/username (other transports).
+     */
+    fun toConfig(preset: Preset): com.openminis.app.data.repository.MCPRepository.MCPServerConfig {
+        return com.openminis.app.data.repository.MCPRepository.MCPServerConfig(
+            id = preset.id + "-" + System.currentTimeMillis().toString(36),
+            name = preset.displayName,
+            note = null,
+            command = preset.command,
+            args = preset.args,
+            url = preset.url,
+            iconUrl = preset.iconUrl,
+            env = emptyMap(),
+            enabled = true,
+            oauth = if (preset.authUrl != null && preset.tokenUrl != null) {
+                com.openminis.app.mcp.oauth.MCPOAuthConfig(
+                    authUrl = preset.authUrl,
+                    tokenUrl = preset.tokenUrl,
+                    scopes = preset.scopes ?: "",
+                    clientId = "",
+                    clientSecret = null,
+                    redirectUri = null,
+                )
+            } else null,
+        )
+    }
 }

@@ -225,6 +225,8 @@ private fun MCPAddSheet(
     // for the lower form fields at all.
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var selectedTab by remember { mutableIntStateOf(0) }
+    val scope = rememberCoroutineScope()
+    var showPresetPicker by remember { mutableStateOf(false) }
     val isEdit = editServer != null
 
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
@@ -266,8 +268,40 @@ private fun MCPAddSheet(
                     onDone = onDismiss,
                     onRequestDelete = onRequestDelete,
                 )
-            } else {
+            } else if (selectedTab == 1) {
                 MCPImportTab(mcpRepository = mcpRepository, onDone = onDismiss)
+            } else if (selectedTab == 2 && !isEdit) {
+                // Пресеты: тап — создаёт MCPServerConfig и сохраняет в репо
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                        .padding(bottom = 32.dp)
+                        .navigationBarsPadding(),
+                ) {
+                    Text(
+                        "Готовые пресеты",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.padding(bottom = 8.dp),
+                    )
+                    Text(
+                        "Тап — создаст сервер с командой, args и OAuth endpoints. Останется ввести client_id/secret.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 12.dp),
+                    )
+                    MCPPresets.all.forEach { preset ->
+                        MCPPresetRow(
+                            preset = preset,
+                            onPick = { picked ->
+                                val cfg = MCPPresets.toConfig(picked)
+                                mcpRepository.add(cfg)
+                                onDismiss()
+                            },
+                        )
+                    }
+                }
             }
         }
     }
@@ -1063,4 +1097,63 @@ private fun MCPPresetPicker(
         }
     }
 }
+}
+
+
+/**
+ * Single preset tile in the 3rd tab — tap → [onPick] callback (which creates
+ * the MCPServerConfig and saves it). Renders icon (if any) + displayName +
+ * transport type badge + description.
+ */
+@Composable
+private fun MCPPresetRow(
+    preset: MCPPresets.Preset,
+    onPick: (MCPPresets.Preset) -> Unit,
+) {
+    Surface(
+        onClick = { onPick(preset) },
+        shape = MaterialTheme.shapes.medium,
+        tonalElevation = 1.dp,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        preset.displayName,
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                    if (preset.url == null && preset.command != null) {
+                        Text(
+                            " · STDIO",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else if (preset.url != null) {
+                        Text(
+                            " · HTTP",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                Text(
+                    preset.description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+            androidx.compose.material3.Icon(
+                androidx.compose.material.icons.Icons.AutoMirrored.Filled.ArrowForward,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
 }
