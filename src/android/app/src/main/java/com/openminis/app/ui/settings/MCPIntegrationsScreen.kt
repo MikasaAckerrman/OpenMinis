@@ -168,6 +168,7 @@ fun MCPIntegrationsScreen(
             editServer = null,
             onDismiss = { showAddSheet = false },
             onRequestDelete = {},
+            onTelegramAccessControl = onTelegramAccessControl,
         )
     }
 
@@ -182,6 +183,7 @@ fun MCPIntegrationsScreen(
                 editServer = null
                 deleteId = server.id
             },
+            onTelegramAccessControl = onTelegramAccessControl,
         )
     }
 
@@ -258,6 +260,21 @@ private fun MCPAddSheet(
                         Text(stringResource(R.string.mcp_tab_import), modifier = Modifier.padding(12.dp))
                     }
                 }
+            }
+
+            // [T-tg-whitelist] Telegram access-control entry point.
+            // Visible only when editing the built-in 'telegram' server.
+            if (isEdit && editServer?.id == "telegram" && onTelegramAccessControl != null) {
+                TextButton(
+                    onClick = {
+                        onDismiss()
+                        onTelegramAccessControl()
+                    },
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                ) {
+                    Text(stringResource(R.string.tg_whitelist_access_control))
+                }
+                HorizontalDivider()
             }
 
             if (isEdit || selectedTab == 0) {

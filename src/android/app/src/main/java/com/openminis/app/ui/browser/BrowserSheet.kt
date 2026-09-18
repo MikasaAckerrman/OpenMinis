@@ -612,24 +612,6 @@ private fun TabChip(
     }
 }
 
-@Composable
-private fun ToolbarIcon(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    contentDesc: String,
-    enabled: Boolean,
-    onClick: () -> Unit,
-    tint: Color? = null,
-) {
-    IconButton(onClick = onClick, enabled = enabled) {
-        Icon(
-            icon,
-            contentDescription = contentDesc,
-            modifier = Modifier.size(22.dp),
-            tint = if (!enabled) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
-                else tint ?: MaterialTheme.colorScheme.onSurface,
-        )
-    }
-}
 
 /** Globe icon with a spinning arc border when loading. */
 @Composable

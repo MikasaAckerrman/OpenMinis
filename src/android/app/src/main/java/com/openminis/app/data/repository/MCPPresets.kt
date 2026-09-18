@@ -10,6 +10,9 @@ package com.openminis.app.data.repository
  * input for fields that vary per-user (client_id, secret, env values).
  */
 object MCPPresets {
+    /** Monotonically increasing counter to make ids unique even if nanos collide. */
+    private var idCounter: Long = 0
+
     data class Preset(
         val id: String,
         val displayName: String,
@@ -127,8 +130,9 @@ object MCPPresets {
      * afterwards (OAuth) or the API key/username (other transports).
      */
     fun toConfig(preset: Preset): com.openminis.app.data.repository.MCPRepository.MCPServerConfig {
-        // id = preset + timestamp suffix → unique even if user adds same preset twice
-        val id = preset.id + "-" + System.currentTimeMillis().toString(36)
+        // id = preset + nanos + counter — unique even if user taps same preset twice within 1ms.
+        // nanoTime + counter avoids System.currentTimeMillis() collisions under rapid taps.
+        id = preset.id + "-" + System.nanoTime().toString(36) + "-" + (++idCounter).toString(36)
         return com.openminis.app.data.repository.MCPRepository.MCPServerConfig(
             id = id,
             // display name stored in `note` (MCPServerConfig has no `name` field;
