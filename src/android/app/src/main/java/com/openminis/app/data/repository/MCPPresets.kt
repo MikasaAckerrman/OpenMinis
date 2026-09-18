@@ -127,24 +127,24 @@ object MCPPresets {
      * afterwards (OAuth) or the API key/username (other transports).
      */
     fun toConfig(preset: Preset): com.openminis.app.data.repository.MCPRepository.MCPServerConfig {
+        // id = preset + timestamp suffix → unique even if user adds same preset twice
+        val id = preset.id + "-" + System.currentTimeMillis().toString(36)
         return com.openminis.app.data.repository.MCPRepository.MCPServerConfig(
-            id = preset.id + "-" + System.currentTimeMillis().toString(36),
-            name = preset.displayName,
-            note = null,
+            id = id,
+            // display name stored in `note` (MCPServerConfig has no `name` field;
+            // UI shows server.id as primary label and note as subtitle)
+            note = preset.displayName,
             command = preset.command,
             args = preset.args,
             url = preset.url,
             iconUrl = preset.iconUrl,
-            env = emptyMap(),
             enabled = true,
             oauth = if (preset.authUrl != null && preset.tokenUrl != null) {
                 com.openminis.app.mcp.oauth.MCPOAuthConfig(
-                    authUrl = preset.authUrl,
-                    tokenUrl = preset.tokenUrl,
-                    scopes = preset.scopes ?: "",
                     clientId = "",
-                    clientSecret = null,
-                    redirectUri = null,
+                    authorizationEndpoint = preset.authUrl,
+                    tokenEndpoint = preset.tokenUrl,
+                    scopes = preset.scopes,
                 )
             } else null,
         )

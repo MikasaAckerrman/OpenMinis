@@ -54,6 +54,8 @@ class MCPRepository(private val context: Context) {
         val id: String,
         val note: String? = null,
         val enabled: Boolean = true,
+        /** 24×24 favicon URL shown in UI. Null = use generic icon. */
+        val iconUrl: String? = null,
         // HTTP / SSE transport
         val url: String? = null,
         val headers: Map<String, String> = emptyMap(),
@@ -205,9 +207,9 @@ class MCPRepository(private val context: Context) {
             args = args,
             env = env,
             startupTimeoutSeconds = parseStartupTimeout(entry),
+            iconUrl = entry.optString("iconUrl", "").ifBlank { null },
             oauth = com.openminis.app.mcp.oauth.MCPOAuthConfig.fromJson(entry.optJSONObject("oauth")),
             createdAt = createdAt,
-            iconUrl = entry.optString("iconUrl", "").ifBlank { null },
         )
     }
 
@@ -299,7 +301,12 @@ class MCPRepository(private val context: Context) {
         Log.i(TAG, "Deleted MCP server: $id")
     }
 
-    
+    fun setEnabled(id: String, enabled: Boolean) {
+        _servers.value = _servers.value.map {
+            if (it.id == id) it.copy(enabled = enabled) else it
+        }
+        save()
+    }
 
     fun toggle(id: String) {
         val current = _servers.value.find { it.id == id } ?: return
@@ -436,19 +443,6 @@ class MCPRepository(private val context: Context) {
      * Returns null when the session has no enabled servers. Format per the
      * feature design doc §6a.
      */
-    /**
-     * Toggle a server's enabled state and persist. Safe to call from UI; the
-     * StateFlow re-publishes so any [servers] collector updates.
-     */
-    fun setEnabled(id: String, enabled: Boolean) {
-        val current = _servers.value
-        val updated = current.map { if (it.id == id) it.copy(enabled = enabled) else it }
-        if (updated == current) return
-        save(updated)
-        _servers.value = updated
-    }
-
-
     fun mcpPromptFragment(sessionId: String): String? {
         val enabled = _servers.value
             .filter { isEnabledForSession(it.id, sessionId) }

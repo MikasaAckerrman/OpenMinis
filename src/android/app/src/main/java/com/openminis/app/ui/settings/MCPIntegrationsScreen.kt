@@ -132,8 +132,8 @@ fun MCPIntegrationsScreen(
                 servers.forEachIndexed { index, server ->
                     val transportIcon = if (server.isStdio) Icons.Outlined.Terminal else Icons.Outlined.Language
                     SettingsRow(
-                        title = server.id,
-                        subtitle = server.transportSummary.takeIf { it.isNotBlank() },
+                        title = server.note?.takeIf { it.isNotBlank() } ?: server.id,
+                        subtitle = server.transportSummary.takeIf { it.isNotBlank() } ?: server.id,
                         showChevron = true,
                         showDivider = index < servers.size - 1,
                         // FIX 1: plain tap opens the edit form (was delete-confirm).
