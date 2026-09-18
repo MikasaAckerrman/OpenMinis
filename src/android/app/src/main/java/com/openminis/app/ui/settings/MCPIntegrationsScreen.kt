@@ -170,7 +170,6 @@ fun MCPIntegrationsScreen(
             editServer = null,
             onDismiss = { showAddSheet = false },
             onRequestDelete = {},
-            onTelegramAccessControl = onTelegramAccessControl,
         )
     }
 
@@ -185,7 +184,6 @@ fun MCPIntegrationsScreen(
                 editServer = null
                 deleteId = server.id
             },
-            onTelegramAccessControl = onTelegramAccessControl,
         )
     }
 
