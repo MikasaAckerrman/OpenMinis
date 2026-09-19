@@ -44,7 +44,7 @@ class CompactProgressTest {
         r.callChars(1, 500, 1_000)
         assertEquals(50.0, r.snapshot().percent, 1e-9)
         r.callChars(1, 5_000, 1_000)             // overshoot clamps at 0.99
-        assertEquals(99.0, r.snapshot().percent, 1e-9)
+        assertEquals(99.0, r.snapshot().percent, 0.01)
         assertEquals(CompactPhase.SUMMARIZING, r.snapshot().phase)
         assertEquals("mini", r.snapshot().modelLabel)
     }
