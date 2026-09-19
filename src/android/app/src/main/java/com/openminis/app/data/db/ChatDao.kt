@@ -145,6 +145,14 @@ interface ChatDao {
     @Query("SELECT * FROM messages WHERE session_id = :sessionId ORDER BY sort_order ASC")
     suspend fun loadMessages(sessionId: String): List<MessageEntity>
 
+    // [T-rewrite-verify] Read a single message row back by primary key.
+    // Powers the post-write verification in rewriteMessageText: the DAO
+    // UPDATE reports success even when a SQLite layer problem silently
+    // dropped the write (transaction rollback, blob overflow) — the only
+    // proof the edit landed is reading the row and comparing text.
+    @Query("SELECT * FROM messages WHERE id = :id LIMIT 1")
+    suspend fun getMessageById(id: String): MessageEntity?
+
     @Query("SELECT * FROM messages WHERE session_id = :sessionId ORDER BY sort_order ASC")
     fun observeMessages(sessionId: String): Flow<List<MessageEntity>>
 

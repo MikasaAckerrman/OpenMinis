@@ -1307,6 +1307,11 @@
     <string name="msg_delete_busy_streaming">Stop the current response before editing the history.</string>
     <string name="msg_delete_busy_compacting">Wait for compaction to finish before editing the history.</string>
     <string name="msg_delete_not_found">That message is no longer in this session.</string>
+    <!-- [T-rewrite-verify] History read returned zero rows — the surgery
+         couldn't even look for the message. Distinct from "not found":
+         the bubble is on screen, the DB read failed (safe mode / page
+         error), blaming the message would be a lie. -->
+    <string name="msg_surgery_history_unavailable">History could not be read from the database — try again in a moment.</string>
     <string name="msg_delete_done">Deleted %1$d message(s) from the session and from the model\'s history.</string>
     <string name="msg_delete_done_with_notes">Deleted %1$d message(s). To keep the history valid: %2$s.</string>
     <string name="msg_delete_failed">Could not delete: %1$s</string>

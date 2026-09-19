@@ -2695,6 +2695,17 @@ class ChatViewModel(
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val rows = chatRepository.loadMessages(sid)
+                // [T-rewrite-verify] Same distinction as rewrite: an empty
+                // read is a history-read failure, not "message gone".
+                if (rows.isEmpty()) {
+                    withContext(Dispatchers.Main) {
+                        appendSystemInfo(
+                            text = context.getString(R.string.msg_surgery_history_unavailable),
+                            iconKind = "compact",
+                        )
+                    }
+                    return@launch
+                }
                 val surgical = rows.map {
                     com.openminis.app.data.MessageSurgery.Msg(
                         id = it.id, role = it.role, partsJson = it.partsJson, sortOrder = it.sortOrder,
@@ -2809,6 +2820,25 @@ class ChatViewModel(
                 withContext(Dispatchers.Main) {
                     revokeMemoryWritesInDeletedMessages(deletedUi)
                     reloadSessionFromDb()
+                    // [T-delete-verify] A plan that said it would drop rows
+                    // but removed none means every archiveAndDelete failed
+                    // silently (runCatching.getOrDefault(0)) — reporting
+                    // "deleted 0" as success is the "delete sometimes doesn't
+                    // work" symptom. Surface it as the failure it is.
+                    if (removed == 0 && plan.deleteIds.isNotEmpty()) {
+                        AppLogger.warning(
+                            TAG,
+                            "[Surgery] delete: plan had ${plan.deleteIds.size} row(s), 0 actually removed",
+                        )
+                        appendSystemInfo(
+                            text = context.getString(
+                                R.string.msg_delete_failed,
+                                "0/${plan.deleteIds.size} rows removed",
+                            ),
+                            iconKind = "compact",
+                        )
+                        return@withContext
+                    }
                     val note = if (plan.notes.isEmpty()) {
                         context.getString(R.string.msg_delete_done, removed)
                     } else {
@@ -2866,6 +2896,21 @@ class ChatViewModel(
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val rows = chatRepository.loadMessages(sid)
+                // [T-rewrite-verify] An empty row list is NOT "message no
+                // longer exists" — it means the history read itself failed
+                // (safe-mode short-circuit, SQLite page error). Reporting
+                // "no longer in this session" for a bubble the user is
+                // staring at is the false negative that made edits look
+                // broken. Distinguish the two cases explicitly.
+                if (rows.isEmpty()) {
+                    withContext(Dispatchers.Main) {
+                        appendSystemInfo(
+                            text = context.getString(R.string.msg_surgery_history_unavailable),
+                            iconKind = "compact",
+                        )
+                    }
+                    return@launch
+                }
                 val uiMsg = _messages.value.firstOrNull { it.id == messageId }
                 val candidateIds = buildList {
                     add(messageId)
@@ -2905,8 +2950,6 @@ class ChatViewModel(
                     }
                     return@launch
                 }
-                runCatching { chatRepository.dao.updateMessageParts(row.id, rewritten) }
-                    .onFailure { AppLogger.warning(TAG, "[Surgery] rewrite failed: ${it.message}") }
                 // [T-rewrite-assistant-full] A merged assistant bubble is
                 // several DB rows; the whole edited prose just went into ONE of
                 // them. The other rows of the same turn must give up their text,
@@ -2914,6 +2957,7 @@ class ChatViewModel(
                 // ones — the user edited what they saw as one message and would
                 // get two versions of it. Tool parts / media stay untouched.
                 var siblingsCleared = 0
+                var siblingsFailed = 0
                 for (cand in candidateIds.distinct()) {
                     if (cand == row.id) continue
                     val sib = rows.firstOrNull { it.id == cand } ?: continue
@@ -2922,8 +2966,25 @@ class ChatViewModel(
                     runCatching { chatRepository.dao.updateMessageParts(sib.id, stripped) }
                         .onSuccess { siblingsCleared++ }
                         .onFailure {
+                            siblingsFailed++
                             AppLogger.warning(TAG, "[Surgery] sibling strip ${sib.id} failed: ${it.message}")
                         }
+                }
+                // [T-rewrite-verify] A failed sibling strip leaves the merged
+                // assistant bubble holding BOTH the new prose (row) and the
+                // old paragraphs (sibling) — after reload the model sees the
+                // edit AND the stale text. Not acceptable to swallow.
+                if (siblingsFailed > 0) {
+                    withContext(Dispatchers.Main) {
+                        appendSystemInfo(
+                            text = context.getString(
+                                R.string.msg_delete_failed,
+                                "sibling strip failed for $siblingsFailed row(s)",
+                            ),
+                            iconKind = "compact",
+                        )
+                    }
+                    return@launch
                 }
                 if (siblingsCleared > 0) {
                     AppLogger.info(
@@ -2936,6 +2997,54 @@ class ChatViewModel(
                     "[Surgery] rewrote text of ${row.id.take(8)} (${row.role}): " +
                         "${com.openminis.app.data.MessageSurgery.textOf(row.partsJson).length} → ${newText.length} chars",
                 )
+                // [T-rewrite-verify] Prove the write landed. The DAO call
+                // above was wrapped in runCatching whose failure only hit the
+                // log — the flow then marked the bubble edited, reloaded and
+                // (pre-stealth) announced success, while the DB still held
+                // the OLD text. That is exactly the reported symptom: bubble
+                // shows old text, model answers from old text, user told
+                // "edited". Two guards:
+                //   1) the UPDATE must not have thrown;
+                //   2) read the row back and compare the stored text.
+                // A verification failure surfaces a real error and does NOT
+                // mark edited / reload, so the UI never lies about state.
+                val updateOutcome = runCatching {
+                    chatRepository.dao.updateMessageParts(row.id, rewritten)
+                }
+                if (updateOutcome.isFailure) {
+                    val reason = updateOutcome.exceptionOrNull()
+                        ?.let { "${it.javaClass.simpleName}: ${it.message}" }
+                        ?: "unknown DAO error"
+                    AppLogger.warning(TAG, "[Surgery] rewrite UPDATE failed: $reason")
+                    withContext(Dispatchers.Main) {
+                        appendSystemInfo(
+                            text = context.getString(R.string.msg_delete_failed, reason),
+                            iconKind = "compact",
+                        )
+                    }
+                    return@launch
+                }
+                val readBack = runCatching {
+                    chatRepository.dao.getMessageById(row.id)
+                }.getOrNull()
+                val storedText = readBack?.partsJson?.let {
+                    com.openminis.app.data.MessageSurgery.textOf(it)
+                }
+                if (readBack == null || storedText != newText) {
+                    val reason = when {
+                        readBack == null -> "row vanished after update"
+                        storedText == null -> "row unparsable after update"
+                        else -> "stored text mismatch (${storedText?.length} vs ${newText.length} chars)"
+                    }
+                    AppLogger.warning(TAG, "[Surgery] rewrite verification failed: $reason")
+                    withContext(Dispatchers.Main) {
+                        appendSystemInfo(
+                            text = context.getString(R.string.msg_delete_failed, reason),
+                            iconKind = "compact",
+                        )
+                    }
+                    return@launch
+                }
                 withContext(Dispatchers.Main) {
                     // [T-rewrite-stealth] Mark the bubble as edited (drives the
                     // quiet pencil indicator) BEFORE the reload so the fresh
