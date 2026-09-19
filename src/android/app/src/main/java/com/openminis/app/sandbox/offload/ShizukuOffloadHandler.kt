@@ -8,6 +8,7 @@ import com.openminis.app.sandbox.NativeOffloadRequest
 import com.openminis.app.sandbox.NativeOffloadResult
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlinx.coroutines.runBlocking
 
 /**
  * T322: `android-shizuku-cli` — full CLI surface from the design doc.
@@ -94,6 +95,7 @@ class ShizukuOffloadHandler(private val context: Context) : NativeOffloadHandler
                 "file" -> handleFile(rest, args)
                 "device" -> handleDevice(rest, args)
                 "proc" -> handleProc(rest, args)
+                "job" -> handleJob(rest, args)
                 "exec" -> handleExec(rest, args)
                 else -> NativeOffloadResult(
                     2,
@@ -1285,6 +1287,153 @@ Usage:
         }
     }
 
+    /**
+     * job — fire-and-forget background command execution.
+     *
+     * Submit returns immediately with a [jobId] so the caller can keep
+     * doing useful work; [ExecutionCoordinator] runs the command in an
+     * app-scoped coroutine that survives Activity destroy; status/output/
+     * wait/cancel poll from any session. Mirrors `bg`/`&` in a shell plus
+     * the long-running-task model Claude Code / Cursor expose.
+     *
+     * Per-call flags:
+     *   --name <text>          human label (also shown in the FGS notification)
+     *   --session <id>         PRoot session id (else runs in a throwaway shell)
+     *   --offset <bytes>       (output) start byte
+     *   --max-bytes <n>        (output) max bytes to read (default 16384)
+     *   --timeout <ms>         (wait) how long to block for completion
+     */
+    private fun handleJob(rest: List<String>, args: OffloadArgs): NativeOffloadResult {
+        if (rest.isEmpty()) {
+            return errEnvelope("MISSING_ARG",
+                "job <submit|status|output|wait|cancel|list> [...]\n$JOB_HELP", args)
+        }
+        val sub = rest[0]
+        val subArgs = rest.drop(1)
+        val ctx = context.applicationContext
+        return when (sub) {
+            "submit" -> {
+                val name = args.get("name", "n") ?: "job-${System.currentTimeMillis() / 1000}"
+                val sessionId = args.get("session", "s")
+                // The command is everything after the subcommand that isn't a flag.
+                // Flags (--name, --session) are parsed out by OffloadArgs; the
+                // remaining positional argv becomes the shell command.
+                if (subArgs.isEmpty()) {
+                    return errEnvelope("MISSING_ARG",
+                        "job submit <command...> [--name X] [--session ID]\n$JOB_HELP", args)
+                }
+                val cmd = subArgs.joinToString(" ")
+                val jobId = com.openminis.app.offload.BackgroundJobManager.submit(
+                    context = ctx,
+                    name = name,
+                    command = cmd,
+                    sessionId = sessionId,
+                )
+                okEnvelope(
+                    JSONObject()
+                        .put("job_id", jobId)
+                        .put("name", name)
+                        .put("command", cmd)
+                        .put("session_id", sessionId ?: JSONObject.NULL),
+                    args,
+                )
+            }
+
+            "status" -> {
+                val jobId = subArgs.firstOrNull()
+                    ?: return errEnvelope("MISSING_ARG", "job status <jobId>", args)
+                val job = com.openminis.app.offload.BackgroundJobManager.status(ctx, jobId)
+                    ?: return errEnvelope("JOB_NOT_FOUND", "no job with id '$jobId'", args)
+                val nowMs = System.currentTimeMillis()
+                val elapsedMs = (job.finishedMs ?: nowMs) -
+                    (job.startedMs ?: job.createdMs)
+                okEnvelope(
+                    JSONObject()
+                        .put("id", job.id)
+                        .put("name", job.name)
+                        .put("status", job.status.name)
+                        .put("exit", job.exitCode ?: JSONObject.NULL)
+                        .put("elapsed_ms", elapsedMs)
+                        .put("log_size", job.logSizeBytes)
+                        .put("failure_reason", job.failureReason ?: JSONObject.NULL)
+                        .put("created_ms", job.createdMs)
+                        .put("started_ms", job.startedMs ?: JSONObject.NULL)
+                        .put("finished_ms", job.finishedMs ?: JSONObject.NULL),
+                    args,
+                )
+            }
+
+            "output" -> {
+                val jobId = subArgs.firstOrNull()
+                    ?: return errEnvelope("MISSING_ARG", "job output <jobId> [--offset N] [--max-bytes N]", args)
+                val offset = args.getLong("offset", "o") ?: 0L
+                val maxBytes = args.getInt("max-bytes", "m") ?: (16 * 1024)
+                val (text, newOffset) = com.openminis.app.offload.BackgroundJobManager.output(
+                    context = ctx,
+                    jobId = jobId,
+                    fromOffset = offset,
+                    maxBytes = maxBytes,
+                )
+                okEnvelope(
+                    JSONObject()
+                        .put("job_id", jobId)
+                        .put("text", text)
+                        .put("offset", newOffset)
+                        .put("has_more", newOffset < (com.openminis.app.offload.BackgroundJobStore
+                            .logFile(ctx, jobId).length())),
+                    args,
+                )
+            }
+
+            "wait" -> {
+                val jobId = subArgs.firstOrNull()
+                    ?: return errEnvelope("MISSING_ARG", "job wait <jobId> [--timeout MS]", args)
+                val timeoutMs = args.getLong("timeout", "t") ?: 60_000L
+                val final = runBlocking {
+                    com.openminis.app.offload.BackgroundJobManager.wait(ctx, jobId, timeoutMs)
+                }
+                    ?: return errEnvelope("JOB_NOT_FOUND", "no job with id '$jobId'", args)
+                okEnvelope(
+                    JSONObject()
+                        .put("id", final.id)
+                        .put("status", final.status.name)
+                        .put("exit", final.exitCode ?: JSONObject.NULL)
+                        .put("failure_reason", final.failureReason ?: JSONObject.NULL),
+                    args,
+                )
+            }
+
+            "cancel" -> {
+                val jobId = subArgs.firstOrNull()
+                    ?: return errEnvelope("MISSING_ARG", "job cancel <jobId>", args)
+                val ok = com.openminis.app.offload.BackgroundJobManager.cancel(ctx, jobId)
+                okEnvelope(JSONObject().put("cancelled", ok), args)
+            }
+
+            "list" -> {
+                val jobs = com.openminis.app.offload.BackgroundJobManager.list(ctx)
+                val arr = org.json.JSONArray()
+                for (j in jobs) {
+                    arr.put(
+                        JSONObject()
+                            .put("id", j.id)
+                            .put("name", j.name)
+                            .put("status", j.status.name)
+                            .put("exit", j.exitCode ?: JSONObject.NULL)
+                            .put("elapsed_ms", (j.finishedMs ?: System.currentTimeMillis()) -
+                                j.createdMs),
+                    )
+                }
+                okEnvelope(JSONObject().put("jobs", arr).put("count", jobs.size), args)
+            }
+
+            else -> errEnvelope("UNKNOWN_SUBCOMMAND",
+                "job subcommand must be one of submit|status|output|wait|cancel|list (got '$sub')",
+                args,
+            )
+        }
+    }
+
         private const val FILE_HELP = """file — privileged file access.
 
 Usage:
@@ -1307,6 +1456,21 @@ Usage:
 Usage:
   android-shizuku-cli proc ls [path]
   android-shizuku-cli proc cat <path-relative-to-/proc>
+"""
+
+        private const val JOB_HELP = """job — fire-and-forget background command execution.
+
+Submit returns immediately with a job_id. The command runs in an
+app-scoped coroutine that survives Activity destroy / process pause.
+status / output / wait / cancel poll from any session.
+
+Usage:
+  android-shizuku-cli job submit <command...> [--name <text>] [--session <id>]
+  android-shizuku-cli job status <jobId>
+  android-shizuku-cli job output <jobId> [--offset <bytes>] [--max-bytes <n>]
+  android-shizuku-cli job wait <jobId> [--timeout <ms>]
+  android-shizuku-cli job cancel <jobId>
+  android-shizuku-cli job list
 """
     }
 }
