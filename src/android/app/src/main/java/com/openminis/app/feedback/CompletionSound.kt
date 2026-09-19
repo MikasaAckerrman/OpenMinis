@@ -63,24 +63,19 @@ class CompletionSound(context: Context) {
 
     private val soundPool: SoundPool? by lazy {
         try {
-            val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                // [T-completion-sound-bypass] bypassDnd=true → USAGE_ALARM:
-                // silent mode and DND do not mute it. bypassDnd=false →
-                // USAGE_NOTIFICATION: respects ringer and DND. The pool is
-                // built once with ALARM attributes (the stronger guarantee);
-                // a notification-usage play is approximated by lowering the
-                // volume when the ringer is silent — SoundPool can't rebuild
-                // its attributes per-play, and a second pool for the
-                // notification case doubles the native memory for a corner
-                // most users never hit.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                // [T-completion-sound-bypass] The pool is built with ALARM
+                // attributes (the stronger guarantee for bypass=true);
+                // bypassDnd=false is honoured at play() time via a ringer
+                // check — see the [T-completion-sound-bypass] comment there.
                 SoundPool.Builder()
                     .setMaxStreams(3)
                     .setAudioAttributes(alarmAttributes)
+                    .build()
             } else {
                 @Suppress("DEPRECATION")
                 SoundPool(3, AudioManager.STREAM_ALARM, 0)
             }
-            builder.build()
         } catch (t: Throwable) {
             AppLogger.warning(TAG, "sound pool init failed: ${t.message}")
             null

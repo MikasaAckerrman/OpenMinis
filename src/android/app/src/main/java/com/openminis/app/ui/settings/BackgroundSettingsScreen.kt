@@ -481,6 +481,7 @@ private fun BgSubLabel(text: String) {
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
+@androidx.compose.runtime.Composable
 private fun BgSlider(
     value: Float,
     onValueChange: (Float) -> Unit,

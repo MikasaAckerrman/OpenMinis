@@ -10154,6 +10154,7 @@ class ChatViewModel(
             // depend on execution order. The LLM's tool_calls array order
             // is preserved in toolCalls — sequential execution of mixed
             // batches keeps the same semantics as before.
+            val resultParts = mutableListOf<AgentContentPart>()
             val READ_PARALLEL_TOOLS = setOf(FileReadTool.NAME, ReadImageTool.NAME)
             val canParallelize = toolCalls.size > 1 &&
                 toolCalls.all { (id, name, args) -> name in READ_PARALLEL_TOOLS }
@@ -10252,7 +10253,6 @@ class ChatViewModel(
             }
 
             // Execute all tool calls
-            val resultParts = mutableListOf<AgentContentPart>()
             for ((id, name, args) in toolCalls) {
                 // [T-android-overlay-tool-title] Pull tool_title uniformly
                 // from args for ALL tools — without this browser_use's
