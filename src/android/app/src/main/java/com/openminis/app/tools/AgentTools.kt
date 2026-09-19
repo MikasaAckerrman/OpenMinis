@@ -106,6 +106,14 @@ object AgentTools {
                 add(ReadImageTool.definition())
             }
             if (permitted("browser_use")) add(browserUseDefinition())
+            // [T-spawn-subagent] Claude Code + OpenAI Agents SDK pattern:
+            // the LLM can delegate subtasks to specialist agents at runtime.
+            if (permitted(com.openminis.app.tools.SubagentTools.SPAWN_TOOL_NAME)) {
+                add(com.openminis.app.tools.SubagentTools.spawnSubagentDefinition())
+            }
+            if (permitted(com.openminis.app.tools.SubagentTools.RUN_GRAPH_TOOL_NAME)) {
+                add(com.openminis.app.tools.SubagentTools.runGraphDefinition())
+            }
             if (memoryEnabled) {
                 if (permitted("memory_write")) add(memoryWriteDefinition())
                 if (permitted("memory_get")) add(memoryGetDefinition())

@@ -10755,6 +10755,9 @@ class ChatViewModel(
             ReadImageTool.NAME -> ReadImageTool.execute(argsJson, activeSessionId, context)
             "shell_execute" -> executeShellCommand(argsJson, toolId, toolBlocks, assistantId, currentText)
             "browser_use" -> executeBrowserUseTool(argsJson)
+            // [T-spawn-subagent] Runtime subagent spawning (Claude Code pattern).
+            com.openminis.app.tools.SubagentTools.SPAWN_TOOL_NAME -> executeSpawnSubagent(argsJson)
+            com.openminis.app.tools.SubagentTools.RUN_GRAPH_TOOL_NAME -> executeRunGraph(argsJson)
             "memory_write" -> executeMemoryWriteTool(argsJson)
             "memory_get" -> executeMemoryGetTool(argsJson)
             else -> ToolExecutionResult("Unknown tool: $name", false)
@@ -11052,6 +11055,60 @@ class ChatViewModel(
         } catch (e: Exception) {
             ToolExecutionResult("Error: ${e.message}", false)
         }
+    }
+
+    /**
+     * [T-spawn-subagent] Claude Code pattern: LLM delegates a subtask to a
+     * specialist agent at runtime. Foreground blocks until done; background
+     * runs concurrently and delivers the result via a system message.
+     */
+    private suspend fun executeSpawnSubagent(argsJson: String): ToolExecutionResult {
+        val args = runCatching { JSONObject(argsJson) }.getOrNull()
+            ?: return ToolExecutionResult("Invalid JSON for spawn_subagent", false)
+        val role = args.optString("role").trim()
+        val task = args.optString("task").trim()
+        val background = args.optBoolean("background", false)
+        if (role.isEmpty() || task.isEmpty()) {
+            return ToolExecutionResult("spawn_subagent: 'role' and 'task' are required", false)
+        }
+        val result = com.openminis.app.offload.SubagentExecutor.spawn(
+            context = context,
+            role = role,
+            task = task,
+            foreground = !background,
+            onBackgroundResult = if (background) { { _, subRole, subResult ->
+                // Deliver the background result as a system info line the
+                // next turn will see — same channel iOS uses for background
+                // command notifications.
+                kotlinx.coroutines.runBlocking {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        appendSystemInfo(
+                            text = "[subagent ${subRole.lowercase()}] $subResult",
+                            iconKind = "compact",
+                        )
+                    }
+                }
+            } } else null,
+        )
+        return ToolExecutionResult(result, true)
+    }
+
+    /**
+     * [T-spawn-subagent] OpenAI Agents SDK pattern: run an entire graph
+     * (builtin preset or custom) as a callable tool.
+     */
+    private suspend fun executeRunGraph(argsJson: String): ToolExecutionResult {
+        val args = runCatching { JSONObject(argsJson) }.getOrNull()
+            ?: return ToolExecutionResult("Invalid JSON for run_graph", false)
+        val graphId = args.optString("graph_id").trim()
+        val input = args.optString("input").trim()
+        if (graphId.isEmpty() || input.isEmpty()) {
+            return ToolExecutionResult("run_graph: 'graph_id' and 'input' are required", false)
+        }
+        val result = com.openminis.app.offload.SubagentExecutor.runGraph(
+            context, graphId, input,
+        )
+        return ToolExecutionResult(result, true)
     }
 
     private suspend fun executeBrowserUseTool(argsJson: String): ToolExecutionResult {
@@ -13859,6 +13916,8 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         "file_write" -> "Write File"
         "file_edit" -> "Edit File"
         "browser_use" -> "Browse Web"
+        "spawn_subagent" -> "Spawn Subagent"
+        "run_graph" -> "Run Agent Graph"
         "read_image" -> "Read Image"
         "memory_write" -> "Write Memory"
         "memory_get" -> "Read Memory"

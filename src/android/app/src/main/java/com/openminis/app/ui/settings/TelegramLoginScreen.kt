@@ -55,6 +55,9 @@ fun TelegramLoginScreen(
     var phone by remember { mutableStateOf("") }
     var code by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var apiId by remember { mutableStateOf("") }
+    var apiHash by remember { mutableStateOf("") }
+    var showCreds by remember { mutableStateOf<Boolean?>(null) } // null = not checked yet
     var needsPassword by remember { mutableStateOf(false) }
     var codeSent by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
@@ -70,7 +73,12 @@ fun TelegramLoginScreen(
                 p.inputStream.bufferedReader().readText()
             }.getOrDefault("")
         }
-        loggedIn = runCatching { JSONObject(r.trim()).optBoolean("logged_in", false) }.getOrDefault(false)
+        val json = runCatching { JSONObject(r.trim().lines().lastOrNull { it.startsWith("{") } ?: "{}") }.getOrDefault(JSONObject())
+        loggedIn = json.optBoolean("logged_in", false)
+        // env_ready = env vars set; has_saved_creds = previously entered via UI.
+        // If NEITHER: show the API credentials step first (send-code would
+        // fail without them — the "code never arrives" bug).
+        showCreds = !(json.optBoolean("env_ready", false) || json.optBoolean("has_saved_creds", false))
     }
 
     fun runLogin(vararg args: String, onDone: (JSONObject) -> Unit) {
@@ -81,6 +89,11 @@ fun TelegramLoginScreen(
                 runCatching {
                     val cmd = mutableListOf("python3", "/var/minis/mcp-servers/srv/tg-login.py")
                     cmd.addAll(args)
+                    // Pass API creds when the user entered them locally —
+                    // the script falls back to its saved state / env vars.
+                    if (apiId.isNotBlank() && apiHash.isNotBlank() && args.firstOrNull() != "status") {
+                        cmd.addAll(listOf("--api-id", apiId.trim(), "--api-hash", apiHash.trim()))
+                    }
                     val p = ProcessBuilder(cmd).redirectErrorStream(true).start()
                     p.inputStream.bufferedReader().readText()
                 }.getOrDefault("")
@@ -163,6 +176,82 @@ fun TelegramLoginScreen(
                         Text("Connected", color = textPrimary, fontSize = 16.sp, fontWeight = FontWeight.Medium)
                         Text("Session file active — tg_read, tg_search, tg_list_chats available", color = textSecondary, fontSize = 13.sp)
                     }
+                }
+            }
+        } else if (showCreds == null) {
+            // Checking env vars / saved state — show a spinner-free placeholder
+            // (LaunchedEffect below fills it instantly).
+            TgText("Checking API credentials...", color = subtitleColor)
+        } else if (showCreds == true) {
+            // [T-tg-login-creds-first] API ID + Hash BEFORE phone — without
+            // these, send-code fails silently (no code arrives).
+            OutlinedTextField(
+                value = apiId,
+                onValueChange = { apiId = it },
+                label = { Text("API ID", color = textSecondary) },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                singleLine = true,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = textPrimary,
+                    unfocusedTextColor = textPrimary,
+                    focusedBorderColor = accent,
+                    unfocusedBorderColor = textSecondary.copy(alpha = 0.3f),
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = apiHash,
+                onValueChange = { apiHash = it },
+                label = { Text("API Hash", color = textSecondary) },
+                singleLine = true,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = textPrimary,
+                    unfocusedTextColor = textPrimary,
+                    focusedBorderColor = accent,
+                    unfocusedBorderColor = textSecondary.copy(alpha = 0.3f),
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Get these from my.telegram.org → API development tools. " +
+                "Or set TG_API_ID / TG_API_HASH in Settings → Environment.",
+                color = textSecondary.copy(alpha = 0.7f),
+                fontSize = 12.sp,
+                modifier = Modifier.padding(horizontal = 4.dp),
+            )
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = phone,
+                onValueChange = { phone = it },
+                label = { Text("Phone Number (+7...)", color = textSecondary) },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                singleLine = true,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = textPrimary,
+                    unfocusedTextColor = textPrimary,
+                    focusedBorderColor = accent,
+                    unfocusedBorderColor = textSecondary.copy(alpha = 0.3f),
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(16.dp))
+            Button(
+                onClick = {
+                    runLogin("send-code", phone.trim()) { r ->
+                        if (r.optBoolean("code_sent", false)) codeSent = true
+                    }
+                },
+                enabled = !busy && phone.isNotBlank() && apiId.isNotBlank() && apiHash.isNotBlank(),
+                colors = ButtonDefaults.buttonColors(containerColor = accent),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+            ) {
+                if (busy) {
+                    CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                } else {
+                    Text("Send Code", color = Color.White)
                 }
             }
         } else if (!codeSent) {
