@@ -40,11 +40,11 @@ class CompactProgressTest {
         r.phase(CompactPhase.SUMMARIZING)
         r.callStart("mini", chunkIndex = 1, chunkCount = 1)
         r.callChars(1, 0, 1_000)
-        assertEquals(0, r.snapshot().percent)
+        assertEquals(0.0, r.snapshot().percent, 1e-9)
         r.callChars(1, 500, 1_000)
-        assertEquals(50, r.snapshot().percent)
+        assertEquals(50.0, r.snapshot().percent, 1e-9)
         r.callChars(1, 5_000, 1_000)             // overshoot clamps at 0.99
-        assertEquals(99, r.snapshot().percent)
+        assertEquals(99.0, r.snapshot().percent, 1e-9)
         assertEquals(CompactPhase.SUMMARIZING, r.snapshot().phase)
         assertEquals("mini", r.snapshot().modelLabel)
     }
@@ -58,7 +58,7 @@ class CompactProgressTest {
         r.callStart("b", 2, 2)
         r.callChars(1, 1_000, 1_000)             // half 1 done-ish (0.99)
         r.callChars(2, 500, 1_000)               // half 2 at 0.5
-        assertEquals(74, r.snapshot().percent)   // (0.99+0.5)/2 = 0.745 → 74
+        assertEquals(74.5, r.snapshot().percent, 0.01)   // (0.99+0.5)/2 = 0.745 → 74.5
     }
 
     @Test
@@ -69,7 +69,7 @@ class CompactProgressTest {
         r.callChars(2, 1_000, 1_000)
         // Merge is a fresh 1/1 call — bar restarts, not stuck at old fraction.
         r.callStart("merge", 1, 1)
-        assertEquals(0, r.snapshot().percent)
+        assertEquals(0.0, r.snapshot().percent, 1e-9)
         assertEquals(1, r.snapshot().chunkCount)
     }
 
@@ -79,7 +79,7 @@ class CompactProgressTest {
         r.note("Переключаюсь на X")
         assertEquals("Переключаюсь на X", r.snapshot().routeNote)
         r.done()
-        assertEquals(100, r.snapshot().percent)
+        assertEquals(100.0, r.snapshot().percent, 1e-9)
         assertEquals(CompactPhase.DONE, r.snapshot().phase)
     }
 
