@@ -289,7 +289,7 @@ fun BackgroundSettingsScreen(onBack: () -> Unit) {
                 Spacer(Modifier.size(8.dp))
                 BgSubLabel(stringResource(R.string.settings_sound_effect))
                 BgOptionChips(
-                    options = com.openminis.app.feedback.CompletionSoundEffect.entries
+                    options = com.openminis.app.feedback.CompletionSoundEffect.values()
                         .filter { it != com.openminis.app.feedback.CompletionSoundEffect.NONE }
                         .map { it to soundEffectLabel(it) },
                     selected = soundProfile.effect,
@@ -481,7 +481,6 @@ private fun BgSubLabel(text: String) {
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-@androidx.compose.runtime.Composable
 private fun BgSlider(
     value: Float,
     onValueChange: (Float) -> Unit,
@@ -498,6 +497,8 @@ private fun BgSlider(
     )
 }
 
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
 private fun <T> BgOptionChips(
     options: List<Pair<T, String>>,
     selected: T,
