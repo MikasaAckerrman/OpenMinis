@@ -77,7 +77,7 @@ object CompactProgressStore {
     }
 
     private fun writeToDisk(sessionId: String, p: CompactProgress) {
-        val p = prefs ?: return
+        val sp = prefs ?: return
         val json = JSONObject().apply {
             put("startMs", p.startMs)
             put("phase", p.phase.name)
@@ -102,7 +102,7 @@ object CompactProgressStore {
                 })
             }
         }
-        p.edit().putString("compact_$sessionId", json.toString()).apply()
+        sp.edit().putString("compact_$sessionId", json.toString()).apply()
     }
 
     private fun loadFromDisk(p: SharedPreferences): Map<String, CompactProgress> {
@@ -133,7 +133,7 @@ object CompactProgressStore {
                     // the elapsed-time display matches where we left off.
                     percent = json.optInt("chunkIndex", 1)
                         .coerceAtMost(json.optInt("chunkCount", 1))
-                        .let { (it.toFloat() / json.optInt("chunkCount", 1).coerceAtLeast(1) * 100f).toInt() },
+                        .let { (it.toFloat() / json.optInt("chunkCount", 1).coerceAtLeast(1) * 100f).toDouble() },
                     chunkIndex = json.optInt("chunkIndex", 1),
                     chunkCount = json.optInt("chunkCount", 1),
                     modelLabel = json.optString("modelLabel").ifBlank { null },
