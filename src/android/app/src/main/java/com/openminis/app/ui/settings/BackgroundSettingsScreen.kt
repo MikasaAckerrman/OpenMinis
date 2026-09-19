@@ -27,6 +27,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.BatteryFull
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Layers
+import androidx.compose.material.icons.outlined.MusicNote
 import androidx.compose.material.icons.outlined.NotificationsActive
 import androidx.compose.material.icons.outlined.PhoneAndroid
 import androidx.compose.material.icons.outlined.Vibration
@@ -34,6 +35,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -98,6 +100,9 @@ fun BackgroundSettingsScreen(onBack: () -> Unit) {
     // is remembered rather than re-probed on resume: unlike an overlay grant,
     // a device cannot grow a vibration motor while the screen is open.
     val completionVibrationEnabled by backgroundRepo.completionVibrationEnabled.collectAsState()
+    // [T-completion-sound] Live sound profile, same pattern as vibration.
+    val soundProfile by backgroundRepo.completionSoundProfile.collectAsState()
+    val completionSoundEnabled = soundProfile.enabled
     // [T-haptics-customization] Live buzz shape, so a change made from
     // minis-config is reflected here without reopening the screen.
     val vibrationProfile by backgroundRepo.vibrationProfile.collectAsState()
@@ -263,6 +268,59 @@ fun BackgroundSettingsScreen(onBack: () -> Unit) {
                 BgFooter(stringResource(R.string.settings_vibration_bypass_dnd_footer))
             }
 
+            // [T-completion-sound] Sound on turn end. Renders under the
+            // vibration block — same question ("how do I learn the turn is
+            // done?"), different channel. Unlike vibration, no capability
+            // check: every device can play audio.
+            Spacer(Modifier.size(8.dp))
+            BgToggleRow(
+                icon = Icons.Outlined.MusicNote,
+                iconColor = Color(0xFFFF2D55),
+                title = stringResource(R.string.settings_completion_sound),
+                checked = completionSoundEnabled,
+                onCheckedChange = { wanted ->
+                    backgroundRepo.setCompletionSoundEnabled(wanted)
+                    if (wanted) app.completionSound?.play(soundProfile)
+                },
+            )
+            BgFooter(stringResource(R.string.settings_completion_sound_footer))
+
+            if (completionSoundEnabled) {
+                Spacer(Modifier.size(8.dp))
+                BgSubLabel(stringResource(R.string.settings_sound_effect))
+                BgOptionChips(
+                    options = com.openminis.app.feedback.CompletionSoundEffect.entries
+                        .filter { it != com.openminis.app.feedback.CompletionSoundEffect.NONE }
+                        .map { it to soundEffectLabel(it) },
+                    selected = soundProfile.effect,
+                    onSelect = {
+                        backgroundRepo.setCompletionSoundEffect(it)
+                        app.completionSound?.play(soundProfile.copy(effect = it))
+                    },
+                )
+                Spacer(Modifier.size(8.dp))
+                BgSubLabel(stringResource(R.string.settings_sound_volume))
+                BgSlider(
+                    value = soundProfile.volume,
+                    onValueChange = { backgroundRepo.setCompletionSoundVolume(it) },
+                    onValueChangeFinished = {
+                        app.completionSound?.play(soundProfile)
+                    },
+                )
+                Spacer(Modifier.size(8.dp))
+                BgToggleRow(
+                    icon = Icons.Outlined.NotificationsActive,
+                    iconColor = Color(0xFFFF9500),
+                    title = stringResource(R.string.settings_sound_bypass_dnd),
+                    checked = soundProfile.bypassDnd,
+                    onCheckedChange = {
+                        backgroundRepo.setCompletionSoundBypassDnd(it)
+                        app.completionSound?.play(soundProfile.copy(bypassDnd = it))
+                    },
+                )
+                BgFooter(stringResource(R.string.settings_sound_bypass_dnd_footer))
+            }
+
             // T-bg-overlay phase 2: floating tool-status overlay toggle.
             // Tapping ON without SYSTEM_ALERT_WINDOW deep-links the user to
             // the system "Display over other apps" screen; canDrawOverlays
@@ -423,6 +481,22 @@ private fun BgSubLabel(text: String) {
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
+private fun BgSlider(
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    onValueChangeFinished: () -> Unit,
+) {
+    androidx.compose.material3.Slider(
+        value = value,
+        onValueChange = onValueChange,
+        onValueChangeFinished = onValueChangeFinished,
+        valueRange = 0f..1f,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp),
+    )
+}
+
 private fun <T> BgOptionChips(
     options: List<Pair<T, String>>,
     selected: T,
@@ -462,6 +536,14 @@ private fun <T> BgOptionChips(
 
 /** Display strings for the buzz-shape enums. Kept next to the UI that shows them
  *  so a new pattern cannot be added without a visible label. */
+private fun soundEffectLabel(e: com.openminis.app.feedback.CompletionSoundEffect): String = when (e) {
+    com.openminis.app.feedback.CompletionSoundEffect.CHIME -> "Chime"
+    com.openminis.app.feedback.CompletionSoundEffect.BELL -> "Bell"
+    com.openminis.app.feedback.CompletionSoundEffect.BLIP -> "Blip"
+    com.openminis.app.feedback.CompletionSoundEffect.POP -> "Pop"
+    com.openminis.app.feedback.CompletionSoundEffect.NONE -> "None"
+}
+
 private fun vibrationPatternLabel(p: com.openminis.app.feedback.VibrationPattern): Int = when (p) {
     com.openminis.app.feedback.VibrationPattern.DOUBLE -> R.string.vibration_pattern_double
     com.openminis.app.feedback.VibrationPattern.SINGLE_LONG -> R.string.vibration_pattern_single_long

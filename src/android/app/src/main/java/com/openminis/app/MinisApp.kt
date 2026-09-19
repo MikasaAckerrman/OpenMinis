@@ -84,6 +84,7 @@ class MinisApp : Application(), ImageLoaderFactory {
     // so the Settings row can fire a preview through the same instance the
     // tracker uses (one Vibrator lookup, one place that can fail).
     lateinit var completionHaptics: com.openminis.app.feedback.CompletionHaptics
+    var completionSound: com.openminis.app.feedback.CompletionSound? = null
         private set
     lateinit var mountedFoldersStore: MountedFoldersStore
         private set
@@ -510,6 +511,7 @@ class MinisApp : Application(), ImageLoaderFactory {
         // is the foreground case that matters most when the phone is on a desk
         // beside you.
         completionHaptics = com.openminis.app.feedback.CompletionHaptics(this)
+        completionSound = com.openminis.app.feedback.CompletionSound(this)
         SessionActivityTracker.setTurnEndListener { _, outcome ->
             completionHaptics.onTurnEnded(
                 outcome = outcome,
@@ -518,6 +520,13 @@ class MinisApp : Application(), ImageLoaderFactory {
                 // wiring time: the user may change the pattern between turns and
                 // a captured value would keep buzzing the old shape.
                 profile = backgroundSettingsRepository.readVibrationProfile(),
+            )
+            // [T-completion-sound] Audio sibling of the buzz — read at fire
+            // time for the same reason. Default OFF; the user opts in from
+            // Settings → Background & notifications.
+            completionSound?.onTurnEnded(
+                outcome = outcome,
+                profile = backgroundSettingsRepository.readCompletionSoundProfile(),
             )
         }
 
@@ -804,6 +813,14 @@ class MinisApp : Application(), ImageLoaderFactory {
             .build()
 
     override fun onTerminate() {
+        // [T-completion-sound] Release the SoundPool's native buffers. The
+        // pool holds ~84KB of decoded PCM across four effects; onTerminate
+        // rarely fires on real devices, but when it does this is the right
+        // place to let go.
+        try {
+            completionSound?.release()
+        } catch (_: Throwable) {
+        }
         // onTerminate is called only on emulators or when the system
         // explicitly tears down — real devices usually skip it. Still
         // worth marking the beacon: a present clean_exit on a real

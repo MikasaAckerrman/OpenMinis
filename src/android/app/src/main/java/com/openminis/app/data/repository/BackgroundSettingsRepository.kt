@@ -145,6 +145,45 @@ class BackgroundSettingsRepository(context: Context) {
         _vibrationProfile.value = readVibrationProfile()
     }
 
+    // ── [T-completion-sound] Turn-ended sound ──────────────────────────────
+    //
+    // Mirrors the vibration axes: enabled / effect / volume / bypassDnd, each
+    // under its own key. Read straight from prefs (not cached) so a
+    // minis-config write is picked up on the very next turn.
+
+    private val _completionSoundProfile = MutableStateFlow(readCompletionSoundProfile())
+    val completionSoundProfile: StateFlow<com.openminis.app.feedback.CompletionSoundProfile> =
+        _completionSoundProfile.asStateFlow()
+
+    fun readCompletionSoundProfile(): com.openminis.app.feedback.CompletionSoundProfile =
+        com.openminis.app.feedback.CompletionSoundProfile(
+            enabled = prefs.getBoolean(KEY_SOUND_ENABLED, false),
+            effect = com.openminis.app.feedback.CompletionSoundEffect
+                .fromId(prefs.getString(KEY_SOUND_EFFECT, null)),
+            volume = prefs.getFloat(KEY_SOUND_VOLUME, 0.5f),
+            bypassDnd = prefs.getBoolean(KEY_SOUND_BYPASS_DND, true),
+        )
+
+    fun setCompletionSoundEnabled(value: Boolean) {
+        prefs.edit().putBoolean(KEY_SOUND_ENABLED, value).apply()
+        _completionSoundProfile.value = readCompletionSoundProfile()
+    }
+
+    fun setCompletionSoundEffect(e: com.openminis.app.feedback.CompletionSoundEffect) {
+        prefs.edit().putString(KEY_SOUND_EFFECT, e.id).apply()
+        _completionSoundProfile.value = readCompletionSoundProfile()
+    }
+
+    fun setCompletionSoundVolume(v: Float) {
+        prefs.edit().putFloat(KEY_SOUND_VOLUME, v.coerceIn(0f, 1f)).apply()
+        _completionSoundProfile.value = readCompletionSoundProfile()
+    }
+
+    fun setCompletionSoundBypassDnd(value: Boolean) {
+        prefs.edit().putBoolean(KEY_SOUND_BYPASS_DND, value).apply()
+        _completionSoundProfile.value = readCompletionSoundProfile()
+    }
+
     /**
      * Keeps [completionVibrationEnabled] honest when the key is written from
      * outside this class (minis-config). Held in a field because
@@ -220,5 +259,10 @@ class BackgroundSettingsRepository(context: Context) {
         private const val KEY_VIBRATION_INTENSITY = "completionVibrationIntensity"
         private const val KEY_VIBRATION_LENGTH = "completionVibrationLength"
         private const val KEY_VIBRATION_BYPASS_DND = "completionVibrationBypassDnd"
+        // [T-completion-sound] Sound settings, same prefs file + key style.
+        private const val KEY_SOUND_ENABLED = "completionSoundEnabled"
+        private const val KEY_SOUND_EFFECT = "completionSoundEffect"
+        private const val KEY_SOUND_VOLUME = "completionSoundVolume"
+        private const val KEY_SOUND_BYPASS_DND = "completionSoundBypassDnd"
     }
 }
