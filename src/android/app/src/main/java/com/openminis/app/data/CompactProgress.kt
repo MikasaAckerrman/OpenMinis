@@ -111,7 +111,7 @@ class CompactRunReporter(
                 chunkCount = n,
                 chunkIndex = chunkIndex.coerceIn(1, n),
                 // A new topology means the bar restarts from zero.
-                percent = if (topologyChanged) 0 else it.percent,
+                percent = if (topologyChanged) 0.0 else it.percent,
             )
         }
     }

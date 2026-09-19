@@ -1226,34 +1226,6 @@ Usage:
 """
  
 
-    /**
-     * proc — read kernel /proc pseudofiles. Returns raw text (line-by-line)
-     * by default; `proc cat <path> --format json` parses key:value lines into
-     * a JSON object. Read-only — never writes to /proc.
-     *
-     * Common paths:
-     *   net/dev   — per-interface network byte/packet counters
-     *   net/tcp   — active TCP connections
-     *   net/route — routing table
-     *   loadavg   — 1/5/15-min load average + running/total tasks
-     *   uptime    — wall time + idle time, seconds
-     *   meminfo   — MemTotal/MemFree/Buffers/Cached/SwapTotal/...
-     *   cpuinfo   — per-CPU model/features/bugs
-     *   version   — kernel banner
-     *   cmdline   — kernel boot args
-     *   diskstats — per-device read/write/IO counts
-     *   pressure/{cpu,memory,io`} — stall-stats (Linux 4.20+)
-     *   sys/kernel/random/boot_id — stable machine UUID
-     *   self/status — current process (Shizuku) capabilities
-     */
-        private const val FILE_HELP = """file — privileged file access.
-
-Usage:
-  android-shizuku-cli file ls <path> [-l] [-r]
-  android-shizuku-cli file pull <remote> <local>
-  android-shizuku-cli file push <local> <remote>
-  android-shizuku-cli file rm <path> [-r]
-"""
 
         private const val DEVICE_HELP = """device — device state.
 
