@@ -83,19 +83,22 @@ object SubagentExecutor {
             }
         } else {
             activeBackground[spawnId] = "${agentRole.name}: ${task.take(80)}"
-            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                kotlinx.coroutines.launch {
-                    try {
-                        val result = AgentGraphRunner.run(context, graph.id, task, taskId = spawnId)
-                        val text = formatResult(role, result.finalHandoff ?: "", result.status.name)
-                        onBackgroundResult?.invoke(spawnId, role, text)
-                    } finally {
-                        activeBackground.remove(spawnId)
-                        runCatching { app.providerRepository.deleteAgentGraph(graph.id) }
-                    }
+            val appRef = app
+            val contextRef = context
+            val graphRef = graph
+            val roleRef = role
+            val spawnRef = spawnId
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                try {
+                    val result = AgentGraphRunner.run(contextRef, graphRef.id, task, taskId = spawnRef)
+                    val text = formatResult(roleRef, result.finalHandoff ?: "", result.status.name)
+                    onBackgroundResult?.invoke(spawnRef, roleRef, text)
+                } finally {
+                    activeBackground.remove(spawnRef)
+                    runCatching { appRef.providerRepository.deleteAgentGraph(graphRef.id) }
                 }
             }
-            "spawned: $spawnId (${agentRole.name.lowercase()}, running in background — result will arrive as notification)"
+            return "spawned: $spawnId (${agentRole.name.lowercase()}, running in background — result will arrive as notification)"
         }
     }
 

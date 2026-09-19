@@ -181,7 +181,7 @@ fun TelegramLoginScreen(
         } else if (showCreds == null) {
             // Checking env vars / saved state — show a spinner-free placeholder
             // (LaunchedEffect below fills it instantly).
-            TgText("Checking API credentials...", color = subtitleColor)
+            Text("Checking API credentials...", color = textSecondary.copy(alpha = 0.6f), fontSize = 14.sp)
         } else if (showCreds == true) {
             // [T-tg-login-creds-first] API ID + Hash BEFORE phone — without
             // these, send-code fails silently (no code arrives).
