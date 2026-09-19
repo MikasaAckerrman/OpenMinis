@@ -1058,7 +1058,37 @@ class ChatViewModel(
 
     /** Hide the compact card (dismiss a failure or a lingering state). */
     fun dismissCompactCard() {
-        _compactProgress.value = null
+        publishCompactProgress(null)
+    }
+
+    /**
+     * [T-android-compact-progress-persistent] Clear persistent snapshot too —
+     * user explicitly dismissed, no point restoring on next session open.
+     */
+    private fun publishCompactProgress(p: com.openminis.app.data.CompactProgress?) {
+        _compactProgress.value = p
+        if (p == null) {
+            com.openminis.app.service.CompactProgressStore.clear(sessionId)
+        } else {
+            com.openminis.app.service.CompactProgressStore.put(sessionId, p)
+        }
+    }
+
+    /**
+     * [T-android-compact-progress-persistent] Restore a persisted in-flight
+     * compact at session open (if any). Called from [loadSession] so a card
+     * from a previous session / process restart reappears immediately on first
+     * compose. Single chokepoint over every update to the live progress card.
+     */
+    private fun restoreCompactProgress() {
+        val saved = com.openminis.app.service.CompactProgressStore.snapshotFor(sessionId) ?: return
+        val ageMs = System.currentTimeMillis() - saved.startMs
+        // Drop orphan beyond 1h — the actual coroutine must have died.
+        if (ageMs > 3_600_000L) {
+            com.openminis.app.service.CompactProgressStore.clear(sessionId)
+            return
+        }
+        _compactProgress.value = saved
     }
 
     /**
@@ -1070,7 +1100,7 @@ class ChatViewModel(
      * replaces the card with the actual reason instead of leaving a lie.
      */
     private fun setCompactCardTerminal(reason: String) {
-        _compactProgress.value = com.openminis.app.data.CompactProgress(
+        val _cp = com.openminis.app.data.CompactProgress(
             startMs = System.currentTimeMillis(),
             phase = com.openminis.app.data.CompactPhase.DONE,
             percent = 100,
@@ -1079,6 +1109,7 @@ class ChatViewModel(
                 terminal = reason,
             ),
         )
+        publishCompactProgress(_cp)
     }
 
     /**
@@ -2195,11 +2226,12 @@ class ChatViewModel(
         // [T-compact-progress] Live card state for the whole run.
         val compactStartedMs = System.currentTimeMillis()
         val reporter = com.openminis.app.data.CompactRunReporter(compactStartedMs) { p ->
-            _compactProgress.value = p
+            publishCompactProgress(p)
         }
-        _compactProgress.value = com.openminis.app.data.CompactProgress(
+        val initialProgress = com.openminis.app.data.CompactProgress(
             startMs = compactStartedMs,
         )
+        publishCompactProgress(initialProgress)
         maintenanceJob = viewModelScope.launch(Dispatchers.IO) {
             // [T-canon-persistence] Pre-compact flush. The LLM summary below
             // is lossy: an unpinned "запомни X" spoken inside the compacted
@@ -2286,9 +2318,13 @@ class ChatViewModel(
                     if (digest.isBlank()) {
                         // [T-compact-progress] Total failure — keep the card up
                         // with the SPECIFIC reason every model route refused.
-                        _compactProgress.value = reporter.snapshot().copy(
+                        val _cp = reporter.snapshot().copy(
                             failure = com.openminis.app.data.CompactFailure(
-                                attempts = routeFailure?.attempts.orEmpty(),
+                                attempts = routeFailure?.attempts.orEmpty()
+
+                        _compactProgress.value = _cp
+
+                        publishCompactProgress(_cp),
                                 terminal = routeFailure?.message
                                     ?: "локальный дайджест пуст — сжатие не выполнено",
                             ),
@@ -2346,9 +2382,13 @@ class ChatViewModel(
                 }
                 if (verifiedAnchorIdx < 0) {
                     Log.w(TAG, "[Compact] No agentHistory entry has a DB-persisted dbMessageId; aborting")
-                    _compactProgress.value = reporter.snapshot().copy(
+                    val _cp = reporter.snapshot().copy(
                         failure = com.openminis.app.data.CompactFailure(
-                            attempts = emptyList(),
+                            attempts = emptyList()
+
+                    _compactProgress.value = _cp
+
+                    publishCompactProgress(_cp),
                             terminal = "нет якоря к сохранённому сообщению — сжатие отменено",
                         ),
                     )
@@ -2367,9 +2407,13 @@ class ChatViewModel(
                 val lastCompactedDbId = history[verifiedAnchorIdx].dbMessageId
                     ?: run {
                         Log.w(TAG, "[Compact] verified anchor at idx=$verifiedAnchorIdx lost dbMessageId; aborting")
-                        _compactProgress.value = reporter.snapshot().copy(
+                        val _cp = reporter.snapshot().copy(
                             failure = com.openminis.app.data.CompactFailure(
-                                attempts = emptyList(),
+                                attempts = emptyList()
+
+                        _compactProgress.value = _cp
+
+                        publishCompactProgress(_cp),
                                 terminal = "якорь сжатия потерял id — сжатие отменено",
                             ),
                         )
@@ -2479,7 +2523,7 @@ class ChatViewModel(
                         payload = summary,
                     )
                     // Success: the divider IS the result — hide the progress card.
-                    _compactProgress.value = null
+                    publishCompactProgress(null)
                 }
                 compactSucceeded = true
             } catch (e: CancellationException) {
@@ -2496,9 +2540,13 @@ class ChatViewModel(
                 // [T-compact-progress] Keep the card up with the SPECIFIC
                 // error (models tried + what each answered) and a retry
                 // button — the user must see WHY, not "не удалось сжать".
-                _compactProgress.value = reporter.snapshot().copy(
+                val _cp = reporter.snapshot().copy(
                     failure = com.openminis.app.data.CompactFailure(
-                        attempts = (e as? CompactRouteFailure)?.attempts.orEmpty(),
+                        attempts = (e as? CompactRouteFailure)
+
+                _compactProgress.value = _cp
+
+                publishCompactProgress(_cp)?.attempts.orEmpty(),
                         terminal = e.message ?: e.javaClass.simpleName,
                     ),
                 )
@@ -4614,7 +4662,7 @@ class ChatViewModel(
             _memoryEnabled.value = session.memoryEnabled != 0
             // [T-compact-progress] A compact card belongs to the session it
             // ran in — never leak a failure/progress state across a switch.
-            _compactProgress.value = null
+            publishCompactProgress(null)
             // [T-partial-turn-durability] Recover streams that died with the
             // process: append-only journals under minis-sessions/<sid>/
             // stream-heartbeat hold round text that never reached a row.
@@ -5025,6 +5073,11 @@ class ChatViewModel(
                         }
                     }
                 }
+                // [T-android-compact-progress-persistent] Re-show any
+                // in-flight compact from a previous session open / process
+                // restart. Single line — the card itself does the formatting.
+                restoreCompactProgress()
+
                 // [T-HANG-DIAG] total time spent in loadSession from ENTER to
                 // either successful completion or early return. tHangDiagStart
                 // was captured just inside `try` so this covers the whole
@@ -5701,7 +5754,7 @@ class ChatViewModel(
         if (_isStreaming.value) cancelStream()
         val sid = activeSessionId
         // [T-compact-progress] No compact state may survive a wipe.
-        _compactProgress.value = null
+        publishCompactProgress(null)
         // T-streaming-side-channel: ensure no stale stream delta survives a
         // session wipe; the messages list is about to be cleared, so any
         // pending key would be orphaned.

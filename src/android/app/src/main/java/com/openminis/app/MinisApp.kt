@@ -462,6 +462,10 @@ class MinisApp : Application(), ImageLoaderFactory {
         // displayed in the session-list cell corner. Init early so the
         // session list can read persisted PAUSED badges on first compose.
         com.openminis.app.service.SessionBadgeStore.init(this)
+        // [T-android-compact-progress-persistent] Survives compact progress
+        // across session navigation / process death. Restore before any UI
+        // composes so a stale "SUMMARIZING" card can reappear in its chat.
+        com.openminis.app.service.CompactProgressStore.init(this)
 
         // [T-android-session-paused-badge-hardkill] Reconcile PAUSED badges
         // against the DB's interrupted-session set. The lifecycle-callback push

@@ -103,7 +103,7 @@ internal fun CompactProgressCard(
                 if (!failed && progress.phase != CompactPhase.PREPARING) {
                     Spacer(Modifier.weight(1f))
                     Text(
-                        text = "${progress.percent}%",
+                        text = CompactMath.formatPercent(progress.percent),
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Medium,
                         color = ChatColors.primaryText,
@@ -156,7 +156,7 @@ internal fun CompactProgressCard(
                 }
             } else {
                 val animated by animateFloatAsState(
-                    targetValue = progress.percent / 100f,
+                    targetValue = progress.percent / 100.0,
                     animationSpec = tween(220),
                     label = "compactBar",
                 )

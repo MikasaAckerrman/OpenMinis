@@ -50,8 +50,8 @@ data class CompactFailure(
 data class CompactProgress(
     val startMs: Long,
     val phase: CompactPhase = CompactPhase.PREPARING,
-    /** 0..99 while running, 100 only on DONE. */
-    val percent: Int = 0,
+    /** 0.00..99.99 while running, 100.00 only on DONE. 4-decimal granularity. */
+    val percent: Double = 0.0,
     val chunkIndex: Int = 1,
     val chunkCount: Int = 1,
     val modelLabel: String? = null,
@@ -128,11 +128,13 @@ class CompactRunReporter(
         val f = (chars.toFloat() / target).coerceIn(0f, 0.99f)
         fractions = fractions.toMutableMap().also { it[idx] = f }
         val sum = (1..n).sumOf { (fractions[it] ?: 0f).toDouble() }
-        val pct = ((sum / n) * 100.0).toInt().coerceIn(0, 99)
+        // 4-decimal percent: 0.00 .. 99.99. Cap at 99.99 so DONE (100.00) is
+        // the only state where the bar reads "complete".
+        val pct = ((sum / n) * 100.0).coerceIn(0.0, 99.99)
         publish { it.copy(chunkIndex = idx, percent = pct) }
     }
 
-    fun done() = publish { it.copy(phase = CompactPhase.DONE, percent = 100) }
+    fun done() = publish { it.copy(phase = CompactPhase.DONE, percent = 100.00) }
 }
 
 /**
@@ -148,6 +150,13 @@ object CompactMath {
         val s = totalSec % 60
         return "$m:" + s.toString().padStart(2, '0')
     }
+
+    /**
+     * 1.03837289% → "1.04%" (2 decimals). Pads single-digit values so the
+     * digits don't dance as the timer ticks. 100.00 is reserved for DONE.
+     */
+    fun formatPercent(p: Double): String =
+        String.format(java.util.Locale.US, "%.2f", p.coerceIn(0.0, 99.99)) + "%"
 
     /** 12_345 -> "12.3k", 900 -> "900". */
     fun formatTokens(n: Int): String = when {
