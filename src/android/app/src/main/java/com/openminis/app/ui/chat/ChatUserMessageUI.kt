@@ -459,12 +459,29 @@ internal fun UserMessageBubble(
                 // queued bubbles — they haven't actually been sent yet, so a
                 // send time would be a lie.
                 if (!isQueued) {
-                    Text(
-                        text = formatWallClock(message.createdAtMs),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = ChatColors.secondaryText,
-                        modifier = Modifier.padding(top = 1.dp, end = 2.dp),
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        // [T-rewrite-stealth] Quiet pencil next to the time when
+                        // the stored text was rewritten via the edit flow. No
+                        // snackbar, no system-reminder — the bubble itself is
+                        // the signal.
+                        if (message.isEdited) {
+                            Icon(
+                                Icons.Default.Edit,
+                                contentDescription = stringResource(R.string.msg_edited_label),
+                                modifier = Modifier.size(11.dp),
+                                tint = ChatColors.secondaryText,
+                            )
+                        }
+                        Text(
+                            text = formatWallClock(message.createdAtMs),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = ChatColors.secondaryText,
+                            modifier = Modifier.padding(top = 1.dp, end = 2.dp),
+                        )
+                    }
                 }
             }
             // Small positive y-offset so the menu doesn't sit flush against

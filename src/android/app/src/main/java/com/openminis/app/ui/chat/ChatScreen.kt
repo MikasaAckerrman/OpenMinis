@@ -3520,6 +3520,11 @@ fun ChatScreen(
                                 onDelete = if (isStreaming) null else ({
                                     pendingDeleteMessageId = originalMessageId(item.messageId)
                                 }),
+                                // [T-rewrite-stealth] Pencil shows when this
+                                // turn's stored text was edited.
+                                isEdited = messages.firstOrNull {
+                                    it.id == originalMessageId(item.messageId)
+                                }?.isEdited == true,
                                 // [T-copy-whole-answer] Copy the prose of the
                                 // whole turn. Reads from `messages` (the same
                                 // list the renderer flattens) rather than

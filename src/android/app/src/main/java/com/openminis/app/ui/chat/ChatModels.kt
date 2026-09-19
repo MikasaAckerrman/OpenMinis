@@ -157,6 +157,12 @@ data class ChatMessage(
     // Restored-from-DB rows read entity.created_at / entity.updated_at.
     val createdAtMs: Long = System.currentTimeMillis(),
     val finishedAtMs: Long? = null,
+    // [T-rewrite-stealth] True when this bubble's text was rewritten via the
+    // in-chat edit flow (MessageSurgery). UI-ONLY: drives the quiet pencil
+    // indicator; never serialized into parts_json, never sent to the LLM —
+    // the model just reads the new text from the DB on the next turn. The
+    // mark itself persists via MessageEditStore (SharedPreferences).
+    val isEdited: Boolean = false,
 ) {
     /**
      * [T-bridge-message-ui-leak-android] True when this UI message is the

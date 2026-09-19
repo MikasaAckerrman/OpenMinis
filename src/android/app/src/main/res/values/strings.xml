@@ -1311,6 +1311,8 @@
     <string name="msg_delete_done_with_notes">Deleted %1$d message(s). To keep the history valid: %2$s.</string>
     <string name="msg_delete_failed">Could not delete: %1$s</string>
     <string name="msg_rewrite_done">Message text rewritten. The model will read the new text from now on.</string>
+    <!-- [T-rewrite-stealth] Quiet accessibility label for the pencil marker. -->
+    <string name="msg_edited_label">edited</string>
     <string name="msg_rewrite_no_text">That message has no editable text (tool calls / attachments only).</string>
     <string name="msg_rewrite_dialog_title">Rewrite message</string>
     <string name="msg_rewrite_dialog_hint">This replaces the stored text for real — the model reads the new version on the next turn. Tool calls and attachments are kept.</string>

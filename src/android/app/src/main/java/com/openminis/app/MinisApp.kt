@@ -466,6 +466,7 @@ class MinisApp : Application(), ImageLoaderFactory {
         // across session navigation / process death. Restore before any UI
         // composes so a stale "SUMMARIZING" card can reappear in its chat.
         com.openminis.app.service.CompactProgressStore.init(this)
+        com.openminis.app.service.MessageEditStore.init(this)
 
         // [T-android-session-paused-badge-hardkill] Reconcile PAUSED badges
         // against the DB's interrupted-session set. The lifecycle-callback push

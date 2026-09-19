@@ -285,6 +285,8 @@ internal fun AssistantHeader(
     // fragment the user managed to drag over — which is exactly the complaint
     // this action answers ("some parts don't get copied").
     onCopyAnswer: (() -> Unit)? = null,
+    // [T-rewrite-stealth] Drives the quiet pencil next to the agent name.
+    isEdited: Boolean = false,
 ) {
     // [T-soul-md] Identity header = locked ✨ sparkle gradient icon +
     // SOUL.md-driven `name`. The emoji-customization field was removed,
@@ -339,6 +341,18 @@ internal fun AssistantHeader(
             fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.onSurface,
         )
+        // [T-rewrite-stealth] Quiet pencil after the agent name when this
+        // turn's stored text was rewritten via the edit flow. UI-only signal
+        // (MessageEditStore); no snackbar, no LLM-visible marker.
+        if (isEdited) {
+            Spacer(modifier = Modifier.width(4.dp))
+            Icon(
+                Icons.Default.Edit,
+                contentDescription = stringResource(R.string.msg_edited_label),
+                modifier = Modifier.size(11.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         if (hasActions) {
             DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
                 // [T-copy-whole-answer] First item: it is the only
@@ -394,7 +408,7 @@ internal fun AssistantMessageView(message: ChatMessage, onRetry: (() -> Unit)? =
             .fillMaxWidth()
             .padding(vertical = 2.dp),
     ) {
-        AssistantHeader()
+        AssistantHeader(isEdited = message.isEdited)
 
         // Render blocks in original order — text, thinking, and tool calls interleaved
         // exactly as they arrived in the stream (each assistant turn may contain multiple

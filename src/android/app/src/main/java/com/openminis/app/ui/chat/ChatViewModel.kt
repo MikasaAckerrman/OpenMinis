@@ -414,7 +414,7 @@ class ChatViewModel(
                 limit = (currentTotal - page.fromIndex).coerceAtLeast(0),
             )
             val jsonCache = PartsJsonCache(rows.size)
-            val rebuiltUi = rows.toChatMessages(jsonCache)
+            val rebuiltUi = rows.toChatMessages(jsonCache, sessionKey = sid)
             jsonCache.clear()
             val marker = _cachedLatestMarker
             val rebuiltWithMarker = if (marker == null) {
@@ -2937,11 +2937,14 @@ class ChatViewModel(
                         "${com.openminis.app.data.MessageSurgery.textOf(row.partsJson).length} → ${newText.length} chars",
                 )
                 withContext(Dispatchers.Main) {
+                    // [T-rewrite-stealth] Mark the bubble as edited (drives the
+                    // quiet pencil indicator) BEFORE the reload so the fresh
+                    // list already carries it. No snackbar / system-info row:
+                    // the edit is intentionally invisible to the conversation
+                    // surface AND to the LLM — parts_json was rewritten, the
+                    // model simply reads the new text next turn.
+                    com.openminis.app.service.MessageEditStore.markEdited(sid, messageId)
                     reloadSessionFromDb()
-                    appendSystemInfo(
-                        text = context.getString(R.string.msg_rewrite_done),
-                        iconKind = "compact",
-                    )
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -4785,7 +4788,7 @@ class ChatViewModel(
                     "window=${uiRows.size} total=$totalRows",
                 )
                 val uiJsonCache = PartsJsonCache(uiRows.size)
-                val chatUi = uiRows.toChatMessages(uiJsonCache)
+                val chatUi = uiRows.toChatMessages(uiJsonCache, sessionKey = sid)
                 uiJsonCache.clear()
                 // Publish the bounded UI tail before loading and parsing the
                 // complete LLM history. Sending remains gated by sessionLoaded.
@@ -13238,6 +13241,10 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         // Defaults to a private cache so the other call sites (fork, compact
         // rebuild, snapshot reload) keep working unchanged.
         jsonCache: PartsJsonCache = PartsJsonCache(size),
+        // [T-rewrite-stealth] Session key for MessageEditStore lookups (the
+        // quiet pencil). Empty string skips the lookup entirely (e.g. fork
+        // previews), keeping those paths allocation-free.
+        sessionKey: String = "",
     ): List<ChatMessage> {
         // First pass: extract all toolResult data keyed by toolUseId
         val toolResultMap = mutableMapOf<String, ToolResultData>()
@@ -13433,6 +13440,11 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                 // null (no "finished" concept for a user message).
                 createdAtMs = entity.createdAt,
                 finishedAtMs = if (entity.role == "assistant") entity.updatedAt else null,
+                // [T-rewrite-stealth] Bubble carries the quiet pencil if any of
+                // its rows was edited via the rewrite flow. UI-only flag; the
+                // persisted text (parts_json) is already the new version.
+                isEdited = sessionKey.isNotEmpty() &&
+                    com.openminis.app.service.MessageEditStore.isEdited(sessionKey, entity.id),
             )
         }.let { messages ->
             // Merge consecutive assistant messages into one:
@@ -13476,6 +13488,9 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                         // latest completion so the header shows the full turn.
                         createdAtMs = minOf(prev.createdAtMs, msg.createdAtMs),
                         finishedAtMs = msg.finishedAtMs ?: prev.finishedAtMs,
+                        // [T-rewrite-stealth] Merged turn shows the pencil if
+                        // ANY constituent row was edited.
+                        isEdited = prev.isEdited || msg.isEdited,
                     )
                 } else {
                     merged.add(msg)
