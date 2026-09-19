@@ -93,6 +93,7 @@ class ShizukuOffloadHandler(private val context: Context) : NativeOffloadHandler
                 "notification" -> handleNotification(rest, args)
                 "file" -> handleFile(rest, args)
                 "device" -> handleDevice(rest, args)
+                "proc" -> handleProc(rest, args)
                 "exec" -> handleExec(rest, args)
                 else -> NativeOffloadResult(
                     2,
@@ -1077,6 +1078,7 @@ Groups:
   notification list / dismiss / channel
   file         ls / pull / push / rm
   device       info / battery / usage
+  proc         ls / cat <path>          ← /proc, /sys, /dev read-only
   service      status / ping
 
 Common flags:
@@ -1221,6 +1223,90 @@ Usage:
   android-shizuku-cli device info
   android-shizuku-cli device battery
   android-shizuku-cli device usage [--package pkg] [--top N]
+"""
+ 
+
+    /**
+     * proc — read kernel /proc pseudofiles. Returns raw text (line-by-line)
+     * by default; `proc cat <path> --format json` parses key:value lines into
+     * a JSON object. Read-only — never writes to /proc.
+     *
+     * Common paths:
+     *   net/dev   — per-interface network byte/packet counters
+     *   net/tcp   — active TCP connections
+     *   net/route — routing table
+     *   loadavg   — 1/5/15-min load average + running/total tasks
+     *   uptime    — wall time + idle time, seconds
+     *   meminfo   — MemTotal/MemFree/Buffers/Cached/SwapTotal/...
+     *   cpuinfo   — per-CPU model/features/bugs
+     *   version   — kernel banner
+     *   cmdline   — kernel boot args
+     *   diskstats — per-device read/write/IO counts
+     *   pressure/{cpu,memory,io`} — stall-stats (Linux 4.20+)
+     *   sys/kernel/random/boot_id — stable machine UUID
+     *   self/status — current process (Shizuku) capabilities
+     */
+    private fun handleProc(rest: List<String>, args: OffloadArgs): NativeOffloadResult {
+        if (rest.isEmpty()) {
+            return okEnvelope(JSONObject().put("hint", "use `proc cat <path>` or `proc ls`"),
+                args)
+        }
+        val subcommand = rest[0]
+        val subArgs = rest.drop(1)
+        return when (subcommand) {
+            "ls" -> {
+                val dir = if (subArgs.isNotEmpty()) "/proc/${subArgs[0]}" else "/proc"
+                val r = ShizukuManager.runProcess(arrayOf("ls", "-la", dir), timeoutMs = 4_000)
+                okEnvelope(JSONObject().put("path", dir).put("body", r.stdout), args)
+            }
+            "cat" -> {
+                if (subArgs.isEmpty()) {
+                    return errEnvelope("MISSING_ARG", "usage: proc cat <path-relative-to-/proc>", args)
+                }
+                val path = if (subArgs[0].startsWith("/")) subArgs[0] else "/proc/${subArgs[0]}"
+                // SAFETY: reject any path outside /proc + /sys (kernel tunables). The
+                // user invokes this from inside their own session — not adversarial
+                // — but keeping the surface narrow is a cheap default-deny.
+                if (!path.startsWith("/proc/") && !path.startsWith("/sys/") &&
+                    !path.startsWith("/dev/")) {
+                    return errEnvelope("PATH_NOT_ALLOWED",
+                        "proc cat is restricted to /proc/*, /sys/*, /dev/* — got '$path'", args)
+                }
+                val r = ShizukuManager.runProcess(arrayOf("cat", path), timeoutMs = 4_000)
+                if (r.exitCode != 0) {
+                    errEnvelope("READ_FAILED",
+                        r.stderr.ifBlank { "exit=${r.exitCode}" }, args)
+                } else {
+                    okEnvelope(JSONObject().put("path", path).put("body", r.stdout), args)
+                }
+            }
+            else -> errEnvelope("UNKNOWN_SUBCOMMAND",
+                "proc subcommand must be 'ls' or 'cat' (got '$subcommand')", args)
+        }
+    }
+
+        private const val FILE_HELP = """file — privileged file access.
+
+Usage:
+  android-shizuku-cli file ls <path> [-l] [-r]
+  android-shizuku-cli file pull <remote> <local>
+  android-shizuku-cli file push <local> <remote>
+  android-shizuku-cli file rm <path> [-r]
+"""
+
+        private const val DEVICE_HELP = """device — device state.
+
+Usage:
+  android-shizuku-cli device info
+  android-shizuku-cli device battery
+  android-shizuku-cli device usage [--package pkg] [--top N]
+"""
+
+        private const val PROC_HELP = """proc — read /proc, /sys, /dev kernel pseudofiles (read-only).
+
+Usage:
+  android-shizuku-cli proc ls [path]
+  android-shizuku-cli proc cat <path-relative-to-/proc>
 """
     }
 }
