@@ -518,8 +518,6 @@ private fun TabChip(
     }
 }
 
-@Composable
-
 /** Globe icon with a spinning arc border when loading. */
 @Composable
 private fun BrowserAddressBarIcon(isLoading: Boolean, accent: Color) {
