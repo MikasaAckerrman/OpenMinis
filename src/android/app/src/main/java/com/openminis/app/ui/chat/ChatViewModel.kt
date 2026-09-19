@@ -2320,15 +2320,12 @@ class ChatViewModel(
                         // with the SPECIFIC reason every model route refused.
                         val _cp = reporter.snapshot().copy(
                             failure = com.openminis.app.data.CompactFailure(
-                                attempts = routeFailure?.attempts.orEmpty()
-
-                        _compactProgress.value = _cp
-
-                        publishCompactProgress(_cp),
+                                attempts = routeFailure?.attempts.orEmpty(),
                                 terminal = routeFailure?.message
                                     ?: "локальный дайджест пуст — сжатие не выполнено",
                             ),
                         )
+                        publishCompactProgress(_cp)
                         withContext(Dispatchers.Main) {
                             appendSystemInfo(
                                 "Compaction failed and nothing was preserved mechanically.",
@@ -2384,14 +2381,11 @@ class ChatViewModel(
                     Log.w(TAG, "[Compact] No agentHistory entry has a DB-persisted dbMessageId; aborting")
                     val _cp = reporter.snapshot().copy(
                         failure = com.openminis.app.data.CompactFailure(
-                            attempts = emptyList()
-
-                    _compactProgress.value = _cp
-
-                    publishCompactProgress(_cp),
+                            attempts = emptyList(),
                             terminal = "нет якоря к сохранённому сообщению — сжатие отменено",
                         ),
                     )
+                    publishCompactProgress(_cp)
                     withContext(Dispatchers.Main) {
                         appendSystemInfo("Compact failed: could not anchor to a persisted message.", "compact")
                     }
@@ -2409,14 +2403,11 @@ class ChatViewModel(
                         Log.w(TAG, "[Compact] verified anchor at idx=$verifiedAnchorIdx lost dbMessageId; aborting")
                         val _cp = reporter.snapshot().copy(
                             failure = com.openminis.app.data.CompactFailure(
-                                attempts = emptyList()
-
-                        _compactProgress.value = _cp
-
-                        publishCompactProgress(_cp),
+                                attempts = emptyList(),
                                 terminal = "якорь сжатия потерял id — сжатие отменено",
                             ),
                         )
+                        publishCompactProgress(_cp)
                         withContext(Dispatchers.Main) {
                             appendSystemInfo("Compact failed: anchor message id unavailable.", "compact")
                         }
@@ -2542,14 +2533,11 @@ class ChatViewModel(
                 // button — the user must see WHY, not "не удалось сжать".
                 val _cp = reporter.snapshot().copy(
                     failure = com.openminis.app.data.CompactFailure(
-                        attempts = (e as? CompactRouteFailure)
-
-                _compactProgress.value = _cp
-
-                publishCompactProgress(_cp)?.attempts.orEmpty(),
+                        attempts = (e as? CompactRouteFailure)?.attempts.orEmpty(),
                         terminal = e.message ?: e.javaClass.simpleName,
                     ),
                 )
+                publishCompactProgress(_cp)
                 withContext(Dispatchers.Main) {
                     appendSystemInfo(
                         text = "Compaction failed: ${e.message ?: e.javaClass.simpleName}",
