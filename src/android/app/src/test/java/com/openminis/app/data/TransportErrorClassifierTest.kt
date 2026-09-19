@@ -47,4 +47,23 @@ class TransportErrorClassifierTest {
         assertTrue(TransportErrorClassifier.isExplicitSizeError("CONTEXT WINDOW exceeded"))
         assertTrue(TransportErrorClassifier.isVagueTransportFailure("TIMEOUT waiting for headers"))
     }
+
+    @Test
+    fun `request body too large is an explicit size error`() {
+        // [T-request-body-too-large] live 2026-09-19 AgentRouter rejection:
+        // "request body too large: 1528477 bytes > 1048576 limit" — matched
+        // NONE of the previous markers ('request too large' is not a
+        // substring of 'request BODY too large'), so the compact/split
+        // machinery never triggered and the user hit a dead-end banner.
+        assertTrue(
+            TransportErrorClassifier.isExplicitSizeError(
+                "request body too large: 1528477 bytes > 1048576 limit"
+            )
+        )
+        assertTrue(
+            TransportErrorClassifier.isExplicitSizeError(
+                "Request Body Too Large: body size exceeds the limit"
+            )
+        )
+    }
 }

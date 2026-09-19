@@ -4160,6 +4160,14 @@ class ChatViewModel(
             desc.contains("content is too long") ||
             desc.contains("exceeds the model") ||
             desc.contains("request too large") ||
+            // [T-request-body-too-large] 2026-09-19: "request body too large:
+            // N bytes > M limit" — 'request too large' is NOT a substring
+            // (the word 'body' sits between). Without these the compact/
+            // split machinery never triggers on this gateway rejection.
+            desc.contains("request body too large") ||
+            desc.contains("body too large") ||
+            desc.contains("bytes >") ||
+            desc.contains("body size") ||
             desc.contains("prompt is too long") ||
             desc.contains("token limit") ||
             desc.contains("context window") ||

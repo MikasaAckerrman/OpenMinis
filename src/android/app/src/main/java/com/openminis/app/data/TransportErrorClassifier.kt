@@ -23,6 +23,14 @@ object TransportErrorClassifier {
         "exceeds the model", "request too large", "prompt is too long",
         "token limit", "context window", "payload too large", "413",
         "string too long", "too large for",
+        // [T-request-body-too-large] 2026-09-19 live case: AgentRouter
+        // rejected with "request body too large: 1528477 bytes > 1048576
+        // limit" — NONE of the markers above matched ("request too large"
+        // is not a substring of "request BODY too large"). The compact/
+        // split machinery never triggered and the user saw a dead-end
+        // error banner instead of an automatic retry with a smaller body.
+        "request body too large", "body too large", "bytes >",
+        "bytes exceed", "size limit", "body size",
         // -- Russian relays (vsegpt &c): the live 2026-09-09 rejection was
         //    "запрос отклонен шлюзом" — none of the English markers matched,
         //    so the split logic never ran and every retry resent the same
