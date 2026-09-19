@@ -581,13 +581,19 @@ private fun StreamingMarkdownTextBody(
     }
 
     ShardSubIndexScope {
-        Column(modifier = modifier) {
-            // [T-android-stream-fade] Last block during a live stream gets
-            // LocalAppendOnlyFade=true so MdText fades in newly-appended
-            // word ranges (mirrors iOS TextFadeAnimator). Every other block
-            // — completed prefix, non-streaming sessions — renders opaque.
+        // [T-android-stream-lazy] LazyColumn instead of Column: a streaming
+        // reply with 100+ blocks was composing EVERY block on every throttle
+        // tick (200ms..2s) — the measure/layout pass scaled with document
+        // length, not viewport height, which is the "streaming lags on long
+        // replies" complaint. Virtualization composes only the visible slice.
+        // The non-streaming path below already used LazyColumn for exactly
+        // this reason (T285-md notes the 150-300ms inline-scan freeze the
+        // Column path produced); the streaming path was the last Column user.
+        // Keys mirror the non-streaming path: index disambiguates identical
+        // bodies (repeated `---` HRs), raw text enables reuse.
+        androidx.compose.foundation.lazy.LazyColumn(modifier = modifier) {
             val lastIdx = blocks.size - 1
-            blocks.forEachIndexed { idx, block ->
+            itemsIndexed(blocks, key = { idx, b -> "$idx:${b.raw}" }) { idx, block ->
                 if (isStreaming && idx == lastIdx) {
                     androidx.compose.runtime.CompositionLocalProvider(
                         LocalAppendOnlyFade provides true,
