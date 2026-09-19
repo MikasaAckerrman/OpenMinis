@@ -512,6 +512,19 @@ class MinisApp : Application(), ImageLoaderFactory {
         // beside you.
         completionHaptics = com.openminis.app.feedback.CompletionHaptics(this)
         completionSound = com.openminis.app.feedback.CompletionSound(this)
+        // [T-builtin-graphs] Install the preset agent graphs (Parallel
+        // Research, Implement+Review, Deep Dive) on first launch — a user
+        // who enables auto-routing shouldn't have to hand-write JSON to
+        // try the multi-agent pipeline. Idempotent: existing graphs
+        // (including user-modified presets) are never overwritten.
+        try {
+            com.openminis.app.data.model.BuiltinGraphs.installIfMissing(
+                listExisting = { providerRepository.listAgentGraphsSync().map { it.id } },
+                save = { providerRepository.saveAgentGraphSync(it) },
+            )
+        } catch (e: Exception) {
+            AppLogger.warning("MinisApp", "builtin graphs install failed: ${e.message}")
+        }
         SessionActivityTracker.setTurnEndListener { _, outcome ->
             completionHaptics.onTurnEnded(
                 outcome = outcome,
