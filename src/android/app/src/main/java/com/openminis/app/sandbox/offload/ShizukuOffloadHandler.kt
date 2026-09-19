@@ -1227,13 +1227,6 @@ Usage:
  
 
 
-        private const val DEVICE_HELP = """device — device state.
-
-Usage:
-  android-shizuku-cli device info
-  android-shizuku-cli device battery
-  android-shizuku-cli device usage [--package pkg] [--top N]
-"""
 
         private const val PROC_HELP = """proc — read /proc, /sys, /dev kernel pseudofiles (read-only).
 
