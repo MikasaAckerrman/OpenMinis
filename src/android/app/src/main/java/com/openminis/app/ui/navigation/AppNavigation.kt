@@ -148,6 +148,7 @@ object Routes {
     /** [T-mcp-integration-android] MCP Integrations management screen. */
     const val MCP = "mcp"
     const val TG_WHITELIST = "tg_whitelist"
+    const val TG_LOGIN = "tg_login"
     /** [T-soul-md] SOUL.md editor. */
     const val SOUL = "soul"
     const val MEMORY_FILE_EDIT = "memory_file/{fileName}/{isGlobal}"
@@ -584,6 +585,7 @@ fun AppNavigation(
                 onTerminalClick = { navController.safeNavigate(Routes.terminal()) },
                 onMemoryClick = { navController.safeNavigate(Routes.MEMORY) },
                 onMcpClick = { navController.safeNavigate(Routes.MCP) },
+                onTelegramLoginClick = { navController.safeNavigate(Routes.TG_LOGIN) },
                 onSoulClick = { navController.safeNavigate(Routes.SOUL) },
                 onPermissionsClick = { navController.safeNavigate(Routes.PERMISSIONS) },
                 onUsageClick = { navController.safeNavigate(Routes.USAGE_STATS) },
@@ -1120,6 +1122,12 @@ fun AppNavigation(
                     onBack = { navController.safePopBackStack() },
                 )
             }
+        }
+        // [T-telegram-login] Phone → code → 2FA flow, same session as MCP.
+        composable(Routes.TG_LOGIN) {
+            com.openminis.app.ui.settings.TelegramLoginScreen(
+                onBack = { navController.safePopBackStack() },
+            )
         }
 
         // [T-soul-md] SOUL.md editor.

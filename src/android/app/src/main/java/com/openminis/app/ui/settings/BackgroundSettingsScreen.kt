@@ -304,7 +304,14 @@ fun BackgroundSettingsScreen(onBack: () -> Unit) {
                     value = soundProfile.volume,
                     onValueChange = { backgroundRepo.setCompletionSoundVolume(it) },
                     onValueChangeFinished = {
-                        app.completionSound?.play(soundProfile)
+                        // [T-sound-volume-stale] soundProfile is the value
+                        // captured at composition time — the volume just
+                        // written to prefs isn't in it yet (StateFlow emits
+                        // on the main dispatcher, the lambda can run before
+                        // recomposition). Read fresh from the repository.
+                        app.completionSound?.play(
+                            backgroundRepo.readCompletionSoundProfile()
+                        )
                     },
                 )
                 Spacer(Modifier.size(8.dp))

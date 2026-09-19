@@ -84,6 +84,7 @@ fun SettingsScreen(
     // [T-mcp-integration-android] MCP Integrations page, listed directly below
     // Memory. Default no-op for callers that haven't wired the route yet.
     onMcpClick: () -> Unit = {},
+    onTelegramLoginClick: () -> Unit = {},
     // [T-soul-md] Soul settings page lives between Skills and Memory in the
     // Agent Runtime section; default no-op for callers that haven't wired
     // the route yet.
@@ -215,6 +216,14 @@ fun SettingsScreen(
                     title = stringResource(R.string.settings_mcp),
                     subtitle = stringResource(R.string.settings_mcp_subtitle),
                     onClick = onMcpClick,
+                )
+                // [T-telegram-login] Phone→code→2FA flow for the telegram MCP.
+                SettingsItem(
+                    icon = Icons.AutoMirrored.Outlined.Send,
+                    iconColor = Color(0xFF2AABEE),
+                    title = stringResource(R.string.settings_telegram_login),
+                    subtitle = stringResource(R.string.settings_telegram_login_subtitle),
+                    onClick = onTelegramLoginClick,
                 )
                 SettingsItem(
                     icon = Icons.Outlined.Terminal,

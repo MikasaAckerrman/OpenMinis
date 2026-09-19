@@ -152,6 +152,9 @@
     <!-- [T-mcp-integration-android] MCP Integrations settings entry + management screen -->
     <string name="settings_mcp">MCP Integrations</string>
     <string name="settings_mcp_subtitle">Connect Model Context Protocol servers</string>
+    <!-- [T-telegram-login] -->
+    <string name="settings_telegram_login">Telegram Login</string>
+    <string name="settings_telegram_login_subtitle">Sign in to enable Telegram tools</string>
     <string name="mcp_title">MCP Integrations</string>
     <string name="mcp_add">Add MCP Server</string>
     <string name="mcp_edit">Edit MCP Server</string>
