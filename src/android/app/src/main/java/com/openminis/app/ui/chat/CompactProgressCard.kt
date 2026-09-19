@@ -156,7 +156,7 @@ internal fun CompactProgressCard(
                 }
             } else {
                 val animated by animateFloatAsState(
-                    targetValue = progress.percent / 100.0,
+                    targetValue = (progress.percent / 100.0).toFloat(),
                     animationSpec = tween(220),
                     label = "compactBar",
                 )

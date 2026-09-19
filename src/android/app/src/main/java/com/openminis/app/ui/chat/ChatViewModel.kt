@@ -1103,7 +1103,7 @@ class ChatViewModel(
         val _cp = com.openminis.app.data.CompactProgress(
             startMs = System.currentTimeMillis(),
             phase = com.openminis.app.data.CompactPhase.DONE,
-            percent = 100,
+            percent = 100.0,
             failure = com.openminis.app.data.CompactFailure(
                 attempts = emptyList(),
                 terminal = reason,
