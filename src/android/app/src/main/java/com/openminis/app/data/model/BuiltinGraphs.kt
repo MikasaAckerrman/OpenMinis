@@ -49,6 +49,19 @@ object BuiltinGraphs {
         name = "Parallel Research",
         version = 1,
         nodes = listOf(
+            // [T-builtin-graphs-research-entry] Virtual entry node: the
+            // runner dispatches ONLY entryNodeId (plus its replicas) — a
+            // second root like researcher-b would be unreachable without
+            // an edge from entry. This orchestrator fans out to both
+            // researchers, making the parallel shape explicit.
+            AgentNode(
+                id = "research-entry",
+                role = AgentRole.ORCHESTRATOR,
+                systemPrompt = "Route the task to both researchers. Say only: TO researcher-a: <task> TO researcher-b: <task>. No analysis of your own.",
+                ownedArtifact = "routing instruction",
+                modelRole = "planner",
+                maxTurns = 2,
+            ),
             AgentNode(
                 id = "researcher-a",
                 role = AgentRole.CODEBASE_DISCOVERY,
@@ -75,10 +88,12 @@ object BuiltinGraphs {
             ),
         ),
         edges = listOf(
+            AgentEdge(from = "research-entry", to = "researcher-a", type = EdgeType.PARALLEL),
+            AgentEdge(from = "research-entry", to = "researcher-b", type = EdgeType.PARALLEL),
             AgentEdge(from = "researcher-a", to = SYNTH, type = EdgeType.SEQUENTIAL),
             AgentEdge(from = "researcher-b", to = SYNTH, type = EdgeType.SEQUENTIAL),
         ),
-        entryNodeId = "researcher-a", // runner dispatches ALL root nodes in parallel
+        entryNodeId = "research-entry",
         exitNodeIds = listOf(SYNTH),
         config = GraphConfig(maxParallelNodes = 2),
     )

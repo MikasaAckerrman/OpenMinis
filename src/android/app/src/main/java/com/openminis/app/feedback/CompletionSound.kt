@@ -94,25 +94,44 @@ class CompletionSound(context: Context) {
     private var loaded = false
 
     init {
-        soundPool?.setOnLoadCompleteListener { _, _, status ->
-            if (status != 0) {
-                AppLogger.warning(TAG, "sound sample load failed: status=$status")
-            }
-        }
+        // OnLoadCompleteListener is set inside loadSamples() so the
+        // readiness tracking (pending set → loaded flag) and the listener
+        // live together. Setting it here too would overwrite the one
+        // loadSamples installs.
         loadSamples()
     }
 
     private fun loadSamples() {
         val pool = soundPool ?: return
         try {
-            CompletionSoundEffect.entries.forEach { effect ->
+            // SoundPool.load() is ASYNC: it returns a sample id immediately
+            // and decodes in the background. Track readiness through
+            // OnLoadCompleteListener so the very first play() after app
+            // start can't silently no-op on an undecoded sample.
+            val pending = mutableSetOf<Int>()
+            CompletionSoundEffect.values().forEach { effect ->
                 val resId = effect.resId()
                 if (resId != 0) {
                     val id = pool.load(appContext, resId, 1)
                     sampleIds[effect] = id
+                    pending.add(id)
                 }
             }
-            loaded = sampleIds.isNotEmpty()
+            pool.setOnLoadCompleteListener { _, sampleId, status ->
+                if (status == 0) {
+                    pending.remove(sampleId)
+                    if (pending.isEmpty()) loaded = true
+                } else {
+                    AppLogger.warning(TAG, "sound sample load failed: id=$sampleId status=$status")
+                }
+            }
+            // Fallback: if the listener never fires (hostile ROM), allow play
+            // after a grace period — worst case the first play no-ops.
+            if (sampleIds.isNotEmpty() && !loaded) {
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                    if (!loaded) loaded = true
+                }, 2000L)
+            }
         } catch (t: Throwable) {
             AppLogger.warning(TAG, "sample loading failed: ${t.message}")
             loaded = false
@@ -150,6 +169,21 @@ class CompletionSound(context: Context) {
         if (!loaded) return
         val sampleId = sampleIds[profile.effect] ?: return
         try {
+            // [T-completion-sound-bypass] bypassDnd=false: honour the ringer.
+            // The pool is built with USAGE_ALARM (the stronger guarantee for
+            // the default bypass=true case) — SoundPool cannot rebuild its
+            // AudioAttributes per play. When the user explicitly turned
+            // bypassDnd OFF, the contract is "respect my ringer": silent or
+            // vibrate mode must NOT play. Check the ringer mode here and
+            // bail — this is the closest a single ALARM-tagged pool gets to
+            // notification-usage semantics without a second pool.
+            if (!profile.bypassDnd) {
+                val ringer = audioManager?.ringerMode
+                    ?: android.media.AudioManager.RINGER_MODE_NORMAL
+                if (ringer != android.media.AudioManager.RINGER_MODE_NORMAL) {
+                    return // silent or vibrate — the user asked us to respect it
+                }
+            }
             val vol = profile.volume.coerceIn(0f, 1f)
             pool.play(sampleId, vol, vol, 1, 0, 1f)
         } catch (t: Throwable) {
@@ -203,7 +237,7 @@ enum class CompletionSoundEffect(val id: String) {
     companion object {
         val DEFAULT = CHIME
         fun fromId(raw: String?): CompletionSoundEffect =
-            entries.firstOrNull { it.id == raw } ?: DEFAULT
+            values().firstOrNull { it.id == raw } ?: DEFAULT
     }
 }
 

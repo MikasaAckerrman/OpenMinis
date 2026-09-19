@@ -10136,21 +10136,25 @@ class ChatViewModel(
 
             // [T-parallel-read-tools] When the model issues MULTIPLE
             // read-only tool calls in one response (a common exploration
-            // pattern: "read file A, read file B, check memory"), execute
-            // them CONCURRENTLY instead of one-by-one. These three tools
-            // are pure functions — no shared mutable state inside
-            // executeTool (verified: FileReadTool/ReadImageTool/
-            // memory_get return ToolExecutionResult and never touch
-            // toolBlocks or the UI). The preflight, loop-detector, and
-            // toolBlock UI updates below stay SEQUENTIAL — only the
-            // executeTool call itself moves to Dispatchers.IO.
+            // pattern: "read file A, read file B"), execute them
+            // CONCURRENTLY instead of one-by-one. These two tools are pure
+            // functions — no shared mutable state inside executeTool
+            // (verified: FileReadTool and ReadImageTool return
+            // ToolExecutionResult and never touch toolBlocks or the UI).
+            // memory_get is EXCLUDED: executeMemoryGetTool appends to
+            // _memoryToolRecords (a read-modify-write on a StateFlow that
+            // would race under parallel dispatch).
+            // The preflight, loop-detector, and toolBlock UI updates below
+            // stay SEQUENTIAL — only the executeTool call itself moves to
+            // Dispatchers.IO. Skill-use recording is also done in the
+            // sequential post-process (recordSkillUse is not thread-safe).
             //
             // Not applied when ANY call is a write/shell/browser tool:
             // those mutate state (files, shell session, browser tabs) and
             // depend on execution order. The LLM's tool_calls array order
             // is preserved in toolCalls — sequential execution of mixed
             // batches keeps the same semantics as before.
-            val READ_PARALLEL_TOOLS = setOf(FileReadTool.NAME, ReadImageTool.NAME, "memory_get")
+            val READ_PARALLEL_TOOLS = setOf(FileReadTool.NAME, ReadImageTool.NAME)
             val canParallelize = toolCalls.size > 1 &&
                 toolCalls.all { (id, name, args) -> name in READ_PARALLEL_TOOLS }
             if (canParallelize) {
@@ -10182,6 +10186,23 @@ class ChatViewModel(
                     val (id, name, args) = call
                     val result = results[idx]
                     toolLoopDetector.record(name, parseToolParams(args.toString()), result.output, null, id)
+                    // [T-parallel-read-race] skillRepository.recordSkillUse is
+                    // NOT thread-safe (read-modify-write on _skills.value with
+                    // no lock) — calling it inside async would race when two
+                    // parallel file_reads hit SKILL.md files. Moved to this
+                    // sequential loop; a lost use-count increment is cosmetic,
+                    // but a race on _skills.value could corrupt the list.
+                    if (name == FileReadTool.NAME && result.success) {
+                        runCatching {
+                            // args is already a JSONObject — no re-parse needed.
+                            val readPath = args.optString("path", "")
+                            if (readPath.isNotEmpty()) {
+                                skillRepository?.skillIdFromPath(readPath)?.let { sid ->
+                                    skillRepository.recordSkillUse(sid)
+                                }
+                            }
+                        }
+                    }
                     val blockIdx = allToolBlocks.indexOfFirst { it.id == id }
                     if (blockIdx >= 0) {
                         val elapsed = System.currentTimeMillis() - allToolBlocks[blockIdx].startTimeMs

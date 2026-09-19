@@ -581,19 +581,29 @@ private fun StreamingMarkdownTextBody(
     }
 
     ShardSubIndexScope {
-        // [T-android-stream-lazy] LazyColumn instead of Column: a streaming
-        // reply with 100+ blocks was composing EVERY block on every throttle
-        // tick (200ms..2s) — the measure/layout pass scaled with document
-        // length, not viewport height, which is the "streaming lags on long
-        // replies" complaint. Virtualization composes only the visible slice.
-        // The non-streaming path below already used LazyColumn for exactly
-        // this reason (T285-md notes the 150-300ms inline-scan freeze the
-        // Column path produced); the streaming path was the last Column user.
-        // Keys mirror the non-streaming path: index disambiguates identical
-        // bodies (repeated `---` HRs), raw text enables reuse.
-        androidx.compose.foundation.lazy.LazyColumn(modifier = modifier) {
+        // [T-android-stream-lazy REVERTED] A LazyColumn here would crash:
+        // StreamingMarkdownText renders inside a chat-list LazyColumn item
+        // whose height constraints are [0, infinity] — a vertically
+        // scrollable child measured with infinity maxHeight throws
+        // IllegalStateException. The non-streaming MarkdownViewer (line ~660)
+        // uses LazyColumn safely because FilePreviewScreen gives it a bounded
+        // height; the chat path cannot.
+        //
+        // The perf win must come from elsewhere: the streaming throttle
+        // already tiers parse frequency by document length (200ms..2s), the
+        // parse itself is off-main (Dispatchers.Default), and
+        // MarkdownParseCaches makes scroll-away/return a cache hit. The
+        // recomposition scope below is per-BLOCK (RenderBlock takes an
+        // immutable MdBlock) — a changed last block only recomposes that
+        // block's Text, not the whole Column, because Compose skips stable
+        // children with unchanged inputs.
+        Column(modifier = modifier) {
+            // [T-android-stream-fade] Last block during a live stream gets
+            // LocalAppendOnlyFade=true so MdText fades in newly-appended
+            // word ranges (mirrors iOS TextFadeAnimator). Every other block
+            // — completed prefix, non-streaming sessions — renders opaque.
             val lastIdx = blocks.size - 1
-            itemsIndexed(blocks, key = { idx, b -> "$idx:${b.raw}" }) { idx, block ->
+            blocks.forEachIndexed { idx, block ->
                 if (isStreaming && idx == lastIdx) {
                     androidx.compose.runtime.CompositionLocalProvider(
                         LocalAppendOnlyFade provides true,
