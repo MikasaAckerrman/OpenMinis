@@ -4885,7 +4885,7 @@ class ChatViewModel(
                     "window=${uiRows.size} total=$totalRows",
                 )
                 val uiJsonCache = PartsJsonCache(uiRows.size)
-                val chatUi = uiRows.toChatMessages(uiJsonCache, sessionKey = sid)
+                val chatUi = uiRows.toChatMessages(uiJsonCache, sessionKey = sessionId)
                 uiJsonCache.clear()
                 // Publish the bounded UI tail before loading and parsing the
                 // complete LLM history. Sending remains gated by sessionLoaded.

@@ -1246,6 +1246,31 @@ Usage:
      *   sys/kernel/random/boot_id — stable machine UUID
      *   self/status — current process (Shizuku) capabilities
      */
+        private const val FILE_HELP = """file — privileged file access.
+
+Usage:
+  android-shizuku-cli file ls <path> [-l] [-r]
+  android-shizuku-cli file pull <remote> <local>
+  android-shizuku-cli file push <local> <remote>
+  android-shizuku-cli file rm <path> [-r]
+"""
+
+        private const val DEVICE_HELP = """device — device state.
+
+Usage:
+  android-shizuku-cli device info
+  android-shizuku-cli device battery
+  android-shizuku-cli device usage [--package pkg] [--top N]
+"""
+
+        private const val PROC_HELP = """proc — read /proc, /sys, /dev kernel pseudofiles (read-only).
+
+Usage:
+  android-shizuku-cli proc ls [path]
+  android-shizuku-cli proc cat <path-relative-to-/proc>
+"""
+    }
+
     private fun handleProc(rest: List<String>, args: OffloadArgs): NativeOffloadResult {
         if (rest.isEmpty()) {
             return okEnvelope(JSONObject().put("hint", "use `proc cat <path>` or `proc ls`"),
@@ -1285,28 +1310,4 @@ Usage:
         }
     }
 
-        private const val FILE_HELP = """file — privileged file access.
-
-Usage:
-  android-shizuku-cli file ls <path> [-l] [-r]
-  android-shizuku-cli file pull <remote> <local>
-  android-shizuku-cli file push <local> <remote>
-  android-shizuku-cli file rm <path> [-r]
-"""
-
-        private const val DEVICE_HELP = """device — device state.
-
-Usage:
-  android-shizuku-cli device info
-  android-shizuku-cli device battery
-  android-shizuku-cli device usage [--package pkg] [--top N]
-"""
-
-        private const val PROC_HELP = """proc — read /proc, /sys, /dev kernel pseudofiles (read-only).
-
-Usage:
-  android-shizuku-cli proc ls [path]
-  android-shizuku-cli proc cat <path-relative-to-/proc>
-"""
-    }
 }

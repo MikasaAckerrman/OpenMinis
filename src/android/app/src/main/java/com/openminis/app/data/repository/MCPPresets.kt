@@ -132,7 +132,7 @@ object MCPPresets {
     fun toConfig(preset: Preset): com.openminis.app.data.repository.MCPRepository.MCPServerConfig {
         // id = preset + nanos + counter — unique even if user taps same preset twice within 1ms.
         // nanoTime + counter avoids System.currentTimeMillis() collisions under rapid taps.
-        id = preset.id + "-" + System.nanoTime().toString(36) + "-" + (++idCounter).toString(36)
+        val id = preset.id + "-" + System.nanoTime().toString(36) + "-" + (++idCounter).toString(36)
         return com.openminis.app.data.repository.MCPRepository.MCPServerConfig(
             id = id,
             // display name stored in `note` (MCPServerConfig has no `name` field;

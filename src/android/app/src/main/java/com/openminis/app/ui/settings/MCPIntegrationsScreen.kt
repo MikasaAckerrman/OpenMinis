@@ -44,6 +44,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -184,6 +185,7 @@ fun MCPIntegrationsScreen(
                 editServer = null
                 deleteId = server.id
             },
+            onTelegramAccessControl = onTelegramAccessControl,
         )
     }
 
@@ -221,6 +223,10 @@ private fun MCPAddSheet(
     editServer: MCPRepository.MCPServerConfig?,
     onDismiss: () -> Unit,
     onRequestDelete: () -> Unit,
+    // [T-tg-whitelist] Telegram access-control entry, forwarded from the
+    // parent screen so the edit form's "Telegram access control" button
+    // (visible when editing the built-in 'telegram' server) can navigate.
+    onTelegramAccessControl: (() -> Unit)? = null,
 ) {
     // [T-android-mcp-sheet-ime-occlusion] GH#44: skipPartiallyExpanded so the
     // sheet opens full-height — at half-height the soft keyboard left no room
