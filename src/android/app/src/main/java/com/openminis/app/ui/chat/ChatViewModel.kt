@@ -66,6 +66,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -10132,6 +10134,81 @@ class ChatViewModel(
             }
             AppLogger.info(TAG_STREAM, "runAgentLoop turn=$turn dispatching ${toolCalls.size} tool call(s), continuing")
 
+            // [T-parallel-read-tools] When the model issues MULTIPLE
+            // read-only tool calls in one response (a common exploration
+            // pattern: "read file A, read file B, check memory"), execute
+            // them CONCURRENTLY instead of one-by-one. These three tools
+            // are pure functions — no shared mutable state inside
+            // executeTool (verified: FileReadTool/ReadImageTool/
+            // memory_get return ToolExecutionResult and never touch
+            // toolBlocks or the UI). The preflight, loop-detector, and
+            // toolBlock UI updates below stay SEQUENTIAL — only the
+            // executeTool call itself moves to Dispatchers.IO.
+            //
+            // Not applied when ANY call is a write/shell/browser tool:
+            // those mutate state (files, shell session, browser tabs) and
+            // depend on execution order. The LLM's tool_calls array order
+            // is preserved in toolCalls — sequential execution of mixed
+            // batches keeps the same semantics as before.
+            val READ_PARALLEL_TOOLS = setOf(FileReadTool.NAME, ReadImageTool.NAME, "memory_get")
+            val canParallelize = toolCalls.size > 1 &&
+                toolCalls.all { (id, name, args) -> name in READ_PARALLEL_TOOLS }
+            if (canParallelize) {
+                val parallelStart = System.currentTimeMillis()
+                // Mark ALL blocks RUNNING first (sequential UI update, no
+                // races), then fire the executes concurrently.
+                for ((id, name, args) in toolCalls) {
+                    val preIdx = allToolBlocks.indexOfFirst { it.id == id }
+                    if (preIdx >= 0 && allToolBlocks[preIdx].toolStatus == ToolBlockStatus.PENDING) {
+                        allToolBlocks[preIdx] = allToolBlocks[preIdx].copy(toolStatus = ToolBlockStatus.RUNNING)
+                    }
+                }
+                withContext(Dispatchers.Main) {
+                    updateAssistantMessage(assistantId, accumulatedText, true, allToolBlocks)
+                }
+                val results = kotlinx.coroutines.coroutineScope {
+                    val deferred = toolCalls.map { (id, name, args) ->
+                        async(Dispatchers.IO) {
+                            executeTool(name, args.toString(), id, allToolBlocks, assistantId, accumulatedText)
+                        }
+                    }
+                    deferred.awaitAll()
+                }
+                AppLogger.info(TAG_STREAM,
+                    "parallel-read: ${toolCalls.size} tool(s) in ${System.currentTimeMillis() - parallelStart}ms")
+                // Post-process sequentially — loop detector, block status,
+                // result parts — in the model's original order.
+                for ((idx, call) in toolCalls.withIndex()) {
+                    val (id, name, args) = call
+                    val result = results[idx]
+                    toolLoopDetector.record(name, parseToolParams(args.toString()), result.output, null, id)
+                    val blockIdx = allToolBlocks.indexOfFirst { it.id == id }
+                    if (blockIdx >= 0) {
+                        val elapsed = System.currentTimeMillis() - allToolBlocks[blockIdx].startTimeMs
+                        allToolBlocks[blockIdx] = allToolBlocks[blockIdx].copy(
+                            toolStatus = if (result.success) ToolBlockStatus.SUCCESS else ToolBlockStatus.FAILED,
+                            content = result.output,
+                            durationMs = elapsed,
+                        )
+                    }
+                    resultParts.add(
+                        AgentContentPart.ToolResult(
+                            id = id,
+                            name = name,
+                            content = result.output,
+                            isError = !result.success,
+                        )
+                    )
+                }
+                withContext(Dispatchers.Main) {
+                    updateAssistantMessage(assistantId, accumulatedText, true, allToolBlocks)
+                }
+            } else {
+            // Sequential path (original): works for mixed tool batches,
+            // write tools, shell/browser — anything with side effects.
+            // (The closing brace of this else is at the end of the
+            // original for-loop's post-processing.)
+
             // [T-android-session-last-message-live-tool-call] Push a live
             // preview to the session list NOW, before the (possibly long-
             // running) tools execute. The authoritative assistant row isn't
@@ -10366,6 +10443,7 @@ class ChatViewModel(
                     imageLinuxPath = result.imageLinuxPath,
                 ))
             }
+            } // [T-parallel-read-tools] end of sequential else branch
 
             // Update UI with tool statuses. Mark as awaiting the next model
             // response so "Minis is thinking" shows during the network gap
