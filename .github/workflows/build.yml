@@ -76,9 +76,6 @@ jobs:
       #
       # Scoped to the agent/offload suites on purpose. Turning the gate on
       # revealed 39 tests that were already red before this step existed:
-      #   AnthropicProviderTest  24 — every case dies in resolveSystemPrompt on
-      #       "ANTHROPIC_OAUTH_IDENTIFIER_PROMPT is not configured", because
-      #       app/provider-customization.properties is gitignored and absent in CI
       #   OpenAIProviderTest     11 — TransientError "Server returned an empty
       #       response" against MockWebServer
       #   TerminalSanitizerTest   4 — real behaviour gap: CR folding drops the
@@ -119,6 +116,7 @@ jobs:
             --tests 'com.openminis.app.ui.chat.ResidentEvictionPolicyTest' \
             --tests 'com.openminis.app.ui.chat.VmCacheLruTest' \
             --tests 'com.openminis.app.provider.QuotaErrorDetectionTest' \
+            --tests 'com.openminis.app.provider.AnthropicProviderTest' \
             --tests 'com.openminis.app.provider.ContentFilterDetectionTest' \
             --tests 'com.openminis.app.tools.AgentSystemPromptStoreTest' \
             --tests 'com.openminis.app.tools.AgentWorkerPromptTest' \
