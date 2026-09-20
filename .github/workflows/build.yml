@@ -37,7 +37,7 @@ jobs:
           java-version: 17
           cache: gradle
 
-      - name: Setup Android SDK (manual — action v3 bug: dead 'tools' package)
+      - name: "Setup Android SDK (manual, action v3 has dead tools package)"
         run: |
           # Runner image ships cmdline-tools 16 at ANDROID_HOME. Use it directly.
           # the old action ALWAYS installs 'tools' internally
