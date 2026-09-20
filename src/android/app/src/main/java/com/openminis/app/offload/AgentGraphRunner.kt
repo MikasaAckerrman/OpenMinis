@@ -20,6 +20,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
 
 /**
  * Core execution engine for agent graphs.
@@ -51,7 +53,7 @@ internal object AgentGraphRunner {
          */
         val artifactHostDir: File?,
         val input: String,
-        val sessionMap: MutableMap<String, String> = mutableMapOf(), // runtimeId -> sessionId
+        val sessionMap: ConcurrentHashMap<String, String> = ConcurrentHashMap(), // runtimeId -> sessionId
         /**
          * [T-agent-graph-role-session] runtime-id -> sessionId is not enough when
          * a plan is split into sequential steps for the SAME role: step 2 should
@@ -59,18 +61,18 @@ internal object AgentGraphRunner {
          * session keyed here, so their history accumulates while OTHER roles stay
          * isolated — the test designer still never sees the implementation.
          */
-        val sessionByGroup: MutableMap<String, String> = mutableMapOf(),
+        val sessionByGroup: ConcurrentHashMap<String, String> = ConcurrentHashMap(),
         /** The single user-visible session narrating this run, or null. */
         val showcaseId: String? = null,
-        val handoffMap: MutableMap<String, Handoff> = mutableMapOf(), // nodeId -> handoff received
-        val artifactIndex: MutableMap<String, String> = mutableMapOf(), // path -> content
-        val trace: MutableList<TraceEvent> = mutableListOf(),
-        val nodeStatus: MutableMap<String, NodeStatus> = mutableMapOf(),
+        val handoffMap: ConcurrentHashMap<String, Handoff> = ConcurrentHashMap(), // nodeId -> handoff received
+        val artifactIndex: ConcurrentHashMap<String, String> = ConcurrentHashMap(), // path -> content
+        val trace: ConcurrentLinkedQueue<TraceEvent> = ConcurrentLinkedQueue(),
+        val nodeStatus: ConcurrentHashMap<String, NodeStatus> = ConcurrentHashMap(),
         /** Nodes already enqueued or started — guards against double-dispatch
          *  when a fan-in node's predecessors finish at different times. */
-        val dispatched: MutableSet<String> = mutableSetOf(),
+        val dispatched: MutableSet<String> = ConcurrentHashMap.newKeySet(),
         /** nodeId -> why the scope guard rejected its handoff. */
-        val scopeViolations: MutableMap<String, String> = mutableMapOf(),
+        val scopeViolations: ConcurrentHashMap<String, String> = ConcurrentHashMap(),
     )
 
     enum class NodeStatus { PENDING, RUNNING, COMPLETED, FAILED, BLOCKED, SKIPPED, OUT_OF_SCOPE }
@@ -332,7 +334,7 @@ internal object AgentGraphRunner {
         readyQueue.addAll(entry?.replicaIds() ?: listOf(graph.entryNodeId))
 
         // Track running nodes for parallelism limit
-        val runningJobs = mutableMapOf<String, Job>()
+        val runningJobs = ConcurrentHashMap<String, Job>()
 
         while (true) {
             // Reap completed jobs BEFORE deciding that "work is in flight".
@@ -393,7 +395,7 @@ internal object AgentGraphRunner {
                     taskId = state.taskId,
                     status = RunStatus.FAILED,
                     artifacts = state.artifactIndex,
-                    trace = state.trace,
+                    trace = state.trace.toList(),
                     error = "Deadlock: incomplete exit nodes ${incompleteExits.joinToString(", ")}",
                 )
             }
@@ -460,7 +462,7 @@ internal object AgentGraphRunner {
             taskId = state.taskId,
             status = finalStatus,
             artifacts = state.artifactIndex,
-            trace = state.trace,
+            trace = state.trace.toList(),
             finalHandoff = resolveFinalHandoff(state, allExitRuntimeIds),
         )
     }

@@ -275,6 +275,14 @@ internal sealed class FlatChatItem {
     abstract val key: String
     abstract val contentType: String
 
+    /** [T-deleted-placeholder] Thin separator shown where a message was
+     *  deleted, so neighbours don't glue together. Minimalist: a single
+     *  short rule + nothing else. */
+    data class DeletedPlaceholder(val messageId: String) : FlatChatItem() {
+        override val key = "del_$messageId"
+        override val contentType = "deleted_placeholder"
+    }
+
     /**
      * Cheap-equals — see [AssistantText]. User messages are short and don't
      * stream, but during a streaming overlay rebuild we still re-create the
@@ -602,6 +610,7 @@ internal fun buildFlatChatItems(
             is FlatChatItem.AssistantTyping -> item.copy(messageId = "${item.messageId}#$n")
             is FlatChatItem.AgentRunCard -> item.copy(messageId = "${item.messageId}#$n")
             is FlatChatItem.AssistantError -> item.copy(messageId = "${item.messageId}#$n")
+            is FlatChatItem.DeletedPlaceholder -> item.copy(messageId = "${item.messageId}#$n")
             is FlatChatItem.AssistantLegacyContent -> FlatChatItem.AssistantLegacyContent(
                 messageId = "${item.messageId}#$n",
                 content = item.content,
@@ -612,6 +621,12 @@ internal fun buildFlatChatItems(
     }
     for (idx in fromIndex until messages.size) {
         val message = messages[idx]
+        // [T-deleted-placeholder] Skip deleted placeholders in the normal
+        // rendering path — they emit only a thin separator item.
+        if (message.isDeletedPlaceholder) {
+            out.add(dedupe(FlatChatItem.DeletedPlaceholder(message.id)))
+            continue
+        }
         // [T-android-perf-logging] Per-100-message progress breadcrumb.
         // `out.size` is the running row count, so a sudden jump between two
         // progress lines localizes the heavy batch. Only fires on the

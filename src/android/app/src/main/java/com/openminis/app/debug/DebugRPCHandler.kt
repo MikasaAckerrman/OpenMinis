@@ -71,6 +71,7 @@ class DebugRPCHandler(private val context: Context) {
         return when (method) {
             "rpc.discover" -> DebugMethodRegistry.discover()
             "debug.appInfo" -> handleAppInfo()
+            "debug.installHistory" -> handleInstallHistory()
             "debug.screenshot" -> handleScreenshot(params)
             "debug.ls" -> handleLS(params)
             "debug.rawLs" -> handleRawLS(params)
@@ -225,6 +226,16 @@ class DebugRPCHandler(private val context: Context) {
     private fun handleAppInfo(): JSONObject {
         val filesDir = context.filesDir
         return JSONObject().apply {
+            // Build provenance — [T-build-tracking] so the agent knows which
+            // tree/commit/branch it runs on without manual investigation.
+            put("versionCode", BuildConfig.VERSION_CODE)
+            put("versionName", BuildConfig.VERSION_NAME)
+            put("gitSha", BuildConfig.GIT_SHA)
+            put("gitBranch", BuildConfig.GIT_BRANCH)
+            put("ciRunId", BuildConfig.CI_RUN_ID)
+            put("buildDate", BuildConfig.BUILD_DATE)
+            put("isDebugBuild", BuildConfig.DEBUG)
+
             put("platform", "android")
             put("sdkVersion", Build.VERSION.SDK_INT)
             put("device", "${Build.MANUFACTURER} ${Build.MODEL}")
@@ -244,6 +255,25 @@ class DebugRPCHandler(private val context: Context) {
     private fun dirSize(dir: File): Long {
         if (!dir.exists()) return 0
         return dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+    }
+
+    // ── Install history [T-build-tracking] ────────────────────────────────
+
+    private fun handleInstallHistory(): JSONObject {
+        val history = com.openminis.app.data.InstallHistory.read(context)
+        return JSONObject().apply {
+            put("count", history.length())
+            put("current", JSONObject().apply {
+                put("versionCode", BuildConfig.VERSION_CODE)
+                put("versionName", BuildConfig.VERSION_NAME)
+                put("gitSha", BuildConfig.GIT_SHA)
+                put("gitBranch", BuildConfig.GIT_BRANCH)
+                put("ciRunId", BuildConfig.CI_RUN_ID)
+                put("buildDate", BuildConfig.BUILD_DATE)
+                put("isDebugBuild", BuildConfig.DEBUG)
+            })
+            put("history", history)
+        }
     }
 
     // ── Screenshot ──────────────────────────────────────────────────────────

@@ -110,6 +110,10 @@ internal fun ChatViewModel.filteredSlashCommands(): List<SlashCommand> {
             "compact" -> cmd.copy(
                 subtitle = context.getString(R.string.slash_compact_subtitle),
             )
+            // [T-compact-level] Show current level in the subtitle.
+            "compact-level" -> cmd.copy(
+                subtitle = "Level: " + _compactLevel.value.displayName,
+            )
             "memory" -> cmd.copy(
                 subtitle = context.getString(
                     if (_memoryEnabled.value) R.string.slash_memory_writes_on

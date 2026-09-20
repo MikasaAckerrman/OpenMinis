@@ -1,6 +1,7 @@
 package com.openminis.app.browser
 
 import android.annotation.SuppressLint
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.os.Handler
@@ -12,6 +13,7 @@ import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
+import android.webkit.PermissionRequest
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
@@ -36,6 +38,10 @@ import java.io.File
 class BrowserUseManager(
     val webView: WebView,
     profile: UserAgentProfile = UserAgentProfile.MOBILE_CHROME,
+    /** [T-browser-permissions] Session-level media toggles read at grant time. */
+    private val cameraPermissionAllowed: () -> Boolean = { false },
+    private val micPermissionAllowed: () -> Boolean = { false },
+    private val appContext: Context? = null,
 ) {
     companion object {
         private const val TAG = "BrowserUseManager"
@@ -90,7 +96,12 @@ class BrowserUseManager(
                 databaseEnabled = true
                 loadWithOverviewMode = true
                 useWideViewPort = true
-                builtInZoomControls = false
+                // D3: pinch-zoom was hard-disabled here while the browser
+                // sheet doubles as the human login surface (shared cookie
+                // store). Enable zoom; displayZoomControls stays off.
+                builtInZoomControls = true
+                setSupportZoom(true)
+                displayZoomControls = false
                 setSupportMultipleWindows(true)
                 mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                 val ua = customUA ?: profile.userAgentString
@@ -404,6 +415,43 @@ class BrowserUseManager(
                         "window.dispatchEvent(new Event('resize'));", null,
                     )
                 }, 80)
+                // D3b (same durable patch as WebViewHolder): SPA-driven
+                // `user-scalable=no` rewrites (input-focus anti-zoom on
+                // Avito/VK) kill pinch until the next navigation. Keep the
+                // meta patched at every change point.
+                view.evaluateJavascript(
+                    "(function(){" +
+                        "if(location.protocol!=='http:'&&location.protocol!=='https:')return;" +
+                        "if(window.__minisZoomPatch)return;window.__minisZoomPatch=1;" +
+                        "var fix=function(m){if(!m)return;var c=m.getAttribute('content')||'';" +
+                        "var o=c;" +
+                        "if(/user-scalable\\s*=\\s*no/i.test(c)){" +
+                        "c=c.replace(/user-scalable\\s*=\\s*no/i,'user-scalable=yes');}else if(!/user-scalable/i.test(c)){c+=', user-scalable=yes';}" +
+                        "var mx=c.match(/maximum-scale\\s*=\\s*([\\d.]+)/i);" +
+                        "if(mx&&parseFloat(mx[1])<10){" +
+                        "c=c.replace(/maximum-scale\\s*=\\s*[\\d.]+/i,'maximum-scale=10');}else if(!mx){c+=', maximum-scale=10';}" +
+                        "if(c!==o)m.setAttribute('content',c);};" +
+                        "var ensure=function(){" +
+                        // D9: patch-only here — the agent's own viewport
+                        // machinery (set_viewport/ensureMetaViewport) owns
+                        // meta creation; creating width=device-width here
+                        // would fight a 1280 set_viewport on meta-less pages.
+                        "fix(document.querySelector('meta[name=viewport]'));};" +
+                        "ensure();" +
+                        "window.__minisFix=fix;" +
+                        // T-preview-react-race (D7): MutationObserver mutating the
+                        // meta inside the SPA's commit silently jams the widget —
+                        // interval probe (2s) instead, off the React commit path.
+                        "setInterval(function(){try{ensure();}catch(e){}},2000);" +
+                        "var st=document.createElement('style');" +
+                        "st.textContent='input[type=text],input[type=tel]," +
+                        "input[type=email],input[type=search],input[type=url]," +
+                        "input[type=password],input[type=number],textarea" +
+                        "{font-size:16px !important}';" +
+                        "document.head.appendChild(st);" +
+                        "})()",
+                    null,
+                )
             }
 
             override fun onReceivedError(
@@ -532,6 +580,35 @@ class BrowserUseManager(
 
             override fun onCloseWindow(window: WebView) {
                 onCloseWindow?.invoke()
+            }
+
+            // [T-browser-permissions] getUserMedia gate: a page's camera/mic
+            // request is granted ONLY when the session toggle (browser ⋯
+            // menu, default OFF) AND the OS permission are both in place;
+            // VIDEO/MICROPHONE only, never the full MediaStream. Denied
+            // otherwise — pages learn of the refusal instead of hanging.
+            override fun onPermissionRequest(request: PermissionRequest) {
+                val resources = request.resources ?: run { request.deny(); return }
+                val wantCamera = resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
+                val wantMic = resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
+                val cameraOk = wantCamera && cameraPermissionAllowed() && appContext.let {
+                    it != null && androidx.core.content.ContextCompat.checkSelfPermission(
+                        it, android.Manifest.permission.CAMERA,
+                    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                }
+                val micOk = wantMic && micPermissionAllowed() && appContext.let {
+                    it != null && androidx.core.content.ContextCompat.checkSelfPermission(
+                        it, android.Manifest.permission.RECORD_AUDIO,
+                    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                }
+                val granted = mutableListOf<String>()
+                if (cameraOk) granted.add(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
+                if (micOk) granted.add(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
+                if (granted.isEmpty() || granted.size < resources.size) {
+                    request.deny()
+                } else {
+                    request.grant(granted.toTypedArray())
+                }
             }
         }
     }

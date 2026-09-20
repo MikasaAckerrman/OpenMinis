@@ -1,5 +1,6 @@
 package com.openminis.app.provider
 
+import com.openminis.app.BuildConfig
 import com.openminis.app.data.model.AgentContentPart
 import com.openminis.app.data.model.LLMError
 import com.openminis.app.data.model.LLMMessage
@@ -17,6 +18,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -288,6 +290,13 @@ class AnthropicProviderTest {
     fun `streamMessage includes temperature in request`() = runBlocking {
         val sseBody = buildString {
             appendLine("data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1}}}")
+            appendLine()
+            // [T-stream-needs-usable-output] One text delta: failOnSilentEmptyCompletion
+            // (added to all providers after these tests were last green) turns a
+            // stream that finishes with no text/tool/media into a TransientError.
+            // This test asserts on the REQUEST body only, so its canned RESPONSE
+            // must still look like a real completion or the assertion never runs.
+            appendLine("data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}")
             appendLine()
             appendLine("data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}")
             appendLine()
@@ -602,6 +611,16 @@ class AnthropicProviderTest {
         // mimicry beta set must NOT carry `redact-thinking-2026-02-12`; with it,
         // the server blanks thinking text (signature only) even though the model
         // reasons. Omitting it == showThinkingSummaries:true.
+        //
+        // [T-anthropic-oauth-prompt-guard] resolveSystemPrompt now reads the
+        // identifier INSIDE the isOAuth branch, so this OAuth-shaped request
+        // still needs the build-time value — which the public mirror deliberately
+        // does not ship. Skip (not fail) when unconfigured; the private repo that
+        // fills in provider-customization.properties runs the assertion fully.
+        assumeTrue(
+            "Claude Code OAuth requires a configured identifier prompt; skipping on an uncustomized build",
+            BuildConfig.ANTHROPIC_OAUTH_IDENTIFIER_PROMPT.isNotEmpty(),
+        )
         val oauthProvider = AnthropicProvider(
             apiKey = "test-oauth-token",
             model = LLMModel.claudeSonnet5,
@@ -622,5 +641,24 @@ class AnthropicProviderTest {
         )
         // Sanity: the OAuth mimicry betas we DO expect are still present.
         assertTrue("oauth beta present", beta.contains("oauth-2025-04-20"))
+    }
+
+    // -- [T-anthropic-oauth-prompt-guard] ------------------------------------
+
+    @Test
+    fun `API-key request never reads the OAuth identifier prompt`() {
+        // The public mirror builds with an EMPTY ANTHROPIC_OAUTH_IDENTIFIER_PROMPT
+        // and the getter throws on read by design. `resolveSystemPrompt` used to
+        // read it before branching on isOAuth, so every API-key Anthropic request
+        // (including custom-base relays) died with
+        // "ANTHROPIC_OAUTH_IDENTIFIER_PROMPT is not configured". The provider in
+        // setUp() is isOAuth=false, so this call must not throw and must carry
+        // only the user's own system block.
+        val system = provider.resolveSystemPrompt("You are helpful")
+
+        assertNotNull("API-key path must still emit the user system block", system)
+        assertEquals(1, system!!.length())
+        assertEquals("You are helpful", system.getJSONObject(0).getString("text"))
+        assertNull(provider.resolveSystemPrompt(null))
     }
 }

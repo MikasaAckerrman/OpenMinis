@@ -1051,6 +1051,9 @@
     <string name="thinking_level_medium">Среднее</string>
     <string name="thinking_level_high">Высокое</string>
     <string name="thinking_level_max">Максимум</string>
+    <string name="thinking_level_xhigh">Сверхвысокое</string>
+    <string name="thinking_level_ultra">Ультра</string>
+    <string name="thinking_level_sheet_title">Интенсивность размышления</string>
     <string name="model_picker_title">Выбор модели</string>
     <string name="model_picker_done">Готово</string>
     <string name="model_picker_search_placeholder">Поиск моделей</string>
@@ -1377,4 +1380,11 @@
     <string name="browser_downloads_cancel">Отменить загрузку</string>
     <string name="browser_downloads_failed">Сбой</string>
     <string name="browser_downloads_open">Открыть</string>
+    <!-- [T-error-diagnostics] User-friendly error classification -->
+    <string name="error_diag_offline">📱 Сеть недоступна — нет соединения (возможно вышка/радио)</string>
+    <string name="error_diag_connection">🔌 Соединение оборвано — сеть или шлюз разорвал связь</string>
+    <string name="error_diag_no_response">⏱️ Сервер не отвечает — запрос отправлен, ответа нет</string>
+    <string name="error_diag_bad_gateway">🖥️ Ошибка шлюза — 5xx на стороне сервиса</string>
+    <string name="delete_role_user">Ваше</string>
+    <string name="delete_role_assistant">Ответ</string>
 </resources>

@@ -963,6 +963,19 @@ internal fun FloatingToolStatusBar(
                 overflow = TextOverflow.Ellipsis,
             )
 
+            // [T-mcp-progress-timer] Elapsed timer — visible heartbeat so
+            // the user can tell the tool is alive, not stuck.
+            if (timerText != null) {
+                Text(
+                    text = timerText,
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Medium,
+                    color = if (isRunning) toolAccent else ChatColors.tertiaryText,
+                    modifier = Modifier.padding(start = 6.dp),
+                )
+            }
+
             // Pagination
             if (toolBlocks.size > 1) {
                 Row(

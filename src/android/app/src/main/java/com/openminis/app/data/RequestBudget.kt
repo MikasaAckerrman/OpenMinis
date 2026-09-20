@@ -106,17 +106,17 @@ object RequestBudget {
      *   prompt excluded — it is a separate field and never elided).
      * @param protectRecentUserTextTurns trailing user-text turns whose
      *   tool_results are never elided (the live working context).
+     * @param maxBodyBytes ceiling on the estimated serialized body.
+     * @param imageProtectRecentUserTextTurns trailing user-text turns whose
+     *   IMAGES are never elided (smaller than the tool shield — old
+     *   screenshots are compactible dead weight; see
+     *   [DEFAULT_IMAGE_PROTECT_TURNS]).
      * @param overheadBytes serialized size of EVERYTHING that rides in the
      *   same request body but is not a message part: the system prompt,
      *   tool JSON schemas, legacy top-level imageParts. Until this parameter
      *   existed the ceiling silently applied to parts only — a 60 KB system
      *   prompt plus tool schemas meant the real body could exceed the relay
      *   limit while the gate reported "fits".
-     * @param maxBodyBytes ceiling on the estimated serialized body.
-     * @param imageProtectRecentUserTextTurns trailing user-text turns whose
-     *   IMAGES are never elided (smaller than the tool shield — old
-     *   screenshots are compactible dead weight; see
-     *   [DEFAULT_IMAGE_PROTECT_TURNS]).
      */
     fun plan(
         messages: List<LLMMessage>,

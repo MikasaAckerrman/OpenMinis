@@ -65,25 +65,18 @@ object QuotaErrorDetection {
     fun isQuotaFailure(body: String): Boolean =
         QUOTA_MARKERS.any { body.contains(it, ignoreCase = true) }
 
-    /**
-     * Human-readable one-liner for the error surface.
-     *
-     * Prefers the gateway's own `error.message` (it carries the useful part —
-     * remaining balance and required amount) over dumping raw JSON at the
-     * user. Falls back to a truncated body when the shape is unfamiliar, so
-     * an unknown relay never degrades to an empty message.
-     *
-     * Hand-rolled extraction instead of a JSON parse: this runs on an error
-     * path where the body may be truncated, HTML, or not JSON at all, and a
-     * parser exception here would mask the real failure.
-     */
-    fun describe(body: String, limit: Int = 500): String {
-        val message = extractErrorMessage(body)
-        if (!message.isNullOrBlank()) return message.take(limit)
-        return body.take(limit)
-    }
+    /** Human-readable one-liner: the relay's own message, else truncated body. */
+    fun describe(body: String, limit: Int = 500): String =
+        extractRelayMessage(body)?.takeIf { it.isNotBlank() }?.take(limit) ?: body.take(limit)
 
-    private fun extractErrorMessage(body: String): String? {
+    /**
+     * Recover the gateway's own `error.message` from a body that may be
+     * truncated, HTML, or not JSON at all. Shared by [QuotaErrorDetection] and
+     * [GatewayDowntimeDetection]; hand-rolled (no parser) because an exception
+     * on an error path would mask the real failure. Internal to this file's
+     * package so both detectors describe bodies identically.
+     */
+    internal fun extractRelayMessage(body: String): String? {
         val key = "\"message\""
         val keyAt = body.indexOf(key)
         if (keyAt < 0) return null

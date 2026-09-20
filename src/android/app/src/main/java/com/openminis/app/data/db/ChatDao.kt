@@ -217,6 +217,9 @@ interface ChatDao {
     @Query("SELECT * FROM messages WHERE session_id = :sessionId AND sort_order >= :keepCount ORDER BY sort_order ASC")
     suspend fun selectMessagesAtOrAfter(sessionId: String, keepCount: Int): List<MessageEntity>
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertDeletedMessages(rows: List<DeletedMessageEntity>)
+
     /**
      * Paged variant of [selectMessagesAtOrAfter]. Used by the archive path so a
      * session holding an oversized tool_result cannot blow the CursorWindow
@@ -232,9 +235,6 @@ interface ChatDao {
         offset: Int,
         limit: Int,
     ): List<MessageEntity>
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertDeletedMessages(rows: List<DeletedMessageEntity>)
 
     /**
      * Archive-then-truncate: copy every row at/after [keepCount] into
