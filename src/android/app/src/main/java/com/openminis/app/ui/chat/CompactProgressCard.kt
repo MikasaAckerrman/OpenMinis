@@ -56,6 +56,7 @@ internal fun CompactProgressCard(
     progress: CompactProgress,
     onRetry: () -> Unit,
     onDismiss: () -> Unit,
+    onCancel: (() -> Unit)? = null,
 ) {
     val failed = progress.failure != null
 
@@ -117,6 +118,19 @@ internal fun CompactProgressCard(
                     fontSize = 12.sp,
                     color = ChatColors.secondaryText,
                 )
+                // [T-compact-cancel] X button while the run is live.
+                if (!failed && onCancel != null) {
+                    Spacer(Modifier.width(6.dp))
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Отменить сжатие",
+                        tint = ChatColors.secondaryText,
+                        modifier = Modifier
+                            .size(18.dp)
+                            .clip(RoundedCornerShape(9.dp))
+                            .clickable { onCancel() },
+                    )
+                }
                 if (failed) {
                     Spacer(Modifier.width(6.dp))
                     Icon(

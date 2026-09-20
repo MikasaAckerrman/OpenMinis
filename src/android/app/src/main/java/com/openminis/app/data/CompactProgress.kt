@@ -112,6 +112,14 @@ class CompactRunReporter(
                 chunkIndex = chunkIndex.coerceIn(1, n),
                 // A new topology means the bar restarts from zero.
                 percent = if (topologyChanged) 0.0 else it.percent,
+                // [T-compact-ttfb] Switch phase the moment the first call
+                // starts (not when the first token arrives — TTFB on a big
+                // prompt can be 10-60s). The user sees "Generating summary"
+                // immediately instead of "Preparing…" at 0% for a minute.
+                phase = com.openminis.app.data.CompactPhase.SUMMARIZING,
+                // Bump off zero so the bar + percent label visibly tick
+                // over from the very first second of the call.
+                percent = maxOf(it.percent, 0.1),
             )
         }
     }

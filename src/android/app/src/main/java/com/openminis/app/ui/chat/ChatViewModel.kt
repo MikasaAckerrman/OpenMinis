@@ -2083,6 +2083,28 @@ class ChatViewModel(
      * back to false to know the run finished, and read [compactSummary] for
      * the resulting summary text.
      */
+    /**
+     * [T-compact-cancel] User-visible cancel for the running compact.
+     * Cancels the maintenance job, resets the guard, and leaves a card
+     * explaining WHY the card disappeared (not a silent vanish).
+     */
+    fun cancelCompact() {
+        val job = maintenanceJob ?: run {
+            // No active compact — nothing to cancel (button not visible).
+            return
+        }
+        if (!job.isActive) return
+        AppLogger.info(TAG, "[Compact] cancelCompact() by user")
+        job.cancel()
+        maintenanceJob = null
+        _isCompacting.value = false
+        publishCompactProgress(null)
+        appendSystemInfo(
+            text = "Сжатие отменено",
+            iconKind = "compact",
+        )
+    }
+
     fun runCompactNow() {
         compactAll(com.openminis.app.data.CompactionLaunchPolicy.Origin.EXPLICIT_USER)
     }
@@ -2365,6 +2387,10 @@ class ChatViewModel(
         }
         val initialProgress = com.openminis.app.data.CompactProgress(
             startMs = compactStartedMs,
+            phase = com.openminis.app.data.CompactPhase.PREPARING,
+            // [T-compact-ttfb] Start at a non-zero tick so the bar + label
+            // show life from second one instead of a flat 0.00% dead card.
+            percent = 0.01,
         )
         publishCompactProgress(initialProgress)
         maintenanceJob = viewModelScope.launch(Dispatchers.IO) {
@@ -4241,6 +4267,10 @@ class ChatViewModel(
                 // via failOnSilentEmptyCompletion (reasoning-only output is
                 // NOT a usable summary).
                 val sb = StringBuilder()
+                // [T-compact-speed] Hard 120s per-call timeout: a stuck relay
+                // must not hold the whole compact hostage for 13+ minutes.
+                // Timeout counts from call start (covers TTFB + streaming).
+                kotlinx.coroutines.withTimeoutOrNull(120_000L) {
                 provider.streamMessage(
                     messages = listOf(
                         LLMMessage(role = LLMMessage.Role.USER, content = userMessage)
@@ -4262,6 +4292,7 @@ class ChatViewModel(
                         reporter?.callChars(chunkIndex, sb.length, targetChars)
                     }
                 }
+                } ?: throw java.net.SocketTimeoutException("compact call exceeded 120s (TTFB+stream)")
                 if (providerIdx >= 0 || maxOut != budgetedStartMaxOut) {
                     AppLogger.info(
                         TAG,
