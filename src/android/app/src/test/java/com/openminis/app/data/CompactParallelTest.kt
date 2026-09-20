@@ -84,7 +84,7 @@ class CompactParallelTest {
 
     @Test
     fun `windowFractions publishes per-window progress`() {
-        val r = CompactRunReporter { }
+        val r = CompactRunReporter(startMs = 0) { }
         r.callStart("m", 1, 3)  // 3 windows
         assertEquals(3, r.snapshot().windowFractions.size)
         assertEquals(0.0, r.snapshot().windowFractions[0], 1e-9)
