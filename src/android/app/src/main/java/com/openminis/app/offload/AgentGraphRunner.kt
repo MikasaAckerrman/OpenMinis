@@ -742,7 +742,7 @@ internal object AgentGraphRunner {
         val handoff = validation.handoff
             ?: HandoffValidator.parseHandoff(finalResponse)
             ?: run {
-                handleParseFailure(execContext, node, finalResponse)
+                handleParseFailure(execContext, node, runtimeId, finalResponse)
                 return
             }
 
@@ -1100,11 +1100,14 @@ internal object AgentGraphRunner {
         handoff: Handoff,
     ): ConditionEvaluator.Result = ConditionEvaluator.evaluate(condition, handoff)
 
-    /** Handle handoff parse failure. */
-    private fun handleParseFailure(execContext: ExecutionContext, node: AgentNode, response: String) {
+    /** Handle handoff parse failure. [runtimeId] — the replica-specific id,
+     *  NOT node.id: parallel replicas of one node share node.id, so writing
+     *  nodeStatus[node.id] from one replica's failure would clobber a
+     *  sibling replica's COMPLETED status. (Ported from 3999d14.) */
+    private fun handleParseFailure(execContext: ExecutionContext, node: AgentNode, runtimeId: String, response: String) {
         val state = execContext.state
-        addTrace(state, node.id, node.role, "PARSE_FAILURE", "Could not parse handoff from response")
-        state.nodeStatus[node.id] = NodeStatus.FAILED
+        addTrace(state, runtimeId, node.role, "PARSE_FAILURE", "Could not parse handoff from response")
+        state.nodeStatus[runtimeId] = NodeStatus.FAILED
     }
 
     /**
