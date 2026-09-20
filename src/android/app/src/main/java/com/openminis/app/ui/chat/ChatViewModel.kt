@@ -1,5 +1,6 @@
-import kotlinx.coroutines.runBlocking
 package com.openminis.app.ui.chat
+
+import kotlinx.coroutines.runBlocking
 
 import android.content.Context
 import android.graphics.Bitmap
@@ -4123,7 +4124,7 @@ class ChatViewModel(
         if (windows.size >= 2) {
             AppLogger.info(TAG, "[Compact] parallel map-reduce: ${windows.size} windows → parallel")
             reporter?.note("Сжимаю ${windows.size} частей параллельно")
-            val parallelSummaries: List<String?> = runBlocking {
+            val parallelSummaries: List<String?> = kotlinx.coroutines.coroutineScope {
                 windows.mapIndexed { i, w ->
                     async(Dispatchers.IO) {
                         try {
