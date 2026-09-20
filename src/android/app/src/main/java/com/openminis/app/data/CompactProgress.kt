@@ -59,6 +59,9 @@ data class CompactProgress(
     val routeNote: String? = null,
     /** Set only when the run ended without compacting anything. */
     val failure: CompactFailure? = null,
+    /** [T-compact-parallel-visual] Per-window completion 0.0..1.0 for the
+     *  parallel map-reduce display: 6 mini-bars under the aggregate bar. */
+    val windowFractions: List<Double> = emptyList(),
 )
 
 /**
@@ -120,6 +123,9 @@ class CompactRunReporter(
                 percent = if (topologyChanged) 0.1
                           else maxOf(it.percent, 0.1),
                 phase = com.openminis.app.data.CompactPhase.SUMMARIZING,
+                // [T-compact-parallel-visual] Topology change resets the
+                // mini-bars to a zero-sized list of the new chunk count.
+                windowFractions = List(n) { 0.0 },
             )
         }
     }
@@ -135,11 +141,14 @@ class CompactRunReporter(
         val target = targetChars.coerceAtLeast(1)
         val f = (chars.toFloat() / target).coerceIn(0f, 0.99f)
         fractions = fractions.toMutableMap().also { it[idx] = f }
+        // [T-compact-parallel-visual] Snapshot fractions AFTER the update so
+        // the mini-bars reflect the latest token of THIS window.
+        val wf = List(n) { i -> (fractions[i + 1] ?: 0f).toDouble() }
         val sum = (1..n).sumOf { (fractions[it] ?: 0f).toDouble() }
         // 4-decimal percent: 0.00 .. 99.99. Cap at 99.99 so DONE (100.00) is
         // the only state where the bar reads "complete".
         val pct = ((sum / n) * 100.0).coerceIn(0.0, 99.99)
-        publish { it.copy(chunkIndex = idx, percent = pct) }
+        publish { it.copy(windowFractions = wf, chunkIndex = idx, percent = pct) }
     }
 
     fun done() = publish { it.copy(phase = CompactPhase.DONE, percent = 100.00) }

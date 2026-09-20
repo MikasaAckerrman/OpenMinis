@@ -118,8 +118,10 @@ internal fun CompactProgressCard(
                     fontSize = 12.sp,
                     color = ChatColors.secondaryText,
                 )
-                // [T-compact-cancel] X button while the run is live.
-                if (!failed && onCancel != null) {
+                // [T-compact-cancel] X button while the run is live. The
+                // phase check (not caller's isCompacting) decides — during
+                // TTFB the guard can flicker, but the phase is authoritative.
+                if (!failed && onCancel != null && progress.phase != CompactPhase.DONE) {
                     Spacer(Modifier.width(6.dp))
                     Icon(
                         imageVector = Icons.Default.Close,
@@ -187,6 +189,39 @@ internal fun CompactProgressCard(
                             .height(3.dp)
                             .clip(RoundedCornerShape(2.dp))
                             .background(ChatColors.sendButton),
+                    )
+                }
+                // [T-compact-parallel-visual] Mini-bars: one per parallel
+                // window. 6 windows = 6 thin bars under the aggregate bar,
+                // each showing ITS own token progress.
+                if (progress.windowFractions.size > 1) {
+                    Spacer(Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        progress.windowFractions.forEach { frac ->
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(2.dp)
+                                    .clip(RoundedCornerShape(1.dp))
+                                    .background(ChatColors.separator.copy(alpha = 0.3f)),
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth(frac.toFloat().coerceIn(0f, 1f))
+                                        .height(2.dp)
+                                        .clip(RoundedCornerShape(1.dp))
+                                        .background(ChatColors.sendButton.copy(alpha = 0.7f)),
+                                )
+                            }
+                        }
+                    }
+                    Text(
+                        text = "${progress.chunkIndex}/${progress.chunkCount} частей · параллельно",
+                        fontSize = 9.sp,
+                        color = ChatColors.tertiaryText,
                     )
                 }
                 val note = progress.routeNote ?: phaseLabel(progress)

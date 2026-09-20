@@ -4464,9 +4464,7 @@ fun ChatScreen(
                         progress = cp,
                         onRetry = { viewModel.runCompactNow() },
                         onDismiss = { viewModel.dismissCompactCard() },
-                        onCancel = if (viewModel.isCompacting.collectAsState().value) {
-                            { viewModel.cancelCompact() }
-                        } else null,
+                        onCancel = { viewModel.cancelCompact() },
                     )
                 }
 
