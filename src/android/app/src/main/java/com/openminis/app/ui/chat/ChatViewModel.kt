@@ -2721,8 +2721,8 @@ class ChatViewModel(
             // and drains through the normal stream-slot machinery — no new
             // reentrancy path. Runs after `finally` so isCompacting is already
             // false. Mirrors the iOS fix for the same report.
-            if (compactSucceeded && _promptQueue.value.isNotEmpty()) {
-                AppLogger.info(TAG, "[Compact] success with ${_promptQueue.value.size} queued prompt(s) — kicking drain")
+            if (_promptQueue.value.isNotEmpty()) {
+                AppLogger.info(TAG, "[Compact] ${if (compactSucceeded) "success" else "finished (error/cancel)"} with ${_promptQueue.value.size} queued prompt(s) — kicking drain")
                 resumeQueueAfterCancel()
             }
         }
@@ -4164,16 +4164,18 @@ class ChatViewModel(
             AppLogger.info(TAG, "[Compact] merging ${fixed.size} partial summaries")
             reporter?.note("Соединяю ${fixed.size} частей в итог")
             val mergePrompt = buildString {
-                append("Merge these partial summaries of one conversation into a SINGLE comprehensive summary.\n\n")
-                append("MUST PRESERVE from ALL parts:\n")
-                append("- Every file path, identifier, URL, and command mentioned\n")
-                append("- Every decision made and its outcome\n")
-                append("- Every error encountered and its resolution\n")
-                append("- The last thing the user requested and its status\n\n")
+                append("You are merging partial summaries of ONE conversation into a SINGLE definitive context summary.\n\n")
+                append("RULES (in priority order):\n")
+                append("1. DEDUPLICATE: identical facts/tool results/paths mentioned in multiple parts → keep ONCE\n")
+                append("2. FRESHNESS: if a fact has an older and newer version (edited file, updated state, superseded decision) → keep ONLY the newest, drop stale\n")
+                append("3. PRESERVE every unique: file path, identifier, URL, command, error+resolution, decision, numeric value\n")
+                append("4. REMOVE filler: conversational padding, restated context, redundant explanations, phrases like 'as mentioned', 'previously discussed'\n")
+                append("5. STRUCTURE: use terse bullet points, not prose. Each bullet = one actionable fact.\n")
+                append("6. The LAST user request and its current status MUST be at the END, clearly marked.\n\n")
                 fixed.forEachIndexed { i, s ->
                     append("=== Part ${i + 1} ===\n").append(s).append("\n\n")
                 }
-                append("Produce ONE unified summary covering ALL of the above.")
+                append("Output the unified summary. Be COMPLETE but TERSE — every bullet earns its place.")
             }
             return try {
                 generateCompactSummary(mergePrompt, reporter, windows.size + 1, windows.size + 1).trim()
@@ -4305,7 +4307,23 @@ class ChatViewModel(
         val model = currentModel
         val contextWindow = model?.contextWindow ?: 128_000
         val estimatedInput = userMessage.length / 4
-        val startMaxOut = maxOf(1024, minOf(8192, contextWindow - estimatedInput))
+        // [T-compact-level-wiring] The user's /compact-level choice drives
+        // the summary SIZE for the WHOLE session (not per-window): Light=40%,
+        // Medium=20%, Ultra=5% of the eligible budget, Auto = the old 8192
+        // ceiling. This is the single knob that makes the picker real.
+        val levelFraction = when (compactLevel.value) {
+            com.openminis.app.data.model.CompactLevel.LIGHT -> 0.40
+            com.openminis.app.data.model.CompactLevel.MEDIUM -> 0.20
+            com.openminis.app.data.model.CompactLevel.ULTRA -> 0.05
+            com.openminis.app.data.model.CompactLevel.AUTO -> 1.0
+        }
+        val startMaxOut = maxOf(
+            1024,
+            minOf(
+                (levelFraction * contextWindow).toInt().coerceAtMost(8192),
+                contextWindow - estimatedInput,
+            ),
+        )
         // [T-summary-budget] The summary is written ONCE but read on EVERY
         // subsequent request — by the model the user is on when it is read,
         // which is the CURRENT model, not necessarily the (possibly larger)
@@ -7438,10 +7456,11 @@ class ChatViewModel(
             return
         }
         if (_isCompacting.value) {
-            appendSystemInfo(
-                text = "Wait for the current compact to finish before sending.",
-                iconKind = "compact",
-            )
+            // [T-compact-send-queue] Don't DROP the user's message while a
+            // compact is running — queue it exactly like the streaming case.
+            // It will auto-send when the compact finishes (the queue pump
+            // runs in compactAll's finally block).
+            enqueuePrompt(text)
             return
         }
         // Non-blocking context pressure check — emits a system notice at the
