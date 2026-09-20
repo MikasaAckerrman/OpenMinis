@@ -69,8 +69,11 @@ class CompactProgressTest {
         r.callChars(2, 1_000, 1_000)
         // Merge is a fresh 1/1 call — bar restarts, not stuck at old fraction.
         r.callStart("merge", 1, 1)
-        assertEquals(0.0, r.snapshot().percent, 1e-9)
+        // [T-compact-ttfb] topology change now floors at 0.1 (instant tick)
+        // and switches to SUMMARIZING — no more dead 0% card.
+        assertEquals(0.1, r.snapshot().percent, 1e-9)
         assertEquals(1, r.snapshot().chunkCount)
+        assertEquals(CompactPhase.SUMMARIZING, r.snapshot().phase)
     }
 
     @Test

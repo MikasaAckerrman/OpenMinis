@@ -4122,6 +4122,8 @@ class ChatViewModel(
         // burns a retry budget on a cascade — the first halving already
         // applies to every pending window, not just the rejected one.
         var capNow = capChars
+        // [T-compact-quality] One-shot retry when the model under-summarizes.
+        var retryOnShort = true
         while (idx < windows.size) {
             val w = windows[idx]
             val input = if (summary == null) {
@@ -4131,7 +4133,19 @@ class ChatViewModel(
                     "Next portion of the conversation (older material is already summarized above):\n$w"
             }
             try {
-                val out = generateCompactSummary(input, reporter, idx + 1, windows.size).trim()
+                var out = generateCompactSummary(input, reporter, idx + 1, windows.size).trim()
+                // [T-compact-quality] Guard: a summary that collapses to near-
+                // nothing (model lazily returned one line) silently destroys
+                // the whole session context. If the LAST window's summary is
+                // < 1% of its input, retry once with an explicit warning in
+                // the prompt; still short → accept (provider may be weak).
+                if (out.length < input.length / 100 && idx == windows.size - 1 && retryOnShort) {
+                    AppLogger.warning(TAG, "[Compact] summary suspiciously short: ${out.length} chars for ${input.length} input — retrying with warning")
+                    retryOnShort = false
+                    val retryPrompt = input + "\n\n⚠ WARNING: your previous summary was unacceptably short. You MUST produce a comprehensive summary — at minimum cover every file, command, decision, error and outcome from the material above. A one-line reply is a FAILURE."
+                    val retryOut = generateCompactSummary(retryPrompt, reporter, idx + 1, windows.size).trim()
+                    if (retryOut.length > out.length) out = retryOut
+                }
                 if (out.isNotEmpty()) summary = out
             } catch (ce: CancellationException) {
                 throw ce
