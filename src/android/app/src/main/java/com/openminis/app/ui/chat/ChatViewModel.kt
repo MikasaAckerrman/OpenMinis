@@ -3602,9 +3602,49 @@ class ChatViewModel(
                 tokenBudget = tailTokenBudget,
             )
             val priorIdxResolved: Int? = walkBack.priorIdx
-            val priorIdx = walkBack.priorIdx ?: (anchorIdx + 1) // empty preAnchor sentinel
+            var priorIdx = walkBack.priorIdx ?: (anchorIdx + 1) // empty preAnchor sentinel
             if (walkBack.stopReason != "userTextTargetMet") {
                 if (verbose) AppLogger.info(TAG, "[CompactDiag] eAH v2 walkBack stopped: reason=${walkBack.stopReason} priorIdx=$priorIdx userTextTurnsFound=${walkBack.userTextTurnsFound} preAnchorMsgs=${walkBack.messageCount}")
+            }
+
+            // [T-pairing-safe-preanchor-boundary] The walkBack boundary lands
+            // on a USER message — which may itself carry tool_result parts
+            // answering a tool_use that sits BEFORE the boundary (user turns
+            // double as tool-result carriers). Slicing exactly there cuts the
+            // pair in half: the result ships inside the slice, the call stays
+            // outside, and PayloadPairingGuard then drops that result on
+            // EVERY request — the live symptom was "dropped 1 unpaired
+            // tool_result ... A slicing path produced an invalid pairing"
+            // repeating on every turn of a long session. Advance the boundary
+            // forward past continuation-only messages (their pairs are
+            // already outside the slice) so the slice starts on a message
+            // whose results are all answered INSIDE the slice. Net context
+            // loss is zero: those results were being dropped by the guard
+            // anyway; the difference is the payload is now stable and the
+            // warn-spam is gone.
+            if (priorIdx <= anchorIdx) {
+                while (priorIdx <= anchorIdx) {
+                    val head = agentHistory.getOrNull(priorIdx) ?: break
+                    val headToolResults = head.contentParts
+                        .filterIsInstance<AgentContentPart.ToolResult>()
+                    if (headToolResults.isEmpty()) break
+                    val sliceUseIds = HashSet<String>()
+                    for (j in priorIdx..anchorIdx) {
+                        for (p in agentHistory[j].contentParts) {
+                            if (p is AgentContentPart.ToolUse) sliceUseIds.add(p.id)
+                        }
+                    }
+                    val allCallsOutsideSlice = headToolResults.all { it.id !in sliceUseIds }
+                    if (!allCallsOutsideSlice) break
+                    priorIdx += 1
+                }
+                if (priorIdx != (walkBack.priorIdx ?: anchorIdx + 1) && verbose) {
+                    AppLogger.info(
+                        TAG,
+                        "[CompactDiag] eAH v2 pair-safe boundary: priorIdx " +
+                            "${walkBack.priorIdx} → $priorIdx (skipped continuation-only head)",
+                    )
+                }
             }
 
             // PRE-ANCHOR PRUNE (tool-heavy session fix):
