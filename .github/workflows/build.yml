@@ -43,14 +43,13 @@ jobs:
           # the old action ALWAYS installs 'tools' internally
           # which Google removed → sdkmanager exit 1 → job dies. This manual
           # path does exactly what we need without the action's dead package.
+          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           [ -x "$SDKMANAGER" ] || SDKMANAGER="$ANDROID_HOME/cmdline-tools/16.0/bin/sdkmanager"
           echo "sdkmanager at: $SDKMANAGER"
           yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
           "$SDKMANAGER" --install "platforms;android-36" "build-tools;36.0.0" "platform-tools" "ndk;28.2.13676358" > /dev/null 2>&1
           "$SDKMANAGER" --list_installed | head -20
-        env:
-          ANDROID_HOME: ${{ env.ANDROID_HOME }}
       - name: Cache Gradle
         uses: actions/cache@v4
         with:
@@ -232,6 +231,7 @@ jobs:
 
       - name: Setup Android SDK (manual — action v3 dead package bug)
         run: |
+          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           [ -x "$SDKMANAGER" ] || SDKMANAGER="$ANDROID_HOME/cmdline-tools/16.0/bin/sdkmanager"
           yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
