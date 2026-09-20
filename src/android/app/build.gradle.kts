@@ -41,6 +41,14 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
+        // [T-build-tracking] Build identity for DebugRPCHandler / about screen,
+        // so the agent knows which tree/commit/branch it runs on without
+        // manual investigation.
+        buildConfigField("String", "GIT_SHA", "\"${System.getenv("GITHUB_SHA")?.take(7) ?: "local"}\"")
+        buildConfigField("String", "GIT_BRANCH", "\"${System.getenv("GITHUB_REF_NAME") ?: "local"}\"")
+        buildConfigField("String", "CI_RUN_ID", "\"${System.getenv("GITHUB_RUN_ID") ?: "local"}\"")
+        buildConfigField("String", "BUILD_DATE", "\"${System.getenv("BUILD_DATE") ?: "local"}\"")
+
         // System prompt prefix required by Anthropic for Claude Code OAuth
         // credentials. Empty in the public mirror (see provider-customization.properties).
         buildConfigField(
