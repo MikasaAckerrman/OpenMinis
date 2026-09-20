@@ -4312,10 +4312,10 @@ class ChatViewModel(
         // Medium=20%, Ultra=5% of the eligible budget, Auto = the old 8192
         // ceiling. This is the single knob that makes the picker real.
         val levelFraction = when (compactLevel.value) {
-            com.openminis.app.data.model.CompactLevel.LIGHT -> 0.40
-            com.openminis.app.data.model.CompactLevel.MEDIUM -> 0.20
-            com.openminis.app.data.model.CompactLevel.ULTRA -> 0.05
-            com.openminis.app.data.model.CompactLevel.AUTO -> 1.0
+            CompactLevel.LIGHT -> 0.40
+            CompactLevel.MEDIUM -> 0.20
+            CompactLevel.ULTRA -> 0.05
+            CompactLevel.AUTO -> 1.0
         }
         val startMaxOut = maxOf(
             1024,
