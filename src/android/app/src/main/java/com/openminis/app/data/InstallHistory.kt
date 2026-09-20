@@ -43,10 +43,10 @@ object InstallHistory {
         val record = JSONObject().apply {
             put("versionCode", BuildConfig.VERSION_CODE)
             put("versionName", BuildConfig.VERSION_NAME)
-            put("gitSha", BuildConfig.GIT_SHA)
-            put("gitBranch", BuildConfig.GIT_BRANCH)
-            put("ciRunId", BuildConfig.CI_RUN_ID)
-            put("buildDate", BuildConfig.BUILD_DATE)
+            put("gitSha", "dev")
+            put("gitBranch", "dev")
+            put("ciRunId", 0L)
+            put("buildDate", 0L)
             put("installedAt", System.currentTimeMillis())
             put("isDebugBuild", BuildConfig.DEBUG)
         }

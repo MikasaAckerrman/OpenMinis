@@ -92,8 +92,7 @@ object GatewayDowntimeDetection {
         return DOWNTIME_MARKERS.any { body.contains(it, ignoreCase = true) }
     }
 
-    /** Human-readable one-liner: the relay's own message, else truncated body. */
-    fun describe(body: String, limit: Int = 500): String =
-        QuotaErrorDetection.extractRelayMessage(body)?.takeIf { it.isNotBlank() }?.take(limit)
-            ?: body.take(limit)
+    /** Human-readable one-liner: truncated body (relay message extraction
+     *  not available in this line — kept simple). */
+    fun describe(body: String, limit: Int = 500): String = body.take(limit)
 }
