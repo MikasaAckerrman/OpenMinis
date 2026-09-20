@@ -1121,16 +1121,16 @@ class ChatViewModel(
     }
 
     /**
-     * [T-compact-summary-prompt] Stable system prompt for compaction: the
-     * summariser sees the same instructions regardless of the current model.
+     * [T-compact-summary-prompt] REMOVED as a dead duplicate after the
+     * integration merge: this class also holds `private val
+     * compactSummarySystemPrompt` (the full-quality compaction engine
+     * prompt, the one actually passed to the provider at the
+     * streamMessage call site). Two same-named prompt members with
+     * WILDLY different behaviour ("2-6 short paragraphs" here vs the
+     * detailed never-lose-a-fact contract there) is a merge-era trap:
+     * any future caller that reaches for the function form silently
+     * degrades every compaction this app runs.
      */
-    private fun compactSummarySystemPrompt(): String = buildString {
-        append("Summarize this conversation transcript. ")
-        append("MUST PRESERVE: concrete work products (code, file paths, commands, URLs, identifiers), ")
-        append("decisions made, open questions, the last user request. ")
-        append("Format: 2-6 short paragraphs, no headers, no meta-commentary. ")
-        append("End with: NEXT ACTION: one line describing the immediate next step.")
-    }
 
     /**
      * [T-estimate-chars] Rough character-count estimate for a message,
@@ -4286,6 +4286,22 @@ class ChatViewModel(
         chunkIndex: Int = 1,
         chunkCount: Int = 1,
     ): String {
+        // [T-compact-level-wiring] Compute the level target BEFORE the prompt
+        // is assembled — the target size is part of the user message below.
+        val inputTokens = (conversationText.length / 4).coerceAtLeast(1)
+        val levelFraction = when (compactLevel.value) {
+            CompactLevel.LIGHT -> 0.40
+            CompactLevel.MEDIUM -> 0.20
+            CompactLevel.ULTRA -> 0.05
+            CompactLevel.AUTO -> 1.0
+        }
+        val levelTargetTokens = when (compactLevel.value) {
+            CompactLevel.LIGHT -> (levelFraction * inputTokens).toInt().coerceIn(2_048, 8_192)
+            CompactLevel.MEDIUM -> (levelFraction * inputTokens).toInt().coerceIn(1_024, 8_192)
+            CompactLevel.ULTRA -> (levelFraction * inputTokens).toInt().coerceIn(512, 4_096)
+            CompactLevel.AUTO -> 8_192
+        }
+        val targetApproxChars = levelTargetTokens * 4
         // Wrap the transcript in explicit BEGIN/END framing so the model
         // treats it as material to summarize rather than as a chat turn to
         // continue. Mirrors iOS AIChatViewModel+Compaction.swift
@@ -4303,24 +4319,26 @@ class ChatViewModel(
                     "Write everything in past tense, framed as \"what was discussed / what " +
                     "was done\", NOT as an ongoing goal or todo list."
             )
+            append("\n\nTARGET SIZE: approximately $targetApproxChars characters " +
+                "(≈${levelTargetTokens} tokens, ~${(levelFraction * 100).toInt()}% of the source). " +
+                "A one-line or few-line summary is a FAILURE — completeness beats brevity. " +
+                "Do NOT stop early: cover every file, command, decision, error and outcome.")
         }
         val model = currentModel
         val contextWindow = model?.contextWindow ?: 128_000
         val estimatedInput = userMessage.length / 4
-        // [T-compact-level-wiring] The user's /compact-level choice drives
-        // the summary SIZE for the WHOLE session (not per-window): Light=40%,
-        // Medium=20%, Ultra=5% of the eligible budget, Auto = the old 8192
-        // ceiling. This is the single knob that makes the picker real.
-        val levelFraction = when (compactLevel.value) {
-            CompactLevel.LIGHT -> 0.40
-            CompactLevel.MEDIUM -> 0.20
-            CompactLevel.ULTRA -> 0.05
-            CompactLevel.AUTO -> 1.0
-        }
+        // [T-compact-level-wiring] (levelFraction / levelTargetTokens /
+        // targetApproxChars are computed at the top of this function, before
+        // the prompt is assembled — the prompt quotes them.) The budget is a
+        // FRACTION OF THE INPUT (the transcript being compacted), not of the
+        // model's context window: a 20k-token chat on a 128k model with the
+        // old "0.40 × window" math still left the model free to answer in
+        // one line because the PROMPT never carried the expectation — the
+        // observed failure was 80k chars in → 1.5k chars out in LIGHT.
         val startMaxOut = maxOf(
             1024,
             minOf(
-                (levelFraction * contextWindow).toInt().coerceAtMost(8192),
+                levelTargetTokens,
                 contextWindow - estimatedInput,
             ),
         )
@@ -8057,6 +8075,36 @@ class ChatViewModel(
      * placeholder's slot, so the bubble keeps its position next to the user's
      * message instead of being dropped and re-appended at the end.
      */
+    /**
+     * [T-rewrite-lookup-after-stream] The streamed assistant bubble is born
+     * with a client-generated placeholder id; persistence gives the row its
+     * real DB id. Until this swap ran, EVERY id-keyed UI path (message
+     * rewrite, delete, retry, edit-mark lookup, compaction-boundary checks)
+     * searched DB rows by the placeholder id and failed with "this message
+     * no longer exists in the session" — the message was visible on screen
+     * yet unfindable, and only a session reload (which rebuilds ids from
+     * the DB) "fixed" it. Mirrors the placeholder→persisted swap that
+     * [commitGraphMessage] already does for the graph path.
+     *
+     * No-op when the placeholder is gone (list rebuilt by a concurrent
+     * reload — ids are already canonical) — the message must never vanish.
+     */
+    private fun reconcileAssistantUiId(placeholderId: String, dbId: String) {
+        val exists = _messages.value.any { it.id == placeholderId }
+        if (!exists) {
+            // Concurrent reload already replaced the list with canonical
+            // DB-id messages — nothing to reconcile.
+            return
+        }
+        _messages.value = _messages.value.map { msg ->
+            if (msg.id == placeholderId) {
+                msg.copy(id = dbId, sourceDbIds = listOf(dbId))
+            } else {
+                msg
+            }
+        }
+    }
+
     private suspend fun commitGraphMessage(
         activeSessionId: String,
         placeholderId: String,
@@ -10354,7 +10402,11 @@ class ChatViewModel(
                 }
                 val turnParts = buildTurnParts(allToolBlocks, turnStartBlockIndex, toolInputMap)
                 val blockMeta = allToolBlocks.filter { it.kind == "tool_use" }.associateBy { it.id }
-                persistAssistantTurn(turnParts, lastUsage, turnReasoningContent, blockMeta)
+                val turnDbId = persistAssistantTurn(turnParts, lastUsage, turnReasoningContent, blockMeta)
+                // [T-rewrite-lookup-after-stream] Swap the bubble's placeholder
+                // id for the persisted DB id — id-keyed UI paths (rewrite,
+                // delete, retry, edit marks) look the message up in DB rows.
+                if (turnDbId != null) reconcileAssistantUiId(assistantId, turnDbId)
                 // [T-partial-turn-durability] Round committed → the crash
                 // journal and the live-round export are obsolete.
                 liveTurnTextSb = null
@@ -10793,6 +10845,11 @@ class ChatViewModel(
             val turnParts = buildTurnParts(allToolBlocks, turnStartBlockIndex, toolInputMap)
             val blockMeta = allToolBlocks.filter { it.kind == "tool_use" }.associateBy { it.id }
             val assistantDbId = persistAssistantTurn(turnParts, lastUsage, turnReasoningContent, blockMeta)
+            // [T-rewrite-lookup-after-stream] Same swap as the no-tool-call
+            // site: the streamed bubble must carry the DB id, otherwise
+            // rewrite/delete on a fresh message fails with "message no
+            // longer exists in this session" until the session is reloaded.
+            if (assistantDbId != null) reconcileAssistantUiId(assistantId, assistantDbId)
             // [T-partial-turn-durability] Round committed (this site runs after
             // tool execution; the export stayed live through the tool gap so an
             // error/cancel during execution could still commit the round text).

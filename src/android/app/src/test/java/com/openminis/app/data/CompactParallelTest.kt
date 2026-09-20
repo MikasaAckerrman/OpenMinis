@@ -69,17 +69,21 @@ class CompactParallelTest {
 
     @Test
     fun `CompactLevel fraction maps to correct values`() {
-        // LIGHT=40%, MEDIUM=20%, ULTRA=5%, AUTO=100% of budget
-        val light = 0.40 * 128_000
-        val medium = 0.20 * 128_000
-        val ultra = 0.05 * 128_000
-        assertEquals(51_200, light.toInt())
-        assertEquals(25_600, medium.toInt())
-        assertEquals(6_400, ultra.toInt())
-        // But all clamped to 8192 max:
-        assertTrue(minOf(light.toInt(), 8192) <= 8192)
-        assertTrue(minOf(medium.toInt(), 8192) <= 8192)
-        assertTrue(minOf(ultra.toInt(), 8192) <= 8192)
+        // [T-compact-level-wiring] The level fraction applies to the INPUT
+        // (the transcript being compacted), not the model's context window:
+        // LIGHT=40%, MEDIUM=20%, ULTRA=5% of the SOURCE, AUTO=the 8192
+        // ceiling. A 20k-token transcript compacts to ~8k/4k/1k tokens.
+        val inputTokens = 20_000
+        val light = 0.40 * inputTokens
+        val medium = 0.20 * inputTokens
+        val ultra = 0.05 * inputTokens
+        assertEquals(8_000, light.toInt())
+        assertEquals(4_000, medium.toInt())
+        assertEquals(1_000, ultra.toInt())
+        // All clamped into their level ranges by ChatViewModel:
+        assertTrue(light.toInt().coerceIn(2_048, 8_192) <= 8_192)
+        assertTrue(medium.toInt().coerceIn(1_024, 8_192) <= 8_192)
+        assertTrue(ultra.toInt().coerceIn(512, 4_096) <= 4_096)
     }
 
     @Test
