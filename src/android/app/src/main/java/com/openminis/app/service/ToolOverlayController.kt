@@ -276,7 +276,8 @@ class ToolOverlayController(private val context: Context) {
             val v = view ?: return@post
             try {
                 ringAnimator?.cancel()
-                ringAnimator = null                windowManager.removeView(v)
+                ringAnimator = null
+                windowManager.removeView(v)
             } catch (e: Throwable) {
                 Log.w(TAG, "removeView failed: ${e.message}")
             }
