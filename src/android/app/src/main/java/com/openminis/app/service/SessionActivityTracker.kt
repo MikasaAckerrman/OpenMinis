@@ -376,8 +376,46 @@ object SessionActivityTracker {
                 else -> com.openminis.app.feedback.TurnOutcome.Completed
             }
             turnEndListener?.invoke(sessionId, outcome)
+            // [T-overlay-session-dots] Drive the dot completion animation
+            // from the same gate: only sessions that actually streamed get
+            // the fill+check sequence; cancelled ones just vanish.
+            if (sessionDotsEnabled && outcome != com.openminis.app.feedback.TurnOutcome.Cancelled) {
+                dotCompletionListeners.toTypedArray().forEach { cb ->
+                    try {
+                        cb(sessionId)
+                    } catch (t: Throwable) {
+                        android.util.Log.w("SessionActivityTracker", "dot completion cb failed: ${t.message}")
+                    }
+                }
+            }
         }
     }
+
+    // [T-overlay-session-dots] session-dot support --------------------------------
+
+    /** Master switch (wired to a settings toggle later; default ON). */
+    @Volatile var sessionDotsEnabled: Boolean = true
+
+    private val dotCompletionListeners = mutableListOf<(String) -> Unit>()
+
+    fun addDotCompletionListener(cb: (String) -> Unit) {
+        synchronized(dotCompletionListeners) { dotCompletionListeners.add(cb) }
+    }
+
+    /** Compatibility shim used by AgentForegroundService. */
+    fun isSessionDotsEnabledCompat(): Boolean = sessionDotsEnabled
+
+    /** Cache of sessionId → title for initials and completion labels. */
+    private val sessionTitles = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    fun rememberSessionTitle(sessionId: String, title: String?) {
+        if (!title.isNullOrBlank()) sessionTitles[sessionId] = title
+    }
+
+    fun sessionTitleFor(sessionId: String): String? = sessionTitles[sessionId]
+
+    fun sessionInitialFor(sessionId: String): String? =
+        sessionTitles[sessionId]?.trim()?.firstOrNull()?.toString()?.uppercase()
 
     /**
      * [T-completion-haptics] Caller marks the session's stream as

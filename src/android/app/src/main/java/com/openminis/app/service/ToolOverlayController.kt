@@ -13,6 +13,7 @@ import android.graphics.PixelFormat
 import android.graphics.RectF
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
+import android.view.animation.DecelerateInterpolator
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -113,6 +114,11 @@ class ToolOverlayController(private val context: Context) {
     private var view: View? = null
     private var logoView: ImageView? = null
     private var ringView: RotatingRingView? = null
+
+    // [T-overlay-session-dots] N-session indicator grid replaces the
+    // single minis logo when several sessions are running (falls back to
+    // the logo when the grid is empty and legacy callers still show()).
+    private var dotsGrid: SessionDotsGrid? = null
     private var ringAnimator: ObjectAnimator? = null
     private var labelView: TextView? = null
     private var statusView: TextView? = null
@@ -192,19 +198,93 @@ class ToolOverlayController(private val context: Context) {
         }
     }
 
+    /**
+     * [T-overlay-session-dots] Push the CURRENTLY RUNNING sessions
+     * (id → display initial) into the dot grid. The grid appears as soon
+     * as the first session starts and replaces the legacy minis-logo
+     * spinner for the duration.
+     */
+    fun updateSessionDots(active: List<Pair<String, String>>) {
+        mainHandler.post {
+            try {
+                val grid = dotsGrid
+                if (grid == null) {
+                    if (active.isNotEmpty() && !isShown) {
+                        // Attach lazily so the dots surface even without a
+                        // legacy show() call.
+                        attach()
+                    }
+                    return@post
+                }
+                grid.updateRunning(active)
+                val hasDots = grid.hasAnyDot()
+                grid.visibility = if (hasDots) View.VISIBLE else View.GONE
+                logoView?.visibility = if (hasDots) View.INVISIBLE else View.VISIBLE
+                ringView?.visibility =
+                    if (hasDots) View.GONE else ringView?.visibility ?: View.GONE
+            } catch (e: Throwable) {
+                Log.w(TAG, "updateSessionDots failed: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * [T-overlay-session-dots] Completion sequence for one session per the
+     * user spec: (1) the capsule label shows the session NAME across the
+     * cell with a fade, ~3s; (2) the dot fills with its colour, a
+     * checkmark draws, then the dot fades out; (3) when no dots remain,
+     * the capsule hides itself.
+     */
+    fun completeSessionDot(sessionId: String, sessionTitle: String) {
+        mainHandler.post {
+            try {
+                val grid = dotsGrid ?: return@post
+                // Phase 1: session name across the cell (label row).
+                labelView?.let { label ->
+                    val name = sessionTitle.ifBlank { "Сессия" }
+                    val appear = ObjectAnimator.ofFloat(label, View.ALPHA, 0f, 1f).apply {
+                        duration = 350
+                        interpolator = DecelerateInterpolator()
+                        start()
+                    }
+                    label.text = name
+                    label.ellipsize = android.text.TextUtils.TruncateAt.END
+                    appear.start()
+                }
+                // Phase 2 (+3s): fill + checkmark + fade on the dot.
+                mainHandler.postDelayed({
+                    try {
+                        grid.completeSession(sessionId) {
+                            // Phase 3: no dots left → hide the capsule.
+                            if (!grid.hasAnyDot()) {
+                                hide()
+                            }
+                        }
+                        grid.visibility = if (grid.hasAnyDot()) View.VISIBLE else View.GONE
+                    } catch (e: Throwable) {
+                        Log.w(TAG, "completeSession dot-phase failed: ${e.message}")
+                    }
+                }, 3000L)
+            } catch (e: Throwable) {
+                Log.w(TAG, "completeSessionDot failed: ${e.message}")
+            }
+        }
+    }
+
     fun hide() {
         mainHandler.post {
             val v = view ?: return@post
             try {
                 ringAnimator?.cancel()
-                ringAnimator = null
-                windowManager.removeView(v)
+                ringAnimator = null                windowManager.removeView(v)
             } catch (e: Throwable) {
                 Log.w(TAG, "removeView failed: ${e.message}")
             }
             view = null
             logoView = null
             ringView = null
+            dotsGrid?.shutdownAll()
+            dotsGrid = null
             labelView = null
             statusView = null
             replyView = null
@@ -325,10 +405,30 @@ class ToolOverlayController(private val context: Context) {
             minimumWidth = dpToPx(120)
         }
 
-        // [T-bg-overlay-polish] Logo + rotating ring stacked in a
-        // FrameLayout. The logo is clipped to a circle via
-        // ViewOutlineProvider; the ring is a custom View drawing a thin
-        // arc that we rotate with an ObjectAnimator.
+        // [T-overlay-session-dots] Session indicator grid lives in a
+        // FrameLayout side by side with the legacy logo stack: the dots
+        // grid is shown while ANY session is running/finishing, the
+        // logo stays as the empty-state fallback.
+        val dotZoneWidth = dpToPx(78)
+        val dotZoneHeight = dpToPx(32)
+        val dotZone = FrameLayout(context).apply {
+            layoutParams = LinearLayout.LayoutParams(dotZoneWidth, dotZoneHeight).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                rightMargin = dpToPx(6)
+            }
+        }
+
+        val grid = SessionDotsGrid(context).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ).apply { gravity = Gravity.CENTER }
+            visibility = View.GONE
+        }
+        dotsGrid = grid
+        dotZone.addView(grid)
+
+        // Legacy single-logo stack (kept as the no-sessions fallback).
         val logoSize = dpToPx(LOGO_SIZE_DP)
         val ringInset = dpToPx(RING_INSET_DP)
         // Ring view matches the logo box; with a centered stroke this
@@ -338,7 +438,6 @@ class ToolOverlayController(private val context: Context) {
         val logoStack = FrameLayout(context).apply {
             layoutParams = LinearLayout.LayoutParams(logoSize, logoSize).apply {
                 gravity = Gravity.CENTER_VERTICAL
-                rightMargin = dpToPx(6)
             }
         }
 
@@ -374,7 +473,8 @@ class ToolOverlayController(private val context: Context) {
         ringView = ring
         logoStack.addView(ring)
 
-        container.addView(logoStack)
+        dotZone.addView(logoStack)
+        container.addView(dotZone)
 
         val textCol = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL

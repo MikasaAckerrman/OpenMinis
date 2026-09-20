@@ -346,6 +346,13 @@ class AgentForegroundService : Service() {
                 SessionActivityTracker.dismissOverlay()
             }
         }
+
+        // [T-overlay-session-dots] Session completion → name-across-cell
+        // (~3s) → fill+checkmark → dot gone; capsule hides when empty.
+        SessionActivityTracker.addDotCompletionListener { sessionId ->
+            val title = SessionActivityTracker.sessionTitleFor(sessionId).orEmpty()
+            overlayController?.completeSessionDot(sessionId, title)
+        }
         val backgroundRepo = app.backgroundSettingsRepository
 
         overlayScope.launch {
@@ -388,7 +395,23 @@ class AgentForegroundService : Service() {
                     hasActiveStream = activeSessions.isNotEmpty(),
                     dynamicIslandEnabled = values[14] as Boolean,
                 )
-            }.distinctUntilChanged().collect { state -> applyOverlayState(state) }
+            }.distinctUntilChanged().collect { state ->
+                applyOverlayState(state)
+                // [T-overlay-session-dots] Feed the running-session set to
+                // the dot grid (initial = first char of the session title,
+                // resolved via the session registry; fallback "•").
+                if (SessionActivityTracker.isSessionDotsEnabledCompat()) {
+                    val active = SessionActivityTracker.activeSessions.value
+                    if (active.isNotEmpty()) {
+                        val specs = active.map { sid ->
+                            val initial = SessionActivityTracker
+                                .sessionInitialFor(sid) ?: "•"
+                            sid to initial
+                        }
+                        overlayController?.updateSessionDots(specs)
+                    }
+                }
+            }
         }
     }
 

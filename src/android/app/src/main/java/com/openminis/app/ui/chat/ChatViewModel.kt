@@ -5166,6 +5166,11 @@ class ChatViewModel(
                 return@launch
             }
             _sessionTitle.value = session.title ?: "New Chat"
+            // [T-overlay-session-dots] Remember the title so the floating
+            // capsule's dot grid can render the initial and the completion
+            // label for this session.
+            com.openminis.app.service.SessionActivityTracker
+                .rememberSessionTitle(sessionId, _sessionTitle.value)
             _sessionCategory.value = session.category
             _memoryEnabled.value = session.memoryEnabled != 0
             // [T-compact-progress] A compact card belongs to the session it
