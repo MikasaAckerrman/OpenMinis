@@ -5786,6 +5786,10 @@ fun ChatScreen(
     }
 
     // Browser bottom sheet
+    val showCompactLevelPicker by viewModel.showCompactLevelPicker.collectAsState()
+    var showCompactLevelSheet by remember { mutableStateOf(false) }
+    LaunchedEffect(showCompactLevelPicker) { showCompactLevelSheet = showCompactLevelPicker }
+
     // [T-compact-level] Compact level picker sheet.
     if (showCompactLevelSheet) {
         val currentLevel by viewModel.compactLevel.collectAsState()

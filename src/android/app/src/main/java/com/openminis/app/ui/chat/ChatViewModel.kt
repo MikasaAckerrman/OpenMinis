@@ -1170,7 +1170,7 @@ class ChatViewModel(
     }
 
     // [T-compact-level] User-selectable compaction aggressiveness.
-    private val _compactLevel = MutableStateFlow(
+    internal val _compactLevel = MutableStateFlow(
         CompactLevel.fromOrdinalSafe(
             context.getSharedPreferences("compact_prefs", Context.MODE_PRIVATE)
                 .getInt("level", CompactLevel.AUTO.ordinal)
