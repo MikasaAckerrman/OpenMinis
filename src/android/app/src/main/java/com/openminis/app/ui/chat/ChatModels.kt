@@ -163,6 +163,10 @@ data class ChatMessage(
     // the model just reads the new text from the DB on the next turn. The
     // mark itself persists via MessageEditStore (SharedPreferences).
     val isEdited: Boolean = false,
+    // [T-deleted-placeholder] Marks a deleted message's position so the UI
+    // can show a minimal separator instead of letting neighbours glue
+    // together. Replaced in deleteMessage, removed on reloadSessionFromDb.
+    val isDeletedPlaceholder: Boolean = false,
 ) {
     /**
      * [T-bridge-message-ui-leak-android] True when this UI message is the

@@ -1067,6 +1067,107 @@ class ChatViewModel(
      * [T-android-compact-progress-persistent] Clear persistent snapshot too —
      * user explicitly dismissed, no point restoring on next session open.
      */
+    // [T-queue-persist] — prompt queue survives process death. Serialized
+    // as [ {id, text} ] via DraftStore; attachments are NOT persisted (the
+    // process that produced them is gone).
+    private fun persistPromptQueue() {
+        val sid = realSessionId.ifEmpty { sessionId }
+        if (sid.isEmpty()) return
+        val arr = org.json.JSONArray()
+        for (p in _promptQueue.value) {
+            arr.put(org.json.JSONObject().apply {
+                put("id", p.id)
+                put("text", p.text)
+            })
+        }
+        com.openminis.app.data.DraftStore.saveQueue(context, sid, arr.toString())
+    }
+
+    /** [T-queue-persist] Clear both in-memory and persisted queue. */
+    private fun clearPromptQueue() {
+        _promptQueue.value = emptyList()
+        val sid = realSessionId.ifEmpty { sessionId }
+        if (sid.isNotEmpty()) {
+            com.openminis.app.data.DraftStore.clearQueue(context, sid)
+        }
+    }
+
+    /**
+     * [T-queue-persist] Restore the prompt queue from DraftStore on session load.
+     */
+    private fun restorePromptQueue() {
+        val sid = realSessionId.ifEmpty { sessionId }
+        if (sid.isEmpty()) return
+        val json = com.openminis.app.data.DraftStore.loadQueue(context, sid)
+        if (json.isBlank()) return
+        runCatching {
+            val arr = org.json.JSONArray(json)
+            if (arr.length() == 0) return
+            val prompts = mutableListOf<QueuedPrompt>()
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                val id = obj.optString("id")
+                val text = obj.optString("text")
+                if (id.isNotEmpty() && text.isNotEmpty()) {
+                    prompts.add(QueuedPrompt(id = id, text = text))
+                }
+            }
+            if (prompts.isEmpty()) return
+            _promptQueue.value = prompts
+        }
+    }
+
+    /**
+     * [T-compact-summary-prompt] Stable system prompt for compaction: the
+     * summariser sees the same instructions regardless of the current model.
+     */
+    private fun compactSummarySystemPrompt(): String = buildString {
+        append("Summarize this conversation transcript. ")
+        append("MUST PRESERVE: concrete work products (code, file paths, commands, URLs, identifiers), ")
+        append("decisions made, open questions, the last user request. ")
+        append("Format: 2-6 short paragraphs, no headers, no meta-commentary. ")
+        append("End with: NEXT ACTION: one line describing the immediate next step.")
+    }
+
+    /**
+     * [T-estimate-chars] Rough character-count estimate for a message,
+     * including contentParts payloads. Used by calculateSafeChunkCount.
+     */
+    private fun estimateChatChars(m: LLMMessage): Long {
+        var chars = m.content.length.toLong() + 50
+        for (part in m.contentParts) {
+            when (part) {
+                is com.openminis.app.data.model.AgentContentPart.Text ->
+                    chars += part.text.length
+                is com.openminis.app.data.model.AgentContentPart.ToolUse ->
+                    chars += part.input?.toString()?.length ?: 0
+                is com.openminis.app.data.model.AgentContentPart.ToolResult ->
+                    chars += part.content.length
+                else -> chars += 100
+            }
+        }
+        return chars
+    }
+
+    /**
+     * [T-safe-split] Compute the target chunk count: total_chars / 60_000,
+     * clamped to [2, 8].
+     */
+    private fun calculateSafeChunkCount(messages: List<LLMMessage>): Int {
+        val totalChars = messages.sumOf { estimateChatChars(it) }
+        val target = (totalChars / 60_000L).toInt() + 1
+        return target.coerceIn(2, 8)
+    }
+
+    /**
+     * [T-error-format] Human-readable error string, collapsing provider
+     * internals into an actionable message.
+     */
+    private fun formatErrorForUser(e: Throwable): String {
+        val msg = e.message ?: e.javaClass.simpleName
+        return if (msg.length > 200) msg.take(200) + "…" else msg
+    }
+
     private fun publishCompactProgress(p: com.openminis.app.data.CompactProgress?) {
         _compactProgress.value = p
         if (p == null) {
