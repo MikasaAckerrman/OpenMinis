@@ -3,7 +3,7 @@ name: Build APK
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, feat/message-rewrite-visual]
     # Trigger on [quick] marker in commit message
     #
     # NOTE: `paths-ignore` also filters out commits that touch NO files at all,
