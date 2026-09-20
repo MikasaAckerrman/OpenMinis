@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
 import android.os.Build
@@ -127,6 +128,11 @@ class AgentForegroundService : Service() {
      * down deterministically.
      */
     private var overlayController: ToolOverlayController? = null
+
+    // [T-overlay-v3] Tender-v3 floating capsule window (waves + count +
+    // metrics + sessions panel). Separate from the legacy reply-status
+    // capsule: it only tracks RUNNING sessions.
+    private var sessionOverlayWindow: SessionOverlayWindow? = null
     private val overlayScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var lingerJob: Job? = null
 
@@ -308,6 +314,10 @@ class AgentForegroundService : Service() {
             )
         }
         releaseWakeLock()
+        // [T-overlay-v3] Tear the tender-v3 capsule window down BEFORE
+        // cancelling the scope (its sampler must observe a live scope).
+        sessionOverlayWindow?.shutdown()
+        sessionOverlayWindow = null
         try {
             overlayController?.hide()
         } catch (_: Throwable) {}
@@ -347,12 +357,17 @@ class AgentForegroundService : Service() {
             }
         }
 
-        // [T-overlay-session-dots] Session completion → name-across-cell
-        // (~3s) → fill+checkmark → dot gone; capsule hides when empty.
-        SessionActivityTracker.addDotCompletionListener { sessionId ->
-            val title = SessionActivityTracker.sessionTitleFor(sessionId).orEmpty()
-            overlayController?.completeSessionDot(sessionId, title)
-        }
+        // [T-overlay-v3] Completion handling: the v3 capsule needs no
+        // per-dot completion animation — when a session finishes,
+        // activeSessions shrinks and the count badge / panel update
+        // reactively; the capsule plays the jelly dismissal when the
+        // LAST session disappears (handled inside SessionOverlayWindow).
+        sessionOverlayWindow = SessionOverlayWindow(
+            context = this,
+            scope = overlayScope,
+            isForegroundGateOpen = { app.isAppForegroundFlow.value },
+            openSession = { sid -> openSessionDeepLink(sid) },
+        )
         val backgroundRepo = app.backgroundSettingsRepository
 
         overlayScope.launch {
@@ -397,21 +412,57 @@ class AgentForegroundService : Service() {
                 )
             }.distinctUntilChanged().collect { state ->
                 applyOverlayState(state)
-                // [T-overlay-session-dots] Feed the running-session set to
-                // the dot grid (initial = first char of the session title,
-                // resolved via the session registry; fallback "•").
+                // [T-overlay-v3] Feed the running-session set to the new
+                // capsule window (tender v3). The window itself owns the
+                // foreground gate, so this call is unconditional — it is a
+                // no-op while the app is in the foreground.
                 if (SessionActivityTracker.isSessionDotsEnabledCompat()) {
-                    val active = SessionActivityTracker.activeSessions.value
-                    if (active.isNotEmpty()) {
-                        val specs = active.map { sid ->
-                            val initial = SessionActivityTracker
-                                .sessionInitialFor(sid) ?: "•"
-                            sid to initial
-                        }
-                        overlayController?.updateSessionDots(specs)
-                    }
+                    val activeNow = SessionActivityTracker.activeSessions.value
+                    sessionOverlayWindow?.updateSessions(
+                        activeNow.map { sid ->
+                            SessionOverlayEntry(
+                                sessionId = sid,
+                                title = SessionActivityTracker.sessionTitleFor(sid).orEmpty()
+                                    .ifBlank { "Сессия ${sid.take(4)}" },
+                                startedAtMs = SessionActivityTracker.sessionStartStamp(sid),
+                                live = true,
+                            )
+                        },
+                    )
+                } else {
+                    sessionOverlayWindow?.updateSessions(emptyList())
                 }
             }
+        }
+
+        // [T-overlay-v3] Foreground transitions show/hide the capsule
+        // window even when the session set itself did not change.
+        overlayScope.launch {
+            app.isAppForegroundFlow.collect {
+                sessionOverlayWindow?.onForegroundChanged()
+            }
+        }
+    }
+
+    /**
+     * [T-overlay-v3] Deep-link into a specific session from the v3
+     * sessions panel — same `minis://session/<id>` route the legacy
+     * capsule uses.
+     */
+    private fun openSessionDeepLink(sessionId: String) {
+        try {
+            val launchIntent = Intent(
+                this,
+                Class.forName("com.openminis.app.MainActivity"),
+            ).apply {
+                data = Uri.parse("minis://session/$sessionId")
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP
+            }
+            startActivity(launchIntent)
+        } catch (e: Throwable) {
+            Log.w("BgDiag", "v3 panel open-session failed: ${e.message}")
         }
     }
 

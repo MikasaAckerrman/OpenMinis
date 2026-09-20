@@ -1,0 +1,609 @@
+package com.openminis.app.service
+
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
+import android.animation.PropertyValuesHolder
+import android.animation.ValueAnimator
+import android.content.Context
+import android.graphics.BlurMaskFilter
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.LinearGradient
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.PixelFormat
+import android.graphics.RadialGradient
+import android.graphics.RectF
+import android.graphics.Shader
+import android.graphics.Typeface
+import android.os.Process
+import android.os.SystemClock
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.view.Gravity
+import android.view.MotionEvent
+import android.view.View
+import android.view.WindowManager
+import com.openminis.app.logging.AppLogger
+
+/**
+ * [T-overlay-v3] Full redesign of the floating session indicator —
+ * pixel-faithful port of the approved tender v3 render
+ * (tender-v3-phones.png / tender-v3-waves.gif):
+ *
+ *  ┌─────────────────────────────────────────┐
+ *  │ [N] │  ~ ~ ~ blue light waves ~ ~ ~  │ ↓2.4 МБ/с │
+ *  │  ▣  │  breathing glow + sparks       │ CPU 18%   │
+ *  │     │                                 │ RAM 412МБ │
+ *  └─────────────────────────────────────────┘
+ *
+ * - Dark glass capsule (11dp corner radius), count badge with a pulsing
+ *   blue ring, 4 light waves entering from different positions at
+ *   different speeds, each BREATHING (alpha + thickness pulse), two
+ *   sparks flying through, and a 3-line metrics column (traffic / CPU /
+ *   RAM) on the right.
+ * - Birth animation: scale .8 → 1.04 → 1 + rise + fade (340 ms).
+ * - Jelly dismissal: bulge → bounce → collapse to a point (300 ms).
+ * - Press feedback: scale .93 + inner shadow + blue border flash +
+ *   8 ms haptic tick.
+ * - Tap opens the sessions panel (tender stage 2): list of running
+ *   sessions with per-session timer / traffic / CPU and an equalizer
+ *   load meter; tap a session row to deep-link into it; tap the capsule
+ *   again to close the panel.
+ *
+ * Everything is drawn with Canvas + ValueAnimator (no Compose — this
+ * window lives outside the app process UI). Metrics are sampled on a
+ * background thread; only invalidate() touches the UI thread.
+ */
+object SessionOverlayPalette {
+    const val CAPSULE_BG = 0xEE0E0F12.toInt()          // 92% dark glass
+    const val CAPSULE_BORDER = 0xFF25272D.toInt()
+    const val COUNT_BG = 0xFF171920.toInt()
+    const val COUNT_BORDER = 0xFF2B2E35.toInt()
+    const val FLOW_BG = 0xFF0D0E12.toInt()
+    const val FLOW_BORDER = 0xFF1E2025.toInt()
+    val WAVE_CORE = Color.parseColor("#6B9AEE")
+    val WAVE_LIGHT = Color.parseColor("#8DB2F5")
+    val WAVE_DIM = Color.argb(38, 70, 120, 220)        // 15% blue
+    const val SPARK = 0xFF93B8FF.toInt()
+    const val METRIC_LABEL = 0xFF7D838E.toInt()
+    const val METRIC_VALUE = 0xFFADB3BF.toInt()
+    const val METRIC_ICON_BG = 0xFF1D1F26.toInt()
+    const val METRIC_ICON_BORDER = 0xFF2A2D34.toInt()
+    const val TEXT_PRIMARY = 0xFFE8EAEE.toInt()
+    val ACCENT = Color.parseColor("#6B9AEE")          // = WAVE_CORE
+    const val PANEL_BG = 0xF70C0D10.toInt()           // 97%
+    const val PANEL_BORDER = 0xFF272930.toInt()
+    const val ROW_SEPARATOR = 0xFF191B20.toInt()
+    const val NAME_COLOR = 0xFFD3D7DE.toInt()
+    const val META_COLOR = 0xFF63676F.toInt()
+    const val EQ_COLOR = 0xFF3A3F4B.toInt()
+    const val GO_BG = 0xFF1A1C22.toInt()
+    const val GO_BORDER = 0xFF2A2D34.toInt()
+    const val GO_ARROW = 0xFF8B929E.toInt()
+    const val IDLE_STATUS = 0xFF40444C.toInt()
+}
+
+/** One running session as shown by the v3 overlay. */
+data class SessionOverlayEntry(
+    val sessionId: String,
+    val title: String,
+    val startedAtMs: Long,
+    /** true while the session is actively streaming/working. */
+    val live: Boolean,
+)
+
+/** Live process metrics feeding the capsule's right column. */
+data class SessionOverlayMetrics(
+    val rxKbPerSec: Float,
+    val txKbPerSec: Float,
+    val cpuPercent: Int,
+    val ramMb: Int,
+)
+
+/**
+ * The capsule itself. One View, one Canvas pass, driven by a single
+ * ValueAnimator at frame rate. touch → press feedback → tap callback.
+ */
+class SessionCapsuleView(
+    context: Context,
+    private val onCapsuleTap: () -> Unit,
+) : View(context) {
+
+    companion object {
+        private const val TAG = "SessionCapsuleView"
+        // Geometry (dp) — matches the tender render 1:1.
+        const val WIDTH_DP = 272f
+        const val HEIGHT_DP = 52f
+        private const val RADIUS_DP = 11f
+        private const val COUNT_W_DP = 36f
+        private const val COUNT_H_DP = 38f
+        private const val COUNT_R_DP = 7f
+        private const val FLOW_H_DP = 38f
+        private const val METRICS_W_DP = 74f
+        // Wave descriptors: top dp / widthFraction / periodMs / delayMs / breatheMs
+        private val WAVES = listOf(
+            WaveSpec(6f, 0.84f, 2200f, 0f, 1150f),
+            WaveSpec(14f, 0.66f, 3100f, 450f, 1350f),
+            WaveSpec(21f, 0.90f, 1700f, 850f, 950f),
+            WaveSpec(30f, 0.58f, 2800f, 250f, 1500f),
+        )
+        private const val HAPTIC_MS = 8L
+    }
+
+    private data class WaveSpec(
+        val topDp: Float,
+        val widthFraction: Float,
+        val periodMs: Float,
+        val delayMs: Float,
+        val breatheMs: Float,
+    )
+
+    // ------------------------------------------------------------------ state
+    var sessionCount: Int = 0
+        private set
+    var metrics: SessionOverlayMetrics = SessionOverlayMetrics(0f, 0f, 0, 0)
+        private set
+    /** true while ≥1 live session → waves animate; false → frozen dim. */
+    var anyLive: Boolean = true
+        private set
+
+    private var panelOpen: Boolean = false
+
+    fun update(count: Int, live: Boolean, m: SessionOverlayMetrics) {
+        sessionCount = count
+        anyLive = live
+        metrics = m
+        postInvalidateOnAnimation()
+    }
+
+    fun setPanelOpen(open: Boolean) {
+        panelOpen = open
+        postInvalidateOnAnimation()
+    }
+
+    // ------------------------------------------------------------- animators
+    private val frameDriver: ValueAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+        duration = 1000L
+        repeatCount = ValueAnimator.INFINITE
+        interpolator = null // linear; per-wave phase does the easing
+        addUpdateListener { postInvalidateOnAnimation() }
+    }
+
+    private var pressAnimator: ValueAnimator? = null
+    private var flashAnimator: ValueAnimator? = null
+    /** 0..1 progress of the birth (in) / jelly (out) choreography. -1 = none. */
+    private var birthProgress = -1f
+    private var jellyProgress = -1f
+
+    fun startFrameDriver() {
+        if (!frameDriver.isRunning) frameDriver.start()
+    }
+
+    fun stopFrameDriver() {
+        frameDriver.cancel()
+    }
+
+    /** Tender: 340 ms — scale .8→1.04→1, rise 12dp, fade in, glow halo. */
+    fun playBirth(onDone: (() -> Unit)? = null) {
+        stopDismissAnimators()
+        birthProgress = 0f
+        val a = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 340
+            addUpdateListener { anim ->
+                birthProgress = anim.animatedValue as Float
+                postInvalidateOnAnimation()
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    birthProgress = -1f
+                    postInvalidateOnAnimation()
+                    onDone?.invoke()
+                }
+            })
+        }
+        a.start()
+    }
+
+    /** Tender: 300 ms jelly — bulge → bounce → collapse to a point. */
+    fun playJelly(onDone: () -> Unit) {
+        stopDismissAnimators()
+        jellyProgress = 0f
+        val scaleX = PropertyValuesHolder.ofFloat("sx", 1f)
+        val a = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 300
+            addUpdateListener { anim ->
+                jellyProgress = anim.animatedValue as Float
+                postInvalidateOnAnimation()
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    jellyProgress = -1f
+                    onDone()
+                }
+            })
+        }
+        a.start()
+    }
+
+    private fun stopDismissAnimators() {
+        birthProgress = -1f
+        jellyProgress = -1f
+    }
+
+    // ------------------------------------------------------------- geometry
+    private fun dp(v: Float): Float = v * resources.displayMetrics.density
+    private val contentRect = RectF()
+    private val tmpRect = RectF()
+    private val tmpPath = Path()
+
+    // ------------------------------------------------------------------ paint
+    private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = SessionOverlayPalette.CAPSULE_BG
+    }
+    private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 1f
+        color = SessionOverlayPalette.CAPSULE_BORDER
+    }
+    private val flashPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+    }
+    private val countBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = SessionOverlayPalette.COUNT_BG
+    }
+    private val countBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 1f
+        color = SessionOverlayPalette.COUNT_BORDER
+    }
+    private val countTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = SessionOverlayPalette.TEXT_PRIMARY
+        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        textAlign = Paint.Align.CENTER
+    }
+    private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = Color.argb(128, 105, 150, 235) // 50% accent
+    }
+    private val flowBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = SessionOverlayPalette.FLOW_BG
+    }
+    private val flowBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 1f
+        color = SessionOverlayPalette.FLOW_BORDER
+    }
+    private val wavePaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val sparkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = SessionOverlayPalette.SPARK
+    }
+    private val metricLabelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = SessionOverlayPalette.METRIC_LABEL
+    }
+    private val metricValuePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = SessionOverlayPalette.METRIC_VALUE
+        typeface = Typeface.create(Typeface.MONOSPACE, Typeface.NORMAL)
+    }
+    private val metricIconBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = SessionOverlayPalette.METRIC_ICON_BG
+    }
+    private val metricIconBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 1f
+        color = SessionOverlayPalette.METRIC_ICON_BORDER
+    }
+    private val metricIconTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = SessionOverlayPalette.METRIC_LABEL
+        textAlign = Paint.Align.CENTER
+    }
+
+    // ------------------------------------------------------------------ press
+    private var pressed = false
+    private val vibrator: Vibrator? =
+        context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                pressed = true
+                playPressFlash()
+                hapticTick()
+                postInvalidateOnAnimation()
+                return true
+            }
+            MotionEvent.ACTION_UP -> {
+                val inside = isInside(event.x, event.y)
+                pressed = false
+                postInvalidateOnAnimation()
+                if (inside) onCapsuleTap()
+                return true
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                pressed = false
+                postInvalidateOnAnimation()
+                return true
+            }
+        }
+        return super.onTouchEvent(event)
+    }
+
+    private fun isInside(x: Float, y: Float): Boolean {
+        val w = measuredWidth.coerceAtLeast(1)
+        val h = measuredHeight.coerceAtLeast(1)
+        return x >= -w * 0.05f && x <= w * 1.05f && y >= -h * 0.05f && y <= h * 1.05f
+    }
+
+    private fun hapticTick() {
+        try {
+            vibrator?.vibrate(
+                VibrationEffect.createOneShot(
+                    HAPTIC_MS,
+                    VibrationEffect.DEFAULT_AMPLITUDE,
+                ),
+            )
+        } catch (_: Exception) {
+        }
+    }
+
+    /** Press: scale .93 + border flash (400 ms fade, 2 repeats skipped). */
+    private fun playPressFlash() {
+        flashAnimator?.cancel()
+        flashAnimator = ValueAnimator.ofFloat(1f, 0f).apply {
+            duration = 400
+            addUpdateListener { anim ->
+                flashPaint.color = Color.argb(
+                    ((anim.animatedValue as Float) * 170).toInt(),
+                    107, 154, 238,
+                )
+                flashPaint.strokeWidth = dp(1.2f)
+                postInvalidateOnAnimation()
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    flashPaint.color = Color.TRANSPARENT
+                    postInvalidateOnAnimation()
+                }
+            })
+        }.also { it.start() }
+    }
+
+    // ------------------------------------------------------------------- draw
+    override fun onDraw(canvas: Canvas) {
+        val w = measuredWidth.toFloat()
+        val h = measuredHeight.toFloat()
+        if (w <= 0f || h <= 0f) return
+
+        // ---- global transform: birth / jelly / press choreography ----
+        var sx = 1f
+        var sy = 1f
+        var ty = 0f
+        var alpha = 1f
+        if (birthProgress in 0f..1f) {
+            val p = birthProgress
+            // scale .8 → 1.04 → 1 (overshoot at 55%)
+            sx = if (p < 0.55f) lerp(0.8f, 1.04f, p / 0.55f) else lerp(1.04f, 1f, (p - 0.55f) / 0.45f)
+            sy = sx
+            ty = lerp(dp(12f), 0f, p)
+            alpha = p
+        } else if (jellyProgress in 0f..1f) {
+            val p = jellyProgress
+            // 22%: (1.10, .88) | 48%: (.92, 1.08) | 70%: (.6,.68) | 100%: (.05,.07)
+            sx = when {
+                p < 0.22f -> lerp(1f, 1.10f, p / 0.22f)
+                p < 0.48f -> lerp(1.10f, 0.92f, (p - 0.22f) / 0.26f)
+                p < 0.70f -> lerp(0.92f, 0.60f, (p - 0.48f) / 0.22f)
+                else -> lerp(0.60f, 0.05f, (p - 0.70f) / 0.30f)
+            }
+            sy = when {
+                p < 0.22f -> lerp(1f, 0.88f, p / 0.22f)
+                p < 0.48f -> lerp(0.88f, 1.08f, (p - 0.22f) / 0.26f)
+                p < 0.70f -> lerp(1.08f, 0.68f, (p - 0.48f) / 0.22f)
+                else -> lerp(0.68f, 0.07f, (p - 0.70f) / 0.30f)
+            }
+            alpha = if (p < 0.70f) lerp(1f, 0.9f, p / 0.70f) else lerp(0.9f, 0f, (p - 0.70f) / 0.30f)
+        } else if (pressed) {
+            sx = 0.93f
+            sy = 0.93f
+        }
+
+        val saveCount = canvas.save()
+        canvas.translate(w / 2f, h / 2f + ty)
+        canvas.scale(sx, sy)
+        canvas.translate(-w / 2f, -h / 2f)
+        if (alpha < 1f) {
+            bgPaint.alpha = ((Color.alpha(SessionOverlayPalette.CAPSULE_BG)) * alpha).toInt()
+        } else {
+            bgPaint.alpha = Color.alpha(SessionOverlayPalette.CAPSULE_BG)
+        }
+
+        contentRect.set(0f, 0f, w, h)
+
+        // ---- capsule body ----
+        val r = dp(RADIUS_DP)
+        canvas.drawRoundRect(contentRect, r, r, bgPaint)
+        borderPaint.strokeWidth = dp(1f)
+        canvas.drawRoundRect(contentRect, r, r, borderPaint)
+        if (flashPaint.color != Color.TRANSPARENT) {
+            canvas.drawRoundRect(contentRect, r, r, flashPaint)
+        }
+
+        // ---- count badge ----
+        val countW = dp(COUNT_W_DP)
+        val countH = dp(COUNT_H_DP)
+        val countX = dp(10f)
+        val countY = (h - countH) / 2f
+        tmpRect.set(countX, countY, countX + countW, countY + countH)
+        val cr = dp(COUNT_R_DP)
+        canvas.drawRoundRect(tmpRect, cr, cr, countBgPaint)
+        canvas.drawRoundRect(tmpRect, cr, cr, countBorderPaint)
+
+        // pulsing ring (2.2 s): alpha .75→0, scale 1→1.15
+        val ringPhase = ((SystemClock.elapsedRealtime() % 2200L) / 2200f)
+        val ringAlpha = (0.75f * (1f - ringPhase) * alpha)
+        if (ringAlpha > 0.02f) {
+            ringPaint.strokeWidth = dp(1f)
+            ringPaint.alpha = (ringAlpha * 255).toInt().coerceIn(0, 255)
+            val grow = lerp(1f, 1.15f, ringPhase)
+            tmpRect.set(
+                countX - (countW * (grow - 1f)) / 2f - dp(4f),
+                countY - (countH * (grow - 1f)) / 2f - dp(4f),
+                countX + countW + (countW * (grow - 1f)) / 2f + dp(4f),
+                countY + countH + (countH * (grow - 1f)) / 2f + dp(4f),
+            )
+            canvas.drawRoundRect(tmpRect, cr * 1.4f, cr * 1.4f, ringPaint)
+        }
+
+        // number
+        countTextPaint.textSize = dp(17f)
+        countTextPaint.alpha = (alpha * 255).toInt()
+        val textY = countY + countH / 2f - (countTextPaint.descent() + countTextPaint.ascent()) / 2f
+        canvas.drawText(
+            sessionCount.coerceAtMost(99).toString(),
+            countX + countW / 2f,
+            textY,
+            countTextPaint,
+        )
+
+        // ---- flow zone with waves ----
+        val flowX = countX + countW + dp(10f)
+        val metricsW = dp(METRICS_W_DP)
+        val flowW = w - flowX - metricsW - dp(12f)
+        val flowY = (h - dp(FLOW_H_DP)) / 2f
+        tmpRect.set(flowX, flowY, flowX + flowW, flowY + dp(FLOW_H_DP))
+        val fr = dp(7f)
+        canvas.drawRoundRect(tmpRect, fr, fr, flowBgPaint)
+        canvas.drawRoundRect(tmpRect, fr, fr, flowBorderPaint)
+
+        drawWaves(canvas, flowX, flowY, flowW, alpha)
+
+        // ---- metrics column ----
+        drawMetrics(canvas, w, h, alpha)
+
+        canvas.restoreToCount(saveCount)
+    }
+
+    private fun drawWaves(canvas: Canvas, flowX: Float, flowY: Float, flowW: Float, alpha: Float) {
+        val now = SystemClock.elapsedRealtime().toFloat()
+        val waveH = dp(2.5f)
+        // clip to the flow zone (rounded)
+        canvas.save()
+        tmpPath.reset()
+        tmpPath.addRoundRect(
+            tmpRect,
+            dp(7f),
+            dp(7f),
+            Path.Direction.CW,
+        )
+        canvas.clipPath(tmpPath)
+
+        for (spec in WAVES) {
+            // travel: left -55% → 105%
+            val travel = ((now + spec.delayMs) % spec.periodMs) / spec.periodMs
+            val left = flowX + flowW * lerp(-0.55f, 1.05f, travel)
+            val waveW = flowW * spec.widthFraction
+            // breathe: alpha .4→1, thickness .7→1.3
+            val breathe = 0.5f - 0.5f * kotlin.math.cos(
+                2f * Math.PI.toFloat() * ((now + spec.delayMs) % spec.breatheMs) / spec.breatheMs,
+            )
+            val breatheAlpha = lerp(0.4f, 1f, breathe) * (if (anyLive) 1f else 0.28f)
+            val thickness = waveH * lerp(0.7f, 1.3f, breathe)
+
+            val gradient = LinearGradient(
+                left, 0f, left + waveW, 0f,
+                intArrayOf(
+                    Color.TRANSPARENT,
+                    SessionOverlayPalette.WAVE_DIM,
+                    SessionOverlayPalette.WAVE_CORE,
+                    SessionOverlayPalette.WAVE_LIGHT,
+                    SessionOverlayPalette.WAVE_DIM,
+                    Color.TRANSPARENT,
+                ),
+                floatArrayOf(0f, 0.2f, 0.48f, 0.54f, 0.82f, 1f),
+                Shader.TileMode.CLAMP,
+            )
+            wavePaint.shader = gradient
+            wavePaint.alpha = ((breatheAlpha * alpha) * 255).toInt().coerceIn(0, 255)
+            // glow: soft shadow layer in the same blue
+            wavePaint.setShadowLayer(dp(4f), 0f, 0f, Color.argb(140, 107, 154, 238))
+            val y = flowY + dp(spec.topDp)
+            tmpRect.set(left, y - thickness / 2f, left + waveW, y + thickness / 2f)
+            canvas.drawRoundRect(tmpRect, thickness / 2f, thickness / 2f, wavePaint)
+        }
+
+        // sparks: two, 3dp dots crossing the zone
+        for (i in 0 until 2) {
+            val delay = if (i == 0) 300f else 1500f
+            val period = 2700f
+            val phase = ((now + delay) % period) / period
+            val x = flowX + flowW * lerp(0.10f, 0.96f, phase)
+            val y = flowY + dp(if (i == 0) 10f else 25f)
+            val visAlpha = when {
+                phase < 0.12f -> phase / 0.12f
+                phase < 0.50f -> lerp(0.95f, 0.45f, (phase - 0.12f) / 0.38f)
+                else -> lerp(0.45f, 0f, (phase - 0.50f) / 0.12f).coerceAtLeast(0f)
+            }
+            sparkPaint.alpha = ((visAlpha * alpha) * 255).toInt().coerceIn(0, 255)
+            sparkPaint.setShadowLayer(dp(3f), 0f, 0f, Color.argb(240, 147, 184, 255))
+            canvas.drawCircle(x, y, dp(1.5f), sparkPaint)
+        }
+        canvas.restore()
+    }
+
+    private fun drawMetrics(canvas: Canvas, w: Float, h: Float, alpha: Float) {
+        val metricsW = dp(METRICS_W_DP)
+        val colRight = w - dp(10f)
+        val rowH = h / 3f
+        val iconSide = dp(11f)
+        metricLabelPaint.textSize = dp(7.5f)
+        metricValuePaint.textSize = dp(9f)
+        metricIconTextPaint.textSize = dp(7.5f)
+        metricLabelPaint.alpha = (alpha * 255).toInt()
+        metricValuePaint.alpha = (alpha * 255).toInt()
+        metricIconBgPaint.alpha = (alpha * 255).toInt()
+        metricIconBorderPaint.alpha = (alpha * 255).toInt()
+
+        val rows = listOf(
+            Triple("↓", formatRate(metrics.rxKbPerSec), "МБ/с"),
+            Triple("C", "${metrics.cpuPercent}", "%"),
+            Triple("R", "${metrics.ramMb}", "МБ"),
+        )
+        for (i in rows.indices) {
+            val (icon, value, unit) = rows[i]
+            val cy = rowH * i + rowH / 2f
+            // icon box
+            val iconX = colRight - metricsW
+            tmpRect.set(iconX, cy - iconSide / 2f, iconX + iconSide, cy + iconSide / 2f)
+            canvas.drawRoundRect(tmpRect, dp(3f), dp(3f), metricIconBgPaint)
+            canvas.drawRoundRect(tmpRect, dp(3f), dp(3f), metricIconBorderPaint)
+            canvas.drawText(
+                icon,
+                iconX + iconSide / 2f,
+                cy - (metricIconTextPaint.descent() + metricIconTextPaint.ascent()) / 2f,
+                metricIconTextPaint,
+            )
+            // value + unit
+            val textX = iconX + iconSide + dp(5f)
+            val valY = cy - (metricValuePaint.descent() + metricValuePaint.ascent()) / 2f
+            canvas.drawText(value, textX, valY, metricValuePaint)
+            val vw = metricValuePaint.measureText(value)
+            metricLabelPaint.textSize = dp(6.5f)
+            canvas.drawText(unit, textX + vw + dp(2.5f), valY, metricLabelPaint)
+            metricLabelPaint.textSize = dp(7.5f)
+        }
+    }
+
+    private fun lerp(a: Float, b: Float, t: Float): Float = a + (b - a) * t
+
+    private fun formatRate(kbPerSec: Float): String {
+        val mb = kbPerSec / 1024f
+        return if (mb >= 1f) String.format("%.1f", mb) else String.format("%.2f", mb)
+    }
+
+    override fun onDetachedFromWindow() {
+        stopFrameDriver()
+        pressAnimator?.cancel()
+        flashAnimator?.cancel()
+        super.onDetachedFromWindow()
+    }
+}

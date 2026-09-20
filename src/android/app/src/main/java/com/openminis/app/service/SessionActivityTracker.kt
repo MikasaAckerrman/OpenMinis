@@ -34,6 +34,16 @@ object SessionActivityTracker {
     val activeSessions: StateFlow<Set<String>> = _activeSessions.asStateFlow()
 
     /**
+     * [T-overlay-v3] elapsedRealtime stamp of the first activation of each
+     * session id — powers the per-session ⌛ timer in the v3 sessions panel.
+     */
+    private val sessionStartMs = HashMap<String, Long>()
+
+    /** [T-overlay-v3] Start stamp for a session (0 if unknown). */
+    @Synchronized
+    fun sessionStartStamp(sessionId: String): Long = sessionStartMs[sessionId] ?: 0L
+
+    /**
      * T166: sessions the user is currently *present in* (composing /
      * reading), distinct from [activeSessions] which tracks streaming.
      * Drives the foreground service so the process stays at adj=200
@@ -299,6 +309,11 @@ object SessionActivityTracker {
     fun setActive(sessionId: String, onStop: (() -> Unit)? = null) {
         val wasIdle = !shouldRunService()
         _activeSessions.value = _activeSessions.value + sessionId
+        // [T-overlay-v3] First-seen activation stamp → per-session timer
+        // in the v3 sessions panel.
+        if (!sessionStartMs.containsKey(sessionId)) {
+            sessionStartMs[sessionId] = android.os.SystemClock.elapsedRealtime()
+        }
         if (onStop != null) {
             synchronized(streamCancellers) { streamCancellers[sessionId] = onStop }
         }
@@ -329,6 +344,11 @@ object SessionActivityTracker {
     fun setInactive(sessionId: String) {
         val wasActive = sessionId in _activeSessions.value
         _activeSessions.value = _activeSessions.value - sessionId
+        // [T-overlay-v3] keep the stamp only while tracked somewhere;
+        // remove when the session leaves both sets to bound the map.
+        if (sessionId !in _activeSessions.value && sessionId !in _presentSessions.value) {
+            sessionStartMs.remove(sessionId)
+        }
         synchronized(streamCancellers) { streamCancellers.remove(sessionId) }
         val wasError = synchronized(pendingErrorFlag) { pendingErrorFlag.remove(sessionId) }
         val wasCancelled = synchronized(pendingCancelFlag) { pendingCancelFlag.remove(sessionId) }
@@ -376,33 +396,17 @@ object SessionActivityTracker {
                 else -> com.openminis.app.feedback.TurnOutcome.Completed
             }
             turnEndListener?.invoke(sessionId, outcome)
-            // [T-overlay-session-dots] Drive the dot completion animation
-            // from the same gate: only sessions that actually streamed get
-            // the fill+check sequence; cancelled ones just vanish.
-            if (sessionDotsEnabled && outcome != com.openminis.app.feedback.TurnOutcome.Cancelled) {
-                dotCompletionListeners.toTypedArray().forEach { cb ->
-                    try {
-                        cb(sessionId)
-                    } catch (t: Throwable) {
-                        android.util.Log.w("SessionActivityTracker", "dot completion cb failed: ${t.message}")
-                    }
-                }
-            }
         }
     }
 
     // [T-overlay-session-dots] session-dot support --------------------------------
 
-    /** Master switch (wired to a settings toggle later; default ON). */
+    /**
+     * [T-overlay-v3] Master switch for the tender-v3 session indicator
+     * window (kept as the future settings toggle hook).
+     */
     @Volatile var sessionDotsEnabled: Boolean = true
 
-    private val dotCompletionListeners = mutableListOf<(String) -> Unit>()
-
-    fun addDotCompletionListener(cb: (String) -> Unit) {
-        synchronized(dotCompletionListeners) { dotCompletionListeners.add(cb) }
-    }
-
-    /** Compatibility shim used by AgentForegroundService. */
     fun isSessionDotsEnabledCompat(): Boolean = sessionDotsEnabled
 
     /** Cache of sessionId → title for initials and completion labels. */
