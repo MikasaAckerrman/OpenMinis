@@ -1034,10 +1034,12 @@ class BrowserTabPool(private val context: Context) {
 
     fun setCameraPagePermission(enabled: Boolean) {
         _cameraPagePermission.value = enabled
+        saveState()
     }
 
     fun setMicPagePermission(enabled: Boolean) {
         _micPagePermission.value = enabled
+        saveState()
     }
 
     /** Toggle between mobile/desktop UA from the browser sheet icon. */

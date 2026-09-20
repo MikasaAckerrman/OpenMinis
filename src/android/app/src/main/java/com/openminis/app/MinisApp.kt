@@ -75,6 +75,15 @@ class MinisApp : Application(), ImageLoaderFactory {
     lateinit var memoryRepository: MemoryRepository
         private set
     lateinit var webAppShortcutRepository: WebAppShortcutRepository
+
+    /** [T-build-tracking] True once onCreate finished setting up every repo.
+     *  MainActivity checks this before rendering: a warm restart after a
+     *  crash-loop can resurrect the process with half-initialised state —
+     *  kill for a clean cold start instead of letting the UI touch dead refs. */
+    val appReady: Boolean
+        get() = this::chatRepository.isInitialized &&
+            this::providerRepository.isInitialized &&
+            this::memoryRepository.isInitialized
         private set
     lateinit var backgroundSettingsRepository: BackgroundSettingsRepository
         private set

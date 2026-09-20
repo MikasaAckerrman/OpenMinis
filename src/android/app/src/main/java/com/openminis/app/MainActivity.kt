@@ -356,6 +356,17 @@ class MainActivity : ComponentActivity() {
                 ?: DeepLinkAction.Unknown
         }
 
+        // [T-build-tracking] Warm-restart guard: if the process was
+        // resurrected but Application.onCreate hasn't finished (crash-loop
+        // recovery), kill for a clean cold start instead of touching dead refs.
+        val appReady = (application as? com.openminis.app.MinisApp)?.appReady ?: false
+        if (!appReady && !com.openminis.app.crash.CrashFrequencyDetector.isSafeMode()) {
+            android.util.Log.w("MainActivity", "app not ready and safe-mode off — killing process for a clean cold start")
+            finish()
+            android.os.Process.killProcess(android.os.Process.myPid())
+            return
+        }
+
         setContent {
             val prefs = remember { getAppearancePrefs(this) }
             var themeMode by remember { mutableIntStateOf(prefs.getInt(KEY_THEME_MODE, 0)) }

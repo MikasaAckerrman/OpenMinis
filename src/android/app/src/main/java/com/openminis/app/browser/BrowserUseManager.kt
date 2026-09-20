@@ -353,6 +353,39 @@ class BrowserUseManager(
                 _canGoForward.value = view.canGoForward()
                 navigationDeferred?.complete(Unit)
                 navigationDeferred = null
+                // [T-zoom-durable] Patch user-scalable=no / maximum-scale=1
+                // back to zoomable at every page finish AND keep patched via
+                // a 2s interval (SPA rewrites the meta at input focus; a
+                // one-shot rewrite dies there — "pinch dead after keyboard").
+                // Ported from f02d1dc: interval probe, not MutationObserver
+                // (React commit race D7). Also forces 16px input font-size
+                // so iOS-style zoom-on-focus can't trigger.
+                view.evaluateJavascript(
+                    "(function(){" +
+                        "if(location.protocol!=='http:'&&location.protocol!=='https:')return;" +
+                        "if(window.__minisZoomPatch)return;window.__minisZoomPatch=1;" +
+                        "var fix=function(m){if(!m)return;var c=m.getAttribute('content')||'';" +
+                        "var o=c;" +
+                        "if(/user-scalable\\s*=\\s*no/i.test(c)){" +
+                        "c=c.replace(/user-scalable\\s*=\\s*no/i,'user-scalable=yes');}else if(!/user-scalable/i.test(c)){c+=', user-scalable=yes';}" +
+                        "var mx=c.match(/maximum-scale\\s*=\\s*([\\d.]+)/i);" +
+                        "if(mx&&parseFloat(mx[1])<10){" +
+                        "c=c.replace(/maximum-scale\\s*=\\s*[\\d.]+/i,'maximum-scale=10');}else if(!mx){c+=', maximum-scale=10';}" +
+                        "if(c!==o)m.setAttribute('content',c);};" +
+                        "var ensure=function(){" +
+                        "fix(document.querySelector('meta[name=viewport]'));};" +
+                        "ensure();" +
+                        "window.__minisFix=fix;" +
+                        "setInterval(function(){try{ensure();}catch(e){}},2000);" +
+                        "var st=document.createElement('style');" +
+                        "st.textContent='input[type=text],input[type=tel]," +
+                        "input[type=email],input[type=search],input[type=url]," +
+                        "input[type=password],input[type=number],textarea" +
+                        "{font-size:16px !important}';" +
+                        "document.head.appendChild(st);" +
+                        "})()",
+                    null,
+                )
                 // Record in browser history
                 val histUrl = url ?: ""
                 val histTitle = view.title ?: ""
