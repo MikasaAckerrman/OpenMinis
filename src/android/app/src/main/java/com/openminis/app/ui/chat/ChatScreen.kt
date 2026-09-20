@@ -3719,6 +3719,7 @@ fun ChatScreen(
                                 )
                             }
                             is FlatChatItem.AssistantTyping -> TypingIndicator()
+                    is FlatChatItem.DeletedPlaceholder -> false
                             is FlatChatItem.AgentRunCard -> {
                                 // Subscribed here, not in the flat list, so a node
                                 // state change repaints just this card instead of
