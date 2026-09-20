@@ -180,6 +180,32 @@ class CompletionSound(context: Context) {
                 }
             }
             val vol = profile.volume.coerceIn(0f, 1f)
+            // [T-completion-sound-duck] Before playing the completion cue,
+            // request transient audio focus with MAY_DUCK so that whatever
+            // the user is listening to (music, podcast, video) is briefly
+            // attenuated while the cue plays. The user's complaint was "I
+            // miss the cue over background audio". Without this, the alarm-
+            // stream cue plays on top of the music at full music volume and
+            // is easily masked. With MAY_DUCK, the system lowers the other
+            // stream for ~1s, the cue is unmistakable, then focus is
+            // abandoned and the other stream returns. Safe no-op if no
+            // other app holds audio focus.
+            val am = audioManager
+            if (am != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                try {
+                    val focusRequest = android.media.AudioFocusRequest.Builder(
+                        android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK
+                    ).setAudioAttributes(alarmAttributes).build()
+                    am.requestAudioFocus(focusRequest)
+                    // Abandon shortly after the cue finishes (the longest
+                    // sample is <1.2s; add a small margin).
+                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                        try { am.abandonAudioFocusRequest(focusRequest) } catch (_: Throwable) {}
+                    }, 1500L)
+                } catch (t: Throwable) {
+                    AppLogger.warning(TAG, "audio focus (duck) request failed: ${t.message}")
+                }
+            }
             pool.play(sampleId, vol, vol, 1, 0, 1f)
         } catch (t: Throwable) {
             AppLogger.warning(TAG, "play failed: ${t.message}")
@@ -241,8 +267,13 @@ enum class CompletionSoundEffect(val id: String) {
  * so Settings changes apply on the very next turn.
  */
 data class CompletionSoundProfile(
-    /** Master switch — default OFF (vibration is the default cue). */
-    val enabled: Boolean = false,
+    /**
+     * Master switch — default ON with audio-ducking (per user request:
+     * "не было шанса что не замечу что ты закончил"). The sound request
+     * uses AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK, so background music dips
+     * instead of stopping.
+     */
+    val enabled: Boolean = true,
     /** Which sound to play. */
     val effect: CompletionSoundEffect = CompletionSoundEffect.DEFAULT,
     /** 0.0..1.0, applied at play time (not stream volume). */

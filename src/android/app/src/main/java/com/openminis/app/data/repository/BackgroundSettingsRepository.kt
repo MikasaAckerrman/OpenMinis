@@ -79,7 +79,7 @@ class BackgroundSettingsRepository(context: Context) {
      * in from Settings → Background & notifications.
      */
     private val _completionVibrationEnabled =
-        MutableStateFlow(prefs.getBoolean(KEY_COMPLETION_VIBRATION, false))
+        MutableStateFlow(prefs.getBoolean(KEY_COMPLETION_VIBRATION, true))
     val completionVibrationEnabled: StateFlow<Boolean> =
         _completionVibrationEnabled.asStateFlow()
 
@@ -95,7 +95,7 @@ class BackgroundSettingsRepository(context: Context) {
      * map costs nothing.
      */
     fun isCompletionVibrationEnabled(): Boolean =
-        prefs.getBoolean(KEY_COMPLETION_VIBRATION, false)
+        prefs.getBoolean(KEY_COMPLETION_VIBRATION, true)
 
     fun setCompletionVibrationEnabled(value: Boolean) {
         prefs.edit().putBoolean(KEY_COMPLETION_VIBRATION, value).apply()
@@ -122,7 +122,7 @@ class BackgroundSettingsRepository(context: Context) {
                 .fromId(prefs.getString(KEY_VIBRATION_INTENSITY, null)),
             length = com.openminis.app.feedback.VibrationLength
                 .fromId(prefs.getString(KEY_VIBRATION_LENGTH, null)),
-            bypassDnd = prefs.getBoolean(KEY_VIBRATION_BYPASS_DND, false),
+            bypassDnd = prefs.getBoolean(KEY_VIBRATION_BYPASS_DND, true),
         )
 
     fun setVibrationPattern(p: com.openminis.app.feedback.VibrationPattern) {
@@ -157,7 +157,7 @@ class BackgroundSettingsRepository(context: Context) {
 
     fun readCompletionSoundProfile(): com.openminis.app.feedback.CompletionSoundProfile =
         com.openminis.app.feedback.CompletionSoundProfile(
-            enabled = prefs.getBoolean(KEY_SOUND_ENABLED, false),
+            enabled = prefs.getBoolean(KEY_SOUND_ENABLED, true),
             effect = com.openminis.app.feedback.CompletionSoundEffect
                 .fromId(prefs.getString(KEY_SOUND_EFFECT, null)),
             volume = prefs.getFloat(KEY_SOUND_VOLUME, 0.5f),

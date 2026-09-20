@@ -4173,6 +4173,7 @@ class ChatViewModel(
                                     "Previous context summary:\n$previousSummary\n\nNext portion:\n$w"
                                 } else w,
                                 reporter, i + 1, windows.size,
+                                maxTokensOverride = 1536,
                             ).trim()
                         } catch (e: Exception) {
                             if (com.openminis.app.data.TransportErrorClassifier.isDefinitelyNotSizeRelated(e.message ?: "")) {
@@ -4192,7 +4193,8 @@ class ChatViewModel(
                 else {
                     AppLogger.info(TAG, "[Compact] sequential retry for window ${i+1}")
                     try {
-                        generateCompactSummary(windows[i], reporter, i + 1, windows.size).trim()
+                        generateCompactSummary(windows[i], reporter, i + 1, windows.size,
+                            maxTokensOverride = 1536).trim()
                     } catch (e: Exception) { "" }
                 }
             }.filter { it.isNotEmpty() }
@@ -4200,8 +4202,10 @@ class ChatViewModel(
             if (fixed.isEmpty()) throw java.io.IOException("all parallel windows failed")
             if (fixed.size == 1) return fixed[0]
 
-            // MERGE: one call that combines all partial summaries.
-            AppLogger.info(TAG, "[Compact] merging ${fixed.size} partial summaries")
+            // MERGE: one call that combines all partial summaries. Uses the
+            // user's /compact-level budget (maxTokensOverride = null) — this
+            // is the one call that produces the final stored summary.
+            AppLogger.info(TAG, "[Compact] merging ${fixed.size} partial summaries (full level budget)")
             reporter?.note("Соединяю ${fixed.size} частей в итог")
             val mergePrompt = buildString {
                 append("You are merging partial summaries of ONE conversation into a SINGLE definitive context summary.\n\n")
@@ -4325,6 +4329,16 @@ class ChatViewModel(
         reporter: com.openminis.app.data.CompactRunReporter? = null,
         chunkIndex: Int = 1,
         chunkCount: Int = 1,
+        /**
+         * [T-compact-rolling-append] Override for the OUTPUT budget. The
+         * intermediate map-phase windows pass a SMALL cap (1536 tokens):
+         * their only job is to compress a slice well enough for the final
+         * merge to integrate it — generating a full 8192-token summary per
+         * window made each auto-compact minutes-long on slow generators
+         * and the merge discarded most of it anyway. null = the user's
+         * /compact-level budget (the final merge and the single-shot path).
+         */
+        maxTokensOverride: Int? = null,
     ): String {
         // [T-compact-level-wiring] Compute the level target BEFORE the prompt
         // is assembled — the target size is part of the user message below.
@@ -4363,6 +4377,15 @@ class ChatViewModel(
                 "(≈${levelTargetTokens} tokens, ~${(levelFraction * 100).toInt()}% of the source). " +
                 "A one-line or few-line summary is a FAILURE — completeness beats brevity. " +
                 "Do NOT stop early: cover every file, command, decision, error and outcome.")
+            if (maxTokensOverride != null) {
+                append(
+                    "\n\nNOTE: this is an INTERMEDIATE chunk of a multi-part compaction. " +
+                        "Compress densely; the final merge will integrate and reformat. " +
+                        "Do NOT add intro/outro headers — write raw compressed facts. " +
+                        "Keep this part COMPACT (≈${maxTokensOverride} tokens): the merge call " +
+                        "produces the final stored summary.",
+                )
+            }
         }
         val model = currentModel
         val contextWindow = model?.contextWindow ?: 128_000
@@ -4375,13 +4398,21 @@ class ChatViewModel(
         // old "0.40 × window" math still left the model free to answer in
         // one line because the PROMPT never carried the expectation — the
         // observed failure was 80k chars in → 1.5k chars out in LIGHT.
-        val startMaxOut = maxOf(
-            1024,
-            minOf(
-                levelTargetTokens,
-                contextWindow - estimatedInput,
-            ),
-        )
+        // [T-compact-rolling-append] When maxTokensOverride is non-null
+        // (intermediate map-phase windows), skip the level math entirely:
+        // the small cap is the speed lever — short generations complete in
+        // seconds on slow generators, and the final merge integrates them.
+        val startMaxOut = if (maxTokensOverride != null) {
+            maxTokensOverride
+        } else {
+            maxOf(
+                1024,
+                minOf(
+                    levelTargetTokens,
+                    contextWindow - estimatedInput,
+                ),
+            )
+        }
         // [T-summary-budget] The summary is written ONCE but read on EVERY
         // subsequent request — by the model the user is on when it is read,
         // which is the CURRENT model, not necessarily the (possibly larger)
@@ -10885,11 +10916,14 @@ class ChatViewModel(
             val turnParts = buildTurnParts(allToolBlocks, turnStartBlockIndex, toolInputMap)
             val blockMeta = allToolBlocks.filter { it.kind == "tool_use" }.associateBy { it.id }
             val assistantDbId = persistAssistantTurn(turnParts, lastUsage, turnReasoningContent, blockMeta)
-            // [T-rewrite-lookup-after-stream] Same swap as the no-tool-call
-            // site: the streamed bubble must carry the DB id, otherwise
-            // rewrite/delete on a fresh message fails with "message no
-            // longer exists in this session" until the session is reloaded.
-            if (assistantDbId != null) reconcileAssistantUiId(assistantId, assistantDbId)
+            // [T-rewrite-lookup-after-stream] Deliberately NO reconcileAssistantUiId
+            // here: this site commits a tool ROUND mid-turn (the stream continues
+            // right after — updateAssistantMessage below/next turn still targets
+            // the placeholder id). Swapping the bubble id here orphans it from
+            // the stream-updater and the bubble visually VANISHES mid-generation.
+            // The final no-tool-call site (turn break) performs the swap; if the
+            // turn ends through an error/cancel instead, the bubble keeps the
+            // placeholder until the next session reload — harmless.
             // [T-partial-turn-durability] Round committed (this site runs after
             // tool execution; the export stayed live through the tool gap so an
             // error/cancel during execution could still commit the round text).
