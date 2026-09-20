@@ -1062,33 +1062,6 @@ class BrowserTabPool(private val context: Context) {
     }
 
     /** Set user agent from UI settings. Applies to all existing tabs and reloads them. */
-    // [T-browser-permissions] Session-level media page permissions. Granted
-    // at WebChromeClient.onPermissionRequest time; persisted in saveState().
-    private val _cameraPagePermission = MutableStateFlow(false)
-    val cameraPagePermission: StateFlow<Boolean> = _cameraPagePermission.asStateFlow()
-
-    private val _micPagePermission = MutableStateFlow(false)
-    val micPagePermission: StateFlow<Boolean> = _micPagePermission.asStateFlow()
-
-    fun setCameraPagePermission(enabled: Boolean) {
-        _cameraPagePermission.value = enabled
-        saveState()
-    }
-
-    fun setMicPagePermission(enabled: Boolean) {
-        _micPagePermission.value = enabled
-        saveState()
-    }
-
-    /** Toggle between mobile/desktop UA from the browser sheet icon. */
-    fun toggleUserAgentFromUI() {
-        val next = if (currentUserAgentProfile.value == UserAgentProfile.MOBILE_CHROME)
-            UserAgentProfile.DESKTOP_CHROME
-        else
-            UserAgentProfile.MOBILE_CHROME
-        setUserAgentFromUI(next)
-    }
-
     fun setUserAgentFromUI(profile: UserAgentProfile, customUA: String? = null) {
         userAgentProfile = profile
         customUserAgentString = customUA

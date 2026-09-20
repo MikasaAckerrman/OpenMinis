@@ -467,14 +467,6 @@ internal sealed class FlatChatItem {
         override val contentType = "info"
     }
 
-    /** [T-deleted-placeholder] Thin separator shown where a message was
-     * deleted, so neighbours don't glue together. Minimalist: a single
-     * short rule + nothing else. */
-    data class DeletedPlaceholder(val messageId: String) : FlatChatItem() {
-        override val key = "del_$messageId"
-        override val contentType = "deleted_placeholder"
-    }
-
     data class AssistantTyping(val messageId: String) : FlatChatItem() {
         override val key = "typing:$messageId"
         override val contentType = "typing"
