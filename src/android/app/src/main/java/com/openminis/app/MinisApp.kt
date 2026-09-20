@@ -84,7 +84,6 @@ class MinisApp : Application(), ImageLoaderFactory {
         get() = this::chatRepository.isInitialized &&
             this::providerRepository.isInitialized &&
             this::memoryRepository.isInitialized
-        private set
     lateinit var backgroundSettingsRepository: BackgroundSettingsRepository
         private set
     lateinit var backgroundTaskNotifier: BackgroundTaskNotifier
