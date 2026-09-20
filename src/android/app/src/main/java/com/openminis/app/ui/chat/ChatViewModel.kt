@@ -1,3 +1,4 @@
+import kotlinx.coroutines.runBlocking
 package com.openminis.app.ui.chat
 
 import android.content.Context
@@ -4122,9 +4123,9 @@ class ChatViewModel(
         if (windows.size >= 2) {
             AppLogger.info(TAG, "[Compact] parallel map-reduce: ${windows.size} windows → parallel")
             reporter?.note("Сжимаю ${windows.size} частей параллельно")
-            val parallelSummaries = kotlinx.coroutines.coroutineScope {
+            val parallelSummaries: List<String?> = runBlocking {
                 windows.mapIndexed { i, w ->
-                    kotlinx.coroutines.async(Dispatchers.IO) {
+                    async(Dispatchers.IO) {
                         try {
                             generateCompactSummary(
                                 if (i == 0 && !previousSummary.isNullOrBlank()) {
@@ -4133,12 +4134,10 @@ class ChatViewModel(
                                 reporter, i + 1, windows.size,
                             ).trim()
                         } catch (e: Exception) {
-                            // Auth/quota propagate immediately; size errors
-                            // fall back to sequential (adaptive cap needs it).
                             if (com.openminis.app.data.TransportErrorClassifier.isDefinitelyNotSizeRelated(e.message ?: "")) {
                                 throw e
                             }
-                            AppLogger.warning(TAG, "[Compact] window ${i+1}/${windows.size} failed in parallel: ${(e.message ?: "").take(80)} — will retry sequentially")
+                            AppLogger.warning(TAG, "[Compact] window ${i+1}/${windows.size} failed in parallel: ${(e.message ?: "").take(80)} — sequential retry")
                             null
                         }
                     }
