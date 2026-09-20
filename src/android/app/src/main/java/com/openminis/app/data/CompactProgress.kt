@@ -117,7 +117,7 @@ class CompactRunReporter(
                 // immediately instead of "Preparing…" at 0% for a minute.
                 // Bump off zero so the bar + percent label visibly tick
                 // over from the very first second of the call.
-                percent = if (topologyChanged) maxOf(0.1, it.percent * 0.01)
+                percent = if (topologyChanged) 0.1
                           else maxOf(it.percent, 0.1),
                 phase = com.openminis.app.data.CompactPhase.SUMMARIZING,
             )
