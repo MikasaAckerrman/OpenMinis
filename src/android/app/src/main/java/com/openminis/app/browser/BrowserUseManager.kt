@@ -562,14 +562,6 @@ class BrowserUseManager(
                 _pageTitle.value = title ?: ""
             }
 
-            // [T-browser-camera-gate] getUserMedia() support for the agent
-            // browser — same gate as the user-facing preview browser: toggle
-            // (Settings → Permissions) + OS CAMERA permission; VIDEO only.
-            override fun onPermissionRequest(request: PermissionRequest?) {
-                if (request == null) return
-                com.openminis.app.browser.BrowserCameraGate.handle(request, webView.context)
-            }
-
             override fun onCreateWindow(
                 view: WebView, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message
             ): Boolean {
@@ -586,6 +578,8 @@ class BrowserUseManager(
             // menu, default OFF) AND the OS permission are both in place;
             // VIDEO/MICROPHONE only, never the full MediaStream. Denied
             // otherwise — pages learn of the refusal instead of hanging.
+            // (Supersedes the older T-browser-camera-gate version, which
+            //  ignored session-level toggles.)
             override fun onPermissionRequest(request: PermissionRequest) {
                 val resources = request.resources ?: run { request.deny(); return }
                 val wantCamera = resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
