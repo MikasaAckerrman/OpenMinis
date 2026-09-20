@@ -562,8 +562,8 @@ class SessionOverlayWindow(
             while (isActive) {
                 try {
                     val now = SystemClock.elapsedRealtime()
-                    val rx = android.net.TrafficStats.getUidRxBytes(Process.myUid())
-                    val tx = android.net.TrafficStats.getUidTxBytes(Process.myUid())
+                    val rx = android.net.TrafficStats.getUidRxBytes(android.os.Process.myUid())
+                    val tx = android.net.TrafficStats.getUidTxBytes(android.os.Process.myUid())
                     val cpu = readSelfCpuMillis()
                     val ramKb = readSelfRssKb()
                     var rxRate = 0f

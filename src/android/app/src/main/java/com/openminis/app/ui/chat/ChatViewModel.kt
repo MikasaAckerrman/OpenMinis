@@ -4150,7 +4150,7 @@ class ChatViewModel(
      */
     private suspend fun generateWindowSummaryWithFloor(
         text: String,
-        reporter: CompactProgressReporter?,
+        reporter: com.openminis.app.data.CompactRunReporter?,
         chunkIndex: Int,
         chunkCount: Int,
         budgetTokens: Int,
