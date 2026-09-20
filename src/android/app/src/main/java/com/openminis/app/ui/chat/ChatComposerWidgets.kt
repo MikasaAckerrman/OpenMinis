@@ -861,11 +861,20 @@ internal fun FloatingToolStatusBar(
 
     // [T-mcp-progress-timer] Elapsed timer while a tool is running — gives
     // the user a visible heartbeat so they can tell the process isn't
-    // stuck. Ticks every second; resets when the block id changes.
+    // stuck. Ticks every second.
+    // [T-tool-timer-survive-remount] The elapsed time is DERIVED from the
+    // block's real startTimeMs, not from composable lifetime: leaving the
+    // session screen and coming back remounts this bar, which used to
+    // restart the visible timer from 0 while the tool kept running.
     var elapsedSeconds by remember(block.id) { mutableStateOf(0) }
     LaunchedEffect(block.id, isRunning) {
         if (isRunning) {
-            elapsedSeconds = 0
+            elapsedSeconds = if (block.startTimeMs > 0L) {
+                ((System.currentTimeMillis() - block.startTimeMs) / 1000L)
+                    .toInt().coerceAtLeast(0)
+            } else {
+                0
+            }
             while (true) {
                 kotlinx.coroutines.delay(1000)
                 elapsedSeconds++
