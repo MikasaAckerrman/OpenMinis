@@ -352,16 +352,16 @@ class SessionDotsGrid(context: Context) : LinearLayout(context) {
         if (perRow == 1) {
             val col = LinearLayout(context).apply { orientation = VERTICAL; gravity = Gravity.CENTER }
             all.forEach { col.addView(it, lp()) }
-            addView(col, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+            addView(col, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         } else {
             // vertical wrapper of rows
             val wrap = LinearLayout(context).apply { orientation = VERTICAL; gravity = Gravity.CENTER_VERTICAL }
             all.chunked(perRow).forEach { rowDots ->
                 val row = LinearLayout(context).apply { orientation = HORIZONTAL; gravity = Gravity.CENTER }
                 rowDots.forEach { row.addView(it, lp()) }
-                wrap.addView(row, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+                wrap.addView(row, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
             }
-            addView(wrap, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+            addView(wrap, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         }
         Log.d(TAG, "rebuild: n=$n size=$dotSize perRow=$perRow")
     }
