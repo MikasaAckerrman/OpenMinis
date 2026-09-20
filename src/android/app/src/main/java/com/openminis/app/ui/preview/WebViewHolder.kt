@@ -46,6 +46,12 @@ class WebViewHolder(
 
     private var mobileUserAgent: String = ""
 
+    /** Constructor param captured as a property — usable from methods. */
+    private val appCtx: Context = appContext
+
+    /** The URL the user's link pointed at before auto-resume may replace it. */
+    private val requestedUrl: String = initialUrl
+
     @SuppressLint("SetJavaScriptEnabled")
     val webView: WebView = WebView(appContext).apply {
         settings.javaScriptEnabled = true       // sandbox HTML demos rely on JS
@@ -78,6 +84,16 @@ class WebViewHolder(
         // implicitly via WebViewAssetLoader's defaults.
         settings.useWideViewPort = true
         settings.loadWithOverviewMode = true
+        // T-preview-pinch-zoom: many production sites (Avito, VK) ship
+        // `user-scalable=no` viewport metas, and WebView honors them while
+        // Chrome ignores them for accessibility — so pages looked "static
+        // in a frame". Enable the zoom machinery unconditionally in mobile
+        // mode (it was previously only set inside toggleDesktopMode) and
+        // pair it with the onPageFinished viewport-meta rewrite below that
+        // flips `user-scalable=no` / `maximum-scale=1` back to scalable.
+        settings.setSupportZoom(true)
+        settings.builtInZoomControls = true
+        settings.displayZoomControls = false
         mobileUserAgent = settings.userAgentString
         // T-android-webview-v3-port: enable first- + third-party cookies so
         // the in-chat preview matches Chrome cookie semantics. Without
@@ -126,6 +142,81 @@ class WebViewHolder(
                 isLoading = false
                 pageTitle = view.title.orEmpty()
                 AppLogger.debug(TAG, "onPageFinished title=${pageTitle.take(60)}")
+                // T-preview-position: persist the browsing position so it
+                // survives the preview closing (user → chat) and the app
+                // dying. Two consumers: the user's next same-host open
+                // resumes here, and the agent reads the mirrored JSON at
+                // /var/minis/workspace/preview_position.json.
+                WebPreviewPositionStore.getInstance(appContext).record(url)
+                // History parity with the agent browser (BrowserUseManager
+                // already records its pages; the preview didn't — so agent
+                // history missed everything the user browsed here).
+                if (url.startsWith("http://") || url.startsWith("https://")) {
+                    try {
+                        com.openminis.app.browser.BrowserHistoryStore
+                            .getInstance(appContext)
+                            .record(url, pageTitle)
+                    } catch (e: Exception) {
+                        AppLogger.warning(TAG, "history record failed: ${e.message}")
+                    }
+                }
+                // T-preview-pinch-zoom-2 (D1/D4): a ONE-SHOT meta rewrite on
+                // onPageFinished is not durable — production SPAs (Avito, VK)
+                // re-write the viewport meta at runtime, e.g. flipping to
+                // `user-scalable=no` when an input gains focus to suppress
+                // zoom. After that the WebView honors the NEW meta and pinch
+                // is dead until the next full navigation ("zoom stops working
+                // after the keyboard hides"). Fix: inject a persistent
+                // interval probe (see D7 below) that patches the meta on a 2s
+                // timer — off the SPA commit path. It patches
+                // user-scalable / maximum-scale ONLY, preserving the page's
+                // own width / initial-scale (desktop shrink-to-fit keeps its
+                // scale). Idempotent per document — re-injection on every
+                // finish is a no-op thanks to the window flag.
+                view.evaluateJavascript(
+                    "(function(){" +
+                        "if(location.protocol!=='http:'&&location.protocol!=='https:')return;" +
+                        "if(window.__minisZoomPatch)return;window.__minisZoomPatch=1;" +
+                        "var fix=function(m){if(!m)return;var c=m.getAttribute('content')||'';" +
+                        "var o=c;" +
+                        "if(/user-scalable\\s*=\\s*no/i.test(c)){" +
+                        "c=c.replace(/user-scalable\\s*=\\s*no/i,'user-scalable=yes');}else if(!/user-scalable/i.test(c)){c+=', user-scalable=yes';}" +
+                        "var mx=c.match(/maximum-scale\\s*=\\s*([\\d.]+)/i);" +
+                        "if(mx&&parseFloat(mx[1])<10){" +
+                        "c=c.replace(/maximum-scale\\s*=\\s*[\\d.]+/i,'maximum-scale=10');}else if(!mx){c+=', maximum-scale=10';}" +
+                        "if(c!==o)m.setAttribute('content',c);};" +
+                        "var ensure=function(){" +
+                        "var m=document.querySelector('meta[name=viewport]');" +
+                        "if(!m){m=document.createElement('meta');m.name='viewport';" +
+                        "m.setAttribute('content','width=device-width, initial-scale=1');" +
+                        "document.head.appendChild(m);}" +
+                        "fix(m);};" +
+                        "ensure();" +
+                        "window.__minisFix=fix;" +
+                        // T-preview-react-race (D7): a MutationObserver mutating
+                        // the meta synchronously inside the SPA's own commit
+                        // silently jams the widget: the first transition after
+                        // load works, every later one (submit, "изменить номер",
+                        // code screen) dies with no error. An interval probe (2s)
+                        // stays off the React commit path entirely.
+                        "setInterval(function(){try{ensure();}catch(e){}},2000);" +
+                        // T-preview-stuck-zoom (D5): kill the magnifier state at
+                        // its source. WebView auto-zooms into focused text
+                        // inputs whose computed font-size is < 16px (legacy
+                        // zoom-to-editable behavior). On IME close the scale is
+                        // supposed to unwind, but an SPA meta rewrite in
+                        // between freezes it: the page stays huge and pinch
+                        // is dead. Forcing 16px on text-ish inputs prevents
+                        // the focus zoom from ever starting.
+                        "var st=document.createElement('style');" +
+                        "st.textContent='input[type=text],input[type=tel]," +
+                        "input[type=email],input[type=search],input[type=url]," +
+                        "input[type=password],input[type=number],textarea" +
+                        "{font-size:16px !important}';" +
+                        "document.head.appendChild(st);" +
+                        "})()",
+                    null,
+                )
                 // T-htmlpreview-resize: WebView commits its first layout
                 // against whatever viewport height the container had at
                 // loadUrl-time. If that height was a transient pre-animation
@@ -157,15 +248,6 @@ class WebViewHolder(
             override fun onReceivedIcon(view: WebView?, icon: Bitmap?) {
                 if (icon != null) pageFavicon = icon
             }
-
-            // [T-browser-camera-gate] getUserMedia() support: without this
-            // override a page's camera request (liveness/identity checks)
-            // dies silently. Gate: toggle in Settings → Permissions + OS
-            // CAMERA permission; grants VIDEO only, never audio.
-            override fun onPermissionRequest(request: android.webkit.PermissionRequest?) {
-                if (request == null) return
-                com.openminis.app.browser.BrowserCameraGate.handle(request, appContext)
-            }
         }
         // T-htmlpreview-resize: sheet→fullscreen toggle, IME open/close,
         // and rotation all change the WebView's height after the page is
@@ -195,6 +277,30 @@ class WebViewHolder(
      */
     fun startIfNeeded() {
         if (hasLoaded) return
+        // T-preview-position: auto-resume. If the user previously browsed
+        // this host in the preview and stopped at a page, re-opening any
+        // link to the same host lands them exactly where they stopped
+        // instead of the link's raw target. file:// and minis:// previews
+        // (sandbox documents) never resume. The requested URL stays in
+        // [requestedUrl]; reload/expand keep operating on the resumed page.
+        if (!hasLoaded &&
+            (requestedUrl.startsWith("http://") || requestedUrl.startsWith("https://"))
+        ) {
+            try {
+                val saved = WebPreviewPositionStore
+                    .getInstance(appCtx)
+                    .lastFor(requestedUrl)
+                if (saved != null && saved != requestedUrl &&
+                    WebPreviewPositionStore.hostOf(saved) == WebPreviewPositionStore.hostOf(requestedUrl)
+                ) {
+                    AppLogger.info(TAG, "resume: $requestedUrl → $saved")
+                    currentUrl = saved
+                }
+            } catch (e: Exception) {
+                AppLogger.warning(TAG, "resume lookup failed: ${e.message}")
+            }
+        }
+        hasLoaded = true
         // T-htmlpreview-2d5c4f3d: defer the actual loadUrl until the
         // WebView is attached to a window AND has been laid out with a
         // positive width/height. Pages that compute `100vh` / `height: 100%`
@@ -205,7 +311,6 @@ class WebViewHolder(
         // We start the load eagerly when the WebView is already laid out
         // (warm reuse — re-entering a sheet for the same holder), and
         // otherwise post once to the WebView's handler after attach.
-        hasLoaded = true
         if (webView.isAttachedToWindow && webView.width > 0 && webView.height > 0) {
             AppLogger.info(TAG, "loadUrl (attached) ${currentUrl.take(160)}")
             webView.loadUrl(currentUrl)
@@ -262,8 +367,16 @@ class WebViewHolder(
             applyShrinkToFit(DESKTOP_VIEWPORT_CSS_WIDTH)
         } else {
             webView.settings.userAgentString = mobileUserAgent
-            webView.settings.useWideViewPort = false
-            webView.settings.loadWithOverviewMode = false
+            // T-preview-viewport-regression: keep wide-viewport + overview ON
+            // in mobile mode (same as creation defaults). The previous code
+            // disabled both here, which desynced mobile re-entry from the
+            // creation path — meta-less pages rendered at the 980px fallback
+            // with no shrink-to-fit, pushing buttons off-screen right.
+            webView.settings.useWideViewPort = true
+            webView.settings.loadWithOverviewMode = true
+            webView.settings.setSupportZoom(true)
+            webView.settings.builtInZoomControls = true
+            webView.settings.displayZoomControls = false
             webView.setInitialScale(0)
         }
         AppLogger.info(TAG, "toggleDesktopMode → $desktopMode")

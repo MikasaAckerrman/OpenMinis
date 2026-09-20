@@ -1168,6 +1168,30 @@ class ChatViewModel(
         return if (msg.length > 200) msg.take(200) + "…" else msg
     }
 
+    // [T-compact-level] User-selectable compaction aggressiveness.
+    private val _compactLevel = MutableStateFlow(
+        CompactLevel.fromOrdinalSafe(
+            context.getSharedPreferences("compact_prefs", Context.MODE_PRIVATE)
+                .getInt("level", CompactLevel.AUTO.ordinal)
+        )
+    )
+    val compactLevel: StateFlow<CompactLevel> = _compactLevel.asStateFlow()
+
+    fun setCompactLevel(level: CompactLevel) {
+        if (_compactLevel.value == level) return
+        _compactLevel.value = level
+        context.getSharedPreferences("compact_prefs", Context.MODE_PRIVATE)
+            .edit().putInt("level", level.ordinal).commit()
+    }
+
+    private val _lastError = MutableStateFlow<String?>(null)
+    val lastError: StateFlow<String?> = _lastError.asStateFlow()
+
+    private val _showCompactLevelPicker = MutableStateFlow(false)
+    val showCompactLevelPicker: StateFlow<Boolean> = _showCompactLevelPicker.asStateFlow()
+
+    fun dismissCompactLevelPicker() { _showCompactLevelPicker.value = false }
+
     private fun publishCompactProgress(p: com.openminis.app.data.CompactProgress?) {
         _compactProgress.value = p
         if (p == null) {
@@ -2765,6 +2789,45 @@ class ChatViewModel(
      * Any additional row the plan had to touch is reported to the user — a
      * "delete one message" that silently removed three is worse than a refusal.
      */
+    // [T-queue-edit] Edit a queued prompt: save current input to backup,
+    // replace input with the queued text, remove from queue.
+    fun editQueuedMessage(itemId: String) {
+        val target = _promptQueue.value.find { it.id == itemId } ?: return
+        // Save current input to restore after send.
+        _preEditTextBackup.value = _inputText.value
+        persistPreEditText()
+        // Replace input with the queued message's text.
+        _inputText.value = target.text
+        // Remove from queue + UI.
+        _promptQueue.value = _promptQueue.value.filterNot { it.id == itemId }
+        _messages.value = _messages.value.filterNot { it.id == itemId }
+        persistPromptQueue()
+    }
+
+    /** [T-queue-edit] Restore the pre-edit backup after the edited message was sent. */
+    fun restorePreEditText() {
+        val backup = _preEditTextBackup.value
+        if (backup.isNotEmpty() && _inputText.value.isBlank()) {
+            _inputText.value = backup
+        }
+        _preEditTextBackup.value = ""
+        clearPreEditText()
+    }
+
+    private val _preEditTextBackup = MutableStateFlow("")
+    private fun persistPreEditText() {
+        val sid = realSessionId.ifEmpty { sessionId }
+        if (sid.isEmpty()) return
+        context.getSharedPreferences("queue_edit_backup", Context.MODE_PRIVATE)
+            .edit().putString("backup_$sid", _preEditTextBackup.value).apply()
+    }
+    private fun clearPreEditText() {
+        val sid = realSessionId.ifEmpty { sessionId }
+        if (sid.isEmpty()) return
+        context.getSharedPreferences("queue_edit_backup", Context.MODE_PRIVATE)
+            .edit().remove("backup_$sid").apply()
+    }
+
     fun deleteMessage(messageId: String) {
         if (_isStreaming.value) {
             appendSystemInfo(
