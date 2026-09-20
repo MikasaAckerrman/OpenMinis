@@ -37,20 +37,20 @@ jobs:
           java-version: 17
           cache: gradle
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          api-level: 36
-          ndk-version: r28c
-          build-tools: 36.0.0
-          # CI fix 2026-09-19: the action's default package is 'tools',
-          # which Google removed from the SDK repository — sdkmanager now
-          # exits 1 with "Failed to find package 'tools'" and the whole
-          # job dies before any compile step. 'tools' has been obsolete
-          # since cmdline-tools 11+ (runner image ships cmdline-tools 16).
-          # platform-tools (adb) is the standard surviving package.
-          packages: 'platform-tools'
-
+      - name: Setup Android SDK (manual — action v3 bug: dead 'tools' package)
+        run: |
+          # Runner image ships cmdline-tools 16 at ANDROID_HOME. Use it directly.
+          # the old action ALWAYS installs 'tools' internally
+          # which Google removed → sdkmanager exit 1 → job dies. This manual
+          # path does exactly what we need without the action's dead package.
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          [ -x "$SDKMANAGER" ] || SDKMANAGER="$ANDROID_HOME/cmdline-tools/16.0/bin/sdkmanager"
+          echo "sdkmanager at: $SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          "$SDKMANAGER" --install "platforms;android-36" "build-tools;36.0.0" "platform-tools" "ndk;28.2.13676358" > /dev/null 2>&1
+          "$SDKMANAGER" --list_installed | head -20
+        env:
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
       - name: Cache Gradle
         uses: actions/cache@v4
         with:
@@ -230,15 +230,12 @@ jobs:
           distribution: 'temurin'
           java-version: 17
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          api-level: 36
-          ndk-version: r28c
-          # CI fix 2026-09-19: same 'tools' package removal — see the build
-          # job above.
-          packages: 'platform-tools'
-
+      - name: Setup Android SDK (manual — action v3 dead package bug)
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          [ -x "$SDKMANAGER" ] || SDKMANAGER="$ANDROID_HOME/cmdline-tools/16.0/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          "$SDKMANAGER" --install "platforms;android-36" "build-tools;36.0.0" "platform-tools" "ndk;28.2.13676358" > /dev/null 2>&1
       - name: Build native dependencies
         run: |
           cd deps
