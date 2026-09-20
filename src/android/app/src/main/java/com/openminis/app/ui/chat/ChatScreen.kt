@@ -5786,6 +5786,65 @@ fun ChatScreen(
     }
 
     // Browser bottom sheet
+    // [T-compact-level] Compact level picker sheet.
+    if (showCompactLevelSheet) {
+        val currentLevel by viewModel.compactLevel.collectAsState()
+        androidx.compose.material3.ModalBottomSheet(
+            onDismissRequest = {
+                viewModel.dismissCompactLevelPicker()
+                showCompactLevelSheet = false
+            },
+        ) {
+            androidx.compose.material3.Text(
+                text = "Compression Level",
+                fontSize = 18.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = ChatColors.primaryText,
+                modifier = Modifier.padding(start = 24.dp, bottom = 8.dp),
+            )
+            CompactLevel.entries.forEach { level ->
+                val isSelected = level == currentLevel
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            viewModel.setCompactLevel(level)
+                            viewModel.dismissCompactLevelPicker()
+                            showCompactLevelSheet = false
+                        }
+                        .padding(horizontal = 24.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = level.displayName,
+                            fontSize = 16.sp,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                            color = if (isSelected) ChatColors.sendButton else ChatColors.primaryText,
+                        )
+                        Text(
+                            text = when (level) {
+                                CompactLevel.LIGHT -> "Keep more detail — ~30-40% of original"
+                                CompactLevel.MEDIUM -> "Balanced — ~15-20% of original"
+                                CompactLevel.ULTRA -> "Aggressive — ~5% of original"
+                                CompactLevel.AUTO -> "Model chooses based on context size"
+                            },
+                            fontSize = 13.sp,
+                            color = ChatColors.tertiaryText,
+                        )
+                    }
+                    if (isSelected) {
+                        Icon(
+                            Icons.Default.Check,
+                            contentDescription = null,
+                            tint = ChatColors.sendButton,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     if (showBrowserSheet) {
         BrowserSheet(
             tabPool = viewModel.browserTabPool,

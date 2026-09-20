@@ -16,6 +16,7 @@ import com.openminis.app.browser.BrowserTabPool
 import com.openminis.app.data.db.MessageEntity
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Compress
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.Psychology
@@ -1849,6 +1850,12 @@ class ChatViewModel(
             subtitle = "",
         ),
         SlashCommand(
+            id = "compact-level",
+            icon = Icons.Default.Tune,
+            title = "Compact Level",
+            subtitle = "Compression aggressiveness",
+        ),
+        SlashCommand(
             id = "memory",
             icon = Icons.Default.Psychology,
             title = "Memory",
@@ -1918,6 +1925,7 @@ class ChatViewModel(
 
         when (cmd.id) {
             "compact" -> runCompactNow()
+            "compact-level" -> _showCompactLevelPicker.value = true
             "memory" -> toggleMemoryEnabled()
             "thinking" -> toggleThinking()
             "clear" -> _clearChatConfirmRequested.value = true

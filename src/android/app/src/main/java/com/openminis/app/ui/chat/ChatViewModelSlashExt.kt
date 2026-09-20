@@ -104,6 +104,9 @@ internal fun ChatViewModel.filteredSlashCommands(): List<SlashCommand> {
     val filter = _slashFilter.value.lowercase()
     val base = availableSlashCommands.map { cmd ->
         when (cmd.id) {
+            "compact-level" -> cmd.copy(
+                subtitle = "Level: " + _compactLevel.value.displayName,
+            )
             "compact" -> cmd.copy(
                 subtitle = context.getString(R.string.slash_compact_subtitle),
             )
