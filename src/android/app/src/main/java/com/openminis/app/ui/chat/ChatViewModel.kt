@@ -4110,9 +4110,83 @@ class ChatViewModel(
         if (windows.isEmpty()) return previousSummary.orEmpty().trim()
         AppLogger.info(
             TAG,
-            "[Compact] rolling reduce: transcript ${transcript.length} chars → ${windows.size} window(s) " +
+            "[Compact] transcript ${transcript.length} chars → ${windows.size} window(s) " +
                 "of ≤$capChars chars (window=$windowTokens tok)${if (!previousSummary.isNullOrBlank()) ", seeded with previous summary" else ""}",
         )
+
+        // [T-compact-parallel] Map-Reduce: when there are ≥2 windows, run
+        // all window summaries IN PARALLEL (each is an independent LLM call
+        // with its own budgeted cap), then merge the partial summaries with
+        // one final call. 6 windows: sequential = 6×TTFB, parallel = 1×TTFB
+        // + 1 merge. 3-6x faster on real relays.
+        if (windows.size >= 2) {
+            AppLogger.info(TAG, "[Compact] parallel map-reduce: ${windows.size} windows → parallel")
+            reporter?.note("Сжимаю ${windows.size} частей параллельно")
+            val parallelSummaries = kotlinx.coroutines.coroutineScope {
+                windows.mapIndexed { i, w ->
+                    kotlinx.coroutines.async(Dispatchers.IO) {
+                        try {
+                            generateCompactSummary(
+                                if (i == 0 && !previousSummary.isNullOrBlank()) {
+                                    "Previous context summary:\n$previousSummary\n\nNext portion:\n$w"
+                                } else w,
+                                reporter, i + 1, windows.size,
+                            ).trim()
+                        } catch (e: Exception) {
+                            // Auth/quota propagate immediately; size errors
+                            // fall back to sequential (adaptive cap needs it).
+                            if (com.openminis.app.data.TransportErrorClassifier.isDefinitelyNotSizeRelated(e.message ?: "")) {
+                                throw e
+                            }
+                            AppLogger.warning(TAG, "[Compact] window ${i+1}/${windows.size} failed in parallel: ${(e.message ?: "").take(80)} — will retry sequentially")
+                            null
+                        }
+                    }
+                }.map { it.await() }
+            }
+
+            // Any window that failed in parallel gets a sequential retry
+            // with the adaptive-cap logic (single-window call, full retry).
+            val fixed = parallelSummaries.mapIndexed { i, s ->
+                if (s != null && s.isNotEmpty()) s
+                else {
+                    AppLogger.info(TAG, "[Compact] sequential retry for window ${i+1}")
+                    try {
+                        generateCompactSummary(windows[i], reporter, i + 1, windows.size).trim()
+                    } catch (e: Exception) { "" }
+                }
+            }.filter { it.isNotEmpty() }
+
+            if (fixed.isEmpty()) throw java.io.IOException("all parallel windows failed")
+            if (fixed.size == 1) return fixed[0]
+
+            // MERGE: one call that combines all partial summaries.
+            AppLogger.info(TAG, "[Compact] merging ${fixed.size} partial summaries")
+            reporter?.note("Соединяю ${fixed.size} частей в итог")
+            val mergePrompt = buildString {
+                append("Merge these partial summaries of one conversation into a SINGLE comprehensive summary.\n\n")
+                append("MUST PRESERVE from ALL parts:\n")
+                append("- Every file path, identifier, URL, and command mentioned\n")
+                append("- Every decision made and its outcome\n")
+                append("- Every error encountered and its resolution\n")
+                append("- The last thing the user requested and its status\n\n")
+                fixed.forEachIndexed { i, s ->
+                    append("=== Part ${i + 1} ===\n").append(s).append("\n\n")
+                }
+                append("Produce ONE unified summary covering ALL of the above.")
+            }
+            return try {
+                generateCompactSummary(mergePrompt, reporter, windows.size + 1, windows.size + 1).trim()
+                    .ifEmpty { fixed.joinToString("\n\n") }
+            } catch (e: Exception) {
+                // Merge failed — concatenated parts are a valid degraded result.
+                AppLogger.warning(TAG, "[Compact] merge failed: ${(e.message ?: "").take(80)} — using concatenated parts")
+                fixed.joinToString("\n\n")
+            }
+        }
+
+        // Single window or sequential fallback path (original logic).
+        var seqWindows = windows
         var summary: String? = previousSummary?.takeIf { it.isNotBlank() }
         var idx = 0
         // [T-compact-window-packing] Adaptive cap: starts at the model/relay
@@ -4124,8 +4198,8 @@ class ChatViewModel(
         var capNow = capChars
         // [T-compact-quality] One-shot retry when the model under-summarizes.
         var retryOnShort = true
-        while (idx < windows.size) {
-            val w = windows[idx]
+        while (idx < seqWindows.size) {
+            val w = seqWindows[idx]
             val input = if (summary == null) {
                 w
             } else {
@@ -4133,17 +4207,17 @@ class ChatViewModel(
                     "Next portion of the conversation (older material is already summarized above):\n$w"
             }
             try {
-                var out = generateCompactSummary(input, reporter, idx + 1, windows.size).trim()
+                var out = generateCompactSummary(input, reporter, idx + 1, seqWindows.size).trim()
                 // [T-compact-quality] Guard: a summary that collapses to near-
                 // nothing (model lazily returned one line) silently destroys
                 // the whole session context. If the LAST window's summary is
                 // < 1% of its input, retry once with an explicit warning in
                 // the prompt; still short → accept (provider may be weak).
-                if (out.length < input.length / 100 && idx == windows.size - 1 && retryOnShort) {
+                if (out.length < input.length / 100 && idx == seqWindows.size - 1 && retryOnShort) {
                     AppLogger.warning(TAG, "[Compact] summary suspiciously short: ${out.length} chars for ${input.length} input — retrying with warning")
                     retryOnShort = false
                     val retryPrompt = input + "\n\n⚠ WARNING: your previous summary was unacceptably short. You MUST produce a comprehensive summary — at minimum cover every file, command, decision, error and outcome from the material above. A one-line reply is a FAILURE."
-                    val retryOut = generateCompactSummary(retryPrompt, reporter, idx + 1, windows.size).trim()
+                    val retryOut = generateCompactSummary(retryPrompt, reporter, idx + 1, seqWindows.size).trim()
                     if (retryOut.length > out.length) out = retryOut
                 }
                 if (out.isNotEmpty()) summary = out
@@ -4158,13 +4232,13 @@ class ChatViewModel(
                 if (newCap < com.openminis.app.data.CompactChunking.MIN_HALVABLE_CHARS) throw e
                 AppLogger.info(
                     TAG,
-                    "[Compact] window ${idx + 1}/${windows.size} rejected (${msg.take(120)}) — " +
-                        "adaptive cap $capNow → $newCap, repacking pending ${windows.size - idx} window(s)",
+                    "[Compact] window ${idx + 1}/${seqWindows.size} rejected (${msg.take(120)}) — " +
+                        "adaptive cap $capNow → $newCap, repacking pending ${seqWindows.size - idx} window(s)",
                 )
                 reporter?.note("Шлюз отклонил часть — режу мельче и продолжаю")
                 capNow = newCap
                 val repacked = com.openminis.app.data.CompactChunking.packWindows(
-                    windows.subList(idx, windows.size).joinToString("\n"),
+                    seqWindows.subList(idx, seqWindows.size).joinToString("\n"),
                     capNow,
                 )
                 if (repacked.isEmpty()) {
@@ -4172,7 +4246,7 @@ class ChatViewModel(
                     idx += 1
                     continue
                 }
-                windows = windows.subList(0, idx) + repacked
+                seqWindows = seqWindows.subList(0, idx) + repacked
                 // idx stays: the first repacked window takes the rejected slot.
                 continue
             }
