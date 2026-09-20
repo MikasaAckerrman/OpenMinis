@@ -246,7 +246,11 @@ class AnthropicProvider(
                 if (payload == "[DONE]") break
 
                 val event = try { JSONObject(payload) } catch (_: Exception) { continue }
-                android.util.Log.d("ToolChain[Provider]", "RAW SSE: $payload")
+                // [T-perf-raw-sse-gate] see OpenAIProvider — raw payload
+                // dumps only under the debug flag, bounded to 400 chars.
+                if (com.openminis.app.logging.AppLogger.isDebugEnabled) {
+                    android.util.Log.d("ToolChain[Provider]", "RAW SSE: ${payload.take(400)}")
+                }
                 val eventType = event.safeOptString("type", "")
 
                 when (eventType) {

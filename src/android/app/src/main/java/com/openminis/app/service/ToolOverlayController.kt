@@ -203,19 +203,19 @@ class ToolOverlayController(private val context: Context) {
      * (id → display initial) into the dot grid. The grid appears as soon
      * as the first session starts and replaces the legacy minis-logo
      * spinner for the duration.
+     *
+     * [T-overlay-foreground-gate] This method NEVER attaches the window:
+     * show/hide ownership belongs to applyOverlayState's shouldShow gate
+     * (foreground / permission / toggle / camera-suppress). Attaching
+     * here re-showed the capsule ON TOP of the open app — the reported
+     * "overlay appears while Minis is in the foreground" bug.
      */
     fun updateSessionDots(active: List<Pair<String, String>>) {
         mainHandler.post {
             try {
-                val grid = dotsGrid
-                if (grid == null) {
-                    if (active.isNotEmpty() && !isShown) {
-                        // Attach lazily so the dots surface even without a
-                        // legacy show() call.
-                        attach()
-                    }
-                    return@post
-                }
+                // Only update when the capsule is already on screen —
+                // visibility lifecycle is not ours to drive.
+                val grid = dotsGrid ?: return@post
                 grid.updateRunning(active)
                 val hasDots = grid.hasAnyDot()
                 grid.visibility = if (hasDots) View.VISIBLE else View.GONE

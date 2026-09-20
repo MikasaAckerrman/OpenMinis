@@ -223,14 +223,23 @@ fun rememberSystemResourceMonitor(active: Boolean): SystemResourceMonitor {
             monitor.reset()
             return@LaunchedEffect
         }
-        // Prime the baseline; first read returns 0% by design (no prior
-        // tick snapshot to subtract). Two seconds later we have a real
-        // delta, matching iOS's first-tick behavior.
-        monitor.sampleOnce(context)
+        // [T-perf-resource-monitor-off-main] Sampling touches Binder
+        // (ActivityManager.getMemoryInfo) and /proc walks
+        // (Debug.getMemoryInfo / per-process stat reads). On a loaded
+        // system a Binder round-trip can block for SECONDS — the stall
+        // detector logged 3.5–24.5 s main-thread hangs with the whole
+        // chat frozen (ANR-grade), even on an otherwise idle chat. All
+        // sampling runs on Dispatchers.IO; the main thread only gets the
+        // tick++ recompose signal.
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            monitor.sampleOnce(context)
+        }
         tick++
         while (isActive) {
             delay(2000)
-            monitor.sampleOnce(context)
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                monitor.sampleOnce(context)
+            }
             tick++
         }
     }

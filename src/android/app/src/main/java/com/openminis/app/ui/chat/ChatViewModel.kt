@@ -4161,9 +4161,25 @@ class ChatViewModel(
         // with its own budgeted cap), then merge the partial summaries with
         // one final call. 6 windows: sequential = 6×TTFB, parallel = 1×TTFB
         // + 1 merge. 3-6x faster on real relays.
+        // [T-compact-level-proportional] Per-window budget = the LEVEL
+        // fraction of that window's own size (LIGHT 40% / MEDIUM 20% /
+        // ULTRA 5%), floor 768 tokens. The old fixed 1536 cap compressed a
+        // 96k-char window to ~6k chars (1/16!) and the merge of those
+        // crumbs produced the "200k chars → 1.5k chars" failure the user
+        // explicitly forbade: 200k must go to ~40k depending on level.
+        val levelFractionForWindows = when (compactLevel.value) {
+            CompactLevel.LIGHT -> 0.40
+            CompactLevel.MEDIUM -> 0.20
+            CompactLevel.ULTRA -> 0.05
+            CompactLevel.AUTO -> 0.10
+        }
+        fun perWindowBudget(windowChars: Int): Int {
+            val est = (windowChars / 4).coerceAtLeast(1)
+            return (levelFractionForWindows * est).toInt().coerceAtLeast(768)
+        }
         if (windows.size >= 2) {
-            AppLogger.info(TAG, "[Compact] parallel map-reduce: ${windows.size} windows → parallel")
-            reporter?.note("Сжимаю ${windows.size} частей параллельно")
+            AppLogger.info(TAG, "[Compact] parallel map: ${windows.size} windows, level=${compactLevel.value} fraction=$levelFractionForWindows")
+            reporter?.note("Сжимаю ${windows.size} частей параллельно (${compactLevel.value.displayName})")
             val parallelSummaries: List<String?> = kotlinx.coroutines.coroutineScope {
                 windows.mapIndexed { i, w ->
                     async(Dispatchers.IO) {
@@ -4173,7 +4189,7 @@ class ChatViewModel(
                                     "Previous context summary:\n$previousSummary\n\nNext portion:\n$w"
                                 } else w,
                                 reporter, i + 1, windows.size,
-                                maxTokensOverride = 1536,
+                                maxTokensOverride = perWindowBudget(w.length),
                             ).trim()
                         } catch (e: Exception) {
                             if (com.openminis.app.data.TransportErrorClassifier.isDefinitelyNotSizeRelated(e.message ?: "")) {
@@ -4194,7 +4210,7 @@ class ChatViewModel(
                     AppLogger.info(TAG, "[Compact] sequential retry for window ${i+1}")
                     try {
                         generateCompactSummary(windows[i], reporter, i + 1, windows.size,
-                            maxTokensOverride = 1536).trim()
+                            maxTokensOverride = perWindowBudget(windows[i].length)).trim()
                     } catch (e: Exception) { "" }
                 }
             }.filter { it.isNotEmpty() }
@@ -4202,9 +4218,30 @@ class ChatViewModel(
             if (fixed.isEmpty()) throw java.io.IOException("all parallel windows failed")
             if (fixed.size == 1) return fixed[0]
 
-            // MERGE: one call that combines all partial summaries. Uses the
-            // user's /compact-level budget (maxTokensOverride = null) — this
-            // is the one call that produces the final stored summary.
+            // [T-compact-level-proportional] LIGHT/MEDIUM/ULTRA: CONCATENATE
+            // the per-window summaries directly — each window already
+            // compressed at the level's own fraction, the parts are cut on
+            // safe user-turn boundaries (no overlapping material), so the
+            // concatenation IS the level-proportional summary: 200k chars in
+            // → ~40k out (MEDIUM) with zero extra LLM latency. The old extra
+            // merge call re-compressed the parts AGAIN with a full budget —
+            // one more long generation per compact, and the merge's own
+            // dedup pass is what collapsed well-sized parts into crumbs.
+            // Level AUTO keeps the semantic merge (dedup matters more than
+            // speed there).
+            if (compactLevel.value != CompactLevel.AUTO) {
+                val combined = fixed.joinToString("\n\n")
+                AppLogger.info(
+                    TAG,
+                    "[Compact] level=${compactLevel.value} concatenated ${fixed.size} parts: " +
+                        "transcript ${transcript.length} chars → ${combined.length} chars " +
+                        "(${combined.length * 100 / transcript.length.coerceAtLeast(1)}%)",
+                )
+                reporter?.note("Готово: ${transcript.length / 1000}к → ${combined.length / 1000}к символов")
+                return combined
+            }
+
+            // AUTO: semantic merge (one call, full budget) — dedup across parts.
             AppLogger.info(TAG, "[Compact] merging ${fixed.size} partial summaries (full level budget)")
             reporter?.note("Соединяю ${fixed.size} частей в итог")
             val mergePrompt = buildString {

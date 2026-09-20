@@ -790,7 +790,14 @@ class OpenAIProvider private constructor(
                     )
                     continue
                 }
-                android.util.Log.d("ToolChain[Provider]", "RAW SSE: $payload")
+                // [T-perf-raw-sse-gate] RAW payload logging was unconditional —
+                // hundreds of full-JSON log lines per streamed second eat
+                // CPU+IO on slow devices and flood logcat. Keep the raw
+                // dump behind the debug flag; the T321 summaries below stay
+                // always-on (counts/lengths only).
+                if (com.openminis.app.logging.AppLogger.isDebugEnabled) {
+                    android.util.Log.d("ToolChain[Provider]", "RAW SSE: ${payload.take(400)}")
+                }
                 sseEventCount++
 
                 // T321: per-event delta-field summary. Only counts/lengths,

@@ -332,6 +332,16 @@ class SessionDotsGrid(context: Context) : LinearLayout(context) {
 
     private fun rebuild() {
         removeAllViews()
+        // [T-overlay-session-dots-crash] Cached dots (kept alive for the
+        // completion animation) still carry a parent pointer to their
+        // previous row/column wrapper — that wrapper was detached above,
+        // but the parent reference itself survives. Re-adding a view
+        // that still has a parent throws IllegalStateException ("The
+        // specified child already has a parent") — this was the crash
+        // loop on every rebuild after the first one. Detach explicitly.
+        (dots.values + finishing.values).forEach { dot ->
+            (dot.parent as? ViewGroup)?.removeView(dot)
+        }
         val all = dots.values + finishing.values
         val n = all.size
         if (n == 0) return
