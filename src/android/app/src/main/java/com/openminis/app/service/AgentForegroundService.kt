@@ -364,13 +364,14 @@ class AgentForegroundService : Service() {
         // activeSessions shrinks and the count badge / panel update
         // reactively; the capsule plays the jelly dismissal when the
         // LAST session disappears (handled inside SessionOverlayWindow).
+        val backgroundRepo = app.backgroundSettingsRepository
         sessionOverlayWindow = SessionOverlayWindow(
             context = this,
             scope = overlayScope,
             isForegroundGateOpen = { app.isAppForegroundFlow.value },
             openSession = { sid -> openSessionDeepLink(sid) },
+            backgroundRepo = backgroundRepo,
         )
-        val backgroundRepo = app.backgroundSettingsRepository
 
         overlayScope.launch {
             combine(

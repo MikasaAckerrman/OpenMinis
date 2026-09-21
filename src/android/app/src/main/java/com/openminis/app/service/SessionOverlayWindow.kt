@@ -481,16 +481,15 @@ class SessionOverlayWindow(
     private val scope: CoroutineScope,
     private val isForegroundGateOpen: () -> Boolean,
     private val openSession: (String) -> Unit,
+    private val backgroundRepo: com.openminis.app.data.repository.BackgroundSettingsRepository,
 ) {
     companion object {
         private const val TAG = "SessionOverlayWindow"
         private const val BOTTOM_MARGIN_DP = 78f
 
-    // [T-overlay-v3-persist] Position + form preferences (screen fractions
-    // survive rotation; portrait orb toggle).
+    // [T-overlay-v3-persist] Form + feedback preferences. Position lives
+    // in the LEGACY store (backgroundRepo, absolute per-orientation x/y).
     private const val PREFS_NAME = "overlay_v3_prefs"
-    private const val PREF_X_FRAC = "x_frac"
-    private const val PREF_Y_FRAC = "y_frac"
     private const val PREF_PORTRAIT_ORB = "portrait_orb"
     private const val PREF_HAPTIC = "haptic_enabled"
     private const val PREF_SOUND = "sound_enabled"
@@ -599,17 +598,20 @@ class SessionOverlayWindow(
             val target = if (landscape || portraitOrb) 1f else 0f
             capsule?.setShape(target, animated = true)
             capsuleParams?.let { params ->
-                val dm = context.resources.displayMetrics
                 val vb = visibleBounds()
-                // Re-anchor from saved fractions so the orb lands at the
-                // same RELATIVE spot after rotating.
-                restorePosition(vb, params.width, params.height)?.let { (x, y) ->
-                    params.x = x
-                    params.y = y
-                } ?: run {
+                // [T-overlay-v3-legacy-mechanics] Re-anchor from the
+                // per-orientation legacy store; hard-clamped so a rotation
+                // can never strand the window off-screen (same rule the
+                // legacy onConfigurationChanged used).
+                val savedX = backgroundRepo.getOverlayX(landscape)
+                val savedY = backgroundRepo.getOverlayY(landscape)
+                if (savedX >= 0 && savedY >= 0) {
+                    params.x = savedX
+                    params.y = savedY
+                } else {
                     params.x = (vb.width() - params.width) / 2
                     params.y = vb.bottom - params.height -
-                        (BOTTOM_MARGIN_DP * dm.density).toInt()
+                        (48f * context.resources.displayMetrics.density).toInt()
                 }
                 clampCapsuleIntoReach(params)
                 capsule?.let { v ->
@@ -723,31 +725,39 @@ class SessionOverlayWindow(
             w,
             h,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            // [T-overlay-v3-legacy-mechanics] EXACTLY the flags the legacy
+            // capsule flew under for years (plus fit-insets zeroed as the
+            // one defensive extra — see the fit-bug note): no hardware
+            // acceleration flag, NOT_TOUCH_MODAL like the legacy window.
+            // The user asked for the legacy MECHANICS with the new visuals —
+            // the mechanics start with the window flags.
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
-                or WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
+                or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+                or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             android.graphics.PixelFormat.TRANSLUCENT,
         ).apply {
-            // [T-overlay-v3-fit-bug] Absolute TOP|LEFT placement so dragging
-            // is a plain x/y += delta. FIT TYPES ARE ZEROED: default
-            // fitTypes=STATUS_BARS|NAVIGATION_BARS made vivo snap-move the
-            // window whenever it crossed the gesture-bar zone (the "tap and
-            // it vanishes" video bug). No system-driven repositioning —
-            // we own the coordinates.
             if (android.os.Build.VERSION.SDK_INT >= 30) {
                 setFitInsetsTypes(0)
             }
             gravity = Gravity.TOP or Gravity.LEFT
+            // [T-overlay-v3-legacy-mechanics] Position = the legacy store
+            // (backgroundRepo, absolute per-orientation x/y) — the spot the
+            // user's own drag history lives in, with the same hard clamp
+            // the legacy attach() used: a born-off-screen window is
+            // impossible, the whole capsule is ALWAYS on-screen.
+            val landscape = context.resources.configuration.orientation ==
+                android.content.res.Configuration.ORIENTATION_LANDSCAPE
             val vb = visibleBounds()
-            val saved = restorePosition(vb, w, h)
-            if (saved != null) {
-                x = saved.first
-                y = saved.second
+            val savedX = backgroundRepo.getOverlayX(landscape)
+            val savedY = backgroundRepo.getOverlayY(landscape)
+            if (savedX >= 0 && savedY >= 0) {
+                x = savedX.coerceIn(0, (vb.width() - w).coerceAtLeast(0))
+                y = savedY.coerceIn(vb.top, (vb.bottom - h).coerceAtLeast(vb.top))
             } else {
-                // [T-overlay-v3-fit-bug] default = above the VISIBLE bottom
-                // (gesture bar excluded), not raw heightPixels.
-                x = (vb.width() - w) / 2
-                y = vb.bottom - h - (BOTTOM_MARGIN_DP * dm.density).toInt()
+                // [T-overlay-v3-legacy-mechanics] legacy default: bottom
+                // LEFT, 10dp from the edge, 48dp nav-bar reserve.
+                x = (10f * dm.density).toInt()
+                y = vb.bottom - h - (48f * dm.density).toInt()
             }
         }
         capsuleParams = params
@@ -811,46 +821,28 @@ class SessionOverlayWindow(
     }
 
     /**
-     * [T-overlay-v3-soft-clamp] The window may be parked partially off
-     * screen (up to 30% of its body hidden) — but never fully stuck: at
-     * least 70% of it always stays reachable, and the saved position is
-     * re-validated on every show/rotate/resize.
+     * [T-overlay-v3-legacy-mechanics] HARD clamp — the capsule is always
+     * fully on-screen inside the safe visible rect (legacy rule). The
+     * position is re-validated on every show/rotate/resize.
      */
     private fun clampCapsuleIntoReach(params: WindowManager.LayoutParams) {
+        // [T-overlay-v3-legacy-mechanics] HARD clamp — the legacy window's
+        // rule: the capsule is ALWAYS fully on-screen, x/y can never leave
+        // the safe visible rect. "Park it half off-screen" (the soft clamp)
+        // was MY invention and it is what fed the window into the
+        // gesture-bar zone on vivo. Legacy mechanics: zero tolerance.
         val w = params.width.coerceAtLeast(1)
         val h = params.height.coerceAtLeast(1)
-        // [T-overlay-v3-fit-bug] Clamp against the VISIBLE bounds and allow
-        // at most 30% off-screen (was 45% — the user could shove the orb
-        // into the gesture-bar zone and "lose" it). 70% always reachable.
         val vb = visibleBounds()
-        val maxX = vb.width() - (w * 0.70f).toInt()
-        val maxY = vb.bottom - (h * 0.70f).toInt()
-        val minX = -(w * 0.30f).toInt()
-        val minY = vb.top - (h * 0.30f).toInt()
+        val maxX = vb.width() - w
+        val maxY = vb.bottom - h
+        val minX = vb.left
+        val minY = vb.top
         params.x = params.x.coerceIn(minX, maxX.coerceAtLeast(minX))
         params.y = params.y.coerceIn(minY, maxY.coerceAtLeast(minY))
     }
 
-    /** Saved fractional position → pixels, validated against reachability. */
-    private fun restorePosition(vb: android.graphics.Rect, winW: Int, winH: Int): Pair<Int, Int>? {
-        val fx = overlayPrefs.getFloat(PREF_X_FRAC, -1f)
-        val fy = overlayPrefs.getFloat(PREF_Y_FRAC, -1f)
-        if (fx < 0f || fy < 0f) return null
-        val w = winW
-        val h = winH
-        val x = (fx * vb.width() - w / 2).toInt()
-        val y = (vb.top + fy * vb.height() - h / 2).toInt()
-        // [T-overlay-v3-fit-bug] reachability vs the VISIBLE bounds (70%
-        // must remain on-screen) — a position saved pre-fix in the gesture
-        // bar zone is pulled back instead of restored.
-        val maxX = vb.width() - (w * 0.70f).toInt()
-        val maxY = vb.bottom - (h * 0.70f).toInt()
-        val okX = x in (-(w * 0.30f)).toInt()..maxX.coerceAtLeast(0)
-        val okY = y in (-(h * 0.45f)).toInt()..maxY.coerceAtLeast(0)
-        if (!okX || !okY) return null // saved spot is unreachable → default
-        return x.coerceAtLeast(-(w * 0.45f).toInt()) to y.coerceAtLeast(-(h * 0.45f).toInt())
-    }
-
+    
     /**
      * Persist the center position as screen fractions (rotation-proof).
      * [T-overlay-v3-attach-jump] The live position lives in
@@ -860,17 +852,14 @@ class SessionOverlayWindow(
      * window on the next attach.
      */
     private fun savePosition() {
+        // [T-overlay-v3-legacy-mechanics] Absolute per-orientation x/y in
+        // the SAME store the legacy capsule used (backgroundRepo) — the
+        // user's drag history from the old window carries over, and one
+        // store keeps positions from drifting apart.
         val params = capsuleParams ?: return
-        val view = capsule ?: return
-        // [T-overlay-v3-fit-bug] fractions of the VISIBLE bounds — the same
-        // space restorePosition maps them back into.
-        val vb = visibleBounds()
-        val fx = (params.x + view.width / 2f) / vb.width().coerceAtLeast(1)
-        val fy = (params.y + view.height / 2f) / vb.height().coerceAtLeast(1)
-        overlayPrefs.edit()
-            .putFloat(PREF_X_FRAC, fx.coerceIn(0.05f, 0.95f))
-            .putFloat(PREF_Y_FRAC, fy.coerceIn(0.05f, 0.95f))
-            .apply()
+        val landscape = context.resources.configuration.orientation ==
+            android.content.res.Configuration.ORIENTATION_LANDSCAPE
+        backgroundRepo.setOverlayPosition(params.x, params.y, landscape)
     }
 
     private fun lerpDp(a: Float, b: Float, t: Float): Float = a + (b - a) * t
