@@ -56,15 +56,15 @@ import com.openminis.app.logging.AppLogger
  * background thread; only invalidate() touches the UI thread.
  */
 object SessionOverlayPalette {
-    const val CAPSULE_BG = 0xEE0E0F12.toInt()          // 92% dark glass
-    const val CAPSULE_BORDER = 0xFF25272D.toInt()
-    const val COUNT_BG = 0xFF171920.toInt()
-    const val COUNT_BORDER = 0xFF2B2E35.toInt()
-    const val FLOW_BG = 0xFF0D0E12.toInt()
-    const val FLOW_BORDER = 0xFF1E2025.toInt()
-    val WAVE_CORE = Color.parseColor("#6B9AEE")
-    val WAVE_LIGHT = Color.parseColor("#8DB2F5")
-    val WAVE_DIM = Color.argb(38, 70, 120, 220)        // 15% blue
+    const val CAPSULE_BG = 0xDD1A1D33.toInt()          // was 0xEE0E0F12: dark indigo glass
+    const val CAPSULE_BORDER = 0xFF4A6FD6.toInt()      // was 0xFF25272D: bright blue border
+    const val COUNT_BG = 0xFF111426.toInt()
+    const val COUNT_BORDER = 0xFF5E7FE5.toInt()
+    const val FLOW_BG = 0xFF12162E.toInt()             // was 0xFF0D0E12
+    const val FLOW_BORDER = 0xFF4A6FD6.toInt()         // bright blue
+    val WAVE_CORE = Color.parseColor("#8BB3FF")
+    val WAVE_LIGHT = Color.parseColor("#C2D8FF")
+    val WAVE_DIM = Color.argb(140, 80, 140, 255)       // was a=38
     const val SPARK = 0xFF93B8FF.toInt()
     const val METRIC_LABEL = 0xFF7D838E.toInt()
     const val METRIC_VALUE = 0xFFADB3BF.toInt()
@@ -870,8 +870,8 @@ class SessionCapsuleView(
                 2f * Math.PI.toFloat() *
                     ((now + spec.delayMs.toLong()) % spec.breatheMs.toLong()) / spec.breatheMs,
             )
-            val breatheAlpha = lerp(0.4f, 1f, breathe) * (if (anyLive) 1f else 0.55f)
-            val thickness = waveH * lerp(0.7f, 1.3f, breathe)
+            val breatheAlpha = lerp(0.55f, 1f, breathe) * (if (anyLive) 1f else 0.90f)
+            val thickness = dp(4.0f) * lerp(0.7f, 1.3f, breathe)
 
             val gradient = LinearGradient(
                 left, 0f, left + waveW, 0f,
