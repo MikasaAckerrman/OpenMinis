@@ -578,17 +578,18 @@ class SessionOverlayWindow(
             capsule?.setShape(target, animated = true)
             capsuleParams?.let { params ->
                 val dm = context.resources.displayMetrics
+                val vb = visibleBounds()
                 // Re-anchor from saved fractions so the orb lands at the
                 // same RELATIVE spot after rotating.
-                restorePosition(dm)?.let { (x, y) ->
+                restorePosition(vb, params.width, params.height)?.let { (x, y) ->
                     params.x = x
                     params.y = y
                 } ?: run {
-                    params.x = (dm.widthPixels - params.width) / 2
-                    params.y = dm.heightPixels - params.height -
+                    params.x = (vb.width() - params.width) / 2
+                    params.y = vb.bottom - params.height -
                         (BOTTOM_MARGIN_DP * dm.density).toInt()
                 }
-                clampCapsuleIntoReach(params, dm)
+                clampCapsuleIntoReach(params)
                 capsule?.let { v ->
                     try {
                         windowManager.updateViewLayout(v, params)
@@ -655,18 +656,25 @@ class SessionOverlayWindow(
     private fun moveCapsuleBy(dx: Float, dy: Float) {
         val view = capsule ?: return
         val params = capsuleParams ?: return
-        val dm = context.resources.displayMetrics
         params.x += dx.toInt()
         params.y += dy.toInt()
-        clampCapsuleIntoReach(params, dm)
+        clampCapsuleIntoReach(params)
         try {
             windowManager.updateViewLayout(view, params)
-            savePosition()
         } catch (_: Exception) {
         }
+        // [T-overlay-v3-prefs-spam] savePosition() used to run on EVERY
+        // move event (60/s SharedPreferences writes during a drag) — it
+        // now persists only once, when the gesture ends (see
+        // notifyDragEnded).
         // [T-overlay-v3-panel-anchor] the panel follows the orb while
         // dragged ("they never moved" — the user's exact complaint).
         if (panelOpen) repositionPanel()
+    }
+
+    /** [T-overlay-v3-prefs-spam] One save per gesture, on release. */
+    fun notifyDragEnded() {
+        if (capsuleAttached) savePosition()
     }
 
     // ---------------------------------------------------------------- capsule
@@ -698,22 +706,31 @@ class SessionOverlayWindow(
                 or WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
             android.graphics.PixelFormat.TRANSLUCENT,
         ).apply {
-            // [T-overlay-v3-drag] Absolute TOP|LEFT placement so dragging is
-            // a plain x/y += delta. First show: the saved fractional
-            // position if it keeps the window reachable, otherwise the
-            // default spot (centered above the bottom margin).
+            // [T-overlay-v3-fit-bug] Absolute TOP|LEFT placement so dragging
+            // is a plain x/y += delta. FIT TYPES ARE ZEROED: default
+            // fitTypes=STATUS_BARS|NAVIGATION_BARS made vivo snap-move the
+            // window whenever it crossed the gesture-bar zone (the "tap and
+            // it vanishes" video bug). No system-driven repositioning —
+            // we own the coordinates.
+            if (android.os.Build.VERSION.SDK_INT >= 30) {
+                setFitInsetsTypes(0)
+            }
             gravity = Gravity.TOP or Gravity.LEFT
-            val saved = restorePosition(dm)
+            val vb = visibleBounds()
+            val saved = restorePosition(vb, w, h)
             if (saved != null) {
                 x = saved.first
                 y = saved.second
             } else {
-                x = (dm.widthPixels - w) / 2
-                y = dm.heightPixels - h - (BOTTOM_MARGIN_DP * dm.density).toInt()
+                // [T-overlay-v3-fit-bug] default = above the VISIBLE bottom
+                // (gesture bar excluded), not raw heightPixels.
+                x = (vb.width() - w) / 2
+                y = vb.bottom - h - (BOTTOM_MARGIN_DP * dm.density).toInt()
             }
         }
         capsuleParams = params
         view.onDragDelta = { dx, dy -> moveCapsuleBy(dx, dy) }
+        view.onDragEnded = { mainHandler.post { notifyDragEnded() } }
         // [T-overlay-v3-hold-open] 3s hold on the orb opens the panel; the
         // short tap path stays "close only".
         view.onHoldComplete = { mainHandler.post { openPanel() } }
@@ -764,7 +781,7 @@ class SessionOverlayWindow(
         params.y += (oldH - newH) / 2
         params.width = newW
         params.height = newH
-        clampCapsuleIntoReach(params, dm)
+        clampCapsuleIntoReach(params)
         try {
             windowManager.updateViewLayout(view, params)
         } catch (_: Exception) {
@@ -772,42 +789,41 @@ class SessionOverlayWindow(
     }
 
     /**
-     * [T-overlay-v3-soft-clamp] The window MAY be parked partially off
-     * screen (up to 45% of its body hidden) — but never fully stuck: at
-     * least 55% of it always stays reachable, and the saved position is
+     * [T-overlay-v3-soft-clamp] The window may be parked partially off
+     * screen (up to 30% of its body hidden) — but never fully stuck: at
+     * least 70% of it always stays reachable, and the saved position is
      * re-validated on every show/rotate/resize.
      */
-    private fun clampCapsuleIntoReach(
-        params: WindowManager.LayoutParams,
-        dm: android.util.DisplayMetrics,
-    ) {
+    private fun clampCapsuleIntoReach(params: WindowManager.LayoutParams) {
         val w = params.width.coerceAtLeast(1)
         val h = params.height.coerceAtLeast(1)
-        val maxX = dm.widthPixels - (w * 0.55f).toInt()
-        val maxY = dm.heightPixels - (h * 0.55f).toInt()
-        val minX = -(w * 0.45f).toInt()
-        val minY = -(h * 0.45f).toInt()
+        // [T-overlay-v3-fit-bug] Clamp against the VISIBLE bounds and allow
+        // at most 30% off-screen (was 45% — the user could shove the orb
+        // into the gesture-bar zone and "lose" it). 70% always reachable.
+        val vb = visibleBounds()
+        val maxX = vb.width() - (w * 0.70f).toInt()
+        val maxY = vb.bottom - (h * 0.70f).toInt()
+        val minX = -(w * 0.30f).toInt()
+        val minY = vb.top - (h * 0.30f).toInt()
         params.x = params.x.coerceIn(minX, maxX.coerceAtLeast(minX))
         params.y = params.y.coerceIn(minY, maxY.coerceAtLeast(minY))
     }
 
     /** Saved fractional position → pixels, validated against reachability. */
-    private fun restorePosition(
-        dm: android.util.DisplayMetrics,
-        winW: Int = (SessionCapsuleView.WIDTH_DP * dm.density).toInt(),
-        winH: Int = (SessionCapsuleView.HEIGHT_DP * dm.density).toInt(),
-    ): Pair<Int, Int>? {
+    private fun restorePosition(vb: android.graphics.Rect, winW: Int, winH: Int): Pair<Int, Int>? {
         val fx = overlayPrefs.getFloat(PREF_X_FRAC, -1f)
         val fy = overlayPrefs.getFloat(PREF_Y_FRAC, -1f)
         if (fx < 0f || fy < 0f) return null
         val w = winW
         val h = winH
-        val x = (fx * dm.widthPixels - w / 2).toInt()
-        val y = (fy * dm.heightPixels - h / 2).toInt()
-        // Soft clamp with reachability guarantee (55% visible minimum).
-        val maxX = dm.widthPixels - (w * 0.55f).toInt()
-        val maxY = dm.heightPixels - (h * 0.55f).toInt()
-        val okX = x in (-(w * 0.45f)).toInt()..maxX.coerceAtLeast(0)
+        val x = (fx * vb.width() - w / 2).toInt()
+        val y = (vb.top + fy * vb.height() - h / 2).toInt()
+        // [T-overlay-v3-fit-bug] reachability vs the VISIBLE bounds (70%
+        // must remain on-screen) — a position saved pre-fix in the gesture
+        // bar zone is pulled back instead of restored.
+        val maxX = vb.width() - (w * 0.70f).toInt()
+        val maxY = vb.bottom - (h * 0.70f).toInt()
+        val okX = x in (-(w * 0.30f)).toInt()..maxX.coerceAtLeast(0)
         val okY = y in (-(h * 0.45f)).toInt()..maxY.coerceAtLeast(0)
         if (!okX || !okY) return null // saved spot is unreachable → default
         return x.coerceAtLeast(-(w * 0.45f).toInt()) to y.coerceAtLeast(-(h * 0.45f).toInt())
@@ -824,9 +840,11 @@ class SessionOverlayWindow(
     private fun savePosition() {
         val params = capsuleParams ?: return
         val view = capsule ?: return
-        val dm = context.resources.displayMetrics
-        val fx = (params.x + view.width / 2f) / dm.widthPixels
-        val fy = (params.y + view.height / 2f) / dm.heightPixels
+        // [T-overlay-v3-fit-bug] fractions of the VISIBLE bounds — the same
+        // space restorePosition maps them back into.
+        val vb = visibleBounds()
+        val fx = (params.x + view.width / 2f) / vb.width().coerceAtLeast(1)
+        val fy = (params.y + view.height / 2f) / vb.height().coerceAtLeast(1)
         overlayPrefs.edit()
             .putFloat(PREF_X_FRAC, fx.coerceIn(0.05f, 0.95f))
             .putFloat(PREF_Y_FRAC, fy.coerceIn(0.05f, 0.95f))
@@ -959,13 +977,16 @@ class SessionOverlayWindow(
         val capH = capView?.height ?: 0
         val cy = capParams?.y ?: (dm.heightPixels - capH)
         val gap = dpPx(10f)
+        // [T-overlay-v3-fit-bug] the panel stays inside the SAFE area too
+        // (never over the gesture zone at the bottom).
+        val vb = visibleBounds()
         // Prefer ABOVE the capsule; if not enough room, sit BELOW it.
         val aboveY = cy - panelH - gap
-        val y = if (aboveY >= 0) aboveY else (cy + capH + gap).coerceAtMost(
-            dm.heightPixels - panelH,
+        val y = if (aboveY >= vb.top) aboveY else (cy + capH + gap).coerceAtMost(
+            vb.bottom - panelH,
         )
         val x = (cx + capW / 2 - panelW / 2)
-            .coerceIn(4, (dm.widthPixels - panelW - 4).coerceAtLeast(4))
+            .coerceIn(vb.left, (vb.right - panelW).coerceAtLeast(vb.left))
         return x to y
     }
 
