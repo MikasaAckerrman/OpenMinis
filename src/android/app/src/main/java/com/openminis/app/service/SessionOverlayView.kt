@@ -558,6 +558,7 @@ class SessionCapsuleView(
         val w = measuredWidth.toFloat()
         val h = measuredHeight.toFloat()
         if (w <= 0f || h <= 0f) return
+        val drawT0 = android.os.SystemClock.elapsedRealtime()
 
         // ---- global transform: birth / jelly / press choreography ----
         var sx = 1f
@@ -637,6 +638,22 @@ class SessionCapsuleView(
             drawCapsuleContent(canvas, w, h, capAlpha)
         }
         canvas.restoreToCount(saveCount)
+
+        // [lag-visibility] This view redraws EVERY frame while attached
+        // (frameDriver → postInvalidateOnAnimation). If the drawing itself
+        // is the jank source, frame-drop reports would otherwise say "no
+        // markers" and mislead toward GC. Log any onDraw over 8ms; mark
+        // anything over 16ms so it lands in the JankMonitor attribution.
+        val drawDt = android.os.SystemClock.elapsedRealtime() - drawT0
+        if (drawDt > 8) {
+            com.openminis.app.logging.AppLogger.warning(
+                "SessionOverlayView",
+                "onDraw took ${drawDt}ms (w=$w h=$h rows=$sessionCount) — over frame budget",
+            )
+            if (drawDt > 16) {
+                com.openminis.app.diagnostics.JankMonitor.mark("overlay onDraw ${drawDt}ms rows=$sessionCount")
+            }
+        }
     }
 
     /** Capsule-mode content: badge + flow + metrics (fade out on morph). */

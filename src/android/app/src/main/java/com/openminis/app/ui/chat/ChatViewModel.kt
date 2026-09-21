@@ -366,6 +366,16 @@ class ChatViewModel(
     val uiMessages: StateFlow<List<ChatMessage>> =
         _messages
             .map { raw ->
+                // [lag-visibility] Single choke point for EVERY message-list
+                // emission: one cheap marker per update. When a frame drops,
+                // JankMonitor reports this line with the list size and its
+                // age — "msgs emit n=6120" tells us the delta that cost the
+                // frame. Runs on the main dispatcher (viewModelScope), so
+                // its own cost is measured too.
+                com.openminis.app.diagnostics.JankMonitor.mark(
+                    "msgs emit n=${raw.size}" +
+                        if (raw.isNotEmpty()) " last=${raw.last().role}" else ""
+                )
                 if (raw.any { it.isInternalBridge }) raw.filterNot { it.isInternalBridge } else raw
             }
             .stateIn(

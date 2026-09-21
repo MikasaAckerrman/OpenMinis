@@ -562,7 +562,13 @@ class SessionOverlayWindow(
     // ------------------------------------------------------------------ public
     /** Push the current running-session set. Shows/hides the window. */
     fun updateSessions(list: List<SessionOverlayEntry>) {
+        // [lag-visibility] marker BEFORE the main-thread hop: attributes any
+        // frame drop to overlay list pushes (size + live count).
+        com.openminis.app.diagnostics.JankMonitor.mark(
+            "overlay updateSessions n=${list.size} live=${list.count { it.live }}"
+        )
         mainHandler.post {
+            val t0 = android.os.SystemClock.elapsedRealtime()
             entries = list
             if (list.isEmpty()) {
                 dismissPanel()
@@ -579,6 +585,16 @@ class SessionOverlayWindow(
                     lastMetrics,
                 )
                 if (panelAttached) panel?.update(list, lastMetrics)
+            }
+            // [lag-visibility] overlay updates must stay off the jank radar;
+            // anything near a frame budget is logged with the row count so
+            // slow paths (row layout, metric formatting) are findable.
+            val dt = android.os.SystemClock.elapsedRealtime() - t0
+            if (dt > 8) {
+                com.openminis.app.logging.AppLogger.warning(
+                    TAG,
+                    "updateSessions took ${dt}ms (n=${list.size}) — over frame budget",
+                )
             }
         }
     }
@@ -770,6 +786,8 @@ class SessionOverlayWindow(
             mainHandler.post { resizeCapsuleTo(progress, targetWDp, targetHDp) }
         }
         try {
+            com.openminis.app.diagnostics.JankMonitor.mark("overlay capsule attach n=${entries.size}")
+            val t0 = android.os.SystemClock.elapsedRealtime()
             windowManager.addView(view, params)
             capsuleAttached = true
             view.update(entries.size, entries.any { it.live }, lastMetrics)
@@ -777,7 +795,11 @@ class SessionOverlayWindow(
             view.setShape(shapeTarget, animated = false)
             view.playBirth()
             startSampler()
-            AppLogger.info(TAG, "v3 capsule attached (${entries.size} sessions, shape=$shapeTarget)")
+            val dt = android.os.SystemClock.elapsedRealtime() - t0
+            com.openminis.app.logging.AppLogger.info(
+                TAG,
+                "v3 capsule attached (${entries.size} sessions, shape=$shapeTarget) in ${dt}ms",
+            )
         } catch (e: Exception) {
             AppLogger.warning(TAG, "v3 capsule attach failed: ${e.message}")
             capsule = null
@@ -956,6 +978,8 @@ class SessionOverlayWindow(
         }
         panelParams = params
         try {
+            com.openminis.app.diagnostics.JankMonitor.mark("overlay panel open rows=${entries.size}")
+            val t0 = android.os.SystemClock.elapsedRealtime()
             windowManager.addView(view, params)
             panelAttached = true
             panelOpen = true
@@ -964,7 +988,11 @@ class SessionOverlayWindow(
             view.alpha = 0f
             view.animate().alpha(1f).setDuration(180).start()
             soundFeedback(android.media.ToneGenerator.TONE_PROP_BEEP)
-            AppLogger.info(TAG, "v3 panel opened (${entries.size} rows)")
+            val dt = android.os.SystemClock.elapsedRealtime() - t0
+            com.openminis.app.logging.AppLogger.info(
+                TAG,
+                "v3 panel opened (${entries.size} rows) in ${dt}ms",
+            )
         } catch (e: Exception) {
             AppLogger.warning(TAG, "v3 panel attach failed: ${e.message}")
             panel = null

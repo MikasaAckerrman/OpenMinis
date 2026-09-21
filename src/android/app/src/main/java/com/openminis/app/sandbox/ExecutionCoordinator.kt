@@ -3,6 +3,7 @@ package com.openminis.app.sandbox
 import android.content.Context
 import android.util.Log
 import com.openminis.app.data.repository.EnvVarRepository
+import com.openminis.app.diagnostics.JankMonitor
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.File
@@ -90,6 +91,17 @@ object ExecutionCoordinator {
             // [diag] trace the sessionId that shell_execute is dispatched with —
             // suspected source of the Chinese-emoji filename vanishing bug
             Log.w(TAG, "[diag] execute sessionId=$sessionId cmd=${command.take(120).replace('\n', ' ')}")
+
+            // [self-update-guard] A `pm install` of our own package makes
+            // PackageManager kill THIS process one second into the shell
+            // command — the in-flight turn dies and the user sees a "crash"
+            // (observed 2026-09-21 13:12, logcat: "app died, no saved state"
+            // 1s after pm install). Guard BEFORE the shell runs it: log the
+            // reason and, when it is us, schedule the relaunch alarm.
+            if (SelfUpdateGuard.isPackageInstall(command)) {
+                SelfUpdateGuard.beforePackageInstall(appContext, command)
+            }
+            JankMonitor.mark("shell cmd len=${command.length}")
 
             // Get or create shell — protected by globalLock to avoid duplicate creation
             val shell = getOrCreateShell(sessionId)

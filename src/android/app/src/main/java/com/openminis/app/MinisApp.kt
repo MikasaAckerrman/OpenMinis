@@ -313,6 +313,14 @@ class MinisApp : Application(), ImageLoaderFactory {
         // unstuck on the next launch.
         com.openminis.app.diagnostics.HangDetector.start(this)
 
+        // [lag-visibility] Frame-level jank monitor — the complement to
+        // HangDetector above: it sees the 50-500ms stutters a 3s hang
+        // watchdog never trips on, and attributes each one to the last
+        // UI operations via JankMonitor.mark() call sites. Logcat tag
+        // "Minis.Jank" + daily AppLogger file. Must start before the DB /
+        // repository bring-up below so cold-start jank is measured too.
+        com.openminis.app.diagnostics.JankMonitor.start(this)
+
         database = AppDatabase.getInstance(this)
         chatRepository = ChatRepository(database.chatDao())
         providerRepository = ProviderRepository(this)
