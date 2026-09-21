@@ -266,10 +266,8 @@ class ToolOverlayController(private val context: Context) {
 
     private fun buildView(): View {
         // [T-overlay-v3-skin] Legacy LinearLayout/stack composition is
-        // retired — see the tail of this function for the v3 capsule
-        // construction. Everything above (logo stack, text rows, X) lived
-        // only to compose the old pill.
-        buildV3CapsuleView()
+        // retired — the v3 capsule below IS the window content now.
+        return buildV3CapsuleView()
     }
 
     private fun buildV3CapsuleView(): View {
