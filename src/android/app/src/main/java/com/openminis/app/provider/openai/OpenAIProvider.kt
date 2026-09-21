@@ -739,6 +739,12 @@ class OpenAIProvider private constructor(
 
         // T321: turn-level SSE counters for empty-response triage.
         var sseEventCount = 0
+        // [T-perf-sse-delta-aggregate] Aggregate the per-delta debug line
+        // into one summary per 2s: with file logging on, the per-token
+        // emit produced thousands of log lines and string allocations per
+        // streamed minute (measured: 249 MB freed / 19 s turn) — a real GC
+        // storm behind "chat lags". Off-state stays zero-cost.
+        var lastSseDeltaLogMs = 0L
         var contentLen = 0
         var reasoningLen = 0
         var toolCallEventCount = 0
@@ -813,16 +819,17 @@ class OpenAIProvider private constructor(
                         val tcLen = delta.optJSONArray("tool_calls")?.length() ?: 0
                         val role = delta.optString("role", "")
                         if (cLen + rcLen + rLen + tcLen > 0 || delta.has("role")) {
-                            // [T-sse-debug-hot-path] Per-token diagnostics: build
-                            // and emit ONLY when file logging is on. This loop
-                            // runs on the collecting (UI) thread at token rate —
-                            // the unconditional Log.d + string build was a real
-                            // source of streaming jank with logging off.
+                            // [T-perf-sse-delta-aggregate] see the counters above:
+                            // one aggregated line per 2s instead of one per token.
                             if (com.openminis.app.logging.AppLogger.isDebugEnabled) {
-                                com.openminis.app.logging.AppLogger.debug(
-                                    "OpenAIProvider",
-                                    "[T321] SSE delta: contentLen=$cLen rcLen=$rcLen rLen=$rLen toolCalls=$tcLen role='$role'"
-                                )
+                                val nowMs = System.currentTimeMillis()
+                                if (nowMs - lastSseDeltaLogMs >= 2000) {
+                                    lastSseDeltaLogMs = nowMs
+                                    com.openminis.app.logging.AppLogger.debug(
+                                        "OpenAIProvider",
+                                        "[T321] SSE delta agg: events=$sseEventCount contentLen=$contentLen reasoningLen=$reasoningLen toolCallEvents=$toolCallEventCount"
+                                    )
+                                }
                             }
                         }
                         contentLen += cLen
@@ -898,7 +905,9 @@ class OpenAIProvider private constructor(
                             if (acc != null && delta.isNotEmpty()) {
                                 acc.args.append(delta)
                                 val combined = combineResponsesAPIIds(acc.callId, itemId)
-                                send(LLMStreamChunk.ToolInputDelta(combined, acc.args.toString()))
+                                // [T-perf-toolinput-partial] fragment only — no
+                                // per-delta full-buffer copy, no per-delta log.
+                                send(LLMStreamChunk.ToolInputDelta(combined, delta))
                             } else if (acc == null) {
                                 // Pre-T107 this branch silently dropped the entire tool call
                                 // because no accumulator was set up — leaving the model with
@@ -1090,9 +1099,11 @@ class OpenAIProvider private constructor(
                                 val acc = toolCallAccumulators.getOrPut(idx) { ToolCallAccumulator() }
 
                                 tc.safeOptString("id", "").let { if (it.isNotEmpty()) acc.id = it }
+                                var argDelta = ""
                                 tc.optJSONObject("function")?.let { fn ->
                                     fn.safeOptString("name", "").let { if (it.isNotEmpty()) acc.name = it }
-                                    fn.safeOptString("arguments", "").let { if (it.isNotEmpty()) acc.args.append(it) }
+                                    argDelta = fn.safeOptString("arguments", "")
+                                    if (argDelta.isNotEmpty()) acc.args.append(argDelta)
                                 }
 
                                 // Emit start exactly once per tool call
@@ -1101,10 +1112,11 @@ class OpenAIProvider private constructor(
                                     android.util.Log.d("ToolChain[Provider]", "→ ToolUseStart id=${acc.id} name=${acc.name}")
                                     send(LLMStreamChunk.ToolUseStart(acc.id, acc.name))
                                 }
-                                // Emit input delta
-                                if (acc.id.isNotEmpty() && acc.args.isNotEmpty()) {
-                                    android.util.Log.d("ToolChain[Provider]", "→ ToolInputDelta id=${acc.id} accumulated=${acc.args.length}chars")
-                                    send(LLMStreamChunk.ToolInputDelta(acc.id, acc.args.toString()))
+                                // Emit input delta — [T-perf-toolinput-partial]
+                                // fragment only: the receiver accumulates; the
+                                // old toString() per delta was quadratic garbage.
+                                if (acc.id.isNotEmpty() && argDelta.isNotEmpty()) {
+                                    send(LLMStreamChunk.ToolInputDelta(acc.id, argDelta))
                                 }
                             }
                         }

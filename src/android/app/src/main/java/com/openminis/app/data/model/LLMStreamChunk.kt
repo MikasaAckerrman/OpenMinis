@@ -18,7 +18,15 @@ sealed class LLMStreamChunk {
 
     /** Tool use streaming events */
     data class ToolUseStart(val id: String, val name: String) : LLMStreamChunk()
-    data class ToolInputDelta(val id: String, val accumulated: String) : LLMStreamChunk()
+    /**
+     * [T-perf-toolinput-partial] The provider emits ONLY the newly received
+     * fragment (not a full accumulated snapshot: re-copying the whole
+     * buffer per delta was quadratic — hundreds of MB of short-lived
+     * strings per tool-heavy turn, the measured gcFreed=249MB/19s storm).
+     * The receiver accumulates locally and materializes full snapshots
+     * only on its own UI/preflight cadence.
+     */
+    data class ToolInputDelta(val id: String, val partial: String) : LLMStreamChunk()
     data class ToolCallComplete(val id: String, val name: String, val args: JSONObject) : LLMStreamChunk()
 
     /**

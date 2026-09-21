@@ -285,8 +285,12 @@ class AnthropicProvider(
                                 val partial = delta.safeOptString("partial_json", "")
                                 if (partial.isNotEmpty() && currentToolId != null) {
                                     toolInputBuffer.append(partial)
-                                    android.util.Log.d("ToolChain[Provider]", "→ ToolInputDelta id=$currentToolId accumulated=${toolInputBuffer.length}chars")
-                                    send(LLMStreamChunk.ToolInputDelta(currentToolId!!, toolInputBuffer.toString()))
+                                    // [T-perf-toolinput-partial] emit the fragment only;
+                                    // the receiver owns accumulation. The old
+                                    // toString() per delta re-copied the whole buffer
+                                    // each time (quadratic garbage), and the
+                                    // unconditional Log.d burned a line per token.
+                                    send(LLMStreamChunk.ToolInputDelta(currentToolId!!, partial))
                                 }
                             }
                         }

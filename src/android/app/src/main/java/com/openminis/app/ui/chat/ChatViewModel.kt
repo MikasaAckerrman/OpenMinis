@@ -9300,6 +9300,12 @@ class ChatViewModel(
         // can reconstruct how the model assembled (or failed to assemble) the
         // args.
         val toolInputChunkRings: MutableMap<String, MutableList<String>> = mutableMapOf()
+        // [T-perf-toolinput-partial] Local accumulators per tool id — the
+        // provider now sends FRAGMENTS; full snapshots are materialized only
+        // when the UI gate opens (200ms / 1s for file tools) and at
+        // ToolCallComplete, instead of a full-buffer copy per delta (the
+        // quadratic allocation behind the measured 249MB/turn GC storm).
+        val toolInputBuilders: MutableMap<String, StringBuilder> = mutableMapOf()
         var accumulatedText = ""
         var lastContextUsage = com.openminis.app.data.ContextUsageAttribution.EMPTY
 
@@ -9807,55 +9813,58 @@ class ChatViewModel(
                         // renamed id so the per-tool ring + block lookup match
                         // the block that ToolUseStart created.
                         val toolInputId = dedupeToolInputId(chunk.id)
-                        android.util.Log.d("ToolChain[VM]", "[turn=$turn] ToolInputDelta id=$toolInputId len=${chunk.accumulated.length}")
-                        // Maintain a per-tool ring of the most recent `accumulated`
-                        // snapshots so the preflight validator below can dump them
-                        // when an empty/invalid call is detected. Cheap (single
-                        // append + bounded trim) and lives outside any throttle so
-                        // every delta lands here.
-                        val ring = toolInputChunkRings.getOrPut(toolInputId) { mutableListOf() }
-                        ring.add(chunk.accumulated)
-                        if (ring.size > TOOL_INPUT_CHUNK_RING_MAX) {
-                            // Drop from the front so we keep the most recent N.
-                            ring.subList(0, ring.size - TOOL_INPUT_CHUNK_RING_MAX).clear()
-                        }
+                        // [T-perf-toolinput-partial] Accumulate the fragment
+                        // locally; materialize the full snapshot (title parse,
+                        // ring entry, block copy, UI push) ONLY when the kind
+                        // gate opens. Everything below the gate is O(1) per
+                        // delta with zero large allocations.
+                        val buf = toolInputBuilders.getOrPut(toolInputId) { StringBuilder() }
+                        buf.append(chunk.partial)
                         val idx = allToolBlocks.indexOfFirst { it.id == toolInputId }
                         if (idx >= 0) {
                             val prev = allToolBlocks[idx]
-                            // Stream-parse partial JSON (mirrors iOS extractPartialStringValue):
-                            //   - pull "tool_title" out early so the pill header updates live
-                            //   - keep the raw accumulated JSON in toolArgs so detail-sheet
-                            //     renderers (extractShellCommand, args.optString("command"), …)
-                            //     can pick up fields as they appear.
-                            //   - leave content empty during streaming (real output arrives
-                            //     after ToolCallComplete).
-                            val partialTitle = extractPartialStringValue("tool_title", chunk.accumulated)
-                            val liveTitle = when {
-                                !partialTitle.isNullOrEmpty() -> partialTitle
-                                prev.toolTitle.isNotEmpty() && prev.toolTitle != prev.toolName -> prev.toolTitle
-                                else -> friendlyToolTitle(prev.toolName)
-                            }
-                            allToolBlocks[idx] = prev.copy(
-                                toolArgs = chunk.accumulated,
-                                toolTitle = liveTitle,
-                                content = "",
-                            )
                             // T256 tier 2: gate UI push by tool kind. file_write/file_edit
                             // pump multi-KB JSON through the SSE — pushing every delta
                             // pegs the UI thread for no readable benefit (the user can't
                             // skim a partial JSON blob anyway). Mirrors iOS
                             // AIChatViewModel.swift:6229-6259 (1s file / 200ms other).
-                            // Local state above is mutated unconditionally so when the
-                            // gate eventually opens — or ToolCallComplete force-flushes —
-                            // the latest accumulated args are pushed.
+                            // When the gate opens we snapshot ONCE (string build,
+                            // partial-title scan, ring entry, block copy, UI push);
+                            // ToolCallComplete force-flushes from the same buffer.
                             val toolName = prev.toolName
                             val isHeavyFileTool = toolName == "file_write" || toolName == "file_edit"
                             val gateMs = if (isHeavyFileTool) 1_000L else 200L
                             val nowMs = System.currentTimeMillis()
                             val lastTs = if (isHeavyFileTool) lastFileToolInputMs else lastOtherToolInputMs
-                            if (nowMs - lastTs >= gateMs) {
+                            val firstSnapshot = prev.toolArgs.isEmpty()
+                            if (nowMs - lastTs >= gateMs || firstSnapshot) {
                                 if (isHeavyFileTool) lastFileToolInputMs = nowMs
                                 else lastOtherToolInputMs = nowMs
+                                val accumulated = buf.toString()
+                                // Per-tool ring of the most recent accumulated
+                                // snapshots so the preflight validator below can
+                                // dump them when an empty/invalid call is detected.
+                                val ring = toolInputChunkRings.getOrPut(toolInputId) { mutableListOf() }
+                                ring.add(accumulated)
+                                if (ring.size > TOOL_INPUT_CHUNK_RING_MAX) {
+                                    ring.subList(0, ring.size - TOOL_INPUT_CHUNK_RING_MAX).clear()
+                                }
+                                // Stream-parse partial JSON (mirrors iOS extractPartialStringValue):
+                                //   - pull "tool_title" out early so the pill header updates live
+                                //   - keep the raw accumulated JSON in toolArgs so detail-sheet
+                                //     renderers (extractShellCommand, args.optString("command"), …)
+                                //     can pick up fields as they appear.
+                                val partialTitle = extractPartialStringValue("tool_title", accumulated)
+                                val liveTitle = when {
+                                    !partialTitle.isNullOrEmpty() -> partialTitle
+                                    prev.toolTitle.isNotEmpty() && prev.toolTitle != prev.toolName -> prev.toolTitle
+                                    else -> friendlyToolTitle(prev.toolName)
+                                }
+                                allToolBlocks[idx] = prev.copy(
+                                    toolArgs = accumulated,
+                                    toolTitle = liveTitle,
+                                    content = "",
+                                )
                                 withContext(Dispatchers.Main) {
                                     updateAssistantMessage(assistantId, accumulatedText + turnTextSb.toString(), true, allToolBlocks)
                                 }
@@ -9868,6 +9877,19 @@ class ChatViewModel(
                         // the downstream tool-result join all key on the
                         // same value (matches the rename applied at start).
                         val toolCompleteId = dedupeToolCompleteId(chunk.id)
+                        // [T-perf-toolinput-partial] Force-flush: register the
+                        // FULL accumulated buffer (built from fragments) in the
+                        // diagnostic ring so the preflight dump below sees the
+                        // complete args even when the 200ms/1s gate never fired.
+                        toolInputBuilders.remove(toolCompleteId)?.let { fullBuf ->
+                            if (fullBuf.isNotEmpty()) {
+                                val ring = toolInputChunkRings.getOrPut(toolCompleteId) { mutableListOf() }
+                                ring.add(fullBuf.toString())
+                                if (ring.size > TOOL_INPUT_CHUNK_RING_MAX) {
+                                    ring.subList(0, ring.size - TOOL_INPUT_CHUNK_RING_MAX).clear()
+                                }
+                            }
+                        }
                         android.util.Log.d("ToolChain[VM]", "[turn=$turn] ToolCallComplete id=$toolCompleteId name=${chunk.name} args=${chunk.args.toString().take(300)}")
                         toolCalls.add(Triple(toolCompleteId, chunk.name, chunk.args))
                         val idx = allToolBlocks.indexOfFirst { it.id == toolCompleteId }
@@ -11095,6 +11117,7 @@ class ChatViewModel(
                     allToolBlocks.clear()
                     allToolInputs.clear()
                     toolInputChunkRings.clear()
+                    toolInputBuilders.clear()
                     _canResume.value = false
                     continue
                 }
