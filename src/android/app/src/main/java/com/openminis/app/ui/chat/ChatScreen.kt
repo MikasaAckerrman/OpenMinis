@@ -3666,12 +3666,22 @@ fun ChatScreen(
                                 // via OpenRouter) still streams reasoning_-
                                 // content. Snapshot on the message wins so
                                 // toggling the level after a turn finishes
-                                // doesn't retro-hide an already-visible block;
-                                // legacy DB-restored messages (snapshot=null)
-                                // follow the chat's current level.
-                                val effectiveLevel = item.messageThinkingLevel
-                                    ?: viewModel.thinkingLevel.value
-                                if (effectiveLevel.isEnabled) {
+                                // doesn't retro-hide an already-visible block.
+                                //
+                                // [T-thinking-history-visibility] Legacy
+                                // DB-restored messages (snapshot=null) used to
+                                // "follow the chat's current level" — which
+                                // made every historical reasoning block
+                                // disappear the moment the level was OFF or
+                                // the session default resolved to OFF
+                                // (1827 stored rows with reasoning_content sit
+                                // in OFF/None sessions in the live DB). The
+                                // stored text is DATA, not a request setting:
+                                // a missing snapshot now means SHOW. Only an
+                                // explicit OFF snapshot (the T300 forced-stream
+                                // case) keeps the block hidden.
+                                val showThinking = item.messageThinkingLevel?.isEnabled ?: true
+                                if (showThinking) {
                                     // [T-android-thinking-auto-collapse] Use
                                     // `isLastBlockOverall` (not `isLast` =
                                     // last-thinking-only) so the block flips
