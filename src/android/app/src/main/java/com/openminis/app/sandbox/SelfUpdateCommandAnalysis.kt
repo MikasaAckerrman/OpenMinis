@@ -21,6 +21,10 @@ object SelfUpdateCommandAnalysis {
     private val INSTALL_HINTS = listOf(
         Regex("""\bpm\s+install\b"""),
         Regex("""\bcmd\s+package\s+install\b"""),
+        // [T-guard-cli-install] android-shizuku-cli style:
+        // `package install <apk>` runs a REAL install via root and kills
+        // the live app — must schedule the relaunch alarm too.
+        Regex("""\bpackage\s+install\b"""),
         // Multi-step PackageInstaller shell sessions
         Regex("""\binstall-create\b"""),
         Regex("""\binstall-write\b"""),
@@ -43,9 +47,43 @@ object SelfUpdateCommandAnalysis {
      * so a reader buried in a pipeline can be judged by ITS first token:
      * `cat x | grep install-create` must not trigger, `cat x | pm install`
      * must.
+     *
+     * [T-guard-quote-aware] PROVEN LIVE (2026-09-21): splitting on raw
+     * [|;&] is WRONG when those characters sit INSIDE quotes — a grep
+     * pattern like `grep -E 'KILLED|relaunch|alarm'` got shredded into
+     * pseudo-segments, and combined with prose comments mentioning
+     * "pm install" in an agent's shell annotation the guard scheduled
+     * a relaunch alarm → the app "randomly crashed" 4+ times an hour.
+     * Split ONLY outside single/double quotes now.
      */
-    private fun splitSegments(line: String): List<String> =
-        line.split(Regex("""[|;&]{1,2}""")).filter { it.isNotBlank() }
+    private fun splitSegments(line: String): List<String> {
+        val out = mutableListOf<String>()
+        val cur = StringBuilder()
+        var quote: Char? = null
+        var i = 0
+        while (i < line.length) {
+            val c = line[i]
+            when {
+                quote != null -> {
+                    cur.append(c)
+                    if (c == quote) quote = null
+                }
+                c == '\'' || c == '"' -> {
+                    quote = c
+                    cur.append(c)
+                }
+                c == '|' || c == ';' || c == '&' -> {
+                    if (cur.isNotBlank()) out += cur.toString()
+                    cur.clear()
+                    if (i + 1 < line.length && line[i + 1] == c) i++
+                }
+                else -> cur.append(c)
+            }
+            i++
+        }
+        if (cur.isNotBlank()) out += cur.toString()
+        return out
+    }
 
     /**
      * Shell tools that merely READ text. A hint matched inside their
@@ -69,6 +107,13 @@ object SelfUpdateCommandAnalysis {
             .trim().split(Regex("""\s+"""))
             .filter { it.isNotBlank() }
         if (tokens.isEmpty()) return false
+
+        // [T-guard-comments] A '#' starting the segment opens a shell
+        // COMMENT: everything to end of line is prose, not a command.
+        // PROVEN LIVE: an agent annotation like `# Установка vc51 … pm
+        // install … мост` triggered the guard and "crashed" the app via
+        // the relaunch alarm. Comments are never installs.
+        if (tokens[0].startsWith("#")) return false
 
         // Skip leading wrappers / env assignments to find the first
         // MEANINGFUL token — the tool this segment actually runs.

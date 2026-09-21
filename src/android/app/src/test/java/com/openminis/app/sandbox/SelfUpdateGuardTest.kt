@@ -50,6 +50,8 @@ fun main() {
     check(true, "cat note.txt | pm install -t /data/local/tmp/a.apk", "уступка пайпа реальному install")
     check(true, "su -c 'pm install -r /data/local/tmp/b.apk'")
     check(true, "PM_INSTALL=1 pm install x.apk", "env-префикс с похожим именем")
+    check(true, "android-shizuku-cli package install /data/local/tmp/minis-test.apk", "CLI-установка через рут (убивает процесс)")
+    check(true, "android-shizuku-cli package install /data/local/tmp/x.apk --grant-permissions", "CLI-установка с флагами")
 
     // ---- ЧТЕНИЕ, НЕ ВЫПОЛНЕНИЕ (ложные срабатывания недопустимы) ----
     check(false, "grep -rn install-create src/android/", "агент грепает этот самый файл")
@@ -67,6 +69,14 @@ fun main() {
     check(false, "awk '/install-write/ {print}' log.txt")
     check(false, "echo pm install -t x.apk", "echo текста установки — не запуск")
     check(false, "tail -100 minis-2026-09-21.log")
+
+    // ---- ПРОЖИТЫЕ ЛОЖНЫ-ТРИГГЕРЫ (инцидент «вылетает много раз» 16:12—16:13) ----
+    check(false, "android-shizuku-cli exec \"grep -cE 'KILLED|relaunch|alarm' /data/data/com.openminis.app.clone/files/logs/minis-2026-09-21.log\"", "grep с | внутри кавычек — НЕ пайп")
+    check(false, "android-shizuku-cli exec \"grep -E 'KILLED|relaunch|alarm|self-update' /data/data/com.openminis.app.clone/files/logs/minis-2026-09-21.log\"", "кавычки защищают паттерн")
+    check(false, "grep 'package-install detected' /data/data/com.openminis.app.clone/files/logs/minis-2026-09-21.log", "grep по логу guard'а")
+    check(false, "# Установка vc51 (мост работает изнутри пески — но ksu-коннект режется SELinux; ставлю через ФАЙЛОВЫЙ мост): cp /tmp/apk51_out/app-clone.apk /tmp/apk51-copy.apk", "комментарий-аннотация агента")
+    check(false, "cp /tmp/apk51_out/app-clone.apk /tmp/apk51-copy.apk", "копия файла — не установка")
+    check(false, "cp /tmp/serve/test.apk /data/local/tmp/test.apk && ls -la /data/local/tmp/test.apk", "копия в tmp — не установка")
 
     // ---- ПУТИ ----
     checkPaths(listOf("/data/local/tmp/minis-test.apk"), "pm install -r -t /data/local/tmp/minis-test.apk")
