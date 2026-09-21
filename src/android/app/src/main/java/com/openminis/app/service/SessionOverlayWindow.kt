@@ -152,6 +152,7 @@ class SessionOverlayPanelView(
     // (accidental touch protection, mirrors the orb's 3s hold-to-open).
     private var holdAnimator: ValueAnimator? = null
     private var holdRow = -1
+    private var holdSessionId = ""
     private var holdProgress = 0f
 
     /** Vibrates on hold-complete (set by the window; honors settings). */
@@ -205,6 +206,11 @@ class SessionOverlayPanelView(
     private fun startRowHold(row: Int) {
         cancelRowHold()
         holdRow = row
+        // [T-overlay-v3-row-hold] remember the SESSION, not the index:
+        // entries can shift under the finger while holding (a session
+        // ends, another starts) — opening "whatever is now at index N"
+        // would open the wrong chat.
+        holdSessionId = entries.getOrNull(row)?.sessionId ?: ""
         holdProgress = 0f
         holdAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
             duration = 2500L
@@ -215,13 +221,14 @@ class SessionOverlayPanelView(
             }
             addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) {
-                    if (holdProgress >= 0.999f && holdRow in entries.indices) {
-                        val entry = entries[holdRow]
+                    if (holdProgress >= 0.999f && holdSessionId.isNotEmpty()) {
+                        val entry = entries.firstOrNull { it.sessionId == holdSessionId }
                         holdRow = -1
+                        holdSessionId = ""
                         holdProgress = 0f
                         hapticTick()
                         postInvalidateOnAnimation()
-                        onRowTap(entry)
+                        if (entry != null) onRowTap(entry)
                     }
                 }
             })
@@ -233,6 +240,7 @@ class SessionOverlayPanelView(
         holdAnimator?.cancel()
         holdAnimator = null
         holdRow = -1
+        holdSessionId = ""
         holdProgress = 0f
     }
 
@@ -675,8 +683,10 @@ class SessionOverlayWindow(
             android.content.res.Configuration.ORIENTATION_LANDSCAPE
         val portraitOrb = overlayPrefs.getBoolean(PREF_PORTRAIT_ORB, false)
         val shapeTarget = if (landscape || portraitOrb) 1f else 0f
-        val wDp = lerpDp(SessionCapsuleView.WIDTH_DP, SessionCapsuleView.CIRCLE_DP, shapeTarget)
-        val hDp = lerpDp(SessionCapsuleView.HEIGHT_DP, SessionCapsuleView.CIRCLE_DP, shapeTarget)
+        // [T-overlay-v3-trail] the WINDOW in orb mode is 128dp (2x the orb)
+        // so the drag trail has room outside the body.
+        val wDp = lerpDp(SessionCapsuleView.WIDTH_DP, SessionCapsuleView.CIRCLE_WINDOW_DP, shapeTarget)
+        val hDp = lerpDp(SessionCapsuleView.HEIGHT_DP, SessionCapsuleView.CIRCLE_WINDOW_DP, shapeTarget)
         val w = (wDp * dm.density).toInt()
         val h = (hDp * dm.density).toInt()
         val params = WindowManager.LayoutParams(
@@ -768,12 +778,16 @@ class SessionOverlayWindow(
     }
 
     /** Saved fractional position → pixels, validated against reachability. */
-    private fun restorePosition(dm: android.util.DisplayMetrics): Pair<Int, Int>? {
+    private fun restorePosition(
+        dm: android.util.DisplayMetrics,
+        winW: Int = (SessionCapsuleView.WIDTH_DP * dm.density).toInt(),
+        winH: Int = (SessionCapsuleView.HEIGHT_DP * dm.density).toInt(),
+    ): Pair<Int, Int>? {
         val fx = overlayPrefs.getFloat(PREF_X_FRAC, -1f)
         val fy = overlayPrefs.getFloat(PREF_Y_FRAC, -1f)
         if (fx < 0f || fy < 0f) return null
-        val w = (SessionCapsuleView.WIDTH_DP * dm.density).toInt()
-        val h = (SessionCapsuleView.HEIGHT_DP * dm.density).toInt()
+        val w = winW
+        val h = winH
         val x = (fx * dm.widthPixels - w / 2).toInt()
         val y = (fy * dm.heightPixels - h / 2).toInt()
         // Soft clamp with reachability guarantee (55% visible minimum).

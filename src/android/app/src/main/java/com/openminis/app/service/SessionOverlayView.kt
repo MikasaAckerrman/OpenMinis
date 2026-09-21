@@ -305,7 +305,13 @@ class SessionCapsuleView(
 
     // ------------------------------------------------------------- geometry
     private fun dp(v: Float): Float = v * resources.displayMetrics.density
+
+    private fun density(): Float = resources.displayMetrics.density
     private val contentRect = RectF()
+
+    // [T-overlay-v3-trail] body rect: the visible orb/capsule inside the
+    // (possibly larger) window.
+    private val bodyRect = RectF()
     private val tmpRect = RectF()
     private val tmpPath = Path()
 
@@ -318,9 +324,11 @@ class SessionCapsuleView(
         strokeWidth = 1f
         color = SessionOverlayPalette.CAPSULE_BORDER
     }
-    private val flashPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-    }
+    // [T-overlay-v3-press-fill] fill-from-touch fields.
+    private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private var fillProgress = 0f
+    private var fillX = 0f
+    private var fillY = 0f
     private val countBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = SessionOverlayPalette.COUNT_BG
     }
@@ -398,7 +406,7 @@ class SessionCapsuleView(
                     if (holdProgress >= 0.999f) {
                         holdProgress = 0f
                         postInvalidateOnAnimation()
-                        playPressFlash()
+                        playPressFill(width / 2f, height / 2f)
                         onHoldComplete()
                     }
                 }
@@ -419,8 +427,12 @@ class SessionCapsuleView(
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                // [T-overlay-v3-trail] touches in the invisible trail margin
+                // (outside the visible body) pass through — they are not
+                // ours to consume.
+                if (!isInside(event.x, event.y)) return false
                 pressed = true
-                playPressFlash()
+                playPressFill(event.x, event.y)
                 hapticTick()
                 postInvalidateOnAnimation()
                 lastRawX = event.rawX
@@ -469,10 +481,17 @@ class SessionCapsuleView(
         return super.onTouchEvent(event)
     }
 
+    /**
+     * [T-overlay-v3-trail] Hit-testing against the BODY (the visible
+     * orb/capsule), not the full window: in orb mode the window is 128dp
+     * with a 64dp body centered in it — taps in the invisible margin
+     * (where the trail lives) must not count.
+     */
     private fun isInside(x: Float, y: Float): Boolean {
-        val w = measuredWidth.coerceAtLeast(1)
-        val h = measuredHeight.coerceAtLeast(1)
-        return x >= -w * 0.05f && x <= w * 1.05f && y >= -h * 0.05f && y <= h * 1.05f
+        if (bodyRect.isEmpty) return false
+        val pad = dp(6f)
+        return x >= bodyRect.left - pad && x <= bodyRect.right + pad &&
+            y >= bodyRect.top - pad && y <= bodyRect.bottom + pad
     }
 
     private fun hapticTick() {
@@ -487,22 +506,25 @@ class SessionCapsuleView(
         }
     }
 
-    /** Press: scale .93 + border flash (400 ms fade, 2 repeats skipped). */
-    private fun playPressFlash() {
+    /**
+     * [T-overlay-v3-press-fill] Press feedback = a soft radial FILL that
+     * blooms from the touch point INSIDE the body and melts away (~320ms,
+     * peak alpha 36 — subtle, clearly felt, no borders/outlines per the
+     * user's spec).
+     */
+    private fun playPressFill(fx: Float, fy: Float) {
+        fillX = fx
+        fillY = fy
         flashAnimator?.cancel()
         flashAnimator = ValueAnimator.ofFloat(1f, 0f).apply {
-            duration = 400
+            duration = 320
             addUpdateListener { anim ->
-                flashPaint.color = Color.argb(
-                    ((anim.animatedValue as Float) * 170).toInt(),
-                    107, 154, 238,
-                )
-                flashPaint.strokeWidth = dp(1.2f)
+                fillProgress = anim.animatedValue as Float
                 postInvalidateOnAnimation()
             }
             addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) {
-                    flashPaint.color = Color.TRANSPARENT
+                    fillProgress = 0f
                     postInvalidateOnAnimation()
                 }
             })
@@ -571,8 +593,18 @@ class SessionCapsuleView(
         canvas.drawRoundRect(contentRect, r, r, bgPaint)
         borderPaint.strokeWidth = dp(1f)
         canvas.drawRoundRect(contentRect, r, r, borderPaint)
-        if (flashPaint.color != Color.TRANSPARENT) {
-            canvas.drawRoundRect(contentRect, r, r, flashPaint)
+        // [T-overlay-v3-press-fill] soft radial fill blooming from the
+        // touch point — no outlines, just light filling the body.
+        if (fillProgress > 0.01f) {
+            val fr = maxOf(w, h) * 1.2f
+            fillPaint.shader = android.graphics.RadialGradient(
+                fillX, fillY, fr,
+                (fillProgress * 36).toInt().coerceIn(0, 36).shl(24) or
+                    (SessionOverlayPalette.ACCENT and 0xFFFFFF),
+                SessionOverlayPalette.ACCENT and 0x00FFFFFF,
+                android.graphics.Shader.TileMode.CLAMP,
+            )
+            canvas.drawRoundRect(bodyRect, r, r, fillPaint)
         }
 
         // [T-overlay-v3-landscape-morph] circle content fades IN with the
@@ -588,6 +620,8 @@ class SessionCapsuleView(
     /** Capsule-mode content: badge + flow + metrics (fade out on morph). */
     private fun drawCapsuleContent(canvas: Canvas, w: Float, h: Float, alpha: Float) {
         if (alpha <= 0.02f) return
+        // [T-overlay-v3-trail] capsule content draws over the BODY rect.
+        canvas.clipRect(bodyRect)
 
         // ---- count badge ----
         val countW = dp(COUNT_W_DP)
@@ -652,7 +686,9 @@ class SessionCapsuleView(
         if (alpha <= 0.02f) return
         val cx = w / 2f
         val cy = h / 2f
-        val base = minOf(w, h) / 2f
+        // [T-overlay-v3-trail] base = the BODY radius (64dp orb), not the
+        // window: the inner life lives inside the visible orb.
+        val base = lerp(minOf(w, h) / 2f, CIRCLE_DP / 2f * density(), shapeMorph)
         val now = SystemClock.elapsedRealtime()
 
         // ---- rotating "liquid" arcs (visible through the glass) ----
