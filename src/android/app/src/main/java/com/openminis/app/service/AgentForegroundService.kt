@@ -291,9 +291,9 @@ class AgentForegroundService : Service() {
     // bounds and picks up the new capped width.
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
         super.onConfigurationChanged(newConfig)
+        // [T-overlay-v3-skin] Rotation → morph capsule ⇄ orb, handled
+        // inside the legacy controller (it owns the window now).
         overlayController?.onConfigurationChanged()
-        // [T-overlay-v3-shape-policy] rotation → morph capsule ⇄ orb.
-        sessionOverlayWindow?.onConfigurationChanged(newConfig)
     }
 
     override fun onDestroy() {
@@ -411,13 +411,14 @@ class AgentForegroundService : Service() {
                 )
             }.distinctUntilChanged().collect { state ->
                 applyOverlayState(state)
-                // [T-overlay-v3] Feed the running-session set to the new
-                // capsule window (tender v3). The window itself owns the
-                // foreground gate, so this call is unconditional — it is a
-                // no-op while the app is in the foreground.
+                // [T-overlay-v3-skin] Feed the running-session set to the
+                // LEGACY controller (now wearing the v3 capsule skin):
+                // count badge + panel rows. Metrics stay zeroed until a
+                // live collector is wired; the render shows the metrics
+                // column regardless (tender-v3 look).
                 if (SessionActivityTracker.isSessionDotsEnabledCompat()) {
                     val activeNow = SessionActivityTracker.activeSessions.value
-                    sessionOverlayWindow?.updateSessions(
+                    overlayController?.updateSessions(
                         activeNow.map { sid ->
                             SessionOverlayEntry(
                                 sessionId = sid,
@@ -427,9 +428,10 @@ class AgentForegroundService : Service() {
                                 live = true,
                             )
                         },
+                        SessionOverlayMetrics(0f, 0f, 0, 0),
                     )
                 } else {
-                    sessionOverlayWindow?.updateSessions(emptyList())
+                    overlayController?.updateSessions(emptyList(), SessionOverlayMetrics(0f, 0f, 0, 0))
                 }
             }
         }

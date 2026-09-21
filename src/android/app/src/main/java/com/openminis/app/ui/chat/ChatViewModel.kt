@@ -2837,17 +2837,25 @@ class ChatViewModel(
      */
     // [T-queue-edit] Edit a queued prompt: save current input to backup,
     // replace input with the queued text, remove from queue.
-    fun editQueuedMessage(itemId: String) {
-        val target = _promptQueue.value.find { it.id == itemId } ?: return
+    fun editQueuedMessage(messageId: String) {
+        // [T-queue-edit-prefix-fix] The chat bubble's id is
+        // "queued_msg_<promptId>" (see enqueuePrompt), while the queue
+        // entry id is the bare promptId. The previous implementation
+        // looked the CHAT id up in _promptQueue — never matched, silent
+        // return, "текст не добавляется". Restored to the original
+        // 8b78d1c/6f34d3d shape: resolve the message, take its
+        // queuedPromptId, and let removeQueuedPrompt drop BOTH the queue
+        // entry and the bubble.
+        val msg = _messages.value.firstOrNull { it.id == messageId } ?: return
+        if (!msg.isQueued) return
+        val pid = msg.queuedPromptId ?: return
         // Save current input to restore after send.
         _preEditTextBackup.value = _inputText.value
         persistPreEditText()
-        // Replace input with the queued message's text.
-        _inputText.value = target.text
+        // Replace (not append) the input with the queued message's text.
+        _inputText.value = msg.content
         // Remove from queue + UI.
-        _promptQueue.value = _promptQueue.value.filterNot { it.id == itemId }
-        _messages.value = _messages.value.filterNot { it.id == itemId }
-        persistPromptQueue()
+        removeQueuedPrompt(pid)
     }
 
     /** [T-queue-edit] Restore the pre-edit backup after the edited message was sent. */
@@ -7413,6 +7421,11 @@ class ChatViewModel(
     fun removeQueuedPrompt(promptId: String) {
         _promptQueue.value = _promptQueue.value.filterNot { it.id == promptId }
         _messages.value = _messages.value.filterNot { it.queuedPromptId == promptId }
+        // [T-queue-edit-prefix-fix] Keep the persisted queue in sync —
+        // withdrawQueuedMessage already calls persistPromptQueue after
+        // its own removal; editQueuedMessage now routes through here
+        // too, so the edit must survive a process death just the same.
+        persistPromptQueue()
     }
 
     /** Withdraw a queued message before it gets injected into the agent loop. */
@@ -14323,7 +14336,15 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                 // effectively its completion time. User rows leave finishedAtMs
                 // null (no "finished" concept for a user message).
                 createdAtMs = entity.createdAt,
-                finishedAtMs = if (entity.role == "assistant") entity.updatedAt else null,
+                // [T-msg-timestamps-backfill] Legacy rows were inserted WITHOUT
+                // updated_at (writer fixed 2026-09-21) — their created_at was
+                // written at TURN END too, so it is an honest finish clock for
+                // them. Duration will compute ~0 → the label correctly falls
+                // back to the bare finish time (see assistantTurnFinishedLabel
+                // contract).
+                finishedAtMs = if (entity.role == "assistant") {
+                    entity.updatedAt ?: entity.createdAt
+                } else null,
                 // [T-rewrite-stealth] Bubble carries the quiet pencil if any of
                 // its rows was edited via the rewrite flow. UI-only flag; the
                 // persisted text (parts_json) is already the new version.

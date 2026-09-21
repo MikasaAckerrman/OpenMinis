@@ -433,6 +433,16 @@ class ChatRepository(internal val dao: ChatDao) {
             tokenUsage = tokenUsage,
             sortOrder = sortOrder,
             reasoningContent = reasoningContent,
+            // [T-msg-timestamps-writer] The assistant row is INSERTED AT TURN
+            // END ("the agent loop persists the authoritative assistant row
+            // only at turn end", see updateLastMessageLivePreview), so `now`
+            // IS the finish time. Without this field the reader
+            // (finishedAtMs = entity.updatedAt) got NULL for EVERY message —
+            // PROVEN in the live DB (updated_at = NULL on all assistant rows
+            // 2026-09-21) — and the finish stamp never rendered. User rows
+            // are also written here on send, so their updated_at = send time
+            // (harmless: the reader nulls finishedAtMs for user rows).
+            updatedAt = now,
         )
         dao.insertMessage(message)
         val preview = extractTextPreview(capped)
