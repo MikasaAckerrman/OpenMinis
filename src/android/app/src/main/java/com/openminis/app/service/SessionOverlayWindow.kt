@@ -745,6 +745,20 @@ class SessionOverlayWindow(
         val newW = (wDp * dm.density).toInt()
         val newH = (hDp * dm.density).toInt()
         if (newW == oldW && newH == oldH) return
+        // [T-overlay-v3-attach-jump] If the view has not been laid out yet
+        // (width == 0 — first frames after addView), only update the
+        // requested size and DO NOT touch the position: "keeping the center
+        // fixed" against a zero size used to teleport the window by
+        // (newW-0)/2 pixels into the top-left corner off-screen.
+        if (oldW == 0 || oldH == 0) {
+            params.width = newW
+            params.height = newH
+            try {
+                windowManager.updateViewLayout(view, params)
+            } catch (_: Exception) {
+            }
+            return
+        }
         // Keep the CENTER fixed so the morph doesn't jump.
         params.x += (oldW - newW) / 2
         params.y += (oldH - newH) / 2
@@ -799,12 +813,20 @@ class SessionOverlayWindow(
         return x.coerceAtLeast(-(w * 0.45f).toInt()) to y.coerceAtLeast(-(h * 0.45f).toInt())
     }
 
-    /** Persist the center position as screen fractions (rotation-proof). */
+    /**
+     * Persist the center position as screen fractions (rotation-proof).
+     * [T-overlay-v3-attach-jump] The live position lives in
+     * capsuleParams.x/y — view.x/y are View *translation* properties and
+     * are always 0 for WindowManager-managed windows, so reading them here
+     * used to persist a garbage fraction (center-left) and teleport the
+     * window on the next attach.
+     */
     private fun savePosition() {
+        val params = capsuleParams ?: return
         val view = capsule ?: return
         val dm = context.resources.displayMetrics
-        val fx = (view.x + view.width / 2f) / dm.widthPixels
-        val fy = (view.y + view.height / 2f) / dm.heightPixels
+        val fx = (params.x + view.width / 2f) / dm.widthPixels
+        val fy = (params.y + view.height / 2f) / dm.heightPixels
         overlayPrefs.edit()
             .putFloat(PREF_X_FRAC, fx.coerceIn(0.05f, 0.95f))
             .putFloat(PREF_Y_FRAC, fy.coerceIn(0.05f, 0.95f))

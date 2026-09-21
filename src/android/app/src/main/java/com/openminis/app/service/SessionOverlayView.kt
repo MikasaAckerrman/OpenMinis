@@ -203,7 +203,13 @@ class SessionCapsuleView(
         shapeAnimator?.cancel()
         if (!animated) {
             shapeMorph = t
-            onShapeMorph(t, lerp(WIDTH_DP, CIRCLE_DP, t), lerp(HEIGHT_DP, CIRCLE_DP, t))
+            // [T-overlay-v3-attach-jump] Do NOT fire onShapeMorph here: the
+            // window was created with the final size in showCapsule, and
+            // the resize callback runs BEFORE the first layout (view.width
+            // == 0) — it used to "re-center" the window by
+            // (0 - 952px)/2 = -476px, teleporting the capsule into the
+            // top-left corner and off-screen on EVERY attach. The morph
+            // callback is for ROTATION morphs only.
             postInvalidateOnAnimation()
             return
         }
