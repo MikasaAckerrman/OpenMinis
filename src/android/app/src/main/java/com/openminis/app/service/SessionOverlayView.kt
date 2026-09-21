@@ -131,6 +131,9 @@ class SessionCapsuleView(
     /** Shape progress + target size in dp → the window resizes itself. */
     var onShapeMorph: (progress: Float, wDp: Float, hDp: Float) -> Unit = { _, _, _ -> }
 
+    // [T-overlay-v3-trail] paint for the drag-trail mist.
+    private val fogPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+
     // [T-overlay-v3-eternal] paints for the inner life of the orb.
     private val liquidArcPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
