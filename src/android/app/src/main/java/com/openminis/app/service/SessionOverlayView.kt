@@ -831,14 +831,15 @@ class SessionCapsuleView(
             // [T-overlay-v3-eternal] Waiting sessions keep SLOW but clearly
             // visible waves (0.28 alpha was "a black platform" to the eye on
             // dark wallpapers — the user's video). Live = full speed.
-            val periodMs = if (anyLive) spec.periodMs else (spec.periodMs * 1.6f).toLong()
+            val periodMs: Float = if (anyLive) spec.periodMs else spec.periodMs * 1.6f
             // travel: left -55% → 105%
-            val travel = ((now + spec.delayMs) % periodMs) / periodMs
+            val travel = ((now + spec.delayMs.toLong()) % periodMs.toLong()) / periodMs
             val left = flowX + flowW * lerp(-0.55f, 1.05f, travel)
             val waveW = flowW * spec.widthFraction
             // breathe: alpha .4→1, thickness .7→1.3
             val breathe = 0.5f - 0.5f * kotlin.math.cos(
-                2f * Math.PI.toFloat() * ((now + spec.delayMs) % spec.breatheMs) / spec.breatheMs,
+                2f * Math.PI.toFloat() *
+                    ((now + spec.delayMs.toLong()) % spec.breatheMs.toLong()) / spec.breatheMs,
             )
             val breatheAlpha = lerp(0.4f, 1f, breathe) * (if (anyLive) 1f else 0.55f)
             val thickness = waveH * lerp(0.7f, 1.3f, breathe)
