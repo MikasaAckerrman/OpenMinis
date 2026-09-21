@@ -385,7 +385,7 @@ class SessionCapsuleView(
         cancelHold()
         holdAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
             duration = 3000L
-            interpolator = LinearInterpolator()
+            interpolator = android.view.animation.LinearInterpolator()
             addUpdateListener { anim ->
                 holdProgress = anim.animatedValue as Float
                 postInvalidateOnAnimation()
@@ -439,7 +439,7 @@ class SessionCapsuleView(
                     cancelHold()
                     // [T-overlay-v3-trail] deposit a fog spot behind the
                     // motion (view-local coords of the PREVIOUS position).
-                    addTrailSpot(w / 2f - dx, h / 2f - dy)
+                    addTrailSpot(width / 2f - dx, height / 2f - dy)
                     // [T-overlay-v3-drag] forward only past the slop so
                     // tiny jitters don't move the window.
                     onDragDelta(dx, dy)
@@ -656,8 +656,8 @@ class SessionCapsuleView(
         liquidArcPaint.strokeWidth = dp(2f)
         for (liq in 0..1) {
             val rot = (now % 9000L) / 9000f * 360f * (if (liq == 0) 1f else -1f) + liq * 120f
-            val ar = base * (0.66f + 0.05f * sin(now / 1700f + liq))
-            val a = (0.16f + 0.10f * (0.5f + 0.5f * sin(now / 1300f + liq * 2.1f))) * alpha
+            val ar = base * (0.66f + 0.05f * Math.sin(now / 1700.0 + liq).toFloat())
+            val a = (0.16f + 0.10f * (0.5f + 0.5f * Math.sin(now / 1300.0 + liq * 2.1).toFloat())) * alpha
             liquidArcPaint.alpha = (a * 255).toInt().coerceIn(0, 255)
             arcRect.set(cx - ar, cy - ar * 0.62f, cx + ar, cy + ar * 0.62f)
             val start = rot
@@ -666,8 +666,8 @@ class SessionCapsuleView(
 
         // ---- breathing core ----
         val corePhase = (now % 1800L) / 1800f
-        val coreR = base * lerp(0.17f, 0.26f, 0.5f + 0.5f * sin(corePhase * Math.PI.toFloat() * 2f))
-        val coreA = (0.55f + 0.25f * sin(corePhase * Math.PI.toFloat() * 2f)) * alpha
+        val coreR = base * lerp(0.17f, 0.26f, 0.5f + 0.5f * Math.sin(corePhase * Math.PI * 2.0).toFloat())
+        val coreA = (0.55f + 0.25f * Math.sin(corePhase * Math.PI * 2.0).toFloat()) * alpha
         corePaint.shader = android.graphics.RadialGradient(
             cx, cy, coreR,
             (coreA * 255).toInt().coerceIn(0, 255).shl(24) or (SessionOverlayPalette.ACCENT_BRIGHT and 0xFFFFFF),
@@ -685,9 +685,9 @@ class SessionCapsuleView(
             val ang = t * Math.PI.toFloat() * 2f * speeds[i] * (if (i == 1) 4f else 3f) + i * 2.1f
             val orx = base * orbits[i]
             val ory = base * orbits[i] * 0.66f
-            val px = cx + orx * cos(ang)
-            val py = cy + ory * sin(ang)
-            val sa = (0.5f + 0.35f * sin(ang * 1.7f + i)) * alpha
+            val px = cx + orx * Math.cos(ang.toDouble()).toFloat()
+            val py = cy + ory * Math.sin(ang.toDouble()).toFloat()
+            val sa = (0.5f + 0.35f * Math.sin(ang * 1.7 + i).toFloat()) * alpha
             sparkPaint.alpha = (sa * 255).toInt().coerceIn(0, 255)
             canvas.drawCircle(px, py, dp(1.6f), sparkPaint)
         }
