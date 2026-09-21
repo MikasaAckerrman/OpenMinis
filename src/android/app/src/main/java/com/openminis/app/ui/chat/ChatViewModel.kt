@@ -10878,6 +10878,10 @@ class ChatViewModel(
                 val preflightError = preflightValidateToolCall(name, args, agentTools)
                 if (preflightError != null) {
                     val chunkRing: List<String> = toolInputChunkRings.remove(id) ?: emptyList()
+                    // [T-perf-toolinput-partial] drop the builder too — keeping
+                    // it would leak the full args buffer for every blocked
+                    // call until the turn-level reset.
+                    toolInputBuilders.remove(id)
                     AppLogger.warning(
                         "ToolPreflight",
                         "BLOCKED tool=$name id=$id reason=\"$preflightError\" " +
@@ -10924,6 +10928,12 @@ class ChatViewModel(
                 android.util.Log.d("ToolChain[VM]", "[turn=$turn] executeTool START name=$name args=${argsStr.take(200)}")
                 val result = executeTool(name, argsStr, id, allToolBlocks, assistantId, accumulatedText)
                 android.util.Log.d("ToolChain[VM]", "[turn=$turn] executeTool END name=$name success=${result.success} title=${result.toolTitle} outputLen=${result.output.length} output=${result.output.take(200)}")
+                // [T-perf-toolinput-partial] the args are fully persisted in the
+                // block; the streaming accumulator + diagnostic ring for this id
+                // are dead weight now — release both so long agent loops with
+                // dozens of tool calls don't accumulate every call's buffer.
+                toolInputChunkRings.remove(id)
+                toolInputBuilders.remove(id)
 
                 // Record post-execution. WARNING text is appended to the tool
                 // result so the model sees it on its next turn. No block here —

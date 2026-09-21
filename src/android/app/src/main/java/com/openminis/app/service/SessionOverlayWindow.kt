@@ -455,12 +455,35 @@ class SessionOverlayWindow(
     private fun hideCapsule() {
         val view = capsule ?: run { detachCapsuleImmediate(); return }
         if (!capsuleAttached) { detachCapsuleImmediate(); return }
+        // [T-overlay-v3-race] The jelly callback must remove THIS view from
+        // WindowManager unconditionally. Guarding with `capsule === view`
+        // leaked a duplicate capsule: when a new session re-shows the window
+        // mid-animation, `capsule` is already the NEW view — the guard
+        // skipped the detach and the OLD view stayed attached forever.
         view.playJelly {
-            mainHandler.post { detachCapsuleImmediate() }
+            mainHandler.post { detachView(view) }
         }
         // Safety: force-detach if jelly somehow never completes.
-        mainHandler.postDelayed({ if (capsule === view) detachCapsuleImmediate() }, 450)
+        mainHandler.postDelayed({ detachView(view) }, 450)
         capsuleAttached = false
+    }
+
+    /**
+     * [T-overlay-v3-race] Detach exactly this view; clear the `capsule`
+     * bookkeeping only when it is still the current one.
+     */
+    private fun detachView(view: SessionCapsuleView) {
+        try {
+            view.stopFrameDriver()
+            windowManager.removeView(view)
+        } catch (_: Exception) {
+            // already removed / not attached — benign
+        }
+        if (capsule === view) {
+            capsule = null
+            capsuleAttached = false
+            if (entries.isEmpty()) stopSampler()
+        }
     }
 
     private fun detachCapsuleImmediate() {
@@ -530,12 +553,27 @@ class SessionOverlayWindow(
         panelOpen = false
         capsule?.setPanelOpen(false)
         val view = panel ?: run { panelAttached = false; return }
+        // [T-overlay-v3-race] detach THIS view, not whatever `panel` holds by
+        // the time the 150ms fade ends — a fast re-open mid-fade would have
+        // installed a new panel the old animation must NOT remove.
         view.animate().alpha(0f).setDuration(150).setListener(object : AnimatorListenerAdapter() {
             override fun onAnimationEnd(animation: Animator) {
-                detachPanelImmediate()
+                mainHandler.post { detachPanelView(view) }
             }
         }).start()
         panelAttached = false
+    }
+
+    /** [T-overlay-v3-race] see dismissPanel. */
+    private fun detachPanelView(view: SessionOverlayPanelView) {
+        try {
+            windowManager.removeView(view)
+        } catch (_: Exception) {
+        }
+        if (panel === view) {
+            panel = null
+            panelAttached = false
+        }
     }
 
     private fun detachPanelImmediate() {
