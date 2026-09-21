@@ -149,6 +149,14 @@ class SessionCapsuleView(
         const val HEIGHT_DP = 52f
         // [T-overlay-v3-landscape-morph] landscape circle diameter.
         const val CIRCLE_DP = 64f
+
+        /**
+         * [T-overlay-v3-trail] The orb WINDOW is 2x the orb: the outer ring
+         * of the window is invisible canvas where the drag-trail mist can
+         * live. A 64dp window would clip the trail to nothing — the mist
+         * the user asked for would simply never be visible.
+         */
+        const val CIRCLE_WINDOW_DP = 128f
         private const val RADIUS_DP = 11f
         private const val COUNT_W_DP = 36f
         private const val COUNT_H_DP = 38f
