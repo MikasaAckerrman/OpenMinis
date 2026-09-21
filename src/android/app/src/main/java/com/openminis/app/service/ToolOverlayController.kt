@@ -239,10 +239,35 @@ class ToolOverlayController(private val context: Context) {
             dpToPx(CAPSULE_HEIGHT_DP),
             type,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
             PixelFormat.TRANSLUCENT,
         ).apply {
+            // [T-overlay-vivo-fix] Two vivo/Android-15 layer bugs proven
+            // live on this device (2026-09-21):
+            // (1) Default fitTypes = STATUS_BARS|NAVIGATION_BARS|CAPTION_BAR
+            //     made SurfaceFlinger assign the overlay a corrupted layer
+            //     (bounds -12600,-28000 → "invisible reason: nothing to
+            //     draw") — the window attached, WM said HAS_DRAWN, but the
+            //     surface stayed EMPTY (the "fully black window"). The v3
+            //     window never hit this because it zeroed fit-insets
+            //     (setFitInsetsTypes(0), its "fit-bug note"). Zeroing here
+            //     too — an overlay must not fit system bars at all.
+            // (2) softInputMode default = adjustPan got the layer the
+            //     private flag INSET_PARENT_FRAME_BY_IME (visible in
+            //     dumpsys), pinning the surface to the IME parent frame
+            //     with a 10-screen buffer. ADJUST_NOTHING: an overlay has
+            //     no business tracking the keyboard.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                setFitInsetsTypes(0)
+                setFitInsetsSides(0)
+            }
+            softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING
+            // [T-overlay-vivo-fix] FLAG_LAYOUT_NO_LIMITS removed: the
+            // position is clamped to the visible display before attach
+            // (see below), so the flag's only real effect was letting the
+            // window be parked partly off-screen where vivo's nav-bar
+            // snapping made it "vanish down" on tap (the user's recorded
+            // video bug). On-screen clamping makes the flag pointless.
             gravity = Gravity.TOP or Gravity.START
             val metrics = context.resources.displayMetrics
             val width = fixedCapsuleWidthPx()
@@ -286,7 +311,8 @@ class ToolOverlayController(private val context: Context) {
                 val approxOverlayHeight = dpToPx(LOGO_SIZE_DP + 16)
                 val approxNavBar = dpToPx(48)
                 x = padding
-                y = metrics.heightPixels - approxOverlayHeight - approxNavBar - padding
+                y = (metrics.heightPixels - approxOverlayHeight - approxNavBar - padding)
+                    .coerceAtLeast(0)
             }
         }
         layoutParams = params
