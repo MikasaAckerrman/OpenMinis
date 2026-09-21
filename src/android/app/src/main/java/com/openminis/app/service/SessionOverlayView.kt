@@ -642,19 +642,31 @@ class SessionCapsuleView(
         // [lag-visibility] This view redraws EVERY frame while attached
         // (frameDriver → postInvalidateOnAnimation). If the drawing itself
         // is the jank source, frame-drop reports would otherwise say "no
-        // markers" and mislead toward GC. Log any onDraw over 8ms; mark
-        // anything over 16ms so it lands in the JankMonitor attribution.
+        // markers" and mislead toward GC. RATE-LIMITED: AppLogger.warning
+        // can hit synchronous file I/O on this thread, and an unthrottled
+        // log per slow frame would AMPLIFY the very jank it measures
+        // (120Hz × PrintWriter.flush is a real cost). Ring markers stay
+        // cheap (no I/O) but are also throttled to keep other markers in
+        // the attribution window.
         val drawDt = android.os.SystemClock.elapsedRealtime() - drawT0
         if (drawDt > 8) {
-            com.openminis.app.logging.AppLogger.warning(
-                "SessionOverlayView",
-                "onDraw took ${drawDt}ms (w=$w h=$h rows=$sessionCount) — over frame budget",
-            )
-            if (drawDt > 16) {
+            val now = android.os.SystemClock.elapsedRealtime()
+            if (now - lastSlowDrawLogMs > 2_000L) {
+                lastSlowDrawLogMs = now
+                com.openminis.app.logging.AppLogger.warning(
+                    "SessionOverlayView",
+                    "onDraw took ${drawDt}ms (w=$w h=$h rows=$sessionCount) — over frame budget (rate-limited 2s)",
+                )
+            }
+            if (drawDt > 16 && now - lastSlowDrawMarkMs > 500L) {
+                lastSlowDrawMarkMs = now
                 com.openminis.app.diagnostics.JankMonitor.mark("overlay onDraw ${drawDt}ms rows=$sessionCount")
             }
         }
     }
+
+    private var lastSlowDrawLogMs = 0L
+    private var lastSlowDrawMarkMs = 0L
 
     /** Capsule-mode content: badge + flow + metrics (fade out on morph). */
     private fun drawCapsuleContent(canvas: Canvas, w: Float, h: Float, alpha: Float) {

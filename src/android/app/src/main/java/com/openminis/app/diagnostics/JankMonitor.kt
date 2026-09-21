@@ -63,9 +63,12 @@ object JankMonitor {
     private var lastSummaryMs = 0L
 
     private var jankCount = 0
-    private var frames = 0L
+    private var framesInWindow = 0L
     private var worstFrameMs = 0L
     private var started = false
+
+    /** True while the frame loop is posted. Toggled from activity lifecycle. */
+    private var active = false
 
     fun start(context: Context) {
         if (started) return
@@ -84,12 +87,39 @@ object JankMonitor {
         }
         Log.i(TAG, "start: refresh=${"%.1f".format(1_000_000_000.0 / framePeriodNanos)}Hz " +
             "threshold=${MIN_SKIPPED_FRAMES} vsyncs (~${MIN_SKIPPED_FRAMES * framePeriodNanos / 1_000_000}ms)")
-        Choreographer.getInstance().postFrameCallback(frameCallback)
+        setActive(true)
+    }
+
+    /**
+     * Gate the frame loop on app visibility.
+     *
+     * An always-reposted Choreographer callback keeps the vsync subscription
+     * alive 24/7 — the main thread wakes 60-120 times a second forever, even
+     * with a static screen and no animation running. MinisApp's lifecycle
+     * callbacks call this with the foreground activity count. When the app is
+     * backgrounded the loop stops; the session overlay still self-times its
+     * own onDraw in that state, so background overlay cost stays observable.
+     *
+     * MUST be called on the main thread (lifecycle callbacks guarantee it).
+     */
+    fun setActive(active: Boolean) {
+        if (!started || this.active == active) return
+        this.active = active
+        if (active) {
+            // A stale lastFrameNanos would make the FIRST frame after a pause
+            // look like a multi-second jank — reset the baseline.
+            lastFrameNanos = 0L
+            Choreographer.getInstance().postFrameCallback(frameCallback)
+        } else {
+            Choreographer.getInstance().removeFrameCallback(frameCallback)
+        }
+        Log.i(TAG, "setActive($active)")
     }
 
     private val frameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
-            frames++
+            if (!active) return // deactivated between schedule and fire — do not repost
+            framesInWindow++
             if (lastFrameNanos != 0L) {
                 val deltaNanos = frameTimeNanos - lastFrameNanos
                 if (deltaNanos > framePeriodNanos * MIN_SKIPPED_FRAMES) {
@@ -132,11 +162,12 @@ object JankMonitor {
         if (now - lastSummaryMs < SUMMARY_INTERVAL_MS) return
         lastSummaryMs = now
         val line = "summary ${SUMMARY_INTERVAL_MS / 1000}s: janks=$jankCount worst=${worstFrameMs}ms " +
-            "frames=$frames"
+            "frames=$framesInWindow"
         Log.w(TAG, line)
         AppLogger.warning(FILE_TAG, line)
         jankCount = 0
         worstFrameMs = 0L
+        framesInWindow = 0L
     }
 
     /**

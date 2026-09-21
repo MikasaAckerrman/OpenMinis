@@ -586,6 +586,12 @@ class MinisApp : Application(), ImageLoaderFactory {
             override fun onActivityStarted(activity: Activity) {
                 val wasBackgrounded = foregroundActivityCount == 0
                 foregroundActivityCount++
+                // [lag-visibility] Frame monitor runs only while some
+                // Activity is visible — see JankMonitor.setActive for why
+                // an always-on Choreographer loop is a battery bug.
+                if (wasBackgrounded) {
+                    com.openminis.app.diagnostics.JankMonitor.setActive(true)
+                }
                 if (wasBackgrounded) {
                     _isAppForegroundFlow.value = true
                     // [T-android-stale-conn-fg-evict] Evict the shared LLM
@@ -658,6 +664,10 @@ class MinisApp : Application(), ImageLoaderFactory {
                 foregroundActivityCount = (foregroundActivityCount - 1).coerceAtLeast(0)
                 if (foregroundActivityCount == 0) {
                     _isAppForegroundFlow.value = false
+                    // [lag-visibility] Stop the frame loop while nothing is
+                    // visible (battery: an always-posted Choreographer
+                    // callback keeps vsync wakeups alive 24/7).
+                    com.openminis.app.diagnostics.JankMonitor.setActive(false)
                     // [T-background-diag] Timestamp the moment we go background.
                     // Correlating it with a later onCleared / FGS onDestroy shows
                     // HOW LONG the OS tolerated us — seconds points at an OEM
