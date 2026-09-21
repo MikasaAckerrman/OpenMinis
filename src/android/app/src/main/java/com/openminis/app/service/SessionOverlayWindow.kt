@@ -124,6 +124,15 @@ class SessionOverlayPanelView(
         color = SessionOverlayPalette.GO_ARROW
         style = Paint.Style.FILL
     }
+    // [T-overlay-v3-panel-scroll]
+    private val scrollBarPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = SessionOverlayPalette.METRIC_LABEL
+    }
+    // [T-overlay-v3-row-hold] progress ring on the go-button.
+    private val holdRingPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = SessionOverlayPalette.ACCENT
+    }
 
     // ---------------------------------------------------------------- layout
     fun panelHeightDp(rows: Int): Float =
@@ -132,18 +141,50 @@ class SessionOverlayPanelView(
     // ------------------------------------------------------------------ touch
     private var pressedRow = -1
 
+    // [T-overlay-v3-panel-scroll] vertical scroll when rows exceed the
+    // visible window (wheel/drag; content offset clamped).
+    private var scrollPx = 0f
+    private var maxScrollPx = 0f
+    private var lastScrollY = 0f
+
+    // [T-overlay-v3-row-hold] opening a session = HOLD the row (2.5s) with
+    // a progress ring on the arrow button; a short tap does NOT open
+    // (accidental touch protection, mirrors the orb's 3s hold-to-open).
+    private var holdAnimator: ValueAnimator? = null
+    private var holdRow = -1
+    private var holdProgress = 0f
+
+    /** Vibrates on hold-complete (set by the window; honors settings). */
+    var hapticTick: () -> Unit = {}
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 pressedRow = hitRow(event.x, event.y)
+                lastScrollY = event.y
                 postInvalidateOnAnimation()
+                if (pressedRow >= 0) startRowHold(pressedRow)
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val dy = event.y - lastScrollY
+                lastScrollY = event.y
+                if (kotlin.math.abs(dy) > 2f) {
+                    // [T-overlay-v3-row-hold] movement cancels the hold.
+                    cancelRowHold()
+                    pressedRow = -1
+                }
+                if (maxScrollPx > 0f) {
+                    scrollPx = (scrollPx - dy).coerceIn(0f, maxScrollPx)
+                    postInvalidateOnAnimation()
+                }
                 return true
             }
             MotionEvent.ACTION_UP -> {
-                val row = hitRow(event.x, event.y)
-                if (row >= 0 && row == pressedRow && row < entries.size) {
-                    onRowTap(entries[row])
-                } else if (closeRect.contains(event.x, event.y)) {
+                cancelRowHold()
+                // [T-overlay-v3-row-hold] rows open ONLY via the completed
+                // 2.5s hold — a short tap deliberately does nothing.
+                if (closeRect.contains(event.x, event.y)) {
                     // tap on the header pill / outside rows = close
                     onRowTap(SessionOverlayEntry("", "", 0L, false)) // sentinel → close
                 }
@@ -152,6 +193,7 @@ class SessionOverlayPanelView(
                 return true
             }
             MotionEvent.ACTION_CANCEL -> {
+                cancelRowHold()
                 pressedRow = -1
                 postInvalidateOnAnimation()
                 return true
@@ -160,9 +202,47 @@ class SessionOverlayPanelView(
         return super.onTouchEvent(event)
     }
 
+    private fun startRowHold(row: Int) {
+        cancelRowHold()
+        holdRow = row
+        holdProgress = 0f
+        holdAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 2500L
+            interpolator = android.view.animation.LinearInterpolator()
+            addUpdateListener { anim ->
+                holdProgress = anim.animatedValue as Float
+                postInvalidateOnAnimation()
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    if (holdProgress >= 0.999f && holdRow in entries.indices) {
+                        val entry = entries[holdRow]
+                        holdRow = -1
+                        holdProgress = 0f
+                        hapticTick()
+                        postInvalidateOnAnimation()
+                        onRowTap(entry)
+                    }
+                }
+            })
+            start()
+        }
+    }
+
+    private fun cancelRowHold() {
+        holdAnimator?.cancel()
+        holdAnimator = null
+        holdRow = -1
+        holdProgress = 0f
+    }
+
     private fun hitRow(x: Float, y: Float): Int {
+        // [T-overlay-v3-panel-scroll] rowBounds live in the translated
+        // content space (drawn with translate(0, -scrollPx)); the finger
+        // reports panel-space coords — add the scroll back.
+        val cy = y + scrollPx
         for ((idx, rect) in rowBounds) {
-            if (rect.contains(x, y)) return idx
+            if (rect.contains(x, cy)) return idx
         }
         return -1
     }
@@ -219,17 +299,43 @@ class SessionOverlayPanelView(
         // separator under header
         canvas.drawRect(0f, headBottom, w, headBottom + 1f, sepPaint)
 
-        // ---- rows ----
+        // ---- rows (scrollable: [T-overlay-v3-panel-scroll]) ----
         rowBounds.clear()
         var y = headBottom + 1f
         val rowH = dp(ROW_HEIGHT_DP)
+        // Total content height vs visible → scroll budget.
+        val contentH = entries.size * rowH
+        val visibleH = h - (headBottom + 1f)
+        maxScrollPx = (contentH - visibleH).coerceAtLeast(0f)
+        if (maxScrollPx <= 0f) scrollPx = 0f
+        val saveRows = canvas.save()
+        // clip rows to the panel body (below header) and shift by scroll.
+        canvas.clipRect(0f, headBottom + 1f, w, h)
+        canvas.translate(0f, -scrollPx)
         for ((idx, entry) in entries.withIndex()) {
-            drawRow(canvas, entry, y, rowH, w, now, pressedRow == idx)
+            drawRow(
+                canvas, entry, y, rowH, w, now,
+                pressed = pressedRow == idx,
+                holdP = if (idx == holdRow) holdProgress else 0f,
+            )
+            // [T-overlay-v3-panel-scroll] hit-rects are computed in the same
+            // translated space the finger uses (hitRow converts back).
             rowBounds.add(idx to RectF(0f, y, w, y + rowH))
             y += rowH
             if (idx < entries.size - 1) {
                 canvas.drawRect(0f, y - 1f, w, y, sepPaint)
             }
+        }
+        canvas.restoreToCount(saveRows)
+        // scroll bar when scrollable
+        if (maxScrollPx > 0f) {
+            val barH = (visibleH * visibleH / contentH).coerceAtLeast(dp(18f))
+            val barY = headBottom + 1f + (visibleH - barH) * (scrollPx / maxScrollPx)
+            scrollBarPaint.alpha = 90
+            canvas.drawRoundRect(
+                w - dp(3f), barY, w - dp(1.5f), barY + barH,
+                dp(1f), dp(1f), scrollBarPaint,
+            )
         }
     }
 
@@ -241,6 +347,7 @@ class SessionOverlayPanelView(
         w: Float,
         now: Long,
         pressed: Boolean,
+        holdP: Float = 0f,
     ) {
         if (pressed) {
             canvas.drawRect(0f, y, w, y + rowH, pressOverlayPaint)
@@ -310,12 +417,25 @@ class SessionOverlayPanelView(
         tmpPath.lineTo(cx0 - a * 0.4f, cy + a)
         tmpPath.close()
         canvas.drawPath(tmpPath, arrowPaint)
+
+        // [T-overlay-v3-row-hold] progress ring around the go-button while
+        // the 2.5s hold runs — fills clockwise from 12 o'clock.
+        if (holdP > 0f) {
+            holdRingPaint.strokeWidth = dp(1.8f)
+            holdRingPaint.alpha = 255
+            holdArcRect.set(
+                goX - dp(2f), cy - goBtnW / 2f - dp(2f),
+                goX + goBtnW + dp(2f), cy + goBtnW / 2f + dp(2f),
+            )
+            canvas.drawArc(holdArcRect, -90f, 360f * holdP, false, holdRingPaint)
+        }
     }
 
     private val pressOverlayPaint = Paint().apply { color = Color.argb(8, 255, 255, 255) }
     private val contentRect = RectF()
     private val tmpRect = RectF()
     private val tmpPath = Path()
+    private val holdArcRect = RectF()
 
     private fun lerp(a: Float, b: Float, t: Float): Float = a + (b - a) * t
 
@@ -357,6 +477,15 @@ class SessionOverlayWindow(
     companion object {
         private const val TAG = "SessionOverlayWindow"
         private const val BOTTOM_MARGIN_DP = 78f
+
+    // [T-overlay-v3-persist] Position + form preferences (screen fractions
+    // survive rotation; portrait orb toggle).
+    private const val PREFS_NAME = "overlay_v3_prefs"
+    private const val PREF_X_FRAC = "x_frac"
+    private const val PREF_Y_FRAC = "y_frac"
+    private const val PREF_PORTRAIT_ORB = "portrait_orb"
+    private const val PREF_HAPTIC = "haptic_enabled"
+    private const val PREF_SOUND = "sound_enabled"
         private const val SAMPLE_INTERVAL_MS = 1500L
     }
 
@@ -370,6 +499,32 @@ class SessionOverlayWindow(
     private var panelAttached = false
     // [T-overlay-v3-drag] live layout params of the capsule window (drag).
     private var capsuleParams: WindowManager.LayoutParams? = null
+
+    // [T-overlay-v3-panel-anchor] live params of the panel window.
+    private var panelParams: WindowManager.LayoutParams? = null
+
+    // [T-overlay-v3-persist] position/form settings.
+    private val overlayPrefs by lazy {
+        context.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
+    }
+
+    // [T-overlay-v3-feedback] Sound feedback (ToneGenerator — no assets,
+    // no audio focus drama). Honors the settings toggle; failures are
+    // silently ignored (missing tone service, etc).
+    private var toneGenerator: android.media.ToneGenerator? = null
+    private fun soundFeedback(tone: Int) {
+        if (!overlayPrefs.getBoolean(PREF_SOUND, false)) return
+        try {
+            if (toneGenerator == null) {
+                toneGenerator = android.media.ToneGenerator(
+                    android.media.AudioManager.STREAM_SYSTEM, 55,
+                )
+            }
+            toneGenerator?.startTone(tone, 90)
+        } catch (_: Throwable) {
+            toneGenerator = null
+        }
+    }
     private var panelOpen = false
     private var samplerJob: Job? = null
 
@@ -400,6 +555,45 @@ class SessionOverlayWindow(
     }
 
     /** Re-check the foreground gate (app went to background / foreground). */
+    /**
+     * [T-overlay-v3-shape-policy] Rotation: landscape ALWAYS morphs to the
+     * orb (fixed); portrait morphs back unless the user forced the orb in
+     * settings. The position is re-validated (rotation-safe fractions +
+     * reachability guarantee).
+     */
+    fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        mainHandler.post {
+            val landscape = newConfig.orientation ==
+                android.content.res.Configuration.ORIENTATION_LANDSCAPE
+            val portraitOrb = overlayPrefs.getBoolean(PREF_PORTRAIT_ORB, false)
+            val target = if (landscape || portraitOrb) 1f else 0f
+            capsule?.setShape(target, animated = true)
+            capsuleParams?.let { params ->
+                val dm = context.resources.displayMetrics
+                // Re-anchor from saved fractions so the orb lands at the
+                // same RELATIVE spot after rotating.
+                restorePosition(dm)?.let { (x, y) ->
+                    params.x = x
+                    params.y = y
+                } ?: run {
+                    params.x = (dm.widthPixels - params.width) / 2
+                    params.y = dm.heightPixels - params.height -
+                        (BOTTOM_MARGIN_DP * dm.density).toInt()
+                }
+                clampCapsuleIntoReach(params, dm)
+                capsule?.let { v ->
+                    try {
+                        windowManager.updateViewLayout(v, params)
+                    } catch (_: Exception) {
+                    }
+                }
+            }
+            // Panel re-anchors itself on its next update; close it during
+            // the morph to avoid geometry overlap.
+            if (panelOpen) dismissPanel()
+        }
+    }
+
     fun onForegroundChanged() {
         mainHandler.post {
             if (isForegroundGateOpen()) {
@@ -411,6 +605,25 @@ class SessionOverlayWindow(
         }
     }
 
+    /** [T-overlay-v3-feedback] short vibration tick honoring settings. */
+    private fun hapticFeedback() {
+        if (!overlayPrefs.getBoolean(PREF_HAPTIC, true)) return
+        try {
+            val vib = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                (context.getSystemService(android.content.Context.VIBRATOR_MANAGER_SERVICE)
+                    as? android.os.VibratorManager)?.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                context.getSystemService(android.content.Context.VIBRATOR_SERVICE)
+                    as? android.os.Vibrator
+            } ?: return
+            vib.vibrate(
+                android.os.VibrationEffect.createOneShot(12, 70),
+            )
+        } catch (_: Throwable) {
+        }
+    }
+
     fun shutdown() {
         mainHandler.post {
             dismissPanel()
@@ -418,24 +631,34 @@ class SessionOverlayWindow(
         }
         samplerJob?.cancel()
         samplerJob = null
+        try {
+            toneGenerator?.release()
+        } catch (_: Throwable) {
+        }
+        toneGenerator = null
     }
 
     /**
-     * [T-overlay-v3-drag] Move the capsule window by a gesture delta,
-     * clamped to the screen bounds so it can't be dragged off-screen.
+     * [T-overlay-v3-soft-clamp] Move by a gesture delta. The window may be
+     * parked with up to 45% of its body off screen — but NEVER more: at
+     * least 55% stays inside, so it can always be grabbed back. The
+     * position is persisted (screen fractions) on every move.
      */
     private fun moveCapsuleBy(dx: Float, dy: Float) {
         val view = capsule ?: return
         val params = capsuleParams ?: return
         val dm = context.resources.displayMetrics
-        val w = view.width.coerceAtLeast(1)
-        val h = view.height.coerceAtLeast(1)
-        params.x = (params.x + dx.toInt()).coerceIn(0, (dm.widthPixels - w).coerceAtLeast(0))
-        params.y = (params.y + dy.toInt()).coerceIn(0, (dm.heightPixels - h).coerceAtLeast(0))
+        params.x += dx.toInt()
+        params.y += dy.toInt()
+        clampCapsuleIntoReach(params, dm)
         try {
             windowManager.updateViewLayout(view, params)
+            savePosition()
         } catch (_: Exception) {
         }
+        // [T-overlay-v3-panel-anchor] the panel follows the orb while
+        // dragged ("they never moved" — the user's exact complaint).
+        if (panelOpen) repositionPanel()
     }
 
     // ---------------------------------------------------------------- capsule
@@ -444,8 +667,18 @@ class SessionOverlayWindow(
         val view = SessionCapsuleView(context) { onCapsuleTapped() }
         capsule = view
         val dm = context.resources.displayMetrics
-        val w = (SessionCapsuleView.WIDTH_DP * dm.density).toInt()
-        val h = (SessionCapsuleView.HEIGHT_DP * dm.density).toInt()
+        // [T-overlay-v3-shape-policy] Shape: landscape is ALWAYS the orb
+        // (no override — the user said horizontal can't be changed); in
+        // portrait the default is the capsule, but the user can force the
+        // orb via the overlay settings toggle.
+        val landscape = context.resources.configuration.orientation ==
+            android.content.res.Configuration.ORIENTATION_LANDSCAPE
+        val portraitOrb = overlayPrefs.getBoolean(PREF_PORTRAIT_ORB, false)
+        val shapeTarget = if (landscape || portraitOrb) 1f else 0f
+        val wDp = lerpDp(SessionCapsuleView.WIDTH_DP, SessionCapsuleView.CIRCLE_DP, shapeTarget)
+        val hDp = lerpDp(SessionCapsuleView.HEIGHT_DP, SessionCapsuleView.CIRCLE_DP, shapeTarget)
+        val w = (wDp * dm.density).toInt()
+        val h = (hDp * dm.density).toInt()
         val params = WindowManager.LayoutParams(
             w,
             h,
@@ -455,30 +688,116 @@ class SessionOverlayWindow(
                 or WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
             android.graphics.PixelFormat.TRANSLUCENT,
         ).apply {
-            // [T-overlay-v3-drag] Absolute TOP|LEFT placement (same visual
-            // spot as BOTTOM|CENTER + margin: centered above the bottom
-            // margin) so dragging is a plain x/y += delta without a
-            // gravity flip mid-gesture — the capsule keeps the legacy
-            // "floating" drag behavior.
+            // [T-overlay-v3-drag] Absolute TOP|LEFT placement so dragging is
+            // a plain x/y += delta. First show: the saved fractional
+            // position if it keeps the window reachable, otherwise the
+            // default spot (centered above the bottom margin).
             gravity = Gravity.TOP or Gravity.LEFT
-            x = (dm.widthPixels - w) / 2
-            y = dm.heightPixels - h - (BOTTOM_MARGIN_DP * dm.density).toInt()
+            val saved = restorePosition(dm)
+            if (saved != null) {
+                x = saved.first
+                y = saved.second
+            } else {
+                x = (dm.widthPixels - w) / 2
+                y = dm.heightPixels - h - (BOTTOM_MARGIN_DP * dm.density).toInt()
+            }
         }
         capsuleParams = params
         view.onDragDelta = { dx, dy -> moveCapsuleBy(dx, dy) }
+        // [T-overlay-v3-hold-open] 3s hold on the orb opens the panel; the
+        // short tap path stays "close only".
+        view.onHoldComplete = { mainHandler.post { openPanel() } }
+        view.onShapeMorph = { progress, targetWDp, targetHDp ->
+            mainHandler.post { resizeCapsuleTo(progress, targetWDp, targetHDp) }
+        }
         try {
             windowManager.addView(view, params)
             capsuleAttached = true
             view.update(entries.size, entries.any { it.live }, lastMetrics)
             view.startFrameDriver()
+            view.setShape(shapeTarget, animated = false)
             view.playBirth()
             startSampler()
-            AppLogger.info(TAG, "v3 capsule attached (${entries.size} sessions)")
+            AppLogger.info(TAG, "v3 capsule attached (${entries.size} sessions, shape=$shapeTarget)")
         } catch (e: Exception) {
             AppLogger.warning(TAG, "v3 capsule attach failed: ${e.message}")
             capsule = null
         }
     }
+
+    /** [T-overlay-v3-shape-policy] Resize the capsule window mid-morph. */
+    private fun resizeCapsuleTo(progress: Float, wDp: Float, hDp: Float) {
+        val view = capsule ?: return
+        val params = capsuleParams ?: return
+        val dm = context.resources.displayMetrics
+        val oldW = view.width
+        val oldH = view.height
+        val newW = (wDp * dm.density).toInt()
+        val newH = (hDp * dm.density).toInt()
+        if (newW == oldW && newH == oldH) return
+        // Keep the CENTER fixed so the morph doesn't jump.
+        params.x += (oldW - newW) / 2
+        params.y += (oldH - newH) / 2
+        params.width = newW
+        params.height = newH
+        clampCapsuleIntoReach(params, dm)
+        try {
+            windowManager.updateViewLayout(view, params)
+        } catch (_: Exception) {
+        }
+    }
+
+    /**
+     * [T-overlay-v3-soft-clamp] The window MAY be parked partially off
+     * screen (up to 45% of its body hidden) — but never fully stuck: at
+     * least 55% of it always stays reachable, and the saved position is
+     * re-validated on every show/rotate/resize.
+     */
+    private fun clampCapsuleIntoReach(
+        params: WindowManager.LayoutParams,
+        dm: android.util.DisplayMetrics,
+    ) {
+        val w = params.width.coerceAtLeast(1)
+        val h = params.height.coerceAtLeast(1)
+        val maxX = dm.widthPixels - (w * 0.55f).toInt()
+        val maxY = dm.heightPixels - (h * 0.55f).toInt()
+        val minX = -(w * 0.45f).toInt()
+        val minY = -(h * 0.45f).toInt()
+        params.x = params.x.coerceIn(minX, maxX.coerceAtLeast(minX))
+        params.y = params.y.coerceIn(minY, maxY.coerceAtLeast(minY))
+    }
+
+    /** Saved fractional position → pixels, validated against reachability. */
+    private fun restorePosition(dm: android.util.DisplayMetrics): Pair<Int, Int>? {
+        val fx = overlayPrefs.getFloat(PREF_X_FRAC, -1f)
+        val fy = overlayPrefs.getFloat(PREF_Y_FRAC, -1f)
+        if (fx < 0f || fy < 0f) return null
+        val w = (SessionCapsuleView.WIDTH_DP * dm.density).toInt()
+        val h = (SessionCapsuleView.HEIGHT_DP * dm.density).toInt()
+        val x = (fx * dm.widthPixels - w / 2).toInt()
+        val y = (fy * dm.heightPixels - h / 2).toInt()
+        // Soft clamp with reachability guarantee (55% visible minimum).
+        val maxX = dm.widthPixels - (w * 0.55f).toInt()
+        val maxY = dm.heightPixels - (h * 0.55f).toInt()
+        val okX = x in (-(w * 0.45f)).toInt()..maxX.coerceAtLeast(0)
+        val okY = y in (-(h * 0.45f)).toInt()..maxY.coerceAtLeast(0)
+        if (!okX || !okY) return null // saved spot is unreachable → default
+        return x.coerceAtLeast(-(w * 0.45f).toInt()) to y.coerceAtLeast(-(h * 0.45f).toInt())
+    }
+
+    /** Persist the center position as screen fractions (rotation-proof). */
+    private fun savePosition() {
+        val view = capsule ?: return
+        val dm = context.resources.displayMetrics
+        val fx = (view.x + view.width / 2f) / dm.widthPixels
+        val fy = (view.y + view.height / 2f) / dm.heightPixels
+        overlayPrefs.edit()
+            .putFloat(PREF_X_FRAC, fx.coerceIn(0.05f, 0.95f))
+            .putFloat(PREF_Y_FRAC, fy.coerceIn(0.05f, 0.95f))
+            .apply()
+    }
+
+    private fun lerpDp(a: Float, b: Float, t: Float): Float = a + (b - a) * t
 
     private fun hideCapsule() {
         val view = capsule ?: run { detachCapsuleImmediate(); return }
@@ -528,12 +847,11 @@ class SessionOverlayWindow(
     }
 
     // ------------------------------------------------------------------ panel
+    // [T-overlay-v3-hold-open] Opening the panel = 3s HOLD on the orb.
+    // A short tap now ONLY closes an already-open panel (safe dismiss —
+    // accidental taps can't cover the screen with the panel).
     private fun onCapsuleTapped() {
-        if (panelOpen) {
-            dismissPanel()
-        } else {
-            openPanel()
-        }
+        if (panelOpen) dismissPanel()
     }
 
     private fun openPanel() {
@@ -547,10 +865,13 @@ class SessionOverlayWindow(
             }
         }
         panel = view
+        view.hapticTick = { hapticFeedback() }
         val dm = context.resources.displayMetrics
         val w = (SessionOverlayPanelView.WIDTH_DP * dm.density).toInt()
         val rows = entries.size.coerceAtLeast(1)
-        val h = (view.panelHeightDp(rows) * dm.density).toInt()
+        // [T-overlay-v3-panel-scroll] Cap the panel at 6 visible rows; more
+        // sessions scroll inside (the panel view owns scroll gesture + bar).
+        val h = (view.panelHeightDp(rows.coerceAtMost(6)) * dm.density).toInt()
         val params = WindowManager.LayoutParams(
             w,
             h,
@@ -559,9 +880,16 @@ class SessionOverlayWindow(
                 or WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
             android.graphics.PixelFormat.TRANSLUCENT,
         ).apply {
-            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-            y = ((BOTTOM_MARGIN_DP + SessionCapsuleView.HEIGHT_DP + 12f) * dm.density).toInt()
+            // [T-overlay-v3-panel-anchor] The panel is ANCHORED to the
+            // capsule (and follows it while dragged — see moveCapsuleBy):
+            // sits just above the orb, horizontally aligned to the orb's
+            // left edge, clamped on screen.
+            gravity = Gravity.TOP or Gravity.LEFT
+            val anchor = panelAnchorPosition(w, h, dm)
+            x = anchor.first
+            y = anchor.second
         }
+        panelParams = params
         try {
             windowManager.addView(view, params)
             panelAttached = true
@@ -570,6 +898,7 @@ class SessionOverlayWindow(
             capsule?.setPanelOpen(true)
             view.alpha = 0f
             view.animate().alpha(1f).setDuration(180).start()
+            soundFeedback(android.media.ToneGenerator.TONE_PROP_BEEP)
             AppLogger.info(TAG, "v3 panel opened (${entries.size} rows)")
         } catch (e: Exception) {
             AppLogger.warning(TAG, "v3 panel attach failed: ${e.message}")
@@ -577,9 +906,53 @@ class SessionOverlayWindow(
         }
     }
 
+    /**
+     * [T-overlay-v3-panel-anchor] Where the panel sits relative to the
+     * capsule: above it (fallback below when there's no room up top),
+     * aligned to the capsule's left edge, clamped horizontally.
+     */
+    private fun panelAnchorPosition(
+        panelW: Int,
+        panelH: Int,
+        dm: android.util.DisplayMetrics,
+    ): Pair<Int, Int> {
+        val capParams = capsuleParams
+        val capView = capsule
+        val cx = capParams?.x ?: ((dm.widthPixels - panelW) / 2)
+        val capW = capView?.width ?: 0
+        val capH = capView?.height ?: 0
+        val cy = capParams?.y ?: (dm.heightPixels - capH)
+        val gap = dpPx(10f)
+        // Prefer ABOVE the capsule; if not enough room, sit BELOW it.
+        val aboveY = cy - panelH - gap
+        val y = if (aboveY >= 0) aboveY else (cy + capH + gap).coerceAtMost(
+            dm.heightPixels - panelH,
+        )
+        val x = (cx + capW / 2 - panelW / 2)
+            .coerceIn(4, (dm.widthPixels - panelW - 4).coerceAtLeast(4))
+        return x to y
+    }
+
+    /** [T-overlay-v3-panel-anchor] Keep the panel glued while dragging. */
+    private fun repositionPanel() {
+        val view = panel ?: return
+        val params = panelParams ?: return
+        val dm = context.resources.displayMetrics
+        val anchor = panelAnchorPosition(view.width, view.height, dm)
+        params.x = anchor.first
+        params.y = anchor.second
+        try {
+            windowManager.updateViewLayout(view, params)
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun dpPx(dp: Float): Int = (dp * context.resources.displayMetrics.density).toInt()
+
     private fun dismissPanel() {
         panelOpen = false
         capsule?.setPanelOpen(false)
+        soundFeedback(android.media.ToneGenerator.TONE_PROP_NACK)
         val view = panel ?: run { panelAttached = false; return }
         // [T-overlay-v3-race] detach THIS view, not whatever `panel` holds by
         // the time the 150ms fade ends — a fast re-open mid-fade would have
@@ -601,6 +974,7 @@ class SessionOverlayWindow(
         if (panel === view) {
             panel = null
             panelAttached = false
+            panelParams = null
         }
     }
 

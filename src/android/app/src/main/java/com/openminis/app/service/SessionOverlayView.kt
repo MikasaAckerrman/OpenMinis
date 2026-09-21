@@ -72,6 +72,7 @@ object SessionOverlayPalette {
     const val METRIC_ICON_BORDER = 0xFF2A2D34.toInt()
     const val TEXT_PRIMARY = 0xFFE8EAEE.toInt()
     val ACCENT = Color.parseColor("#6B9AEE")          // = WAVE_CORE
+    val ACCENT_BRIGHT = Color.parseColor("#8DB2F5")    // = WAVE_TIP
     const val PANEL_BG = 0xF70C0D10.toInt()           // 97%
     const val PANEL_BORDER = 0xFF272930.toInt()
     const val ROW_SEPARATOR = 0xFF191B20.toInt()
@@ -121,11 +122,30 @@ class SessionCapsuleView(
     private var dragDistance = 0f
     private val touchSlopPx = 12
 
+    // [T-overlay-v3-landscape-morph] 0f = full capsule (portrait), 1f =
+    // full circle (landscape). The window animates the LayoutParams size
+    // alongside this progress so the shape morph is one smooth gesture.
+    private var shapeMorph = 0f
+    private var shapeAnimator: ValueAnimator? = null
+
+    /** Shape progress + target size in dp → the window resizes itself. */
+    var onShapeMorph: (progress: Float, wDp: Float, hDp: Float) -> Unit = { _, _, _ -> }
+
+    // [T-overlay-v3-eternal] paints for the inner life of the orb.
+    private val liquidArcPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = SessionOverlayPalette.ACCENT_BRIGHT
+    }
+    private val corePaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val arcRect = android.graphics.RectF()
+
     companion object {
         private const val TAG = "SessionCapsuleView"
         // Geometry (dp) — matches the tender render 1:1.
         const val WIDTH_DP = 272f
         const val HEIGHT_DP = 52f
+        // [T-overlay-v3-landscape-morph] landscape circle diameter.
+        const val CIRCLE_DP = 64f
         private const val RADIUS_DP = 11f
         private const val COUNT_W_DP = 36f
         private const val COUNT_H_DP = 38f
@@ -160,6 +180,44 @@ class SessionCapsuleView(
         private set
 
     private var panelOpen: Boolean = false
+
+    /**
+     * [T-overlay-v3-landscape-morph] Morph to the landscape CIRCLE (target=1)
+     * or back to the portrait capsule (target=0). 380 ms with a soft
+     * overshoot; the window resizes LayoutParams in lockstep via
+     * [onShapeMorph] so the whole thing reads as one fluid transformation.
+     */
+    fun setShape(target: Float, animated: Boolean = true) {
+        val t = target.coerceIn(0f, 1f)
+        shapeAnimator?.cancel()
+        if (!animated) {
+            shapeMorph = t
+            onShapeMorph(t, lerp(WIDTH_DP, CIRCLE_DP, t), lerp(HEIGHT_DP, CIRCLE_DP, t))
+            postInvalidateOnAnimation()
+            return
+        }
+        shapeAnimator = ValueAnimator.ofFloat(shapeMorph, t).apply {
+            duration = 380L
+            interpolator = android.view.animation.OvershootInterpolator(0.8f)
+            addUpdateListener { anim ->
+                shapeMorph = anim.animatedValue as Float
+                onShapeMorph(
+                    shapeMorph,
+                    lerp(WIDTH_DP, CIRCLE_DP, shapeMorph),
+                    lerp(HEIGHT_DP, CIRCLE_DP, shapeMorph),
+                )
+                postInvalidateOnAnimation()
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    // Snap exactly.
+                    shapeMorph = t
+                    onShapeMorph(t, lerp(WIDTH_DP, CIRCLE_DP, t), lerp(HEIGHT_DP, CIRCLE_DP, t))
+                }
+            })
+            start()
+        }
+    }
 
     fun update(count: Int, live: Boolean, m: SessionOverlayMetrics) {
         sessionCount = count
@@ -314,6 +372,47 @@ class SessionCapsuleView(
     private val vibrator: Vibrator? =
         context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
 
+    // [T-overlay-v3-hold-open] Hold 3s on the orb → the sessions panel
+    // opens (sweep ring fills around the orb); a SHORT tap only closes an
+    // already-open panel. The window owns the actual open/close actions.
+    private var holdAnimator: ValueAnimator? = null
+    private var holdProgress = 0f
+
+    /** Hold completed (3s) → window opens the panel. */
+    var onHoldComplete: () -> Unit = {}
+
+    private fun startHold() {
+        cancelHold()
+        holdAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 3000L
+            interpolator = LinearInterpolator()
+            addUpdateListener { anim ->
+                holdProgress = anim.animatedValue as Float
+                postInvalidateOnAnimation()
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    if (holdProgress >= 0.999f) {
+                        holdProgress = 0f
+                        postInvalidateOnAnimation()
+                        playPressFlash()
+                        onHoldComplete()
+                    }
+                }
+            })
+            start()
+        }
+    }
+
+    private fun cancelHold() {
+        holdAnimator?.cancel()
+        holdAnimator = null
+        if (holdProgress > 0f) {
+            holdProgress = 0f
+            postInvalidateOnAnimation()
+        }
+    }
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
@@ -324,6 +423,9 @@ class SessionCapsuleView(
                 lastRawX = event.rawX
                 lastRawY = event.rawY
                 dragDistance = 0f
+                // [T-overlay-v3-hold-open] begin the 3s hold (canceled on
+                // move past slop / up / cancel).
+                startHold()
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
@@ -333,6 +435,11 @@ class SessionCapsuleView(
                 lastRawY = event.rawY
                 dragDistance += kotlin.math.abs(dx) + kotlin.math.abs(dy)
                 if (dragDistance > touchSlopPx) {
+                    // [T-overlay-v3-hold-open] a real drag cancels the hold.
+                    cancelHold()
+                    // [T-overlay-v3-trail] deposit a fog spot behind the
+                    // motion (view-local coords of the PREVIOUS position).
+                    addTrailSpot(w / 2f - dx, h / 2f - dy)
                     // [T-overlay-v3-drag] forward only past the slop so
                     // tiny jitters don't move the window.
                     onDragDelta(dx, dy)
@@ -342,12 +449,16 @@ class SessionCapsuleView(
             MotionEvent.ACTION_UP -> {
                 val inside = isInside(event.x, event.y)
                 pressed = false
+                val wasHolding = holdAnimator != null
+                cancelHold()
                 postInvalidateOnAnimation()
-                if (inside && dragDistance <= touchSlopPx) onCapsuleTap()
+                // Short tap (no drag, no completed hold): toggle-close only.
+                if (inside && dragDistance <= touchSlopPx && !wasHolding) onCapsuleTap()
                 return true
             }
             MotionEvent.ACTION_CANCEL -> {
                 pressed = false
+                cancelHold()
                 postInvalidateOnAnimation()
                 return true
             }
@@ -446,14 +557,34 @@ class SessionCapsuleView(
 
         contentRect.set(0f, 0f, w, h)
 
-        // ---- capsule body ----
-        val r = dp(RADIUS_DP)
+        // [T-overlay-v3-trail] Fog ONLY as a drag trail: while the orb is
+        // being carried, soft blue halos trail BEHIND the motion vector and
+        // die out within ~0.7s (see addTrailSpot / drawTrail). No idle fog.
+        if (trailSpots.isNotEmpty()) drawTrail(canvas, alpha)
+
+        // ---- body: radius morphs capsule(11dp) → circle(w/2) ----
+        val m = shapeMorph
+        val r = lerp(dp(RADIUS_DP), minOf(w, h) / 2f, m)
         canvas.drawRoundRect(contentRect, r, r, bgPaint)
         borderPaint.strokeWidth = dp(1f)
         canvas.drawRoundRect(contentRect, r, r, borderPaint)
         if (flashPaint.color != Color.TRANSPARENT) {
             canvas.drawRoundRect(contentRect, r, r, flashPaint)
         }
+
+        // [T-overlay-v3-landscape-morph] circle content fades IN with the
+        // morph, capsule content fades OUT — no crossfading geometry math.
+        if (m > 0.02f) drawCircleContent(canvas, w, h, alpha * m)
+        if (m < 0.98f) {
+            val capAlpha = alpha * (1f - m)
+            drawCapsuleContent(canvas, w, h, capAlpha)
+        }
+        canvas.restoreToCount(saveCount)
+    }
+
+    /** Capsule-mode content: badge + flow + metrics (fade out on morph). */
+    private fun drawCapsuleContent(canvas: Canvas, w: Float, h: Float, alpha: Float) {
+        if (alpha <= 0.02f) return
 
         // ---- count badge ----
         val countW = dp(COUNT_W_DP)
@@ -506,8 +637,119 @@ class SessionCapsuleView(
 
         // ---- metrics column ----
         drawMetrics(canvas, w, h, alpha)
+    }
 
-        canvas.restoreToCount(saveCount)
+    /**
+     * [T-overlay-v3-eternal] Circle content: something alive INSIDE the
+     * orb — a breathing core, three orbital sparks on elliptical tracks
+     * and two slow rotating "liquid" arcs, all driven by elapsed time so
+     * it never stops. The count number rides on top.
+     */
+    private fun drawCircleContent(canvas: Canvas, w: Float, h: Float, alpha: Float) {
+        if (alpha <= 0.02f) return
+        val cx = w / 2f
+        val cy = h / 2f
+        val base = minOf(w, h) / 2f
+        val now = SystemClock.elapsedRealtime()
+
+        // ---- rotating "liquid" arcs (visible through the glass) ----
+        liquidArcPaint.strokeWidth = dp(2f)
+        for (liq in 0..1) {
+            val rot = (now % 9000L) / 9000f * 360f * (if (liq == 0) 1f else -1f) + liq * 120f
+            val ar = base * (0.66f + 0.05f * sin(now / 1700f + liq))
+            val a = (0.16f + 0.10f * (0.5f + 0.5f * sin(now / 1300f + liq * 2.1f))) * alpha
+            liquidArcPaint.alpha = (a * 255).toInt().coerceIn(0, 255)
+            arcRect.set(cx - ar, cy - ar * 0.62f, cx + ar, cy + ar * 0.62f)
+            val start = rot
+            canvas.drawArc(arcRect, start, 150f, false, liquidArcPaint)
+        }
+
+        // ---- breathing core ----
+        val corePhase = (now % 1800L) / 1800f
+        val coreR = base * lerp(0.17f, 0.26f, 0.5f + 0.5f * sin(corePhase * Math.PI.toFloat() * 2f))
+        val coreA = (0.55f + 0.25f * sin(corePhase * Math.PI.toFloat() * 2f)) * alpha
+        corePaint.shader = android.graphics.RadialGradient(
+            cx, cy, coreR,
+            (coreA * 255).toInt().coerceIn(0, 255).shl(24) or (SessionOverlayPalette.ACCENT_BRIGHT and 0xFFFFFF),
+            SessionOverlayPalette.ACCENT and 0x00FFFFFF,
+            android.graphics.Shader.TileMode.CLAMP,
+        )
+        canvas.drawCircle(cx, cy, coreR, corePaint)
+
+        // ---- three orbital sparks (different speeds & tilts) ----
+        val orbits = floatArrayOf(0.62f, 0.80f, 0.95f)
+        val speeds = floatArrayOf(1f, -0.62f, 0.38f)
+        val tilts = floatArrayOf(-18f, 24f, 62f)
+        for (i in orbits.indices) {
+            val t = (now % 10000L) / 10000f
+            val ang = t * Math.PI.toFloat() * 2f * speeds[i] * (if (i == 1) 4f else 3f) + i * 2.1f
+            val orx = base * orbits[i]
+            val ory = base * orbits[i] * 0.66f
+            val px = cx + orx * cos(ang)
+            val py = cy + ory * sin(ang)
+            val sa = (0.5f + 0.35f * sin(ang * 1.7f + i)) * alpha
+            sparkPaint.alpha = (sa * 255).toInt().coerceIn(0, 255)
+            canvas.drawCircle(px, py, dp(1.6f), sparkPaint)
+        }
+
+        // ---- count number on top ----
+        countTextPaint.textSize = dp(22f)
+        countTextPaint.alpha = (alpha * 255).toInt()
+        countTextPaint.setShadowLayer(dp(3f), 0f, 0f, SessionOverlayPalette.ACCENT and 0x66FFFFFF)
+        val ty = cy - (countTextPaint.descent() + countTextPaint.ascent()) / 2f
+        canvas.drawText(sessionCount.coerceAtMost(99).toString(), cx, ty, countTextPaint)
+        countTextPaint.clearShadowLayer()
+
+        // ---- [T-overlay-v3-hold-open] 3s hold progress ring around the rim ----
+        if (holdProgress > 0f) {
+            ringPaint.strokeWidth = dp(2.4f)
+            ringPaint.alpha = (alpha * 255).toInt()
+            arcRect.set(cx - base + dp(3f), cy - base + dp(3f), cx + base - dp(3f), cy + base - dp(3f))
+            canvas.drawArc(arcRect, -90f, 360f * holdProgress, false, ringPaint)
+        }
+    }
+
+    /**
+     * [T-overlay-v3-trail] Drag trail: soft blue radial halos deposited
+     * behind the moving orb. Each spot fades (0.7s) and widens as it ages.
+     * Optimized: max 10 spots, pure radial gradients, no blur passes —
+     * reads as quality mist without touching the frame budget.
+     */
+    private val trailSpots = ArrayList<TrailSpot>(10)
+
+    private class TrailSpot(val x: Float, val y: Float, val bornAt: Long)
+
+    private fun addTrailSpot(x: Float, y: Float) {
+        val now = SystemClock.elapsedRealtime()
+        if (trailSpots.isNotEmpty() && now - trailSpots.last().bornAt < 24L) return
+        trailSpots.add(TrailSpot(x, y, now))
+        while (trailSpots.size > 10) trailSpots.removeAt(0)
+    }
+
+    private fun drawTrail(canvas: Canvas, alpha: Float) {
+        val now = SystemClock.elapsedRealtime()
+        val it = trailSpots.iterator()
+        while (it.hasNext()) {
+            val spot = it.next()
+            val age = (now - spot.bornAt).toFloat()
+            if (age > 700f) {
+                it.remove()
+                continue
+            }
+            val life = age / 700f
+            val a = (1f - life) * 0.16f * alpha
+            if (a <= 0.01f) continue
+            val r = dp(lerp(10f, 22f, life))
+            fogPaint.shader = android.graphics.RadialGradient(
+                spot.x, spot.y, r,
+                (a * 255).toInt().coerceIn(0, 60).shl(24) or (SessionOverlayPalette.ACCENT and 0xFFFFFF),
+                SessionOverlayPalette.ACCENT and 0x00FFFFFF,
+                android.graphics.Shader.TileMode.CLAMP,
+            )
+            canvas.drawCircle(spot.x, spot.y, r, fogPaint)
+        }
+        // Keep animating while any spot is alive.
+        if (trailSpots.isNotEmpty()) postInvalidateOnAnimation()
     }
 
     private fun drawWaves(canvas: Canvas, flowX: Float, flowY: Float, flowW: Float, alpha: Float) {

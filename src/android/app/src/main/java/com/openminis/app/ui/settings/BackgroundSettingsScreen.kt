@@ -31,6 +31,7 @@ import androidx.compose.material.icons.outlined.MusicNote
 import androidx.compose.material.icons.outlined.NotificationsActive
 import androidx.compose.material.icons.outlined.PhoneAndroid
 import androidx.compose.material.icons.outlined.Vibration
+import androidx.compose.material.icons.outlined.Lens
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -369,6 +370,58 @@ fun BackgroundSettingsScreen(onBack: () -> Unit) {
                 } else {
                     stringResource(R.string.settings_bg_overlay_footer)
                 },
+            )
+
+            // [T-overlay-v3-persist] Session orb settings: portrait form
+            // (capsule vs orb — landscape is always the orb), haptic and
+            // sound feedback of the floating window. Stored in the same
+            // overlay_v3_prefs the window reads.
+            val overlayV3Prefs = remember {
+                context.getSharedPreferences("overlay_v3_prefs", android.content.Context.MODE_PRIVATE)
+            }
+            var portraitOrb by remember {
+                mutableStateOf(overlayV3Prefs.getBoolean("portrait_orb", false))
+            }
+            var overlayHaptic by remember {
+                mutableStateOf(overlayV3Prefs.getBoolean("haptic_enabled", true))
+            }
+            var overlaySound by remember {
+                mutableStateOf(overlayV3Prefs.getBoolean("sound_enabled", false))
+            }
+            Spacer(Modifier.size(8.dp))
+            BgSubLabel("Плавающее окно сессий")
+            BgToggleRow(
+                icon = Icons.Outlined.Lens,
+                iconColor = Color(0xFF0A84FF),
+                title = "Шар вместо капсулы (вертикальный экран)",
+                checked = portraitOrb,
+                onCheckedChange = { wanted ->
+                    overlayV3Prefs.edit().putBoolean("portrait_orb", wanted).apply()
+                    portraitOrb = wanted
+                },
+            )
+            BgToggleRow(
+                icon = Icons.Outlined.Vibration,
+                iconColor = Color(0xFFFF9500),
+                title = "Отклик: вибрация",
+                checked = overlayHaptic,
+                onCheckedChange = { wanted ->
+                    overlayV3Prefs.edit().putBoolean("haptic_enabled", wanted).apply()
+                    overlayHaptic = wanted
+                },
+            )
+            BgToggleRow(
+                icon = Icons.Outlined.MusicNote,
+                iconColor = Color(0xFFFF2D55),
+                title = "Отклик: звук",
+                checked = overlaySound,
+                onCheckedChange = { wanted ->
+                    overlayV3Prefs.edit().putBoolean("sound_enabled", wanted).apply()
+                    overlaySound = wanted
+                },
+            )
+            BgFooter(
+                "Горизонтальный экран всегда использует шар. Открытие списка — удержание шара 3 с, закрытие — короткий тап; сессия открывается удержанием строки 2,5 с.",
             )
 
             // [T-android-dynamic-island] Live Updates / "dynamic island" toggle.

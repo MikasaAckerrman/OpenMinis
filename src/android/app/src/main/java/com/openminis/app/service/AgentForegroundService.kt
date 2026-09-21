@@ -292,6 +292,8 @@ class AgentForegroundService : Service() {
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
         super.onConfigurationChanged(newConfig)
         overlayController?.onConfigurationChanged()
+        // [T-overlay-v3-shape-policy] rotation → morph capsule ⇄ orb.
+        sessionOverlayWindow?.onConfigurationChanged(newConfig)
     }
 
     override fun onDestroy() {
