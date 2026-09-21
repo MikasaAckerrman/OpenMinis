@@ -501,6 +501,28 @@ class SessionOverlayWindow(
         context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    /**
+     * [T-overlay-v3-fit-bug] The VISIBLE app area (excludes nav/gesture
+     * bar): raw heightPixels counts the full panel — clamping against it
+     * let the user drag the orb into the gesture-bar zone where vivo's
+     * fitTypes=NAVIGATION_BARS snap-moved the window (the recorded video
+     * bug: "tap and it vanishes down"). Explicit safe margins (24dp top /
+     * 80dp bottom / 12dp sides) — currentWindowMetrics.bounds includes the
+     * nav bar on API 30+, so it is NOT the visible area.
+     */
+    private fun visibleBounds(): android.graphics.Rect {
+        val dm = context.resources.displayMetrics
+        val top = (24f * dm.density).toInt()
+        val bottom = (80f * dm.density).toInt()
+        val side = (12f * dm.density).toInt()
+        return android.graphics.Rect(
+            side,
+            top,
+            (dm.widthPixels - side).coerceAtLeast(1),
+            (dm.heightPixels - bottom).coerceAtLeast(top + 1),
+        )
+    }
+
     private var capsule: SessionCapsuleView? = null
     private var panel: SessionOverlayPanelView? = null
     private var capsuleAttached = false

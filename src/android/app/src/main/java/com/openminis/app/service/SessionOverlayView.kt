@@ -117,6 +117,9 @@ class SessionCapsuleView(
     // finger stayed within the slop distance.
     /** Drag delta → the window moves the capsule (dx, dy in px). */
     var onDragDelta: (Float, Float) -> Unit = { _, _ -> }
+
+    /** [T-overlay-v3-prefs-spam] fired once when a drag gesture ends. */
+    var onDragEnded: (() -> Unit)? = null
     private var lastRawX = 0f
     private var lastRawY = 0f
     private var dragDistance = 0f
@@ -479,16 +482,21 @@ class SessionCapsuleView(
                 val inside = isInside(event.x, event.y)
                 pressed = false
                 val wasHolding = holdAnimator != null
+                val dragged = dragDistance > touchSlopPx
                 cancelHold()
                 postInvalidateOnAnimation()
+                // [T-overlay-v3-prefs-spam] one positional save per gesture.
+                if (dragged) onDragEnded?.invoke()
                 // Short tap (no drag, no completed hold): toggle-close only.
-                if (inside && dragDistance <= touchSlopPx && !wasHolding) onCapsuleTap()
+                if (inside && !dragged && !wasHolding) onCapsuleTap()
                 return true
             }
             MotionEvent.ACTION_CANCEL -> {
                 pressed = false
+                val dragged = dragDistance > touchSlopPx
                 cancelHold()
                 postInvalidateOnAnimation()
+                if (dragged) onDragEnded?.invoke()
                 return true
             }
         }
