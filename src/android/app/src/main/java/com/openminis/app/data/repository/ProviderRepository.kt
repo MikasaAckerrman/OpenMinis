@@ -519,24 +519,25 @@ class ProviderRepository(private val context: Context) {
             )
         }
         persistScope.launch {
-            synchronized(configLock) {
-                // persistToDbAndMirror canonicalizes entry ids in place
-                // (composite "{instanceId}/{modelId}" form) — the emitted
-                // state above wraps the same lists, so the canonical ids
-                // become visible to readers as soon as they land.
-                // Catch persistence failures so callers stay fire-and-forget
-                // (matches the legacy `apply()` contract): the in-memory
-                // state still reflects the user's intent; the next
-                // successful save resyncs everything.
-                try {
-                    persistToDbAndMirror(config)
-                } catch (e: Exception) {
-                    android.util.Log.e(
-                        "ProviderRepo",
-                        "[ProviderStore] saveConfig persistence failed; in-memory state kept: ${e.message}",
-                        e,
-                    )
-                }
+            // [T-perf-saveconfig-off-main] No `synchronized(configLock)` here:
+            // persistToDbAndMirror suspends (Room + prefs IO), and holding a
+            // Java monitor across a suspension point is a deadlock risk the
+            // compiler rightly rejects. Thread-safety instead: (a) the worker
+            // is single-threaded so persists are strictly ordered; (b) the
+            // config passed in is ALREADY list-isolated — the emit above
+            // installed fresh toMutableList() wrappers, and later mutators
+            // work on _config.value's new lists, never on this snapshot's
+            // lists (list-level changes can't race the serializer; an
+            // element-field write is at worst a slightly fresher value being
+            // serialized, which stays consistent JSON).
+            try {
+                persistToDbAndMirror(config)
+            } catch (e: Exception) {
+                android.util.Log.e(
+                    "ProviderRepo",
+                    "[ProviderStore] saveConfig persistence failed; in-memory state kept: ${e.message}",
+                    e,
+                )
             }
         }
     }
