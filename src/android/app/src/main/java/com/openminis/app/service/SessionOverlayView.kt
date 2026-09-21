@@ -110,6 +110,17 @@ class SessionCapsuleView(
     private val onCapsuleTap: () -> Unit,
 ) : View(context) {
 
+    // [T-overlay-v3-drag] The legacy capsule was draggable ("floating");
+    // the tender-v3 capsule keeps that: MOVE deltas are forwarded to the
+    // window manager, and the gesture only counts as a tap when the
+    // finger stayed within the slop distance.
+    /** Drag delta → the window moves the capsule (dx, dy in px). */
+    var onDragDelta: (Float, Float) -> Unit = { _, _ -> }
+    private var lastRawX = 0f
+    private var lastRawY = 0f
+    private var dragDistance = 0f
+    private val touchSlopPx = 12
+
     companion object {
         private const val TAG = "SessionCapsuleView"
         // Geometry (dp) — matches the tender render 1:1.
@@ -310,13 +321,29 @@ class SessionCapsuleView(
                 playPressFlash()
                 hapticTick()
                 postInvalidateOnAnimation()
+                lastRawX = event.rawX
+                lastRawY = event.rawY
+                dragDistance = 0f
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val dx = event.rawX - lastRawX
+                val dy = event.rawY - lastRawY
+                lastRawX = event.rawX
+                lastRawY = event.rawY
+                dragDistance += kotlin.math.abs(dx) + kotlin.math.abs(dy)
+                if (dragDistance > touchSlopPx) {
+                    // [T-overlay-v3-drag] forward only past the slop so
+                    // tiny jitters don't move the window.
+                    onDragDelta(dx, dy)
+                }
                 return true
             }
             MotionEvent.ACTION_UP -> {
                 val inside = isInside(event.x, event.y)
                 pressed = false
                 postInvalidateOnAnimation()
-                if (inside) onCapsuleTap()
+                if (inside && dragDistance <= touchSlopPx) onCapsuleTap()
                 return true
             }
             MotionEvent.ACTION_CANCEL -> {

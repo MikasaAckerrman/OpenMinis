@@ -3521,6 +3521,18 @@ fun ChatScreen(
                                 onDelete = if (isStreaming) null else ({
                                     pendingDeleteMessageId = originalMessageId(item.messageId)
                                 }),
+                                // [T-rewrite-continue] Continue from THIS
+                                // (possibly rewritten) answer: history is kept
+                                // up to and including it, then generation runs
+                                // forward. Hidden mid-stream.
+                                onContinue = if (isStreaming) null else ({
+                                    coroutineScope.launch {
+                                        tracedScrollToItem("CONTINUE-FROM-TURN", 0, 0)
+                                    }
+                                    safeMutate {
+                                        viewModel.retryFromMessage(originalMessageId(item.messageId))
+                                    }
+                                }),
                                 // [T-rewrite-stealth] Pencil shows when this
                                 // turn's stored text was edited.
                                 isEdited = messages.firstOrNull {

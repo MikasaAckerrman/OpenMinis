@@ -191,6 +191,20 @@ class ProviderRepository(private val context: Context) {
         kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO,
     )
 
+    // [T-perf-saveconfig-off-main] Single-threaded persistence worker.
+    // saveConfig() used runBlocking on the CALLER's thread: every toggle in
+    // the providers screen serialized the WHOLE config (172 instances +
+    // hundreds of models → a large JSON string), ran a full Room
+    // replaceAll transaction AND a synchronous prefs commit() — 100s of ms
+    // of main-thread block per tap ("providers menu lags"). The in-memory
+    // emit is now immediate (instant UI feedback); persistence runs here in
+    // submission order, keeping the DB+mirror hash invariant (both writes
+    // still happen inside one task under configLock).
+    private val persistScope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() +
+            kotlinx.coroutines.Dispatchers.IO.limitedParallelism(1),
+    )
+
     /**
      * Completes once the initial off-thread load has emitted (or determined
      * there's nothing persisted). Lets startup consumers that genuinely need
@@ -484,40 +498,46 @@ class ProviderRepository(private val context: Context) {
         // addEntry / removeEntry) compares equal to `next` → MutableStateFlow
         // suppresses the emission. T273 bumps `revision` so equals always
         // returns false and 18+ collectAsState callers see the new value.
+        // [T-perf-saveconfig-off-main] Emit the new state IMMEDIATELY on the
+        // caller thread (mutation APIs are read-modify-write over
+        // _config.value — deferring the emit to the background worker would
+        // make the NEXT mutation read a stale snapshot and silently drop
+        // this one). Only the expensive part — JSON serialization, the full
+        // Room replaceAll transaction and the synchronous prefs commit() —
+        // moves to the single-threaded persist worker: submission order ==
+        // write order, so a burst of taps ends with the last state durably
+        // stored, and the DB+mirror hash invariant is preserved (both
+        // writes run inside one worker task under configLock).
         synchronized(configLock) {
-            // persistToDbAndMirror returns the canonicalized config (entries'
-            // uuid in composite "{instanceId}/{modelId}" form). Emit that so
-            // subsequent in-memory reads — which compare entry.id by string
-            // equality (e.g. group.memberEntryIds.contains(it.id)) — use one
-            // consistent id shape rather than mixing legacy random uuids and
-            // composite keys.
-            //
-            // Catch persistence failures so callers stay fire-and-forget
-            // (matches the legacy `apply()` contract — pre-Room saveConfig
-            // never threw). DB write fails are rare in practice (disk full,
-            // SQLite corruption, transaction deadlock) but uncaught they'd
-            // crash whichever UI handler triggered the mutation. Still
-            // emit the in-memory state so the UI reflects the user's
-            // intent even when the disk write didn't land; the next
-            // successful save resyncs everything.
-            val canonical = try {
-                runBlocking { persistToDbAndMirror(config) }
-            } catch (e: Exception) {
-                android.util.Log.e(
-                    "ProviderRepo",
-                    "[ProviderStore] saveConfig persistence failed; emitting in-memory only: ${e.message}",
-                    e,
-                )
-                config
-            }
-            _config.value = canonical.copy(
-                instances = canonical.instances.toMutableList(),
-                modelEntries = canonical.modelEntries.toMutableList(),
-                modelGroups = canonical.modelGroups.toMutableList(),
-                agentLoopModelEntryIds = canonical.agentLoopModelEntryIds.toMutableList(),
-                agentLoopGroupIds = canonical.agentLoopGroupIds.toMutableList(),
+            _config.value = config.copy(
+                instances = config.instances.toMutableList(),
+                modelEntries = config.modelEntries.toMutableList(),
+                modelGroups = config.modelGroups.toMutableList(),
+                agentLoopModelEntryIds = config.agentLoopModelEntryIds.toMutableList(),
+                agentLoopGroupIds = config.agentLoopGroupIds.toMutableList(),
                 revision = config.revision + 1,
             )
+        }
+        persistScope.launch {
+            synchronized(configLock) {
+                // persistToDbAndMirror canonicalizes entry ids in place
+                // (composite "{instanceId}/{modelId}" form) — the emitted
+                // state above wraps the same lists, so the canonical ids
+                // become visible to readers as soon as they land.
+                // Catch persistence failures so callers stay fire-and-forget
+                // (matches the legacy `apply()` contract): the in-memory
+                // state still reflects the user's intent; the next
+                // successful save resyncs everything.
+                try {
+                    persistToDbAndMirror(config)
+                } catch (e: Exception) {
+                    android.util.Log.e(
+                        "ProviderRepo",
+                        "[ProviderStore] saveConfig persistence failed; in-memory state kept: ${e.message}",
+                        e,
+                    )
+                }
+            }
         }
     }
 

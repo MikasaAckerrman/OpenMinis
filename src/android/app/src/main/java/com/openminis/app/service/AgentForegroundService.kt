@@ -606,33 +606,15 @@ class AgentForegroundService : Service() {
             } else {
                 state.lastToolStatus ?: state.toolStatus
             }
-            if (isBusy) {
-                controller.show(
-                    toolName = effectiveToolName,
-                    statusText = effectiveStatus,
-                    isRunning = true,
-                    outcome = ToolOutcome.Unknown,
-                    replyExcerpt = null,
-                    targetSessionId = state.currentSessionId,
-                    toolTitle = effectiveToolTitle,
-                )
-            } else {
-                // [T-android-overlay-completion-pending] Completion linger:
-                // the turn ended while backgrounded. Render the controller's
-                // existing completed state (outcome glyph + localized
-                // completion word + reply excerpt row + visible X); it stays
-                // until tap-to-open / X clears hasCompletionPending via
-                // onDismissByUser, or a foreground transition does.
-                controller.show(
-                    toolName = effectiveToolName,
-                    statusText = effectiveStatus,
-                    isRunning = false,
-                    outcome = state.lastOutcome,
-                    replyExcerpt = state.lastReplyExcerpt,
-                    targetSessionId = state.currentSessionId,
-                    toolTitle = effectiveToolTitle,
-                )
-            }
+            // [T-overlay-v3-retire-legacy] The legacy reply-status capsule is
+            // RETIRED: the tender-v3 SessionOverlayWindow (waves capsule +
+            // sessions panel) is the only floating surface now. The user saw
+            // BOTH windows stacked when we added v3 — v3 must REPLACE the
+            // legacy one, not live beside it. The v3 window tracks running
+            // sessions through its own updateSessions feed and handles
+            // show/hide (foreground gate + jelly dismissal) internally, so
+            // there is nothing left for the legacy controller to show.
+            if (controller.isShown) controller.hide()
             return
         }
 

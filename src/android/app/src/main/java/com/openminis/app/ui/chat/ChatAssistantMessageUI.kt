@@ -279,6 +279,10 @@ import com.openminis.app.ui.components.MinisTextButton
 internal fun AssistantHeader(
     onRewrite: (() -> Unit)? = null,
     onDelete: (() -> Unit)? = null,
+    // [T-rewrite-continue] "Continue from here": keep history up to and
+    // including this (possibly stealth-rewritten) answer, then generate
+    // forward. Offered on assistant turn headers when not streaming.
+    onContinue: (() -> Unit)? = null,
     // [T-copy-whole-answer] Copy the prose of this whole turn. Lives on the
     // header menu, not in the body: the body is a SelectionContainer where a
     // long press starts text selection, and selection only ever yields the
@@ -302,7 +306,8 @@ internal fun AssistantHeader(
     // and hijacking that would break copy — which users need far more often
     // than they need to delete a turn.
     var showMenu by remember { mutableStateOf(false) }
-    val hasActions = onRewrite != null || onDelete != null || onCopyAnswer != null
+    val hasActions = onRewrite != null || onDelete != null ||
+        onCopyAnswer != null || onContinue != null
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
@@ -364,6 +369,19 @@ internal fun AssistantHeader(
                         leadingIcon = {
                             Icon(
                                 Icons.Filled.ContentCopy,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        },
+                    )
+                }
+                if (onContinue != null) {
+                    DropdownMenuItem(
+                        text = { Text("Продолжить отсюда") },
+                        onClick = { showMenu = false; onContinue() },
+                        leadingIcon = {
+                            Icon(
+                                Icons.AutoMirrored.Filled.ArrowForward,
                                 contentDescription = null,
                                 modifier = Modifier.size(18.dp),
                             )

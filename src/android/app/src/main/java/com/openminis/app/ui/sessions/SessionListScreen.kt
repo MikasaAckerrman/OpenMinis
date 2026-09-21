@@ -303,6 +303,11 @@ fun SessionListScreen(
     val regeneratingIds by viewModel.regeneratingIds.collectAsState()
     val compressingIds by viewModel.compressingIds.collectAsState()
     val providerConfig by providerRepository.config.collectAsState()
+    // [T-perf-row-global-collectors] Screen-level single subscriptions (were
+    // per-row collectAsState — every active-session/badge change recomposed
+    // every row of the list).
+    val activeSessionsState by SessionActivityTracker.activeSessions.collectAsState()
+    val badgeMapState by com.openminis.app.service.SessionBadgeStore.byId.collectAsState()
     val hasProviders = providerConfig.instances.isNotEmpty()
     val hasGroups = providerConfig.modelGroups.isNotEmpty()
     // [T-android-startup-config-stall] Provider config now loads off-thread, so
@@ -608,10 +613,15 @@ fun SessionListScreen(
                             }
                             items(periodSessions, key = { it.id }) { session ->
                                 val activeQuery = if (isSearchActive && searchQuery.isNotBlank()) searchQuery else ""
+                                // [T-perf-row-global-collectors] one collect per
+                                // screen (see top of SessionListScreen) instead
+                                // of per-row subscriptions.
                                 SessionItemContent(
                                     session = session,
                                     isSelecting = isSelecting,
                                     selectedIds = selectedIds,
+                                    isActive = session.id in activeSessionsState,
+                                    badgeHead = badgeMapState[session.id]?.firstOrNull(),
                                     onSessionClick = onSessionClickGuarded,
                                     onToggleSelect = { viewModel.toggleSelect(it) },
                                     onEnterSelect = { viewModel.enterSelection(it) },
@@ -1103,6 +1113,13 @@ private fun SessionItemContent(
     isCompressing: Boolean = false,
     searchQuery: String = "",
     searchSnippet: String? = null,
+    // [T-perf-row-global-collectors] Hoisted from SessionRow: the row used
+    // to collectAsState() the GLOBAL activeSessions/badgeMap flows inside
+    // every row's composition — any emission (session start/stop, badge
+    // change) recomposed the ENTIRE list. Now collected once at screen
+    // level; rows take plain values and Compose skips unchanged ones.
+    isActive: Boolean = false,
+    badgeHead: com.openminis.app.service.SessionBadgeStore.SessionBadgeState? = null,
 ) {
     if (isSelecting) {
         val isSelected = session.id in selectedIds
@@ -1112,6 +1129,8 @@ private fun SessionItemContent(
             onLongClick = null,
             searchQuery = searchQuery,
             searchSnippet = searchSnippet,
+            isActive = false,
+            badgeHead = null,
             leadingIcon = {
                 Icon(
                     imageVector = if (isSelected) Icons.Filled.CheckCircle else Icons.Outlined.Circle,
@@ -1134,6 +1153,8 @@ private fun SessionItemContent(
                 onClick = { onSessionClick(session.id) },
                 searchQuery = searchQuery,
                 searchSnippet = searchSnippet,
+                isActive = isActive,
+                badgeHead = badgeHead,
                 onLongClick = { offsetPx ->
                     pressOffset = with(density) {
                         DpOffset(offsetPx.x.toDp(), offsetPx.y.toDp())
@@ -1339,6 +1360,9 @@ private fun SessionRow(
     leadingIcon: (@Composable () -> Unit)? = null,
     searchQuery: String = "",
     searchSnippet: String? = null,
+    // [T-perf-row-global-collectors] hoisted — see SessionItemContent.
+    isActive: Boolean = false,
+    badgeHead: com.openminis.app.service.SessionBadgeStore.SessionBadgeState? = null,
 ) {
     val style = remember(session.category) { categoryStyle(session.category) }
     val ctx = androidx.compose.ui.platform.LocalContext.current
@@ -1374,15 +1398,13 @@ private fun SessionRow(
             leadingIcon()
         }
 
-        // Category icon in colored circle (18% opacity matching iOS)
-        val activeSessions by SessionActivityTracker.activeSessions.collectAsState()
-        val isActive = session.id in activeSessions
+        // Category icon in colored circle (18% opacity matching iOS).
+        // [T-perf-row-global-collectors] isActive / badgeHead arrive as
+        // parameters (hoisted to the screen level) — see SessionItemContent.
         // [T-android-session-paused-badge] Head of this session's badge queue
         // — null for the common case. Renders as an overlay in the icon's
         // bottom-right corner, mirroring where iOS's iCloud badge sits so
         // future ICLOUD_SYNCING uses the same anchor.
-        val badgeMap by com.openminis.app.service.SessionBadgeStore.byId.collectAsState()
-        val badgeHead = badgeMap[session.id]?.firstOrNull()
         Box(
             modifier = Modifier.size(44.dp),
         ) {

@@ -368,6 +368,8 @@ class SessionOverlayWindow(
     private var panel: SessionOverlayPanelView? = null
     private var capsuleAttached = false
     private var panelAttached = false
+    // [T-overlay-v3-drag] live layout params of the capsule window (drag).
+    private var capsuleParams: WindowManager.LayoutParams? = null
     private var panelOpen = false
     private var samplerJob: Job? = null
 
@@ -418,6 +420,24 @@ class SessionOverlayWindow(
         samplerJob = null
     }
 
+    /**
+     * [T-overlay-v3-drag] Move the capsule window by a gesture delta,
+     * clamped to the screen bounds so it can't be dragged off-screen.
+     */
+    private fun moveCapsuleBy(dx: Float, dy: Float) {
+        val view = capsule ?: return
+        val params = capsuleParams ?: return
+        val dm = context.resources.displayMetrics
+        val w = view.width.coerceAtLeast(1)
+        val h = view.height.coerceAtLeast(1)
+        params.x = (params.x + dx.toInt()).coerceIn(0, (dm.widthPixels - w).coerceAtLeast(0))
+        params.y = (params.y + dy.toInt()).coerceIn(0, (dm.heightPixels - h).coerceAtLeast(0))
+        try {
+            windowManager.updateViewLayout(view, params)
+        } catch (_: Exception) {
+        }
+    }
+
     // ---------------------------------------------------------------- capsule
     private fun showCapsule() {
         if (capsuleAttached) return
@@ -435,9 +455,17 @@ class SessionOverlayWindow(
                 or WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
             android.graphics.PixelFormat.TRANSLUCENT,
         ).apply {
-            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-            y = (BOTTOM_MARGIN_DP * dm.density).toInt()
+            // [T-overlay-v3-drag] Absolute TOP|LEFT placement (same visual
+            // spot as BOTTOM|CENTER + margin: centered above the bottom
+            // margin) so dragging is a plain x/y += delta without a
+            // gravity flip mid-gesture — the capsule keeps the legacy
+            // "floating" drag behavior.
+            gravity = Gravity.TOP or Gravity.LEFT
+            x = (dm.widthPixels - w) / 2
+            y = dm.heightPixels - h - (BOTTOM_MARGIN_DP * dm.density).toInt()
         }
+        capsuleParams = params
+        view.onDragDelta = { dx, dy -> moveCapsuleBy(dx, dy) }
         try {
             windowManager.addView(view, params)
             capsuleAttached = true

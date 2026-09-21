@@ -6751,7 +6751,21 @@ class ChatViewModel(
         val message = messages[index]
         // [T-android-tool-autoscroll] Start-of-turn snap — see resume().
         _forceScrollToBottom.tryEmit(Unit)
-        if (message.role != "user" || message.content.isBlank()) return false
+        // [T-rewrite-continue] Assistant bubbles are retryable too: a
+        // stealth-rewritten answer ("continue from the rewritten text")
+        // keeps everything up to and INCLUDING that bubble, then
+        // regenerates forward — the user-branch keeps exactly the same
+        // semantics it always had (keep up to the user message, redo the
+        // answer). Non-user/assistant roles (system markers, compact
+        // summaries) stay refused: rewriting history around those needs
+        // its own anchor semantics.
+        if (message.role != "user" && message.role != "assistant") return false
+        // [T-rewrite-continue] A user bubble with no text is a nothing-burger
+        // (attachments-only turns are queued, not retryable this way); an
+        // ASSISTANT turn may legitimately have empty content when the whole
+        // turn was tool calls — its history value lives in the tool blocks,
+        // so it stays continuable.
+        if (message.role == "user" && message.content.isBlank()) return false
 
         val initialProvider = currentProvider
         if (initialProvider == null) {
