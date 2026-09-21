@@ -3451,7 +3451,20 @@ fun ChatScreen(
                                 // the stored text — and Retry covers "run this
                                 // again". Keeping both was two menu items that
                                 // looked the same and behaved differently.
-                                onEdit = null,
+                                // [T-restore-queued-edit] RESTORED from
+                                // 8b78d1c (lost in 656c247's "remove edit
+                                // action" sweep — that commit's rationale was
+                                // about REGULAR user bubbles re-running the
+                                // conversation, but it also killed the Edit
+                                // button for QUEUED messages, which the user
+                                // explicitly requested earlier ("добавить
+                                // возможность изменить то что в ожидание
+                                // отправки"). Queued edit does NOT re-run
+                                // history: it moves the text back to the
+                                // input field and drops the queue entry.
+                                onEdit = if (item.message.isQueued) {
+                                    { safeMutate { viewModel.editQueuedMessage(item.message.id) } }
+                                } else null,
                                 onWithdraw = if (item.message.isQueued) {
                                     { safeMutate { viewModel.withdrawQueuedMessage(item.message.id) } }
                                 } else null,

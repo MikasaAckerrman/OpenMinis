@@ -3084,9 +3084,19 @@ class ChatViewModel(
      */
     fun rewriteMessageText(messageId: String, newText: String) {
         if (_isStreaming.value) {
+            // [T-rewrite-not-lost] PROVEN USER BUG: the dialog closes FIRST
+            // and then this refusal fired — the edited text evaporated
+            // ("гасится и не работает"). Keep it: park the text in the
+            // composer draft so one more tap recovers it, and say why.
+            _inputText.value = newText
+            runCatching {
+                com.openminis.app.data.DraftStore.saveDraft(
+                    context, realSessionId.ifEmpty { sessionId }, newText,
+                )
+            }
             appendSystemInfo(
-                text = context.getString(R.string.msg_delete_busy_streaming),
-                iconKind = "compact",
+                text = context.getString(R.string.chat_rewrite_saved_draft),
+                iconKind = "info",
             )
             return
         }
@@ -6753,11 +6763,39 @@ class ChatViewModel(
      * callers that need the outcome must observe the DB / streaming state.
      */
     fun retryFromMessage(messageId: String): Boolean {
-        if (_isStreaming.value) return false
+        // [T-retry-loud-reject] PROVEN USER BUG ("редактировал последнее
+        // сообщение → жму повторить → гасится и не работает"): a silent
+        // `return false` under a live/lingering stream made the Retry
+        // item LOOK dead — nothing appeared, nothing was refused. The
+        // ChatScreen menu also nulls onRetry while isStreaming=true, so
+        // the item vanishes ("гасится"). Say WHY out loud instead: a
+        // system info bubble the user can read, plus a log line.
+        if (_isStreaming.value) {
+            AppLogger.info(
+                TAG,
+                "[Retry] отказ: стрим активен — тихий return false делал кнопку " +
+                    "«мёртвой» без объяснения (msg=${messageId.take(8)})",
+            )
+            appendSystemInfo(
+                text = context.getString(R.string.chat_retry_streaming),
+                iconKind = "info",
+            )
+            return false
+        }
         _canResume.value = false
         val messages = _messages.value
         val index = messages.indexOfFirst { it.id == messageId }
-        if (index < 0) return false
+        if (index < 0) {
+            // [T-retry-loud-reject] Same reasoning: a stale menu id (the
+            // bubble was rewritten/merged and its id changed between menu
+            // open and tap) used to vanish silently.
+            AppLogger.info(TAG, "[Retry] отказ: id ${messageId.take(8)} не найден в _messages")
+            appendSystemInfo(
+                text = context.getString(R.string.chat_retry_not_found),
+                iconKind = "info",
+            )
+            return false
+        }
         val message = messages[index]
         // [T-android-tool-autoscroll] Start-of-turn snap — see resume().
         _forceScrollToBottom.tryEmit(Unit)
