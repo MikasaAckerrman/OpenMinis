@@ -80,7 +80,14 @@ object TurnMemoryDistiller {
         val session = app.chatRepository.dao.getSession(sessionId) ?: return
         if (session.agentRunId != null) return
 
-        val msgs = app.chatRepository.dao.loadMessages(sessionId)
+        // [T-proactive-memory-perf] Tail load, not the whole history: the
+        // distiller reads ONLY the last turn, and a big session would pay a
+        // full-history load after every substantial turn. 150 rows cover the
+        // longest realistic turn; a turn longer than that undercounts the
+        // digest and at worst skips a distill (never false-positives).
+        val msgs = app.chatRepository.dao
+            .loadLastMessages(sessionId, limit = 150)
+            .asReversed()
         val lastUserIdx = msgs.indexOfLast { it.role == "user" }
         if (lastUserIdx < 0) return
         val turn = msgs.drop(lastUserIdx + 1)

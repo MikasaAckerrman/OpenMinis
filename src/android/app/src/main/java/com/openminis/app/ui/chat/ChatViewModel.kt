@@ -11992,15 +11992,13 @@ class ChatViewModel(
             onBackgroundResult = if (background) { { _, subRole, subResult ->
                 // Deliver the background result as a system info line the
                 // next turn will see. The callback runs on an IO coroutine;
-                // hop to Main for the ViewModel mutation.
+                // mainExecutor is the one hop to the ViewModel mutation.
                 val appCtx = context.applicationContext
-                android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    appCtx.mainExecutor.execute {
-                        appendSystemInfo(
-                            text = "[subagent ${subRole.lowercase()}] $subResult",
-                            iconKind = "compact",
-                        )
-                    }
+                appCtx.mainExecutor.execute {
+                    appendSystemInfo(
+                        text = "[subagent ${subRole.lowercase()}] $subResult",
+                        iconKind = "compact",
+                    )
                 }
             } } else null,
         )

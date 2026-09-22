@@ -96,6 +96,51 @@ object SubagentExecutor {
     }
 
     /**
+     * [T-spawn-crash] Shared background path for spawn()/spawnCustom().
+     *
+     * A raw `CoroutineScope(Dispatchers.IO)` has NO exception handler: before
+     * this helper, any failure inside the launched block — the model run, the
+     * result formatting, or the caller's callback — escaped to the default
+     * handler and KILLED THE APP. A failed background subagent is a tool
+     * error to report, not a crash. runCatching at every hop, finally for
+     * the bookkeeping (ceiling slot, ephemeral graph config).
+     */
+    private fun launchBackground(
+        context: Context,
+        app: MinisApp,
+        graph: AgentGraph,
+        spawnId: String,
+        role: String,
+        task: String,
+        onBackgroundResult: ((spawnId: String, role: String, result: String) -> Unit)?,
+    ): String {
+        activeBackground[spawnId] = "$role: ${task.take(80)}"
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            try {
+                val text = runCatching {
+                    val result = AgentGraphRunner.run(context, graph.id, task, taskId = spawnId, ephemeral = true)
+                    formatResult(role, result)
+                }.getOrElse { e ->
+                    com.openminis.app.logging.AppLogger.warning(
+                        TAG, "background subagent $spawnId failed: ${e.message}",
+                    )
+                    "Subagent (${role.lowercase()}) background run failed: ${e.message}"
+                }
+                runCatching { onBackgroundResult?.invoke(spawnId, role, text) }
+                    .onFailure {
+                        com.openminis.app.logging.AppLogger.warning(
+                            TAG, "background result callback failed: ${it.message}",
+                        )
+                    }
+            } finally {
+                activeBackground.remove(spawnId)
+                runCatching { app.providerRepository.deleteAgentGraph(graph.id) }
+            }
+        }
+        return "spawned: $spawnId ($role, running in background — result will arrive as notification)"
+    }
+
+    /**
      * [T-agent-file] Spawn a user-defined agent (role="custom:<name>"). Same
      * contract as spawn(): foreground waits, background notifies, ephemeral
      * cleanup. The custom file drives tools/model/budget; the runner role is
@@ -116,7 +161,6 @@ object SubagentExecutor {
         val label = "custom:${agent.name}"
         val (graph, node) = buildCustomGraph(agent, task)
         app.providerRepository.saveAgentGraph(graph)
-        val spawnId = node.id
 
         return if (foreground) {
             runSingle(context, app, graph, node, label, task)
@@ -127,18 +171,7 @@ object SubagentExecutor {
                     "running (phone ceiling). Wait for their result notifications first, " +
                     "then spawn again."
             }
-            activeBackground[spawnId] = "$label: ${task.take(80)}"
-            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
-                try {
-                    val result = AgentGraphRunner.run(context, graph.id, task, taskId = spawnId, ephemeral = true)
-                    val text = formatResult(label, result)
-                    onBackgroundResult?.invoke(spawnId, label, text)
-                } finally {
-                    activeBackground.remove(spawnId)
-                    runCatching { app.providerRepository.deleteAgentGraph(graph.id) }
-                }
-            }
-            "spawned: $spawnId ($label, running in background — result will arrive as notification)"
+            launchBackground(context, app, graph, node.id, label, task, onBackgroundResult)
         }
     }
 
@@ -255,8 +288,12 @@ object SubagentExecutor {
                                 ?: return@withPermit "No custom agent '${spec.role.removePrefix("custom:")}' " +
                                     "in ${AgentFileStore.SANDBOX_DIR} (call list_agents)."
                             val (graph, node) = pair
-                            app.providerRepository.saveAgentGraph(graph)
+                            // [T-spawn-crash] Save INSIDE runCatching: a failed
+                            // saveAgentGraph (DB hiccup) used to fail the async,
+                            // cancel every sibling in the batch and throw away
+                            // ALL results. One bad save is one bad agent.
                             runCatching {
+                                app.providerRepository.saveAgentGraph(graph)
                                 runSingle(
                                     context, app, graph, node, spec.role,
                                     TaskBoard.inject(spec.task, snapshot),
@@ -380,23 +417,7 @@ object SubagentExecutor {
                     "running (phone ceiling). Wait for their result notifications first, " +
                     "then spawn again."
             }
-            activeBackground[spawnId] = "${agentRole.name}: ${task.take(80)}"
-            val appRef = app
-            val contextRef = context
-            val graphRef = graph
-            val roleRef = role
-            val spawnRef = spawnId
-            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
-                try {
-                    val result = AgentGraphRunner.run(contextRef, graphRef.id, task, taskId = spawnRef, ephemeral = true)
-                    val text = formatResult(roleRef, result)
-                    onBackgroundResult?.invoke(spawnRef, roleRef, text)
-                } finally {
-                    activeBackground.remove(spawnRef)
-                    runCatching { appRef.providerRepository.deleteAgentGraph(graphRef.id) }
-                }
-            }
-            return "spawned: $spawnId (${agentRole.name.lowercase()}, running in background — result will arrive as notification)"
+            return launchBackground(context, app, graph, spawnId, role, task, onBackgroundResult)
         }
     }
 

@@ -15,6 +15,12 @@ package com.openminis.app.offload
  * batch where it conflicts with nobody already there. Batches run
  * sequentially, tasks inside a batch run in parallel.
  *
+ * KNOWN LIMITATION: the path regex is ASCII (\w = [A-Za-z0-9_]) — Cyrillic
+ * filenames in task text are not matched, so two tasks naming the same
+ * non-ASCII file could still be scheduled in parallel. Deliberate trade-off:
+ * \p{L} would also match ordinary prose words and over-serialize. ASCII
+ * covers every PRoot/sandbox path this app actually uses.
+ *
  * Pure by design (no Android, no IO) so the conflict rules are unit-testable.
  */
 object TaskConflictDetector {

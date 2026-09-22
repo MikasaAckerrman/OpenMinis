@@ -48,23 +48,11 @@ object SubagentTools {
     )
 
     /**
-     * Roles the LLM can spawn. Maps 1:1 to AgentRole enum values that have
-     * system prompts in [com.openminis.app.data.model.AgentPrompts].
+     * Roles the LLM can spawn. Single source of truth: delegates to
+     * [SubagentRoles.SPAWNABLE] (same module) so the tool schema and the
+     * executor's validation can never drift apart.
      */
-    val SPAWNABLE_ROLES = listOf(
-        "REQUIREMENTS_ANALYST",
-        "CODEBASE_DISCOVERY",
-        "SOLUTION_ARCHITECT",
-        "INDEPENDENT_TEST_DESIGNER",
-        "SENIOR_IMPLEMENTER",
-        "CODE_CORRECTNESS_REVIEWER",
-        "SECURITY_REVIEWER",
-        "PERFORMANCE_REVIEWER",
-        "DEPENDENCY_GUARDIAN",
-        "TEST_QUALITY_AUDITOR",
-        "FINAL_GATEKEEPER",
-        "DOCUMENTATION_AGENT",
-    )
+    val SPAWNABLE_ROLES: List<String> = SubagentRoles.SPAWNABLE
 
     fun spawnSubagentDefinition(): AgentToolDefinition = AgentToolDefinition(
         name = SPAWN_TOOL_NAME,
@@ -140,7 +128,8 @@ object SubagentTools {
         propertyOrdering = listOf("tool_title", "agents", "mode", "synthesize", "review"),
     )
 
-    fun runGraphDefinition(): AgentToolDefinition = AgentToolDefinition(        name = RUN_GRAPH_TOOL_NAME,
+    fun runGraphDefinition(): AgentToolDefinition = AgentToolDefinition(
+        name = RUN_GRAPH_TOOL_NAME,
         description = "Run an agent graph (multi-agent pipeline) as a tool. " +
             "The graph orchestrates multiple specialized agents in parallel or sequence, " +
             "and returns the synthesized result. Use this for complex multi-step work " +

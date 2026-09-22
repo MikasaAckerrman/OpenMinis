@@ -145,6 +145,17 @@ interface ChatDao {
     @Query("SELECT * FROM messages WHERE session_id = :sessionId ORDER BY sort_order ASC")
     suspend fun loadMessages(sessionId: String): List<MessageEntity>
 
+    /**
+     * [T-proactive-memory-perf] The last [limit] messages, oldest first.
+     * The post-turn distiller only ever reads the final turn, so loading the
+     * whole session history after every substantial turn was pure I/O burn
+     * on long-lived sessions — the exact jank the user reports on big chats.
+     */
+    @Query(
+        "SELECT * FROM messages WHERE session_id = :sessionId ORDER BY sort_order DESC LIMIT :limit",
+    )
+    suspend fun loadLastMessages(sessionId: String, limit: Int): List<MessageEntity>
+
     // [T-rewrite-verify] Read a single message row back by primary key.
     // Powers the post-write verification in rewriteMessageText: the DAO
     // UPDATE reports success even when a SQLite layer problem silently
