@@ -302,6 +302,14 @@ data class GraphRunResult(
      * produced a handoff (failed, blocked, or deadlocked run).
      */
     val finalHandoff: String? = null,
+    /**
+     * [T-spawn-subagent-ephemeral] The exit node's LAST raw model response,
+     * captured before handoff validation. When [finalHandoff] is null (the
+     * worker answered but botched the HANDOFF block), this carries the actual
+     * work product so a caller can fall back to it instead of discarding a
+     * paid-for answer as "no output".
+     */
+    val lastExitResponse: String? = null,
 )
 
 @Serializable

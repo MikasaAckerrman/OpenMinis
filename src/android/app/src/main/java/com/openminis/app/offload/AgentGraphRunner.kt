@@ -73,6 +73,14 @@ internal object AgentGraphRunner {
         val dispatched: MutableSet<String> = ConcurrentHashMap.newKeySet(),
         /** nodeId -> why the scope guard rejected its handoff. */
         val scopeViolations: ConcurrentHashMap<String, String> = ConcurrentHashMap(),
+        /**
+         * [T-spawn-subagent-ephemeral] runtimeId -> the LAST model response,
+         * stashed before handoff validation. A worker that produced a full
+         * answer but botched the HANDOFF block still has its answer here, so
+         * the caller can fall back to it instead of reporting "no output"
+         * after work was done and paid for.
+         */
+        val responses: ConcurrentHashMap<String, String> = ConcurrentHashMap(),
     )
 
     enum class NodeStatus { PENDING, RUNNING, COMPLETED, FAILED, BLOCKED, SKIPPED, OUT_OF_SCOPE }
@@ -92,6 +100,16 @@ internal object AgentGraphRunner {
         graphId: String,
         input: String,
         taskId: String = UUID.randomUUID().toString(),
+        /**
+         * [T-spawn-subagent-ephemeral] true for tool-initiated runs
+         * (spawn_subagent / run_graph): no showcase session is created, worker
+         * sessions are deleted once the run settles (the handoff rides back in
+         * the tool result, the artifacts live in the workspace, the trace in
+         * offloads), and the live-progress record is dropped here because no
+         * chat card is pinned to it. The chat-decision and debug-RPC paths keep
+         * the showcase and own their cleanup.
+         */
+        ephemeral: Boolean = false,
     ): GraphRunResult = withContext(Dispatchers.IO) {
         val app = context.applicationContext as MinisApp
         val providerRepo = app.providerRepository
@@ -145,14 +163,22 @@ internal object AgentGraphRunner {
         // first node so the very first "started" line has somewhere to land, and
         // before the artifact dir is resolved so artifacts land in the workspace
         // THIS session's `minis://workspace/...` links point at.
-        val showcaseId = AgentRunShowcase.create(
-            context = context,
-            taskId = taskId,
-            graphName = graph.name,
-            input = input,
-            nodeCount = graph.nodes.size,
-            runtimeCount = runtimeCount,
-        )
+        // [T-spawn-subagent-ephemeral] An ephemeral run narrates itself through
+        // the tool result and the live progress card in the ORIGINATING chat —
+        // a showcase session would be a hidden, never-openable row: every list
+        // query filters on agent_run_id IS NULL, and the showcase sets it.
+        val showcaseId = if (ephemeral) {
+            null
+        } else {
+            AgentRunShowcase.create(
+                context = context,
+                taskId = taskId,
+                graphName = graph.name,
+                input = input,
+                nodeCount = graph.nodes.size,
+                runtimeCount = runtimeCount,
+            )
+        }
         // [T-agent-graph-live-progress] Open the live progress record BEFORE the
         // first node, for the same reason the showcase is created first: an event
         // arriving for an unknown taskId is dropped, so a late begin() would lose
@@ -224,16 +250,33 @@ internal object AgentGraphRunner {
         // card vanish mid-commit. Ownership of the cleanup sits with the caller
         // that showed the card.
         AgentRunProgress.finish(taskId, result.status.name)
+        // [T-spawn-subagent-ephemeral] An ephemeral run has no chat card pinned
+        // to its taskId (that ownership belongs to the chat-decision path,
+        // which clears after committing its message), so the record is dropped
+        // here rather than left to accumulate one entry per tool call.
+        if (ephemeral) {
+            AgentRunProgress.clear(taskId)
+        }
 
         // Tool policies are keyed by session id in a process-wide map. Without
         // this the map grows by one entry per node per run and never shrinks —
         // small, but a leak that also means a deleted session's policy lingers
         // and could apply to a recycled id. Same for the role prompt store.
         for (sid in state.sessionMap.values + state.sessionByGroup.values) {
-            com.openminis.app.tools.AgentToolPolicyStore.clearPolicy(sid)
-            com.openminis.app.tools.AgentSystemPromptStore.clearPrompt(sid)
-            com.openminis.app.tools.AgentRuntimePolicyStore.clear(sid)
-            com.openminis.app.tools.AgentWorkspaceStore.clear(sid)
+            if (ephemeral) {
+                // [T-spawn-subagent-ephemeral] A tool-initiated run has no
+                // showcase and no reader for its worker sessions once the tool
+                // result is built. Without this, every spawn_subagent call
+                // leaked one hidden session row per agent, forever: every list
+                // query filters on agent_run_id, so nothing could ever show
+                // or delete them.
+                AgentSessionManager.deleteSession(context, sid)
+            } else {
+                com.openminis.app.tools.AgentToolPolicyStore.clearPolicy(sid)
+                com.openminis.app.tools.AgentSystemPromptStore.clearPrompt(sid)
+                com.openminis.app.tools.AgentRuntimePolicyStore.clear(sid)
+                com.openminis.app.tools.AgentWorkspaceStore.clear(sid)
+            }
             com.openminis.app.tools.AgentNodeBinding.unbind(sid)
             com.openminis.app.tools.AgentToolBudgetStore.clear(sid)
         }
@@ -464,6 +507,11 @@ internal object AgentGraphRunner {
             artifacts = state.artifactIndex,
             trace = state.trace.toList(),
             finalHandoff = resolveFinalHandoff(state, allExitRuntimeIds),
+            // [T-spawn-subagent-ephemeral] Raw answer of the exit node, for the
+            // "answered but botched the handoff" case — see GraphRunResult.
+            lastExitResponse = allExitRuntimeIds
+                .mapNotNull { state.responses[it] }
+                .lastOrNull(),
         )
     }
 
@@ -709,6 +757,11 @@ internal object AgentGraphRunner {
                 )
                 return
             }
+
+        // [T-spawn-subagent-ephemeral] Keep the raw answer before validation:
+        // if the handoff parse fails after the corrective retry, this is the
+        // only surviving copy of the model's work.
+        state.responses[runtimeId] = finalResponse
 
         // Validate handoff
         var validation = HandoffValidator.validateResponse(finalResponse)

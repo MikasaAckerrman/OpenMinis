@@ -54,14 +54,23 @@ object HandoffValidator {
 
         var currentSection = ""
         for (line in lines) {
+            // [T-spawn-subagent-to] Models drift on case ("Orchestrator",
+            // "orchestrator") and on spaces ("Requirements Analyst"). Enum
+            // valueOf is exact-match, so a drifted spelling turned a complete
+            // handoff into a PARSE_FAILURE and discarded the answer.
+            fun roleOf(raw: String): AgentRole? = runCatching {
+                AgentRole.valueOf(raw.trim().uppercase().replace(' ', '_'))
+            }.getOrNull()
             if (line.startsWith("FROM:")) {
-                from = runCatching { AgentRole.valueOf(line.substring(5).trim()) }.getOrNull()
+                from = roleOf(line.substring(5))
             } else if (line.startsWith("TO:")) {
-                to = runCatching { AgentRole.valueOf(line.substring(3).trim()) }.getOrNull()
+                to = roleOf(line.substring(3))
             } else if (line.startsWith("TASK_ID:")) {
                 taskId = line.substring(8).trim()
             } else if (line.startsWith("STATUS:")) {
-                status = runCatching { HandoffStatus.valueOf(line.substring(7).trim()) }.getOrNull()
+                status = runCatching {
+                    HandoffStatus.valueOf(line.substring(7).trim().uppercase().replace(' ', '_'))
+                }.getOrNull()
             } else if (line == "DELIVERABLES:") {
                 currentSection = "DELIVERABLES"
             } else if (line == "SUCCESS_CRITERIA_MET:") {

@@ -5,6 +5,7 @@ import com.openminis.app.data.model.AgentGraph
 import com.openminis.app.data.model.AgentNode
 import com.openminis.app.data.model.AgentRole
 import com.openminis.app.data.model.GraphConfig
+import com.openminis.app.data.model.GraphRunResult
 import com.openminis.app.MinisApp
 import kotlinx.coroutines.launch
 import java.util.UUID
@@ -54,7 +55,11 @@ object SubagentExecutor {
         val node = AgentNode(
             id = "spawn-${UUID.randomUUID().toString().take(8)}",
             role = agentRole,
-            systemPrompt = promptForRole(agentRole, task),
+            // [T-spawn-subagent-to] A single-node run has no next agent, so the
+            // generic "TO: whichever role is next" leaves the model guessing a
+            // value the parser will reject (it must be an exact AgentRole enum
+            // name). Name the one target that always exists: the caller.
+            systemPrompt = promptForRole(agentRole, task) + handoffToGuidance(agentRole),
             allowedTools = defaultToolsForRole(agentRole),
             maxTurns = 8,
             modelRole = modelRoleFor(agentRole),
@@ -78,8 +83,8 @@ object SubagentExecutor {
 
         return if (foreground) {
             try {
-                val result = AgentGraphRunner.run(context, graph.id, task, taskId = spawnId)
-                formatResult(role, result.finalHandoff ?: "", result.status.name)
+                val result = AgentGraphRunner.run(context, graph.id, task, taskId = spawnId, ephemeral = true)
+                formatResult(role, result)
             } finally {
                 app.providerRepository.deleteAgentGraph(graph.id)
             }
@@ -92,8 +97,8 @@ object SubagentExecutor {
             val spawnRef = spawnId
             kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
                 try {
-                    val result = AgentGraphRunner.run(contextRef, graphRef.id, task, taskId = spawnRef)
-                    val text = formatResult(roleRef, result.finalHandoff ?: "", result.status.name)
+                    val result = AgentGraphRunner.run(contextRef, graphRef.id, task, taskId = spawnRef, ephemeral = true)
+                    val text = formatResult(roleRef, result)
                     onBackgroundResult?.invoke(spawnRef, roleRef, text)
                 } finally {
                     activeBackground.remove(spawnRef)
@@ -109,21 +114,42 @@ object SubagentExecutor {
      */
     suspend fun runGraph(context: Context, graphId: String, input: String): String {
         return try {
-            val result = AgentGraphRunner.run(context, graphId, input)
-            formatResult(graphId, result.finalHandoff ?: "", result.status.name)
+            // [T-spawn-subagent-ephemeral] A graph invoked as a TOOL narrates
+            // through the tool result and the live progress card in the
+            // originating chat; a showcase session would be an invisible,
+            // undeletable row (see AgentGraphRunner.run).
+            val result = AgentGraphRunner.run(context, graphId, input, ephemeral = true)
+            formatResult(graphId, result)
         } catch (e: Exception) {
             "Graph '$graphId' failed: ${e.message}"
         }
     }
 
-    private fun formatResult(role: String, output: String, status: String): String {
-        val trimmed = output.trim()
-        return if (trimmed.isEmpty()) {
-            "Subagent (${role.lowercase()}) completed with status $status but produced no output."
-        } else {
-            trimmed
+    /**
+     * [T-spawn-subagent-ephemeral] Prefer the handoff; fall back to the raw
+     * answer when the worker botched the HANDOFF block. Reporting "no output"
+     * after the model was called and paid for throws away work the caller
+     * could still use.
+     */
+    private fun formatResult(role: String, result: GraphRunResult): String {
+        val handoff = result.finalHandoff?.trim().orEmpty()
+        if (handoff.isNotEmpty()) return handoff
+        val raw = result.lastExitResponse?.trim().orEmpty()
+        if (raw.isNotEmpty()) {
+            return "Subagent (${role.lowercase()}) status ${result.status} — no valid " +
+                "HANDOFF block, raw answer follows:\n\n${raw.take(4000)}"
         }
+        val error = result.error?.let { " Error: $it" } ?: ""
+        return "Subagent (${role.lowercase()}) completed with status ${result.status} " +
+            "but produced no output.$error"
     }
+
+    /** [T-spawn-subagent-to] See AgentNode.systemPrompt. */
+    private fun handoffToGuidance(role: AgentRole): String =
+        "\n\nHANDOFF: you are the ONLY agent in this run — there is no next agent. " +
+            "In your final handoff block write FROM: ${role.name}, TO: ORCHESTRATOR " +
+            "(the agent that spawned you), and STATUS: COMPLETE with your findings " +
+            "listed under DELIVERABLES."
 
     /** Role-specific system prompts for spawned subagents. */
     private fun promptForRole(role: AgentRole, task: String): String = when (role) {
@@ -237,6 +263,12 @@ object SubagentExecutor {
     private fun defaultToolsForRole(role: AgentRole): List<String> = when (role) {
         AgentRole.SENIOR_IMPLEMENTER ->
             listOf("shell_execute", "file_read", "file_write", "file_edit", "browser_use")
+        // Their deliverables ARE files (test files, documentation) — without
+        // file tools these roles could only describe the artifact they were
+        // spawned to produce.
+        AgentRole.INDEPENDENT_TEST_DESIGNER,
+        AgentRole.DOCUMENTATION_AGENT ->
+            listOf("shell_execute", "file_read", "file_write", "file_edit")
         else ->
             listOf("shell_execute", "file_read", "browser_use")
     }
