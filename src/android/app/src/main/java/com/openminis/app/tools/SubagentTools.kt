@@ -24,6 +24,7 @@ object SubagentTools {
 
     const val SPAWN_TOOL_NAME = "spawn_subagent"
     const val RUN_GRAPH_TOOL_NAME = "run_graph"
+    const val SPAWN_MANY_TOOL_NAME = "spawn_many"
 
     /**
      * Roles the LLM can spawn. Maps 1:1 to AgentRole enum values that have
@@ -66,8 +67,44 @@ object SubagentTools {
         propertyOrdering = listOf("tool_title", "role", "task", "background"),
     )
 
-    fun runGraphDefinition(): AgentToolDefinition = AgentToolDefinition(
-        name = RUN_GRAPH_TOOL_NAME,
+    fun spawnManyDefinition(): AgentToolDefinition = AgentToolDefinition(
+        name = SPAWN_MANY_TOOL_NAME,
+        description = "Spawn MULTIPLE subagents to work in PARALLEL on independent subtasks. " +
+            "This is the batch tool: one call, one join point, all results numbered in the answer. " +
+            "SAFETY (automatic): file paths mentioned in task texts are cross-checked — tasks that " +
+            "touch the same file or directory are serialized automatically (run one after another, " +
+            "not in parallel), so two agents can never corrupt the same file. Independent tasks run " +
+            "concurrently (max 3 at once on this phone). " +
+            "YOUR job before calling: make the tasks genuinely independent — different files, different " +
+            "questions, no shared output. If two tasks MUST touch the same file, that is fine — the " +
+            "engine will serialize them, but state it in the task texts. " +
+            "Each subagent runs in its own isolated context with a role-specific system prompt and " +
+            "sees ONLY its task — include every detail it needs in the task text. " +
+            "Use for: parallel review of different modules, parallel research questions, " +
+            "implementing changes in disjoint files. NOT for tasks that build on each other " +
+            "(use sequential spawn_subagent or run_graph for pipelines).",
+        parameters = mapOf(
+            "tool_title" to AgentToolParam("string", "A concise 5-10 word summary shown to the user (e.g. 'Spawn 3 reviewers for auth module'). Use the user's language."),
+            "agents" to AgentToolParam(
+                "string",
+                "A JSON array of agent specs, one object per agent: " +
+                    "[{\"role\":\"CODE_CORRECTNESS_REVIEWER\",\"task\":\"Review /path/A.kt for logic errors\"}," +
+                    " {\"role\":\"SECURITY_REVIEWER\",\"task\":\"Audit /path/B.kt for injection\"}]. " +
+                    "Valid roles: " + SPAWNABLE_ROLES.joinToString(", ") + ". " +
+                    "Keep tasks self-contained: the subagent sees ONLY its task text, not this conversation.",
+            ),
+            "mode" to AgentToolParam(
+                "string",
+                "auto (default): parallel with automatic conflict serialization. " +
+                    "serial: run all one-by-one in array order (use when every task depends on the previous).",
+                enumValues = listOf("auto", "serial"),
+            ),
+        ),
+        required = listOf("tool_title", "agents"),
+        propertyOrdering = listOf("tool_title", "agents", "mode"),
+    )
+
+    fun runGraphDefinition(): AgentToolDefinition = AgentToolDefinition(        name = RUN_GRAPH_TOOL_NAME,
         description = "Run an agent graph (multi-agent pipeline) as a tool. " +
             "The graph orchestrates multiple specialized agents in parallel or sequence, " +
             "and returns the synthesized result. Use this for complex multi-step work " +

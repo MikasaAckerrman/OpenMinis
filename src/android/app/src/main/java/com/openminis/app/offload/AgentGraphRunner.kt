@@ -53,6 +53,8 @@ internal object AgentGraphRunner {
          */
         val artifactHostDir: File?,
         val input: String,
+        /** [T-spawn-many] Tool-initiated run: soft scope guard + lenient handoff. */
+        val ephemeral: Boolean = false,
         val sessionMap: ConcurrentHashMap<String, String> = ConcurrentHashMap(), // runtimeId -> sessionId
         /**
          * [T-agent-graph-role-session] runtime-id -> sessionId is not enough when
@@ -221,6 +223,7 @@ internal object AgentGraphRunner {
             artifactHostDir = artifactHostDir,
             input = input,
             showcaseId = showcaseId,
+            ephemeral = ephemeral,
         )
 
         // Initialize all nodes as PENDING
@@ -794,7 +797,25 @@ internal object AgentGraphRunner {
 
         val handoff = validation.handoff
             ?: HandoffValidator.parseHandoff(finalResponse)
-            ?: run {
+            ?: if (state.ephemeral) {
+                // [T-spawn-many] Lenient mode for tool-initiated runs: a
+                // weak model that ignored the HANDOFF protocol (even after
+                // the corrective retry above) still produced an answer —
+                // wrap it instead of failing the run and falling back to
+                // the raw-answer path downstream.
+                addTrace(
+                    state, runtimeId, node.role, "LENIENT_HANDOFF",
+                    "no handoff block — synthesized from the raw answer",
+                )
+                Handoff(
+                    from = node.role,
+                    to = AgentRole.ORCHESTRATOR,
+                    taskId = state.taskId,
+                    status = HandoffStatus.COMPLETE,
+                    deliverables = listOf(finalResponse.take(600)),
+                    nextAction = "The raw answer above is the deliverable; review it.",
+                )
+            } else {
                 handleParseFailure(execContext, node, runtimeId, finalResponse)
                 return
             }
@@ -809,11 +830,25 @@ internal object AgentGraphRunner {
                 AgentRunShowcase.noteOutOfScope(
                     context, state.showcaseId, node.role, verdict.reason,
                 )
-                state.nodeStatus[runtimeId] = NodeStatus.OUT_OF_SCOPE
-                // Keep the handoff for the trace, but do NOT let successors
-                // consume it — an out-of-scope artifact is not a deliverable.
-                state.scopeViolations[runtimeId] = verdict.reason
-                return
+                if (state.ephemeral) {
+                    // [T-spawn-many] Soft stop for tool-initiated runs: the
+                    // answer still rides back to the caller, who judges it.
+                    // A hard stop here discarded a paid answer over a
+                    // discipline technicality — a reviewer quoting code while
+                    // naming a source file in deliverables. Non-ephemeral
+                    // pipelines keep the hard stop: chain of custody matters
+                    // there.
+                    addTrace(
+                        state, runtimeId, node.role, "SCOPE_DOWNGRADED",
+                        "ephemeral run — handoff kept, not recorded as a violation",
+                    )
+                } else {
+                    state.nodeStatus[runtimeId] = NodeStatus.OUT_OF_SCOPE
+                    // Keep the handoff for the trace, but do NOT let successors
+                    // consume it — an out-of-scope artifact is not a deliverable.
+                    state.scopeViolations[runtimeId] = verdict.reason
+                    return
+                }
             }
             is ScopeGuard.Verdict.Suspicious -> {
                 addTrace(state, runtimeId, node.role, "SCOPE_WARNING", verdict.reason)

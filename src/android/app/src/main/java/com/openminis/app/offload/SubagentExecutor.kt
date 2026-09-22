@@ -7,7 +7,11 @@ import com.openminis.app.data.model.AgentRole
 import com.openminis.app.data.model.GraphConfig
 import com.openminis.app.data.model.GraphRunResult
 import com.openminis.app.MinisApp
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -30,28 +34,19 @@ object SubagentExecutor {
     /** Active background subagents: spawnId → role + task preview. */
     private val activeBackground = ConcurrentHashMap<String, String>()
 
-    fun activeBackgroundCount(): Int = activeBackground.size
+    /** [T-spawn-many] Phone ceilings: parallel tool agents + background spawns. */
+    const val MAX_PARALLEL = 3
+    const val MAX_BACKGROUND = 3
+    private val parallelLimiter = Semaphore(MAX_PARALLEL)
+
+    /** [T-spawn-many] One agent of a spawn_many batch. */
+    data class SpawnSpec(val role: String, val task: String)
 
     /**
-     * Spawn a subagent for [task] with [role].
-     *
-     * @param foreground true = suspend until done, return result.
-     *                   false = run concurrently, return spawn id immediately.
-     * @param onBackgroundResult invoked when a background subagent finishes.
+     * [T-spawn-many] The ephemeral single-node graph every spawned subagent
+     * runs in (was inline in spawn()).
      */
-    suspend fun spawn(
-        context: Context,
-        role: String,
-        task: String,
-        foreground: Boolean,
-        onBackgroundResult: ((spawnId: String, role: String, result: String) -> Unit)? = null,
-    ): String {
-        val app = context.applicationContext as MinisApp
-        val agentRole = runCatching { AgentRole.valueOf(role) }
-            .getOrElse {
-                return "Unknown role '$role'. Valid: ${SubagentRoles.SPAWNABLE.joinToString()}"
-            }
-
+    private fun buildEphemeralGraph(agentRole: AgentRole, task: String): Pair<AgentGraph, AgentNode> {
         val node = AgentNode(
             id = "spawn-${UUID.randomUUID().toString().take(8)}",
             role = agentRole,
@@ -77,18 +72,132 @@ object SubagentExecutor {
                 defaultMaxOutputTokens = 8_192,
             ),
         )
+        return graph to node
+    }
 
+    /**
+     * Run one ephemeral subagent to completion. Shared by spawn()'s foreground
+     * path and spawnMany(): saves the graph, runs ephemeral, formats, deletes
+     * the graph config. Worker-session deletion is the runner's job
+     * (ephemeral=true).
+     */
+    private suspend fun runSingle(
+        context: Context,
+        app: MinisApp,
+        graph: AgentGraph,
+        node: AgentNode,
+        role: String,
+        task: String,
+    ): String = try {
+        val result = AgentGraphRunner.run(context, graph.id, task, taskId = node.id, ephemeral = true)
+        formatResult(role, result)
+    } finally {
+        app.providerRepository.deleteAgentGraph(graph.id)
+    }
+
+    /**
+     * [T-spawn-many] Claude Code's "N Task calls, one join point", with the
+     * conflict safety the prompt cannot guarantee:
+     *
+     *  1. TaskConflictDetector extracts file paths from every task text and
+     *     serializes tasks that touch the same file/dir (two writers on one
+     *     file is silent data loss, not a speedup).
+     *  2. Independent tasks run concurrently, capped at [MAX_PARALLEL]
+     *     (phone: memory, provider rate limits).
+     *  3. One tool result carries ALL answers, numbered, so the orchestrator
+     *     sees the batch as a single decision point.
+     */
+    suspend fun spawnMany(context: Context, agents: List<SpawnSpec>, serial: Boolean = false): String {
+        if (agents.isEmpty()) return "spawn_many: no agents given"
+        val app = context.applicationContext as MinisApp
+        val roles = agents.map { spec ->
+            runCatching { AgentRole.valueOf(spec.role) }.getOrElse {
+                return "Unknown role '${spec.role}'. Valid: ${SubagentRoles.SPAWNABLE.joinToString()}"
+            }
+        }
+        val tasks = agents.mapIndexed { i, spec -> TaskConflictDetector.Task(i, spec.role, spec.task) }
+        val plan = if (serial) {
+            // Explicit serial: one task per batch, array order preserved.
+            TaskConflictDetector.Plan(tasks.map { listOf(it) }, emptyList())
+        } else {
+            TaskConflictDetector.plan(tasks)
+        }
+        val sb = StringBuilder()
+        sb.appendLine(
+            "spawn_many: ${agents.size} agent(s) in ${plan.batches.size} batch(es) " +
+                "(${plan.batches.joinToString(" + ") { it.size.toString() }})" +
+                if (plan.isFullyParallel) " — all independent, running in parallel" else "",
+        )
+        plan.conflictNotes.forEach { sb.appendLine("⚠ $it") }
+        sb.appendLine()
+        coroutineScope {
+            var order = 0
+            plan.batches.forEach { batch ->
+                val sections = batch.map { task ->
+                    val spec = agents[task.index]
+                    val agentRole = roles[task.index]
+                    async(kotlinx.coroutines.Dispatchers.IO) {
+                        parallelLimiter.withPermit {
+                            val (graph, node) = buildEphemeralGraph(agentRole, spec.task)
+                            app.providerRepository.saveAgentGraph(graph)
+                            runCatching {
+                                runSingle(context, app, graph, node, spec.role, spec.task)
+                            }.getOrElse { e ->
+                                "Subagent (${spec.role.lowercase()}) error: ${e.message}"
+                            }
+                        }
+                    }
+                }.map { it.await() }
+                sections.forEachIndexed { bi, text ->
+                    order++
+                    sb.appendLine("### $order. ${batch[bi].role}")
+                    sb.appendLine(text)
+                    sb.appendLine()
+                }
+            }
+            sb.appendLine("spawn_many finished: $order result(s).")
+        }
+        return sb.toString()
+    }
+
+    fun activeBackgroundCount(): Int = activeBackground.size
+
+    /**
+     * Spawn a subagent for [task] with [role].
+     *
+     * @param foreground true = suspend until done, return result.
+     *                   false = run concurrently, return spawn id immediately.
+     * @param onBackgroundResult invoked when a background subagent finishes.
+     */
+    suspend fun spawn(
+        context: Context,
+        role: String,
+        task: String,
+        foreground: Boolean,
+        onBackgroundResult: ((spawnId: String, role: String, result: String) -> Unit)? = null,
+    ): String {
+        val app = context.applicationContext as MinisApp
+        val agentRole = runCatching { AgentRole.valueOf(role) }
+            .getOrElse {
+                return "Unknown role '$role'. Valid: ${SubagentRoles.SPAWNABLE.joinToString()}"
+            }
+
+        val (graph, node) = buildEphemeralGraph(agentRole, task)
         app.providerRepository.saveAgentGraph(graph)
         val spawnId = node.id
 
         return if (foreground) {
-            try {
-                val result = AgentGraphRunner.run(context, graph.id, task, taskId = spawnId, ephemeral = true)
-                formatResult(role, result)
-            } finally {
-                app.providerRepository.deleteAgentGraph(graph.id)
-            }
+            runSingle(context, app, graph, node, role, task)
         } else {
+            // [T-spawn-many] Phone ceiling: unbounded background spawns would
+            // multiply live sessions, VMs and model calls on a device with
+            // one radio and one battery.
+            if (activeBackground.size >= MAX_BACKGROUND) {
+                runCatching { app.providerRepository.deleteAgentGraph(graph.id) }
+                return "spawn refused: $MAX_BACKGROUND background subagents are already " +
+                    "running (phone ceiling). Wait for their result notifications first, " +
+                    "then spawn again."
+            }
             activeBackground[spawnId] = "${agentRole.name}: ${task.take(80)}"
             val appRef = app
             val contextRef = context

@@ -11473,6 +11473,7 @@ class ChatViewModel(
             "browser_use" -> executeBrowserUseTool(argsJson)
             // [T-spawn-subagent] Runtime subagent spawning (Claude Code pattern).
             com.openminis.app.tools.SubagentTools.SPAWN_TOOL_NAME -> executeSpawnSubagent(argsJson)
+            com.openminis.app.tools.SubagentTools.SPAWN_MANY_TOOL_NAME -> executeSpawnMany(argsJson)
             com.openminis.app.tools.SubagentTools.RUN_GRAPH_TOOL_NAME -> executeRunGraph(argsJson)
             "memory_write" -> executeMemoryWriteTool(argsJson)
             "memory_get" -> executeMemoryGetTool(argsJson)
@@ -11810,6 +11811,41 @@ class ChatViewModel(
                 }
             } } else null,
         )
+        return ToolExecutionResult(result, true)
+    }
+
+    /**
+     * [T-spawn-many] Batch spawn: N subagents, one tool result. See
+     * SubagentExecutor.spawnMany for the conflict serialization contract.
+     */
+    private suspend fun executeSpawnMany(argsJson: String): ToolExecutionResult {
+        val args = runCatching { JSONObject(argsJson) }.getOrNull()
+            ?: return ToolExecutionResult("Invalid JSON for spawn_many", false)
+        val agentsRaw = args.optString("agents").trim()
+        if (agentsRaw.isEmpty()) {
+            return ToolExecutionResult("spawn_many: 'agents' is required", false)
+        }
+        val specs = runCatching {
+            val arr = org.json.JSONArray(agentsRaw)
+            (0 until arr.length()).mapNotNull { i ->
+                val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                val role = o.optString("role").trim()
+                val task = o.optString("task").trim()
+                if (role.isEmpty() || task.isEmpty()) null
+                else com.openminis.app.offload.SubagentExecutor.SpawnSpec(role, task)
+            }
+        }.getOrElse {
+            return ToolExecutionResult(
+                "spawn_many: 'agents' must be a JSON array of objects " +
+                    "[{\"role\":\"...\",\"task\":\"...\"}]",
+                false,
+            )
+        }
+        if (specs.isEmpty()) {
+            return ToolExecutionResult("spawn_many: no valid agent specs in the array", false)
+        }
+        val serial = args.optString("mode").trim().lowercase() == "serial"
+        val result = com.openminis.app.offload.SubagentExecutor.spawnMany(context, specs, serial)
         return ToolExecutionResult(result, true)
     }
 

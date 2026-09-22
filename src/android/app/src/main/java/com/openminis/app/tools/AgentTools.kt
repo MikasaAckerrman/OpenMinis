@@ -111,6 +111,9 @@ object AgentTools {
             if (permitted(com.openminis.app.tools.SubagentTools.SPAWN_TOOL_NAME)) {
                 add(com.openminis.app.tools.SubagentTools.spawnSubagentDefinition())
             }
+            if (permitted(com.openminis.app.tools.SubagentTools.SPAWN_MANY_TOOL_NAME)) {
+                add(com.openminis.app.tools.SubagentTools.spawnManyDefinition())
+            }
             if (permitted(com.openminis.app.tools.SubagentTools.RUN_GRAPH_TOOL_NAME)) {
                 add(com.openminis.app.tools.SubagentTools.runGraphDefinition())
             }
