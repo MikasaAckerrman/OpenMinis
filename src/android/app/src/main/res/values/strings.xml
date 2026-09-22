@@ -1126,6 +1126,9 @@
          channel + N-tasks-running display strings. Mirrors iOS
          EnhancedBackgroundSettingsView + BackgroundKeepAliveManager. -->
     <string name="settings_section_notifications">Notifications</string>
+    <!-- [T-auto-mode] Autonomous plan execution toggle. -->
+    <string name="settings_auto_mode">Auto Mode</string>
+    <string name="settings_auto_mode_footer">When on, a message that asks for auto mode ("авто-режим" / "auto mode") starts an autonomous run: the agent keeps working through the plan until it reports TASK_COMPLETE, pausing to compact the session at 100% fullness. Any manual message stops the run.</string>
     <string name="settings_task_notifications">Task Notifications</string>
     <string name="settings_task_notifications_footer">Notify when an agent task finishes while the app is in the background. Shows progress in the notification shade and on the lock screen.</string>
     <!-- [T-completion-haptics] Double-buzz when a turn ends. -->

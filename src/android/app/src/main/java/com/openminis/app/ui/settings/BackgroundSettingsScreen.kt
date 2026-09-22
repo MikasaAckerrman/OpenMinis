@@ -25,6 +25,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.BatteryFull
+import androidx.compose.material.icons.outlined.PlayCircle
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.MusicNote
@@ -63,6 +64,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.openminis.app.MinisApp
+import com.openminis.app.data.AutoModePrefs
 import com.openminis.app.R
 import com.openminis.app.power.PowerOptimizationManager
 
@@ -181,6 +183,24 @@ fun BackgroundSettingsScreen(onBack: () -> Unit) {
                 onCheckedChange = { backgroundRepo.setTaskNotificationsEnabled(it) },
             )
             BgFooter(stringResource(R.string.settings_task_notifications_footer))
+
+            // [T-auto-mode] The autonomous loop's master switch (user
+            // decision 22.09.2026): default OFF; when on, the user's own
+            // message arms a run that continues until TASK_COMPLETE.
+            // Sits in Background because it governs unattended work.
+            Spacer(Modifier.size(8.dp))
+            var autoModeEnabled by remember { mutableStateOf(AutoModePrefs.isEnabled()) }
+            BgToggleRow(
+                icon = Icons.Outlined.PlayCircle,
+                iconColor = Color(0xFF5856D6),
+                title = stringResource(R.string.settings_auto_mode),
+                checked = autoModeEnabled,
+                onCheckedChange = { wanted ->
+                    autoModeEnabled = wanted
+                    AutoModePrefs.setEnabled(context, wanted)
+                },
+            )
+            BgFooter(stringResource(R.string.settings_auto_mode_footer))
 
             // [T-completion-haptics] Double-buzz on turn end. Rendered right
             // under Task Notifications because it answers the same question

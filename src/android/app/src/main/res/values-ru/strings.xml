@@ -886,6 +886,9 @@
     <string name="model_group_detail_delete_named_group_confirm">Вы уверены, что хотите удалить \"%1$s\"? Это действие необратимо.</string>
     <string name="provider_list_models_count">Моделей: %1$d</string>
     <string name="settings_section_notifications">Уведомления</string>
+    <!-- [T-auto-mode] Автономное выполнение плана. -->
+    <string name="settings_auto_mode">Авто-режим</string>
+    <string name="settings_auto_mode_footer">Если включено, сообщение с просьбой включить авто-режим запускает автономную работу: агент выполняет план до полного завершения (TASK_COMPLETE), при 100% заполнении сессии делает паузу и сжимает её. Любое твоё сообщение останавливает автономный цикл.</string>
     <string name="settings_task_notifications">Уведомления о задачах</string>
     <string name="settings_task_notifications_footer">Уведомлять, когда задача агента завершается, пока приложение в фоне. Показывает прогресс в шторке уведомлений и на экране блокировки.</string>
     <!-- [T-completion-haptics] Двойная вибрация при завершении хода. -->
