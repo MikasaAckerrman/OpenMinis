@@ -176,6 +176,11 @@ class SessionCapsuleView(
             WaveSpec(30f, 0.58f, 2800f, 250f, 1500f),
         )
         private const val HAPTIC_MS = 8L
+
+        // [T-overlay-v3-perf] constant metric rows — allocated once, never
+        // per frame.
+        val ICON_CHARS = charArrayOf('↓', 'C', 'R')
+        val UNIT_TEXTS = arrayOf("МБ/с", "%", "МБ")
     }
 
     private data class WaveSpec(
@@ -1150,12 +1155,6 @@ class SessionCapsuleView(
             canvas.drawText(unit, textX + vw + dp(2.5f), valY, metricLabelPaint)
             metricLabelPaint.textSize = dp(7.5f)
         }
-    }
-
-    private companion object {
-        // [T-overlay-v3-perf] constant metric rows — allocated once.
-        val ICON_CHARS = charArrayOf('↓', 'C', 'R')
-        val UNIT_TEXTS = arrayOf("МБ/с", "%", "МБ")
     }
 
     /** Row values mirroring [metrics] — rebuilt by update(), read per frame. */
