@@ -1539,6 +1539,99 @@ class ChatViewModel(
         }
     }
 
+    // ── [T-auto-mode] The autonomous plan-execution loop ───────────────────
+    //
+    // Contract (user, 22.09.2026): "он не остановится, пока всё не сделает" —
+    // the run continues through a plan of ANY size until the model declares
+    // TASK_COMPLETE, the turn budget dies, or the user intervenes. The loop
+    // reuses the existing pumps: the continuation is PARKED in the prompt
+    // queue right after a turn ends, and drainQueuedPrompts() — which already
+    // fires after every successful turn — sends it as the next turn. At 100%
+    // context the loop pauses instead: it parks the continuation, breaks the
+    // drain, and the streamJob tail (after _isStreaming=false) launches
+    // compactAll(AUTO_MODE_ARMED); the compact's own queue pump then drains
+    // the parked continuation — pause → compact → continue, no new pump code.
+
+    private val _autoModeArmed = MutableStateFlow(false)
+    val autoModeArmed: StateFlow<Boolean> = _autoModeArmed.asStateFlow()
+    private var autoModeTurns = 0
+
+    /** Continuation parked in the queue, waiting for a pump. */
+    @Volatile
+    private var autoModeParked = false
+
+    /** Set when the next parked continuation must wait for a compact. */
+    @Volatile
+    private var autoModeCompactPending = false
+
+    /**
+     * Fires right after every successful turn (send path + drain loop).
+     * Parks the next continuation — the queue pump drives the actual send.
+     */
+    fun maybeAutoContinue() {
+        if (!_autoModeArmed.value || autoModeParked) return
+        val last = _messages.value.lastOrNull { it.role == "assistant" } ?: return
+        if (com.openminis.app.agent.AgentAutoMode.isPlanComplete(last.content)) {
+            _autoModeArmed.value = false
+            AppLogger.info(TAG_STREAM, "[AutoMode] COMPLETE after $autoModeTurns continuations")
+            appendSystemInfo(
+                text = "Авто-режим завершён: план выполнен (продолжений: $autoModeTurns).",
+                iconKind = "compact",
+            )
+            return
+        }
+        if (autoModeTurns >= com.openminis.app.agent.AgentAutoMode.MAX_AUTO_TURNS) {
+            _autoModeArmed.value = false
+            AppLogger.info(TAG_STREAM, "[AutoMode] STOP: turn budget exhausted")
+            appendSystemInfo(
+                text = "Авто-режим остановлен: исчерпан лимит продолжений " +
+                    "(${com.openminis.app.agent.AgentAutoMode.MAX_AUTO_TURNS}).",
+                iconKind = "compact",
+            )
+            return
+        }
+        autoModeTurns++
+        autoModeParked = true
+        if (autoModePressureNeedsCompact()) {
+            // 100% fullness: pause → compact → the compact pump continues.
+            autoModeCompactPending = true
+            appendSystemInfo(
+                text = "Авто-режим: контекст на пределе — пауза, сжатие сессии, затем продолжение плана.",
+                iconKind = "compact",
+            )
+            AppLogger.info(TAG_STREAM, "[AutoMode] pause for compact at turn $autoModeTurns")
+        } else {
+            AppLogger.info(TAG_STREAM, "[AutoMode] park continuation $autoModeTurns")
+        }
+        enqueuePrompt(com.openminis.app.agent.AgentAutoMode.continuationPrompt(autoModeTurns))
+    }
+
+    /** Same pressure computation as checkContextBeforeSend, boolean form. */
+    private fun autoModePressureNeedsCompact(): Boolean {
+        val tokens = com.openminis.app.data.ContextPressure.resolve(
+            usageTokens = _lastTurnContextTokens.value,
+            estimatedTokens = estimateContextTokens(),
+        )
+        if (tokens <= 0) return false
+        val window = effectiveContextWindowTokens() ?: return false
+        return com.openminis.app.data.ContextPolicy.forContextWindow(window)
+            .check(tokens, window) != com.openminis.app.data.ContextPolicy.CheckResult.OK
+    }
+
+    /**
+     * Stream-tail hook: with the stream closed and a continuation parked, an
+     * over-full context folds history first. compactAll's finally kicks its
+     * own queue pump (resumeQueueAfterCancel → drain), which sends the parked
+     * continuation — the autonomous run survives compaction.
+     */
+    private fun autoModeCompactAndResume() {
+        if (!autoModeCompactPending) return
+        autoModeCompactPending = false
+        if (!_autoModeArmed.value) return
+        AppLogger.info(TAG_STREAM, "[AutoMode] auto-compact then resume")
+        compactAll(com.openminis.app.data.CompactionLaunchPolicy.Origin.AUTO_MODE_ARMED)
+    }
+
     /**
      * [T-turn-timer] Timer line on every tool result + the hard refusal once
      * the grace window is spent. See TurnTimerPolicy for the contract.
@@ -7715,6 +7808,9 @@ class ChatViewModel(
         while (_promptQueue.value.isNotEmpty()) {
             val queued = _promptQueue.value
             _promptQueue.value = emptyList()
+            // [T-auto-mode] The parked continuation is now the active turn —
+            // allow the NEXT turn-end to park the one after it.
+            autoModeParked = false
             Log.i(TAG, "📨[DRAIN] Draining ${queued.size} queued prompt(s): " +
                 queued.joinToString(", ") { "${it.id}=\"${it.text.take(20)}...\"" })
 
@@ -7773,6 +7869,13 @@ class ChatViewModel(
                     fallbackProviders = fallbackProviders,
                     fallbackStrategy = fallbackStrategy,
                 )
+                // [T-auto-mode] Turn ended inside the drain loop: park the
+                // next continuation — the while-condition re-checks the queue
+                // and runs it in this same loop. At 100% context, break and
+                // let the streamJob tail compact; the compact's own pump
+                // re-drains the parked continuation.
+                maybeAutoContinue()
+                if (autoModeCompactPending) break
             } catch (e: CancellationException) {
                 Log.d(TAG, "Agent loop (queued-drain) cancelled")
                 // Cancel mid-drain: cancelStream() will check _promptQueue
@@ -7816,6 +7919,28 @@ class ChatViewModel(
         // needsCompact / exhausted thresholds but still lets the send proceed.
         // The user invokes /compact explicitly to fold history when warned.
         checkContextBeforeSend()
+        // [T-auto-mode] The user's own words arm the autonomous run (gated by
+        // the AutoModePrefs toggle); ANY other manual message from the user
+        // disarms it — their live control always wins over the loop.
+        if (!trimmed.startsWith("⟳")) {
+            if (com.openminis.app.agent.AgentAutoMode.wantsAutoMode(trimmed) &&
+                com.openminis.app.data.AutoModePrefs.isEnabled()
+            ) {
+                _autoModeArmed.value = true
+                autoModeTurns = 0
+                AppLogger.info(TAG_STREAM, "[AutoMode] ARMED by user message")
+                appendSystemInfo(
+                    text = "Авто-режим включён: выполняю план до полного завершения " +
+                        "(финальный ответ закончится строкой TASK_COMPLETE).",
+                    iconKind = "compact",
+                )
+            } else if (_autoModeArmed.value) {
+                _autoModeArmed.value = false
+                autoModeParked = false
+                autoModeCompactPending = false
+                AppLogger.info(TAG_STREAM, "[AutoMode] DISARMED by user message")
+            }
+        }
         // A fresh send supersedes any pending resume — mirror iOS which clears
         // canResume at the top of send().
         _canResume.value = false
@@ -8174,12 +8299,28 @@ class ChatViewModel(
                                 context, realSessionId.ifEmpty { sessionId },
                             )
                         }
+                        // [T-auto-mode] First turn of an armed run: park the
+                        // next continuation, then let the existing drain send
+                        // it. When a compact is pending (100% context), the
+                        // stream tail below compacts first; the compact's
+                        // queue pump then drains the parked continuation.
+                        maybeAutoContinue()
                         // Drain any prompts the user queued while this loop was running.
                         // Skipped on cancel: cancelled job won't reach here.
-                        drainQueuedPrompts(provider, systemPrompt, fallbackProviders, activeFallbackStrategy)
+                        if (!autoModeCompactPending) {
+                            drainQueuedPrompts(provider, systemPrompt, fallbackProviders, activeFallbackStrategy)
+                        }
                         AppLogger.info(TAG_STREAM, "send drainQueuedPrompts RETURN")
                     } catch (e: CancellationException) {
                         AppLogger.info(TAG_STREAM, "send runAgentLoop CANCELLED")
+                        // [T-auto-mode] The user pressed Stop: their control
+                        // wins over the loop — disarm, parked prompts stay
+                        // queued for a manual resume.
+                        if (_autoModeArmed.value) {
+                            _autoModeArmed.value = false
+                            autoModeCompactPending = false
+                            AppLogger.info(TAG_STREAM, "[AutoMode] DISARMED by user Stop")
+                        }
                         Log.d(TAG, "Agent loop cancelled")
                     } catch (e: Exception) {
                         AppLogger.error(TAG_STREAM, "send runAgentLoop EXCEPTION ${e.javaClass.simpleName}: ${e.message}")
@@ -8238,6 +8379,10 @@ class ChatViewModel(
                 if (streamJob === coroutineContext[Job]) {
                     AppLogger.info(TAG_STREAM, "send _isStreaming=false (about to set)")
                     _isStreaming.value = false
+                    // [T-auto-mode] Stream closed with a compact pending:
+                    // fold history now (safe — no live turn), then the
+                    // compact's queue pump sends the parked continuation.
+                    autoModeCompactAndResume()
                 } else {
                     AppLogger.info(TAG_STREAM, "send _isStreaming SKIPPED (stale job)")
                 }

@@ -191,6 +191,7 @@ class MinisApp : Application(), ImageLoaderFactory {
         // request-build time — including offload / title-gen calls that
         // never pass through a ViewModel.
         com.openminis.app.data.FastModePrefs.prime(this)
+        com.openminis.app.data.AutoModePrefs.prime(this)
 
         // T283: install NDK signal handler for native crashes (SIGSEGV/
         // SIGABRT/SIGBUS/SIGFPE/SIGILL/SIGSYS). Writes a one-shot text

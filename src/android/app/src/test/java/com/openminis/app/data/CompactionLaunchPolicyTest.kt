@@ -14,4 +14,12 @@ class CompactionLaunchPolicyTest {
         assertFalse(CompactionLaunchPolicy.mayRewrite(CompactionLaunchPolicy.Origin.MODEL_SWITCH))
         assertFalse(CompactionLaunchPolicy.mayRewrite(CompactionLaunchPolicy.Origin.AUTOMATIC_OFFLOAD))
     }
+
+    @Test
+    fun `an armed auto-mode run may rewrite - the user consented by arming it`() {
+        // [T-auto-mode] The single deliberate exception (user decision
+        // 22.09.2026): an autonomous loop parks its continuation and folds
+        // history at 100% — nobody is watching to type /compact manually.
+        assertTrue(CompactionLaunchPolicy.mayRewrite(CompactionLaunchPolicy.Origin.AUTO_MODE_ARMED))
+    }
 }
