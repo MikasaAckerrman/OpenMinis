@@ -57,6 +57,7 @@ object SubagentExecutor {
             systemPrompt = promptForRole(agentRole, task),
             allowedTools = defaultToolsForRole(agentRole),
             maxTurns = 8,
+            modelRole = modelRoleFor(agentRole),
         )
         val graph = AgentGraph(
             id = "ephemeral-${node.id}",
@@ -238,6 +239,38 @@ object SubagentExecutor {
             listOf("shell_execute", "file_read", "file_write", "file_edit", "browser_use")
         else ->
             listOf("shell_execute", "file_read", "browser_use")
+    }
+
+    /**
+     * Map a spawnable [AgentRole] to a model-role key the resolver understands
+     * (planner | analyst | architect | coder | reviewer | tester — the keys
+     * AgentKeysCollection.VALID_ROLES and BuiltinGraphs use).
+     *
+     * Without SOME model source, AgentGraph.validate() rejects the ephemeral
+     * graph ("needs modelEntryId or modelRole") and every spawn_subagent call
+     * dies at saveAgentGraph before a single token is spent — the bug that
+     * made runtime subagents unusable.
+     *
+     * modelRole (not a pinned modelEntryId) is deliberate: resolution then
+     * goes through ProviderRepository.resolveModelEntryForRole, which honours
+     * the user's per-role keys and Settings and otherwise falls back to the
+     * model the user already chats with — "agents use the model I chat with
+     * unless I say otherwise".
+     */
+    private fun modelRoleFor(role: AgentRole): String = when (role) {
+        AgentRole.REQUIREMENTS_ANALYST -> "planner"
+        AgentRole.CODEBASE_DISCOVERY -> "analyst"
+        AgentRole.SOLUTION_ARCHITECT -> "architect"
+        AgentRole.INDEPENDENT_TEST_DESIGNER -> "tester"
+        AgentRole.TEST_QUALITY_AUDITOR -> "tester"
+        AgentRole.SENIOR_IMPLEMENTER -> "coder"
+        AgentRole.DOCUMENTATION_AGENT -> "analyst"
+        AgentRole.CODE_CORRECTNESS_REVIEWER -> "reviewer"
+        AgentRole.SECURITY_REVIEWER -> "reviewer"
+        AgentRole.PERFORMANCE_REVIEWER -> "reviewer"
+        AgentRole.DEPENDENCY_GUARDIAN -> "reviewer"
+        AgentRole.FINAL_GATEKEEPER -> "reviewer"
+        AgentRole.ORCHESTRATOR -> "planner"
     }
 }
 
