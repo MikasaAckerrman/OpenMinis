@@ -1518,6 +1518,28 @@ class ChatViewModel(
         MutableStateFlow(com.openminis.app.data.MemoryGlobalPrefs.isGlobalEnabled(context))
     val memoryEnabled: StateFlow<Boolean> = _memoryEnabled.asStateFlow()
 
+    /**
+     * [T-proactive-memory] Tool calls since the turn started. Every
+     * NUDGE_INTERVAL-th call of the MAIN session gets a memory reminder
+     * appended to its tool result — the model sees it mid-turn, where a
+     * system-prompt line has already been forgotten. Reset when a turn ends.
+     */
+    private var memoryNudgeToolCalls = 0
+
+    /**
+     * [T-proactive-memory] Append the periodic memory nudge to a tool result.
+     * Workers are excluded: they are role-scoped and budget-bounded, a nudge
+     * there is noise in a context that must stay minimal.
+     */
+    private fun maybeAppendMemoryNudge(result: ToolExecutionResult): ToolExecutionResult {
+        if (com.openminis.app.tools.AgentNodeBinding.of(activeSessionId) != null) return result
+        memoryNudgeToolCalls++
+        if (!com.openminis.app.offload.TurnMemoryDistiller.shouldNudge(memoryNudgeToolCalls)) return result
+        return result.copy(
+            output = result.output + "\n\n" + com.openminis.app.offload.TurnMemoryDistiller.nudgeLine(),
+        )
+    }
+
     internal val _thinkingLevel = MutableStateFlow(ThinkingLevel.OFF)
     val thinkingLevel: StateFlow<ThinkingLevel> = _thinkingLevel.asStateFlow()
 
@@ -7222,6 +7244,18 @@ class ChatViewModel(
                     publishOverlayReplyExcerpt(activeSessionId)
                     SessionActivityTracker.setInactive(activeSessionId)
                     SessionConcurrencyManager.releaseSlot(activeSessionId)
+                    // [T-proactive-memory] Same hook as sendMessage's
+                    // finally — a rerun turn is still a turn.
+                    memoryNudgeToolCalls = 0
+                    viewModelScope.launch(Dispatchers.IO) {
+                        runCatching {
+                            com.openminis.app.offload.TurnMemoryDistiller.maybeDistill(
+                                context, activeSessionId, _memoryEnabled.value,
+                            )
+                        }.onFailure { e ->
+                            AppLogger.warning(TAG_STREAM, "memory distill failed: ${e.message}")
+                        }
+                    }
                     AppLogger.info(TAG_STREAM, "$label streamJob FINALLY exit")
                 }
             } catch (e: CancellationException) {
@@ -8133,6 +8167,21 @@ class ChatViewModel(
                         publishOverlayReplyExcerpt(activeSessionId)
                         SessionActivityTracker.setInactive(activeSessionId)
                         SessionConcurrencyManager.releaseSlot(activeSessionId)
+                        // [T-proactive-memory] Turn over: reset the nudge
+                        // counter and fire the post-turn distiller
+                        // (fire-and-forget, silent, ephemeral — see
+                        // TurnMemoryDistiller). Never blocks the user's next
+                        // message, never shows in the chat list.
+                        memoryNudgeToolCalls = 0
+                        viewModelScope.launch(Dispatchers.IO) {
+                            runCatching {
+                                com.openminis.app.offload.TurnMemoryDistiller.maybeDistill(
+                                    context, activeSessionId, _memoryEnabled.value,
+                                )
+                            }.onFailure { e ->
+                                AppLogger.warning(TAG_STREAM, "memory distill failed: ${e.message}")
+                            }
+                        }
                         AppLogger.info(TAG_STREAM, "send streamJob FINALLY exit")
                     }
                 } catch (e: CancellationException) {
@@ -8746,6 +8795,18 @@ class ChatViewModel(
                         publishOverlayReplyExcerpt(activeSessionId)
                         SessionActivityTracker.setInactive(activeSessionId)
                         SessionConcurrencyManager.releaseSlot(activeSessionId)
+                        // [T-proactive-memory] Same hook as sendMessage's
+                        // finally — a retried turn is still a turn.
+                        memoryNudgeToolCalls = 0
+                        viewModelScope.launch(Dispatchers.IO) {
+                            runCatching {
+                                com.openminis.app.offload.TurnMemoryDistiller.maybeDistill(
+                                    context, activeSessionId, _memoryEnabled.value,
+                                )
+                            }.onFailure { e ->
+                                AppLogger.warning(TAG_STREAM, "memory distill failed: ${e.message}")
+                            }
+                        }
                         AppLogger.info(TAG_STREAM, "retryLast streamJob FINALLY exit")
                     }
                 } catch (e: CancellationException) {
@@ -11380,7 +11441,7 @@ class ChatViewModel(
             com.openminis.app.tools.AgentToolBudgetStore.recordCall(sessionId)
         }
         try {
-            return when (name) {
+            val toolResult = when (name) {
             FileReadTool.NAME -> {
                 val result = FileReadTool.execute(argsJson, activeSessionId, context)
                 // Record skill usage when SKILL.md under /var/minis/skills/<id>/ is read.
@@ -11417,6 +11478,9 @@ class ChatViewModel(
             "memory_get" -> executeMemoryGetTool(argsJson)
             else -> ToolExecutionResult("Unknown tool: $name", false)
             }
+            // [T-proactive-memory] Single choke point for the periodic
+            // reminder — see maybeAppendMemoryNudge.
+            return maybeAppendMemoryNudge(toolResult)
         } finally {
             // Clear the tool marker whether the call succeeded, failed, or threw.
             // A row that keeps naming a finished tool is worse than naming none:
@@ -12613,6 +12677,23 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                 "memory.inject.maxchars",
                 com.openminis.app.data.repository.MemoryRepository.DEFAULT_INJECT_CHARS_TOTAL,
             )
+        // [T-proactive-memory] Relevance tier (OpenHands microagent pattern):
+        // keyword-match the memory corpus against the message being answered
+        // and inject the hits AHEAD of the recency tier below. Recency alone
+        // misses the one line from three weeks ago that THIS message needs —
+        // and the model rarely calls memory_get on its own at turn start.
+        // Uses the last user message from agentHistory (already in memory,
+        // no DB read) — for every send/retry/rerun path the turn's user
+        // message is present there by the time the prompt is built.
+        val relevantMemoryFragment = if (memoryOn) runCatching {
+            val lastUserText = agentHistory.lastOrNull {
+                it.role == LLMMessage.Role.USER && it.content.isNotBlank()
+            }?.content
+            if (lastUserText.isNullOrBlank()) null
+            else memoryRepository?.getMemory(lastUserText.take(300), scope = "all")
+                ?.takeIf { it.isNotBlank() && !it.startsWith("No memory") }
+                ?.let { "Relevant memories (keyword-matched to this message):\n$it" }
+        }.getOrNull() else null
         val dailyMemoryFragment = if (memoryOn) memoryRepository?.loadRecentDailyMemoryFragment(memoryInjectBudget) else null
 
         // [T-env-names-injection] Inject the NAMES (never the values) of the
@@ -12677,6 +12758,10 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
             if (canonFragment != null) {
                 append("\n\n")
                 append(canonFragment)
+            }
+            if (relevantMemoryFragment != null) {
+                append("\n\n")
+                append(relevantMemoryFragment)
             }
             if (dailyMemoryFragment != null) {
                 append("\n\n")
