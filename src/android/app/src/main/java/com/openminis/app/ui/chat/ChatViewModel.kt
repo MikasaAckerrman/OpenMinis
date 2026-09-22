@@ -1562,6 +1562,9 @@ class ChatViewModel(
     /** [T-auto-mode-verify] Strategy changes already spent (cap = MAX_REPLANS). */
     private var autoModeReplans = 0
 
+    /** [T-auto-mode-token-budget] Billed tokens spent by the current armed run. */
+    private var autoModeTokensUsed = 0L
+
     /** Continuation parked in the queue, waiting for a pump. */
     @Volatile
     private var autoModeParked = false
@@ -1626,6 +1629,25 @@ class ChatViewModel(
             appendSystemInfo(
                 text = "Авто-режим остановлен: исчерпан лимит продолжений " +
                     "(${com.openminis.app.agent.AgentAutoMode.MAX_AUTO_TURNS}).",
+                iconKind = "compact",
+            )
+            return
+        }
+        // [T-auto-mode-token-budget] A REAL ledger: the just-finished turn's
+        // usage was persisted with the message — one 1-row tail read, parsed
+        // by the pure tokenCostOf. Compact-safe: the tail is kept verbatim.
+        autoModeTokensUsed += lastTurnTokenCost()
+        if (autoModeTokensUsed >= com.openminis.app.agent.AgentAutoMode.TOKEN_BUDGET) {
+            _autoModeArmed.value = false
+            AppLogger.info(
+                TAG_STREAM,
+                "[AutoMode] STOP: token budget ${com.openminis.app.agent.AgentAutoMode.TOKEN_BUDGET} spent " +
+                    "($autoModeTokensUsed)",
+            )
+            appendSystemInfo(
+                text = "Авто-режим остановлен: исчерпан токен-бюджет " +
+                    "(${com.openminis.app.agent.AgentAutoMode.TOKEN_BUDGET} ток.; израсходовано ~$autoModeTokensUsed). " +
+                    "План не завершён — можно продолжить новым запуском.",
                 iconKind = "compact",
             )
             return
@@ -1771,6 +1793,18 @@ class ChatViewModel(
         }
         return com.openminis.app.agent.AutoModeVerification.Report(failures.isEmpty(), failures)
     }
+
+    /**
+     * [T-auto-mode-token-budget] Billed cost of the just-finished turn:
+     * its usage row is the session's LAST message (the assistant turn
+     * commits before any continuation is sent). One 1-row tail read; a
+     * missing/legacy row costs 0 — a ledger gap never blocks the run.
+     */
+    private suspend fun lastTurnTokenCost(): Long = runCatching {
+        val sid = activeSessionId.ifEmpty { sessionId }
+        val last = chatRepository.dao.loadLastMessages(sid, limit = 1).firstOrNull()
+        com.openminis.app.agent.AgentAutoMode.tokenCostOf(last?.tokenUsage)
+    }.getOrDefault(0L)
 
     /** Same pressure computation as checkContextBeforeSend, boolean form. */
     private fun autoModePressureNeedsCompact(): Boolean {
@@ -8096,6 +8130,7 @@ class ChatViewModel(
                 autoModeTurns = 0
                 autoModeVerifyFails = 0
                 autoModeReplans = 0
+                autoModeTokensUsed = 0L
                 AppLogger.info(TAG_STREAM, "[AutoMode] ARMED by user message")
                 appendSystemInfo(
                     text = "Авто-режим включён: выполняю план до полного завершения " +

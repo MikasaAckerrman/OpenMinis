@@ -129,4 +129,20 @@ class AgentAutoModeTest {
         assertTrue(p.contains("другую стратегию") || p.contains("ДРУГУЮ стратегию"))
         assertTrue(p.contains("/a.kt"))
     }
+
+    // ── token budget ───────────────────────────────────────────────────────
+
+    @Test
+    fun `token cost sums billed fields only`() {
+        val json = """{"inputTokens":1000,"outputTokens":200,"cacheCreationTokens":50,"cacheReadTokens":9000,"latestContextTokens":11050}"""
+        // cacheRead is ~free — not billed.
+        assertEquals(1250L, AgentAutoMode.tokenCostOf(json))
+    }
+
+    @Test
+    fun `missing or corrupt usage costs zero - never blocks the run`() {
+        assertEquals(0L, AgentAutoMode.tokenCostOf(null))
+        assertEquals(0L, AgentAutoMode.tokenCostOf(""))
+        assertEquals(0L, AgentAutoMode.tokenCostOf("not json at all"))
+    }
 }

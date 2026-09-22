@@ -37,6 +37,28 @@ object AgentAutoMode {
     /** The prompt asks the agent to checkpoint (memory + git) at this cadence. */
     const val CHECKPOINT_EVERY_TURNS = 15
 
+    /**
+     * Cumulative token budget of one armed run (input + output +
+     * cache-creation — billed tokens, cache reads are ~free). 10M ≈ a full
+     * autonomous day; the run disarms honestly with the number spent.
+     * Per-turn usage IS persisted (MessageEntity.tokenUsage), so this is a
+     * real ledger, not the turn-count proxy.
+     */
+    const val TOKEN_BUDGET = 10_000_000L
+
+    /**
+     * Parse one persisted token_usage JSON row into its billed cost.
+     * Pure + null-safe: a missing/legacy/corrupt row costs 0 — a ledger gap
+     * must never block the run.
+     */
+    fun tokenCostOf(tokenUsageJson: String?): Long {
+        if (tokenUsageJson.isNullOrBlank()) return 0L
+        return runCatching {
+            val o = org.json.JSONObject(tokenUsageJson)
+            o.optLong("inputTokens") + o.optLong("outputTokens") + o.optLong("cacheCreationTokens")
+        }.getOrDefault(0L)
+    }
+
     /** Arming phrases the user may write naturally (case-insensitive). */
     private val ARM_PHRASES = listOf(
         "авто-режим", "авто режим", "auto mode", "автомод", "/auto",
