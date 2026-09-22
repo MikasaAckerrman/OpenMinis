@@ -1,0 +1,158 @@
+name: Unit Tests
+
+# [T-test-only-ci] Test verification WITHOUT building any APK.
+#
+# Runs the same JVM unit-test gate as build.yml (same task, same scoped
+# --tests filter, same proven-green setup steps) but stops there: no
+# assembleClone, no artifact upload. This exists so the agent workflow can be
+# "verify the code works BEFORE the user authorizes an APK build":
+#
+#   - push with `[test]` in the commit message, or
+#   - manual workflow_dispatch
+#
+# build.yml is untouched: it still only fires on `[quick]`, which stays
+# reserved for pushes the user has authorized to produce an installable APK.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, feat/message-rewrite-visual]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'assets/**'
+
+jobs:
+  tests:
+    name: JVM unit tests (no APK)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: contains(github.event.head_commit.message, '[test]') || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: 17
+          cache: gradle
+
+      - name: "Setup Android SDK (manual, action v3 has dead tools package)"
+        run: |
+          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          [ -x "$SDKMANAGER" ] || SDKMANAGER="$ANDROID_HOME/cmdline-tools/16.0/bin/sdkmanager"
+          echo "sdkmanager at: $SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          "$SDKMANAGER" --install "platforms;android-36" "build-tools;36.0.0" "platform-tools" > /dev/null 2>&1
+          "$SDKMANAGER" --list_installed | head -20
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Build native dependencies (PRoot, Alpine rootfs)
+        run: |
+          cd deps
+          ./build_proot.sh
+          ../scripts/prepare_android_sandbox.sh
+
+      - name: Grant Gradle permission
+        run: chmod +x src/android/gradlew
+
+      # Same scoped filter as build.yml's gate — see the notes there for why
+      # the filter is not the whole suite (OpenAIProviderTest /
+      # TerminalSanitizerTest were red before the gate existed).
+      - name: Run unit tests
+        run: |
+          cd src/android
+          ./gradlew :app:testCloneUnitTest --no-daemon -Dorg.gradle.jvmargs="-Xmx4g" \
+            --tests 'com.openminis.app.offload.*' \
+            --tests 'com.openminis.app.config.ConfigPathResolverTest' \
+            --tests 'com.openminis.app.data.model.ProviderFoldersTest' \
+            --tests 'com.openminis.app.data.model.EndpointHistoryTest' \
+            --tests 'com.openminis.app.data.model.ProviderListSectionsTest' \
+            --tests 'com.openminis.app.data.model.ProviderPickerSectionsTest' \
+            --tests 'com.openminis.app.data.model.SectionAccentTest' \
+            --tests 'com.openminis.app.data.model.PickerSearchTest' \
+            --tests 'com.openminis.app.feedback.CompletionFeedbackPolicyTest' \
+            --tests 'com.openminis.app.feedback.VibrationPatternsTest' \
+            --tests 'com.openminis.app.data.MessageSurgeryMergedTurnTest' \
+            --tests 'com.openminis.app.data.ProtectedTailTest' \
+            --tests 'com.openminis.app.data.CompactRouteTest' \
+            --tests 'com.openminis.app.data.MechanicalCompactTest' \
+            --tests 'com.openminis.app.data.MemoryCanonTest' \
+            --tests 'com.openminis.app.data.SummaryBudgetTest' \
+            --tests 'com.openminis.app.data.CompactProgressTest' \
+            --tests 'com.openminis.app.data.StreamDurabilityTest' \
+            --tests 'com.openminis.app.data.StreamHeartbeatTest' \
+            --tests 'com.openminis.app.data.CompactQualityTest' \
+            --tests 'com.openminis.app.data.TransportErrorClassifierTest' \
+            --tests 'com.openminis.app.data.ContextPressureTest' \
+            --tests 'com.openminis.app.data.MessageTimestampTest' \
+            --tests 'com.openminis.app.agent.EngineeringDisciplineTest' \
+            --tests 'com.openminis.app.ui.chat.ResidentEvictionPolicyTest' \
+            --tests 'com.openminis.app.ui.chat.VmCacheLruTest' \
+            --tests 'com.openminis.app.provider.QuotaErrorDetectionTest' \
+            --tests 'com.openminis.app.provider.AnthropicProviderTest' \
+            --tests 'com.openminis.app.provider.ContentFilterDetectionTest' \
+            --tests 'com.openminis.app.tools.AgentSystemPromptStoreTest' \
+            --tests 'com.openminis.app.tools.AgentWorkerPromptTest' \
+            --tests 'com.openminis.app.tools.AgentSystemPromptStandaloneTest' \
+            --tests 'com.openminis.app.ui.chat.VmCacheLruTest' \
+            --tests 'com.openminis.app.ui.chat.PartsJsonCacheTest' \
+            --tests 'com.openminis.app.ui.chat.AgentModePrefsTest' \
+            --tests 'com.openminis.app.offload.AgentRunProgressTest' \
+            --tests 'com.openminis.app.ui.chat.ChatHistoryWindowTest' \
+            --tests 'com.openminis.app.service.SessionActivityTrackerConcurrencyTest' \
+            --tests 'com.openminis.app.service.SessionConcurrencyManagerTest' \
+            --tests 'com.openminis.app.provider.LlmDispatchGateTest' \
+            --tests 'com.openminis.app.provider.TokenBucketTest' \
+            --tests 'com.openminis.app.provider.RateLimitPolicyTest' \
+            --tests 'com.openminis.app.data.CompactionLaunchPolicyTest' \
+            --tests 'com.openminis.app.data.ContextUsageAttributionTest' \
+            --tests 'com.openminis.app.data.StaleConnectionPolicyTest' \
+            --tests 'com.openminis.app.data.HostActivityTrackerTest' \
+            --tests 'com.openminis.app.data.DnsFailurePolicyTest' \
+            --tests 'com.openminis.app.ui.ScreenDimPolicyTest' \
+            --tests 'com.openminis.app.ui.ScreenDimWakeGestureTest' \
+            --tests 'com.openminis.app.data.PostAnchorPruneTest' \
+            --tests 'com.openminis.app.data.RequestBudgetTest' \
+            --tests 'com.openminis.app.data.SendGatePolicyTest' \
+            --tests 'com.openminis.app.data.MessageCutoffTest' \
+            --tests 'com.openminis.app.data.TransientRetryBudgetTest' \
+            --tests 'com.openminis.app.data.FallbackDecisionTest' \
+            --tests 'com.openminis.app.data.ProviderFallbackIdentityTest' \
+            --tests 'com.openminis.app.data.HistorySizeGateTest' \
+            --tests 'com.openminis.app.data.AutoResumePolicyTest' \
+            --tests 'com.openminis.app.data.AssistantTurnCopyTest' \
+            --tests 'com.openminis.app.data.model.AttachmentIndexTest' \
+            --tests 'com.openminis.app.data.ResumeVisibilityPolicyTest' \
+            --tests 'com.openminis.app.data.CompactDividerCountTest' \
+            --tests 'com.openminis.app.data.MutationJournalTest' \
+            --tests 'com.openminis.app.data.SessionDeletionPolicyTest' \
+            --tests 'com.openminis.app.debug.HeadlessRetryStatusTest' \
+            --tests 'com.openminis.app.ui.chat.UiCopyCapsuleTest' \
+            --tests 'com.openminis.app.ui.chat.UiCopyDiffVerdictTest' \
+            --tests 'com.openminis.app.ui.chat.MinisTextKitSelectionOrderTest' \
+            --tests 'com.openminis.app.ui.chat.ShardOrderTest'
+
+      - name: Upload unit test report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-report-no-apk
+          path: src/android/app/build/reports/tests/
+          retention-days: 7
