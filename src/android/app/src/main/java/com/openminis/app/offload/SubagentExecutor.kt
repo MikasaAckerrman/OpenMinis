@@ -194,7 +194,13 @@ object SubagentExecutor {
      *  3. One tool result carries ALL answers, numbered, so the orchestrator
      *     sees the batch as a single decision point.
      */
-    suspend fun spawnMany(context: Context, agents: List<SpawnSpec>, serial: Boolean = false): String {
+    suspend fun spawnMany(
+        context: Context,
+        agents: List<SpawnSpec>,
+        serial: Boolean = false,
+        synthesize: Boolean = false,
+        review: Boolean = false,
+    ): String {
         if (agents.isEmpty()) return "spawn_many: no agents given"
         val app = context.applicationContext as MinisApp
         // [T-agent-file] Validation: builtin enum or an existing custom agent.
@@ -223,10 +229,24 @@ object SubagentExecutor {
                 if (plan.isFullyParallel) " — all independent, running in parallel" else "",
         )
         plan.conflictNotes.forEach { sb.appendLine("⚠ $it") }
+        if (synthesize) sb.appendLine("+ synthesizer: ONE integrated answer from the board")
+        if (review) sb.appendLine("+ reviewer: verifies the synthesis against the board")
         sb.appendLine()
+
+        // [T-task-board] The executor owns the board: workers never write it
+        // (append-only is a code guarantee, not prompt discipline), each
+        // batch sees the snapshot as of its start, and the file artifact
+        // survives for the orchestrator to inspect later.
+        val board = StringBuilder(TaskBoard.header(agents.map { it.role }))
+        val batchId = "batch-${UUID.randomUUID().toString().take(6)}"
+
         coroutineScope {
             var order = 0
             plan.batches.forEach { batch ->
+                // Snapshot BEFORE the batch: same-batch workers are
+                // conflict-free independents — they see previous batches
+                // only, which is the correct amount of context.
+                val snapshot = board.toString()
                 val sections = batch.map { task ->
                     val spec = agents[task.index]
                     async(kotlinx.coroutines.Dispatchers.IO) {
@@ -237,7 +257,10 @@ object SubagentExecutor {
                             val (graph, node) = pair
                             app.providerRepository.saveAgentGraph(graph)
                             runCatching {
-                                runSingle(context, app, graph, node, spec.role, spec.task)
+                                runSingle(
+                                    context, app, graph, node, spec.role,
+                                    TaskBoard.inject(spec.task, snapshot),
+                                )
                             }.getOrElse { e ->
                                 "Subagent (${spec.role.lowercase()}) error: ${e.message}"
                             }
@@ -249,11 +272,66 @@ object SubagentExecutor {
                     sb.appendLine("### $order. ${batch[bi].role}")
                     sb.appendLine(text)
                     sb.appendLine()
+                    board.append(TaskBoard.entry(order, batch[bi].role, text))
                 }
             }
-            sb.appendLine("spawn_many finished: $order result(s).")
         }
+
+        // [T-task-board] Optional synthesis + review on top of the batch —
+        // the "quality" half of the parallel pipeline.
+        if (synthesize) {
+            val synth = runExtra(
+                context, app, AgentRole.REQUIREMENTS_ANALYST,
+                "Synthesize ONE integrated answer from the subagent results on the board below. " +
+                    "Resolve contradictions explicitly, keep verified facts, flag conflicts and " +
+                    "gaps. Answer in the language of the original tasks.\n\n" +
+                    board.toString().take(9000),
+            )
+            sb.appendLine("### SYNTHESIS (requirements_analyst)")
+            sb.appendLine(synth)
+            sb.appendLine()
+            board.append(TaskBoard.entry(0, "SYNTHESIS", synth))
+        }
+        if (review) {
+            val verdict = runExtra(
+                context, app, AgentRole.CODE_CORRECTNESS_REVIEWER,
+                "Verify the SYNTHESIS below against the findings on the board. List concrete " +
+                    "mistakes, contradictions or unsupported claims with the agent number they " +
+                    "come from; write CONFIRMED if the synthesis holds.\n\n" +
+                    board.toString().take(9000),
+            )
+            sb.appendLine("### REVIEW (code_correctness_reviewer)")
+            sb.appendLine(verdict)
+            sb.appendLine()
+        }
+
+        val boardPath = writeBoardFile(batchId, board.toString())
+        if (boardPath != null) sb.appendLine("Board artifact: $boardPath")
+        sb.appendLine("spawn_many finished.")
         return sb.toString()
+    }
+
+    /** [T-task-board] One builtin ephemeral agent over a ready-made task. */
+    private suspend fun runExtra(
+        context: Context,
+        app: MinisApp,
+        role: AgentRole,
+        task: String,
+    ): String {
+        val (graph, node) = buildEphemeralGraph(role, task)
+        app.providerRepository.saveAgentGraph(graph)
+        return runSingle(context, app, graph, node, role.name.lowercase(), task)
+    }
+
+    /** [T-task-board] Persist the final board as a workspace artifact. */
+    private fun writeBoardFile(batchId: String, board: String): String? = try {
+        val host = com.openminis.app.sandbox.PRootKernel
+            .resolveHostPath("/var/minis/workspace/$batchId/BOARD.md") ?: return null
+        host.parentFile?.mkdirs()
+        host.writeText(board)
+        "/var/minis/workspace/$batchId/BOARD.md"
+    } catch (_: Exception) {
+        null
     }
 
     fun activeBackgroundCount(): Int = activeBackground.size

@@ -122,9 +122,22 @@ object SubagentTools {
                     "serial: run all one-by-one in array order (use when every task depends on the previous).",
                 enumValues = listOf("auto", "serial"),
             ),
+            "synthesize" to AgentToolParam(
+                "boolean",
+                "false (default). true = after all agents finish, one synthesizer agent reads the " +
+                    "task board (every agent's result) and produces ONE integrated answer — resolving " +
+                    "contradictions, flagging gaps. Use for research/analysis batches where you need a " +
+                    "single conclusion, not N raw reports.",
+            ),
+            "review" to AgentToolParam(
+                "boolean",
+                "false (default). true = after the synthesis, a reviewer agent verifies it against " +
+                    "the board (mistakes, contradictions, unsupported claims — or CONFIRMED). " +
+                    "Quality gate; adds one more agent run.",
+            ),
         ),
         required = listOf("tool_title", "agents"),
-        propertyOrdering = listOf("tool_title", "agents", "mode"),
+        propertyOrdering = listOf("tool_title", "agents", "mode", "synthesize", "review"),
     )
 
     fun runGraphDefinition(): AgentToolDefinition = AgentToolDefinition(        name = RUN_GRAPH_TOOL_NAME,

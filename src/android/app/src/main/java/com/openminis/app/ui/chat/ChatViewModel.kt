@@ -11878,7 +11878,9 @@ class ChatViewModel(
             return ToolExecutionResult("spawn_many: no valid agent specs in the array", false)
         }
         val serial = args.optString("mode").trim().lowercase() == "serial"
-        val result = com.openminis.app.offload.SubagentExecutor.spawnMany(context, specs, serial)
+        val synthesize = args.optBoolean("synthesize", false)
+        val review = args.optBoolean("review", false)
+        val result = com.openminis.app.offload.SubagentExecutor.spawnMany(context, specs, serial, synthesize, review)
         return ToolExecutionResult(result, true)
     }
 
