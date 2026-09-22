@@ -1141,7 +1141,7 @@ class SessionCapsuleView(
             canvas.drawRoundRect(tmpRect, dp(3f), dp(3f), metricIconBgPaint)
             canvas.drawRoundRect(tmpRect, dp(3f), dp(3f), metricIconBorderPaint)
             canvas.drawText(
-                icon,
+                icon.toString(),
                 iconX + iconSide / 2f,
                 cy - (metricIconTextPaint.descent() + metricIconTextPaint.ascent()) / 2f,
                 metricIconTextPaint,
