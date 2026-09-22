@@ -2,6 +2,9 @@ package com.openminis.app.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * [T-auto-mode] App-level persisted Auto Mode toggle (FastModePrefs pattern).
