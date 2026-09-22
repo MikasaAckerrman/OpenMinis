@@ -107,4 +107,58 @@ class AutoModeVerificationTest {
         assertTrue(r.contains("/a"))
         assertTrue(r.contains("cmd exit 1"))
     }
+
+    // ── batch probes (the fast path) ───────────────────────────────────────
+
+    @Test
+    fun `all-exist batch chains every path with and`() {
+        assertEquals(
+            "test -e '/a' && test -e '/b'",
+            AutoModeVerification.allExistCommand(listOf("/a", "/b")),
+        )
+    }
+
+    @Test
+    fun `none-exist batch negates each probe`() {
+        assertEquals(
+            "! test -e '/a' && ! test -e '/b'",
+            AutoModeVerification.noneExistCommand(listOf("/a", "/b")),
+        )
+    }
+
+    @Test
+    fun `batch quotes escape embedded quotes`() {
+        assertEquals(
+            "test -e '/tmp/x'\\''y'",
+            AutoModeVerification.allExistCommand(listOf("/tmp/x'y")),
+        )
+    }
+
+    // ── parser robustness ──────────────────────────────────────────────────
+
+    @Test
+    fun `crlf line endings parse identically`() {
+        val c = AutoModeVerification.parse(
+            "done\r\nVERIFY:\r\nfiles: /a.kt\r\ncmd: ls\r\n",
+        )
+        assertNotNull(c)
+        assertEquals(listOf("/a.kt"), c!!.filesExist)
+        assertEquals("ls", c.command)
+    }
+
+    @Test
+    fun `block ends at first unknown line`() {
+        val c = AutoModeVerification.parse(
+            "VERIFY:\nfiles: /a.kt\nА тут обычный текст после блока\nabsent: /ignored.kt",
+        )
+        // Keys after the unknown line are NOT part of the block.
+        assertNotNull(c)
+        assertEquals(listOf("/a.kt"), c!!.filesExist)
+        assertTrue(c.filesAbsent.isEmpty())
+    }
+
+    @Test
+    fun `case-insensitive verify marker`() {
+        assertNotNull(AutoModeVerification.parse("verify:\ncmd: true"))
+    }
 }

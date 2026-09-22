@@ -60,6 +60,9 @@ object AgentAutoMode {
      * Gate evaluated after each successful turn.
      * [contextFull] pauses the loop while compaction catches up (the send
      * queue already parks messages during a compact — same machinery).
+     *
+     * NOTE: kept as the documented contract mirror; the live gate is
+     * maybeAutoContinue() (VM), which composes this with verification.
      */
     fun shouldContinue(
         armed: Boolean,
@@ -72,13 +75,17 @@ object AgentAutoMode {
         !contextFull
 
     /**
-     * The continuation prompt — the whole behavioural contract of the loop,
-     * refreshed every turn so long runs never drift from it. The VERIFY
-     * block is the machine half of completion: the engine executes the
-     * criteria itself (see [AutoModeVerification]) — TASK_COMPLETE counts
-     * only when they pass.
+     * The continuation prompt. Token economics matter on long runs: the FULL
+     * contract (~1.5 KB) goes out on continuation 1 and stays in history;
+     * later turns get the SHORT reminder (~0.3 KB) that carries every rule
+     * keyword (VERIFY, чекпоинт, TASK_COMPLETE-только-после-проверки) — 500
+     * continuations would otherwise re-send ~750 KB of duplicated prompt
+     * text, forcing extra compactions mid-run.
      */
-    fun continuationPrompt(turn: Int): String = buildString {
+    fun continuationPrompt(turn: Int): String =
+        if (turn == 1) fullContinuationPrompt(turn) else shortContinuationPrompt(turn)
+
+    private fun fullContinuationPrompt(turn: Int): String = buildString {
         appendLine("⟳ Авто-режим · продолжение $turn из $MAX_AUTO_TURNS")
         appendLine()
         appendLine("Продолжай выполнять план — автономно, до ПОЛНОГО и наилучшего завершения. Правила:")
@@ -97,6 +104,15 @@ object AgentAutoMode {
         appendLine("6. Если VERIFY провалился — исправь причину и добейся прохождения; после ${AutoModeVerification.MAX_FAILS} провалов подряд движок потребует смены стратегии.")
         appendLine("7. Если упёрся в блокер, который сам обойти не можешь — опиши его, зафиксируй в памяти и продолжай доступную часть плана.")
     }
+
+    /** Every rule keyword of the full contract, ~1/5 the tokens. */
+    private fun shortContinuationPrompt(turn: Int): String =
+        "⟳ Авто-режим · продолжение $turn из $MAX_AUTO_TURNS — правила прежние " +
+            "(полный контракт в первом продолжении): работай по плану до " +
+            "наилучшего завершения; чекпоинт (память+git) каждые $CHECKPOINT_EVERY_TURNS; " +
+            "рабочий ход заканчивай VERIFY-блоком (files/absent/cmd — движок проверит сам); " +
+            "TASK_COMPLETE только после прохождения проверки, последней строкой; " +
+            "не спрашивай, решай сам."
 
     /**
      * The replan prompt: forced strategy change after [AutoModeVerification.MAX_FAILS]

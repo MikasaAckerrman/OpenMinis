@@ -94,9 +94,9 @@ class AgentAutoModeTest {
     // ── the prompt ─────────────────────────────────────────────────────────
 
     @Test
-    fun `continuation prompt carries the full contract`() {
-        val p = AgentAutoMode.continuationPrompt(3)
-        assertTrue(p.contains("3"))
+    fun `continuation 1 carries the full contract`() {
+        val p = AgentAutoMode.continuationPrompt(1)
+        assertTrue(p.contains("1"))
         assertTrue(p.contains(AgentAutoMode.SENTINEL))
         assertTrue(p.contains("чекпоинт"))
         assertTrue(p.contains("наилучш"))
@@ -104,6 +104,21 @@ class AgentAutoModeTest {
         // with a VERIFY block the engine executes itself.
         assertTrue(p.contains("VERIFY:"))
         assertTrue(p.contains("менеджер проверяет"))
+    }
+
+    @Test
+    fun `later continuations use the short prompt - token economics`() {
+        val full = AgentAutoMode.continuationPrompt(1)
+        val short = AgentAutoMode.continuationPrompt(2)
+        // Every rule keyword survives the compression…
+        assertTrue(short.contains(AgentAutoMode.SENTINEL))
+        assertTrue(short.contains("VERIFY"))
+        assertTrue(short.contains("чекпоинт"))
+        assertTrue(short.contains("наилучш"))
+        assertTrue(short.contains("2"))
+        // …at a fraction of the size (500 turns would otherwise re-send
+        // ~750 KB of duplicated contract text).
+        assertTrue(short.length < full.length / 3)
     }
 
     @Test

@@ -1586,8 +1586,16 @@ class ChatViewModel(
         val criteria = com.openminis.app.agent.AutoModeVerification.parse(last.content)
         val claimedComplete = com.openminis.app.agent.AgentAutoMode.isPlanComplete(last.content)
         if (criteria != null) {
-            val report = runAutoModeVerification(criteria)
-            if (!report.passed) {
+            // Crash-proof: the verifier failing (PRoot boot died, shell gone)
+            // must not put an error banner over work that already landed —
+            // degrade to legacy trust for this turn and say so in the log.
+            val report = runCatching { runAutoModeVerification(criteria) }.getOrNull()
+            if (report == null) {
+                AppLogger.warning(
+                    TAG_STREAM,
+                    "[AutoMode] verifier unavailable — degrading to legacy trust for this turn",
+                )
+            } else if (!report.passed) {
                 val failNote = if (claimedComplete) {
                     "TASK_COMPLETE отклонён: машинная проверка не прошла — план НЕ завершён."
                 } else {
@@ -1596,9 +1604,10 @@ class ChatViewModel(
                 AppLogger.info(TAG_STREAM, "[AutoMode] verification failed: ${report.failures.size} check(s)")
                 handleAutoModeVerificationFailure(failNote, report.failures)
                 return
+            } else {
+                // Passed: a TASK_COMPLETE claim is now credible.
+                autoModeVerifyFails = 0
             }
-            // Passed: a TASK_COMPLETE claim is now credible.
-            autoModeVerifyFails = 0
         }
 
         if (claimedComplete) {
@@ -1695,23 +1704,55 @@ class ChatViewModel(
      * gated by the same DestructiveCommandPolicy as the shell tool — a
      * verify line is model-authored text, it gets no trust discount.
      */
+    /**
+     * [T-auto-mode-verify] Execute the criteria in the session's own sandbox
+     * shell — same filesystem, same cwd as the agent's work, so paths the
+     * model verified against are verified by the engine identically.
+     *
+     * Optimization: file probes run as ONE composite `test` chain first
+     * (single session-mutex acquisition, single PRoot round-trip); the
+     * per-path commands run only when the composite fails, to name the
+     * culprit. The command: 300s, gated by the same
+     * DestructiveCommandPolicy as the shell tool — a verify line is
+     * model-authored text, it gets no trust discount.
+     *
+     * Crash-proof: the verifier itself must never kill a SUCCESSFUL turn —
+     * a PRoot boot failure degrades to legacy trust with a loud log rather
+     * than an error banner over work that already landed.
+     */
     private suspend fun runAutoModeVerification(
         criteria: com.openminis.app.agent.AutoModeVerification.Criteria,
     ): com.openminis.app.agent.AutoModeVerification.Report {
         val failures = mutableListOf<String>()
         val sid = activeSessionId.ifEmpty { sessionId }
-        for (path in criteria.filesExist) {
-            val r = com.openminis.app.sandbox.ExecutionCoordinator.execute(
-                sid, com.openminis.app.agent.AutoModeVerification.existsCommand(path), 30_000L,
-            )
-            if (r.exitCode != 0) failures.add("файл не существует: $path")
+        val V = com.openminis.app.agent.AutoModeVerification
+
+        // Fast path: one composite probe for the whole file set.
+        val probes = buildList {
+            if (criteria.filesExist.isNotEmpty()) add(V.allExistCommand(criteria.filesExist))
+            if (criteria.filesAbsent.isNotEmpty()) add(V.noneExistCommand(criteria.filesAbsent))
         }
-        for (path in criteria.filesAbsent) {
-            val r = com.openminis.app.sandbox.ExecutionCoordinator.execute(
-                sid, com.openminis.app.agent.AutoModeVerification.notExistsCommand(path), 30_000L,
+        if (probes.isNotEmpty()) {
+            val fast = com.openminis.app.sandbox.ExecutionCoordinator.execute(
+                sid, probes.joinToString(" && "), 30_000L,
             )
-            if (r.exitCode != 0) failures.add("файл всё ещё существует: $path")
+            if (fast.exitCode != 0) {
+                // Slow path: name the exact culprit(s).
+                for (path in criteria.filesExist) {
+                    val r = com.openminis.app.sandbox.ExecutionCoordinator.execute(
+                        sid, V.existsCommand(path), 30_000L,
+                    )
+                    if (r.exitCode != 0) failures.add("файл не существует: $path")
+                }
+                for (path in criteria.filesAbsent) {
+                    val r = com.openminis.app.sandbox.ExecutionCoordinator.execute(
+                        sid, V.notExistsCommand(path), 30_000L,
+                    )
+                    if (r.exitCode != 0) failures.add("файл всё ещё существует: $path")
+                }
+            }
         }
+
         val cmd = criteria.command
         if (cmd != null) {
             when (com.openminis.app.sandbox.DestructiveCommandPolicy.classify(cmd).verdict) {

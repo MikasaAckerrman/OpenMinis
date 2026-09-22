@@ -102,6 +102,17 @@ object AutoModeVerification {
     /** Single-path absence probe. */
     fun notExistsCommand(path: String): String = "! test -e ${shellQuote(path)}"
 
+    /**
+     * Batch probes: ONE shell command (one session-mutex acquisition, one
+     * PRoot round-trip) for the whole list — the fast path. `test` is a
+     * shell builtin, so long lists are not bounded by exec ARG_MAX either.
+     */
+    fun allExistCommand(paths: List<String>): String =
+        paths.joinToString(" && ") { "test -e ${shellQuote(it)}" }
+
+    fun noneExistCommand(paths: List<String>): String =
+        paths.joinToString(" && ") { "! test -e ${shellQuote(it)}" }
+
     /** Failure report for the next continuation / replan prompt. */
     fun failureReport(failures: List<String>): String =
         if (failures.isEmpty()) "verification passed" else
