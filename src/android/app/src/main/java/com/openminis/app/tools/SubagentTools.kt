@@ -2,6 +2,7 @@ package com.openminis.app.tools
 
 import com.openminis.app.data.model.AgentToolDefinition
 import com.openminis.app.data.model.AgentToolParam
+import com.openminis.app.offload.SubagentRoles
 
 /**
  * [T-spawn-subagent] Runtime subagent spawning — Claude Code + OpenAI Agents SDK pattern.
