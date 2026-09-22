@@ -56,15 +56,15 @@ import com.openminis.app.logging.AppLogger
  * background thread; only invalidate() touches the UI thread.
  */
 object SessionOverlayPalette {
-    const val CAPSULE_BG = 0xDD1A1D33.toInt()          // was 0xEE0E0F12: dark indigo glass
-    const val CAPSULE_BORDER = 0xFF4A6FD6.toInt()      // was 0xFF25272D: bright blue border
-    const val COUNT_BG = 0xFF111426.toInt()
-    const val COUNT_BORDER = 0xFF5E7FE5.toInt()
-    const val FLOW_BG = 0xFF12162E.toInt()             // was 0xFF0D0E12
-    const val FLOW_BORDER = 0xFF4A6FD6.toInt()         // bright blue
-    val WAVE_CORE = Color.parseColor("#8BB3FF")
-    val WAVE_LIGHT = Color.parseColor("#C2D8FF")
-    val WAVE_DIM = Color.argb(140, 80, 140, 255)       // was a=38
+    const val CAPSULE_BG = 0xDC161A26.toInt()          // tuned indigo glass (was 0xEE0E0F12)
+    const val CAPSULE_BORDER = 0xB34B6EDC.toInt()      // soft blue glow border (was 0xFF25272D)
+    const val COUNT_BG = 0xFF111423.toInt()
+    const val COUNT_BORDER = 0xFF5A78E6.toInt()
+    const val FLOW_BG = 0xDC121524.toInt()             // tuned to match capsule
+    const val FLOW_BORDER = 0xB34B6EDC.toInt()
+    val WAVE_CORE = Color.parseColor("#82AAFF")
+    val WAVE_LIGHT = Color.parseColor("#AACCFF")
+    val WAVE_DIM = Color.argb(100, 70, 120, 220)
     const val SPARK = 0xFF93B8FF.toInt()
     const val METRIC_LABEL = 0xFF7D838E.toInt()
     const val METRIC_VALUE = 0xFFADB3BF.toInt()
@@ -123,7 +123,10 @@ class SessionCapsuleView(
     private var lastRawX = 0f
     private var lastRawY = 0f
     private var dragDistance = 0f
-    private val touchSlopPx = 12
+    private val touchSlopPx = dp(24f)
+    private val tapSlopPx = dp(32f)
+    private val tapTimeoutMs = 350L
+    private var downTimeMs = 0L
 
     // [T-overlay-v3-landscape-morph] 0f = full capsule (portrait), 1f =
     // full circle (landscape). The window animates the LayoutParams size
@@ -455,6 +458,7 @@ class SessionCapsuleView(
                 lastRawX = event.rawX
                 lastRawY = event.rawY
                 dragDistance = 0f
+                downTimeMs = SystemClock.elapsedRealtime()
                 // [T-overlay-v3-hold-open] begin the 3s hold (canceled on
                 // move past slop / up / cancel).
                 startHold()
@@ -482,13 +486,23 @@ class SessionCapsuleView(
                 val inside = isInside(event.x, event.y)
                 pressed = false
                 val wasHolding = holdAnimator != null
+                // [T-overlay-v3-tap] A tap is a short press with very little
+                // movement. `touchSlopPx` (24 dp) gates drag start, but a
+                // deliberate finger can wobble up to 32 dp and still be a
+                // tap if the gesture was quick (<350 ms). This fixes the
+                // "tap moves the capsule down" bug caused by the old 12 px
+                // slop on high-dpi screens.
+                val duration = SystemClock.elapsedRealtime() - downTimeMs
+                val isTap = !wasHolding &&
+                    inside &&
+                    dragDistance <= tapSlopPx &&
+                    duration < tapTimeoutMs
                 val dragged = dragDistance > touchSlopPx
                 cancelHold()
                 postInvalidateOnAnimation()
                 // [T-overlay-v3-prefs-spam] one positional save per gesture.
                 if (dragged) onDragEnded?.invoke()
-                // Short tap (no drag, no completed hold): toggle-close only.
-                if (inside && !dragged && !wasHolding) onCapsuleTap()
+                if (isTap) onCapsuleTap()
                 return true
             }
             MotionEvent.ACTION_CANCEL -> {
