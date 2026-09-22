@@ -2,7 +2,6 @@ package com.openminis.app.service
 
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
-import android.animation.PropertyValuesHolder
 import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.BlurMaskFilter
@@ -246,6 +245,12 @@ class SessionCapsuleView(
         sessionCount = count
         anyLive = live
         metrics = m
+        // [T-overlay-v3-perf] text is drawn EVERY frame; format it here, once
+        // per sampler tick, instead of 4 String.format per frame in onDraw.
+        countText = count.coerceAtMost(99).toString()
+        CACHED_VALUE_TEXTS = arrayOf(
+            formatRate(m.rxKbPerSec), m.cpuPercent.toString(), m.ramMb.toString(),
+        )
         postInvalidateOnAnimation()
     }
 
@@ -259,7 +264,21 @@ class SessionCapsuleView(
         duration = 1000L
         repeatCount = ValueAnimator.INFINITE
         interpolator = null // linear; per-wave phase does the easing
-        addUpdateListener { postInvalidateOnAnimation() }
+        addUpdateListener {
+            // [T-overlay-v3-perf] Idle throttle: with no live sessions, no
+            // drag trail and no gesture, the only motion is the deliberately
+            // slow waiting waves — half the frame rate is visually identical
+            // and halves the overlay's idle cost on battery.
+            frameTick++
+            val idle = !anyLive &&
+                trailSpots.isEmpty() &&
+                holdProgress <= 0f &&
+                birthProgress < 0f &&
+                jellyProgress < 0f &&
+                fillProgress <= 0.01f
+            if (idle && frameTick % 2 == 1) return@addUpdateListener
+            postInvalidateOnAnimation()
+        }
     }
 
     private var pressAnimator: ValueAnimator? = null
@@ -297,11 +316,24 @@ class SessionCapsuleView(
         a.start()
     }
 
-    /** Tender: 300 ms jelly — bulge → bounce → collapse to a point. */
+    /**
+     * Tender: 300 ms jelly — bulge → bounce → collapse to a point.
+     *
+     * [T-overlay-v3-jelly-smooth] The keyframes used to be joined by LINEAR
+     * segments: at every breakpoint the velocity flips instantly (e.g. +10%
+     * → −8% in one frame), which reads as a jerk, exactly the "дерганое
+     * закрытие" report. Each segment is now cosine-eased — velocity ramps to
+     * zero at every key, so the squash reads as deliberate jelly POSES
+     * (bulge / rebound / collapse) instead of direction flips.
+     */
     fun playJelly(onDone: () -> Unit) {
         stopDismissAnimators()
+        // [T-overlay-v3-perf] Freeze the ambient animation during the exit:
+        // the waves/sparks are invisible under the collapse+fade, and the
+        // frame budget they burn is what made the 300 ms stretch into
+        // visible stutter on a loaded phone. The view detaches at the end.
+        stopFrameDriver()
         jellyProgress = 0f
-        val scaleX = PropertyValuesHolder.ofFloat("sx", 1f)
         val a = ValueAnimator.ofFloat(0f, 1f).apply {
             duration = 300
             addUpdateListener { anim ->
@@ -310,12 +342,33 @@ class SessionCapsuleView(
             }
             addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) {
-                    jellyProgress = -1f
+                    // [T-overlay-flash] HOLD the collapsed, fully-faded pose
+                    // (jellyProgress = 1 → scale .05, alpha 0) until the view
+                    // is actually detached. Resetting to -1 here let the
+                    // still-attached view draw ONE more frame with no
+                    // choreography — full size, full alpha — before the
+                    // posted removeView landed: the capsule "briefly
+                    // reappears and then disappears". The pose resets in
+                    // stopDismissAnimators / onDetachedFromWindow.
+                    jellyProgress = 1f
+                    postInvalidateOnAnimation()
                     onDone()
+                }
+
+                override fun onAnimationCancel(animation: Animator) {
+                    // A canceled jelly must not leave the frozen pose behind
+                    // if the view stays attached — back to ambient state.
+                    if (jellyProgress != 1f) jellyProgress = -1f
                 }
             })
         }
         a.start()
+    }
+
+    /** Cosine ease inside a keyframe segment — C1-smooth at both ends. */
+    private fun smoothSeg(a: Float, b: Float, t: Float): Float {
+        val s = (1f - kotlin.math.cos(Math.PI.toFloat() * t)) / 2f
+        return a + (b - a) * s
     }
 
     private fun stopDismissAnimators() {
@@ -374,9 +427,15 @@ class SessionCapsuleView(
         strokeWidth = 1f
         color = SessionOverlayPalette.FLOW_BORDER
     }
-    private val wavePaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val wavePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        // [T-overlay-v3-perf] the wave glow shadow: CONSTANT config — set
+        // once here. Setting it per wave per frame was pure config churn on
+        // the hot path (the alpha still modulates per frame via paint.alpha).
+        setShadowLayer(4f * resources.displayMetrics.density, 0f, 0f, Color.argb(140, 107, 154, 238))
+    }
     private val sparkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = SessionOverlayPalette.SPARK
+        setShadowLayer(3f * resources.displayMetrics.density, 0f, 0f, Color.argb(240, 147, 184, 255))
     }
     private val metricLabelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = SessionOverlayPalette.METRIC_LABEL
@@ -397,6 +456,16 @@ class SessionCapsuleView(
         color = SessionOverlayPalette.METRIC_LABEL
         textAlign = Paint.Align.CENTER
     }
+    // [T-overlay-v3-perf] glow variant for the circle's count number — the
+    // shadow layer is set ONCE here; toggling it per frame (setShadowLayer +
+    // clearShadowLayer) was pure config churn in the hot path.
+    private val countTextGlowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = SessionOverlayPalette.TEXT_PRIMARY
+        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        textAlign = Paint.Align.CENTER
+        setShadowLayer(dp3(), 0f, 0f, SessionOverlayPalette.ACCENT and 0x66FFFFFF)
+    }
+    private fun dp3(): Float = 3f * resources.displayMetrics.density
 
     // ------------------------------------------------------------------ press
     private var pressed = false
@@ -588,18 +657,19 @@ class SessionCapsuleView(
             alpha = p
         } else if (jellyProgress in 0f..1f) {
             val p = jellyProgress
-            // 22%: (1.10, .88) | 48%: (.92, 1.08) | 70%: (.6,.68) | 100%: (.05,.07)
+            // [T-overlay-v3-jelly-smooth] cosine-eased keyframes: bulge →
+            // rebound → collapse → point (see playJelly).
             sx = when {
-                p < 0.22f -> lerp(1f, 1.10f, p / 0.22f)
-                p < 0.48f -> lerp(1.10f, 0.92f, (p - 0.22f) / 0.26f)
-                p < 0.70f -> lerp(0.92f, 0.60f, (p - 0.48f) / 0.22f)
-                else -> lerp(0.60f, 0.05f, (p - 0.70f) / 0.30f)
+                p < 0.22f -> smoothSeg(1f, 1.10f, p / 0.22f)
+                p < 0.48f -> smoothSeg(1.10f, 0.92f, (p - 0.22f) / 0.26f)
+                p < 0.70f -> smoothSeg(0.92f, 0.60f, (p - 0.48f) / 0.22f)
+                else -> smoothSeg(0.60f, 0.05f, (p - 0.70f) / 0.30f)
             }
             sy = when {
-                p < 0.22f -> lerp(1f, 0.88f, p / 0.22f)
-                p < 0.48f -> lerp(0.88f, 1.08f, (p - 0.22f) / 0.26f)
-                p < 0.70f -> lerp(1.08f, 0.68f, (p - 0.48f) / 0.22f)
-                else -> lerp(0.68f, 0.07f, (p - 0.70f) / 0.30f)
+                p < 0.22f -> smoothSeg(1f, 0.88f, p / 0.22f)
+                p < 0.48f -> smoothSeg(0.88f, 1.08f, (p - 0.22f) / 0.26f)
+                p < 0.70f -> smoothSeg(1.08f, 0.68f, (p - 0.48f) / 0.22f)
+                else -> smoothSeg(0.68f, 0.07f, (p - 0.70f) / 0.30f)
             }
             alpha = if (p < 0.70f) lerp(1f, 0.9f, p / 0.70f) else lerp(0.9f, 0f, (p - 0.70f) / 0.30f)
         } else if (pressed) {
@@ -632,15 +702,22 @@ class SessionCapsuleView(
         canvas.drawRoundRect(contentRect, r, r, borderPaint)
         // [T-overlay-v3-press-fill] soft radial fill blooming from the
         // touch point — no outlines, just light filling the body.
+        // [T-overlay-v3-perf] the gradient is created ONCE per gesture
+        // (fillX/fillY/r are fixed for the whole 320 ms), not per frame;
+        // only the paint alpha animates.
         if (fillProgress > 0.01f) {
             val fr = maxOf(w, h) * 1.2f
-            fillPaint.shader = android.graphics.RadialGradient(
-                fillX, fillY, fr,
-                (fillProgress * 36).toInt().coerceIn(0, 36).shl(24) or
-                    (SessionOverlayPalette.ACCENT and 0xFFFFFF),
-                SessionOverlayPalette.ACCENT and 0x00FFFFFF,
-                android.graphics.Shader.TileMode.CLAMP,
-            )
+            if (fillShader == null || fillR != fr) {
+                fillShader = android.graphics.RadialGradient(
+                    fillX, fillY, fr,
+                    36 shl(24) or (SessionOverlayPalette.ACCENT and 0xFFFFFF),
+                    SessionOverlayPalette.ACCENT and 0x00FFFFFF,
+                    android.graphics.Shader.TileMode.CLAMP,
+                )
+                fillR = fr
+            }
+            fillPaint.shader = fillShader
+            fillPaint.alpha = (fillProgress * 36).toInt().coerceIn(0, 36)
             canvas.drawRoundRect(bodyRect, r, r, fillPaint)
         }
 
@@ -649,7 +726,15 @@ class SessionCapsuleView(
         if (m > 0.02f) drawCircleContent(canvas, w, h, alpha * m)
         if (m < 0.98f) {
             val capAlpha = alpha * (1f - m)
-            drawCapsuleContent(canvas, w, h, capAlpha)
+            // [T-overlay-v3-jelly-smooth] under the jelly collapse the waves
+            // and metrics are 90% of the remaining draw cost and invisible
+            // at that scale/alpha — skip them and spend the frames on the
+            // squash itself.
+            if (jellyProgress <= 0.4f || jellyProgress < 0f) {
+                drawCapsuleContent(canvas, w, h, capAlpha)
+            } else {
+                drawCapsuleShell(canvas, w, h, capAlpha)
+            }
         }
         canvas.restoreToCount(saveCount)
 
@@ -682,13 +767,118 @@ class SessionCapsuleView(
     private var lastSlowDrawLogMs = 0L
     private var lastSlowDrawMarkMs = 0L
 
+    // ─── [T-overlay-v3-perf] allocation-free hot paths ──────────────────────
+    //
+    // Measured garbage before this block (at 60–120 fps while attached):
+    //   drawWaves    → 4 LinearGradient + 4 setShadowLayer PER FRAME
+    //   drawTrail    → up to 10 RadialGradient PER FRAME while dragging
+    //   drawCircle   → 1 RadialGradient + set/clearShadowLayer PER FRAME
+    //   press fill   → 1 RadialGradient PER FRAME for 320 ms
+    //   drawMetrics  → listOf(Triple×3) + 4 String.format PER FRAME
+    // ≈ up to ~2000 shader//string allocations per second of live overlay →
+    // GC pauses = the "window freezes under load" the user reported.
+    // Fix: shaders are immutable and geometry-independent — create each ONCE
+    // (unit/local coordinates), reuse it every frame, and move/resize via the
+    // shader's local matrix. Strings cache on update(), not per frame.
+
+    /** One gradient per wave, in WAVE-LOCAL coordinates (0..waveW). */
+    private var waveShaders: Array<LinearGradient?>? = null
+    private var waveShaderW = -1f
+    private val shaderMatrix = android.graphics.Matrix()
+
+    /** Unit-radius trail gradient, shared by every spot (matrix per spot). */
+    private val trailShader = android.graphics.RadialGradient(
+        0f, 0f, 1f,
+        SessionOverlayPalette.ACCENT and 0xFFFFFF,
+        SessionOverlayPalette.ACCENT and 0x00FFFFFF,
+        android.graphics.Shader.TileMode.CLAMP,
+    )
+
+    /** Breathing-core gradient in unit radius; scaled to coreR per frame. */
+    private var coreShader: android.graphics.RadialGradient? = null
+    private var coreCx = -1f
+    private var coreCy = -1f
+
+    /** Press-fill gradient — fillX/fillY are fixed for the whole gesture. */
+    private var fillShader: android.graphics.RadialGradient? = null
+    private var fillR = -1f
+
+    /** Text rendered every frame — formatted only when metrics change. */
+    private var countText = "0"
+
+    /** Idle frame skip (see frameDriver). */
+    private var frameTick = 0
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        // Geometry changed → cached shaders are stale.
+        waveShaders = null
+        waveShaderW = -1f
+        coreShader = null
+        coreCx = -1f
+        coreCy = -1f
+        fillShader = null
+        fillR = -1f
+    }
+
+    /** [T-overlay-v3-perf] Wave gradient for [i], created once per width. */
+    private fun waveShader(i: Int, waveW: Float): LinearGradient? {
+        var cache = waveShaders
+        if (cache == null || waveShaderW != waveW) {
+            cache = arrayOfNulls(WAVES.size)
+            waveShaders = cache
+            waveShaderW = waveW
+        }
+        cache[i]?.let { return it }
+        val created = LinearGradient(
+            0f, 0f, waveW, 0f,
+            intArrayOf(
+                Color.TRANSPARENT,
+                SessionOverlayPalette.WAVE_DIM,
+                SessionOverlayPalette.WAVE_CORE,
+                SessionOverlayPalette.WAVE_LIGHT,
+                SessionOverlayPalette.WAVE_DIM,
+                Color.TRANSPARENT,
+            ),
+            floatArrayOf(0f, 0.2f, 0.48f, 0.54f, 0.82f, 1f),
+            Shader.TileMode.CLAMP,
+        )
+        cache[i] = created
+        return created
+    }
+
     /** Capsule-mode content: badge + flow + metrics (fade out on morph). */
     private fun drawCapsuleContent(canvas: Canvas, w: Float, h: Float, alpha: Float) {
         if (alpha <= 0.02f) return
         // [T-overlay-v3-trail] capsule content draws over the BODY rect.
         canvas.clipRect(bodyRect)
+        drawCapsuleShell(canvas, w, h, alpha)
 
-        // ---- count badge ----
+        // ---- flow zone with waves ----
+        val countW = dp(COUNT_W_DP)
+        val countX = dp(10f)
+        val flowX = countX + countW + dp(10f)
+        val metricsW = dp(METRICS_W_DP)
+        val flowW = w - flowX - metricsW - dp(12f)
+        val flowY = (h - dp(FLOW_H_DP)) / 2f
+        tmpRect.set(flowX, flowY, flowX + flowW, flowY + dp(FLOW_H_DP))
+        val fr = dp(7f)
+        canvas.drawRoundRect(tmpRect, fr, fr, flowBgPaint)
+        canvas.drawRoundRect(tmpRect, fr, fr, flowBorderPaint)
+
+        drawWaves(canvas, flowX, flowY, flowW, alpha)
+
+        // ---- metrics column ----
+        drawMetrics(canvas, w, h, alpha)
+    }
+
+    /**
+     * [T-overlay-v3-jelly-smooth] Glass + badge only — the part of the
+     * capsule that stays visible while the jelly collapse swallows it.
+     * Same badge/ring/number code as the full content, minus waves+metrics.
+     */
+    private fun drawCapsuleShell(canvas: Canvas, w: Float, h: Float, alpha: Float) {
+        if (alpha <= 0.02f) return
         val countW = dp(COUNT_W_DP)
         val countH = dp(COUNT_H_DP)
         val countX = dp(10f)
@@ -718,27 +908,7 @@ class SessionCapsuleView(
         countTextPaint.textSize = dp(17f)
         countTextPaint.alpha = (alpha * 255).toInt()
         val textY = countY + countH / 2f - (countTextPaint.descent() + countTextPaint.ascent()) / 2f
-        canvas.drawText(
-            sessionCount.coerceAtMost(99).toString(),
-            countX + countW / 2f,
-            textY,
-            countTextPaint,
-        )
-
-        // ---- flow zone with waves ----
-        val flowX = countX + countW + dp(10f)
-        val metricsW = dp(METRICS_W_DP)
-        val flowW = w - flowX - metricsW - dp(12f)
-        val flowY = (h - dp(FLOW_H_DP)) / 2f
-        tmpRect.set(flowX, flowY, flowX + flowW, flowY + dp(FLOW_H_DP))
-        val fr = dp(7f)
-        canvas.drawRoundRect(tmpRect, fr, fr, flowBgPaint)
-        canvas.drawRoundRect(tmpRect, fr, fr, flowBorderPaint)
-
-        drawWaves(canvas, flowX, flowY, flowW, alpha)
-
-        // ---- metrics column ----
-        drawMetrics(canvas, w, h, alpha)
+        canvas.drawText(countText, countX + countW / 2f, textY, countTextPaint)
     }
 
     /**
@@ -769,16 +939,29 @@ class SessionCapsuleView(
         }
 
         // ---- breathing core ----
+        // [T-overlay-v3-perf] gradient created once per size (unit radius at
+        // the FIXED center), reused every frame: the pulse is a pivot-scaled
+        // local matrix (radius) + paint alpha. Zero allocations per frame.
         val corePhase = (now % 1800L) / 1800f
         val coreR = base * lerp(0.17f, 0.26f, 0.5f + 0.5f * Math.sin(corePhase * Math.PI * 2.0).toFloat())
         val coreA = (0.55f + 0.25f * Math.sin(corePhase * Math.PI * 2.0).toFloat()) * alpha
-        corePaint.shader = android.graphics.RadialGradient(
-            cx, cy, coreR,
-            (coreA * 255).toInt().coerceIn(0, 255).shl(24) or (SessionOverlayPalette.ACCENT_BRIGHT and 0xFFFFFF),
-            SessionOverlayPalette.ACCENT and 0x00FFFFFF,
-            android.graphics.Shader.TileMode.CLAMP,
-        )
-        canvas.drawCircle(cx, cy, coreR, corePaint)
+        if (coreA > 0.02f) {
+            if (coreShader == null || coreCx != cx || coreCy != cy) {
+                coreShader = android.graphics.RadialGradient(
+                    cx, cy, 1f,
+                    (SessionOverlayPalette.ACCENT_BRIGHT and 0xFFFFFF) or 0xFF000000.toInt(),
+                    SessionOverlayPalette.ACCENT and 0x00FFFFFF,
+                    android.graphics.Shader.TileMode.CLAMP,
+                )
+                coreCx = cx
+                coreCy = cy
+            }
+            corePaint.shader = coreShader
+            corePaint.alpha = (coreA * 255).toInt().coerceIn(0, 255)
+            shaderMatrix.setScale(coreR, coreR, cx, cy)
+            coreShader!!.setLocalMatrix(shaderMatrix)
+            canvas.drawCircle(cx, cy, coreR, corePaint)
+        }
 
         // ---- three orbital sparks (different speeds & tilts) ----
         val orbits = floatArrayOf(0.62f, 0.80f, 0.95f)
@@ -797,12 +980,12 @@ class SessionCapsuleView(
         }
 
         // ---- count number on top ----
-        countTextPaint.textSize = dp(22f)
-        countTextPaint.alpha = (alpha * 255).toInt()
-        countTextPaint.setShadowLayer(dp(3f), 0f, 0f, SessionOverlayPalette.ACCENT and 0x66FFFFFF)
-        val ty = cy - (countTextPaint.descent() + countTextPaint.ascent()) / 2f
-        canvas.drawText(sessionCount.coerceAtMost(99).toString(), cx, ty, countTextPaint)
-        countTextPaint.clearShadowLayer()
+        // [T-overlay-v3-perf] dedicated glow paint (shadow configured once),
+        // cached text — no setShadowLayer/clearShadowLayer per frame.
+        countTextGlowPaint.textSize = dp(22f)
+        countTextGlowPaint.alpha = (alpha * 255).toInt()
+        val ty = cy - (countTextGlowPaint.descent() + countTextGlowPaint.ascent()) / 2f
+        canvas.drawText(countText, cx, ty, countTextGlowPaint)
 
         // ---- [T-overlay-v3-hold-open] 3s hold progress ring around the rim ----
         if (holdProgress > 0f) {
@@ -844,12 +1027,15 @@ class SessionCapsuleView(
             val a = (1f - life) * 0.16f * alpha
             if (a <= 0.01f) continue
             val r = dp(lerp(10f, 22f, life))
-            fogPaint.shader = android.graphics.RadialGradient(
-                spot.x, spot.y, r,
-                (a * 255).toInt().coerceIn(0, 60).shl(24) or (SessionOverlayPalette.ACCENT and 0xFFFFFF),
-                SessionOverlayPalette.ACCENT and 0x00FFFFFF,
-                android.graphics.Shader.TileMode.CLAMP,
-            )
+            // [T-overlay-v3-perf] one shared unit-radius gradient; each spot
+            // positions it via the local matrix (scale r, translate to the
+            // spot) instead of allocating its own RadialGradient per frame —
+            // a drag used to churn up to ~10 gradients × frame rate.
+            fogPaint.shader = trailShader
+            fogPaint.alpha = (a * 255).toInt().coerceIn(0, 60)
+            shaderMatrix.setScale(r, r)
+            shaderMatrix.postTranslate(spot.x, spot.y)
+            trailShader.setLocalMatrix(shaderMatrix)
             canvas.drawCircle(spot.x, spot.y, r, fogPaint)
         }
         // Keep animating while any spot is alive.
@@ -858,7 +1044,6 @@ class SessionCapsuleView(
 
     private fun drawWaves(canvas: Canvas, flowX: Float, flowY: Float, flowW: Float, alpha: Float) {
         val now = SystemClock.elapsedRealtime().toFloat()
-        val waveH = dp(2.5f)
         // clip to the flow zone (rounded)
         canvas.save()
         tmpPath.reset()
@@ -870,7 +1055,8 @@ class SessionCapsuleView(
         )
         canvas.clipPath(tmpPath)
 
-        for (spec in WAVES) {
+        for (i in WAVES.indices) {
+            val spec = WAVES[i]
             // [T-overlay-v3-eternal] Waiting sessions keep SLOW but clearly
             // visible waves (0.28 alpha was "a black platform" to the eye on
             // dark wallpapers — the user's video). Live = full speed.
@@ -887,23 +1073,16 @@ class SessionCapsuleView(
             val breatheAlpha = lerp(0.55f, 1f, breathe) * (if (anyLive) 1f else 0.90f)
             val thickness = dp(4.0f) * lerp(0.7f, 1.3f, breathe)
 
-            val gradient = LinearGradient(
-                left, 0f, left + waveW, 0f,
-                intArrayOf(
-                    Color.TRANSPARENT,
-                    SessionOverlayPalette.WAVE_DIM,
-                    SessionOverlayPalette.WAVE_CORE,
-                    SessionOverlayPalette.WAVE_LIGHT,
-                    SessionOverlayPalette.WAVE_DIM,
-                    Color.TRANSPARENT,
-                ),
-                floatArrayOf(0f, 0.2f, 0.48f, 0.54f, 0.82f, 1f),
-                Shader.TileMode.CLAMP,
-            )
-            wavePaint.shader = gradient
+            // [T-overlay-v3-perf] The gradient's colors/positions never
+            // change — only its x-position does. Create it ONCE per width
+            // (waveShader) and slide it with the local matrix: a LinearGradient
+            // per wave PER FRAME was ~4 allocations every 16 ms, the single
+            // largest GC churn in the overlay.
+            val shader = waveShader(i, waveW) ?: continue
+            wavePaint.shader = shader
+            shaderMatrix.setTranslate(left, 0f)
+            shader.setLocalMatrix(shaderMatrix)
             wavePaint.alpha = ((breatheAlpha * alpha) * 255).toInt().coerceIn(0, 255)
-            // glow: soft shadow layer in the same blue
-            wavePaint.setShadowLayer(dp(4f), 0f, 0f, Color.argb(140, 107, 154, 238))
             val y = flowY + dp(spec.topDp)
             tmpRect.set(left, y - thickness / 2f, left + waveW, y + thickness / 2f)
             canvas.drawRoundRect(tmpRect, thickness / 2f, thickness / 2f, wavePaint)
@@ -922,7 +1101,6 @@ class SessionCapsuleView(
                 else -> lerp(0.45f, 0f, (phase - 0.50f) / 0.12f).coerceAtLeast(0f)
             }
             sparkPaint.alpha = ((visAlpha * alpha) * 255).toInt().coerceIn(0, 255)
-            sparkPaint.setShadowLayer(dp(3f), 0f, 0f, Color.argb(240, 147, 184, 255))
             canvas.drawCircle(x, y, dp(1.5f), sparkPaint)
         }
         canvas.restore()
@@ -941,13 +1119,16 @@ class SessionCapsuleView(
         metricIconBgPaint.alpha = (alpha * 255).toInt()
         metricIconBorderPaint.alpha = (alpha * 255).toInt()
 
-        val rows = listOf(
-            Triple("↓", formatRate(metrics.rxKbPerSec), "МБ/с"),
-            Triple("C", "${metrics.cpuPercent}", "%"),
-            Triple("R", "${metrics.ramMb}", "МБ"),
-        )
-        for (i in rows.indices) {
-            val (icon, value, unit) = rows[i]
+        // [T-overlay-v3-perf] no per-frame list allocation, no per-frame
+        // String.format — the strings are cached by update() once per
+        // sampler tick; this runs every frame while the overlay is alive.
+        val icons = ICON_CHARS
+        val values = CACHED_VALUE_TEXTS
+        val units = UNIT_TEXTS
+        for (i in icons.indices) {
+            val icon = icons[i]
+            val value = values[i]
+            val unit = units[i]
             val cy = rowH * i + rowH / 2f
             // icon box
             val iconX = colRight - metricsW
@@ -971,6 +1152,15 @@ class SessionCapsuleView(
         }
     }
 
+    private companion object {
+        // [T-overlay-v3-perf] constant metric rows — allocated once.
+        val ICON_CHARS = charArrayOf('↓', 'C', 'R')
+        val UNIT_TEXTS = arrayOf("МБ/с", "%", "МБ")
+    }
+
+    /** Row values mirroring [metrics] — rebuilt by update(), read per frame. */
+    private var CACHED_VALUE_TEXTS = arrayOf("0.00", "0", "0")
+
     private fun lerp(a: Float, b: Float, t: Float): Float = a + (b - a) * t
 
     private fun formatRate(kbPerSec: Float): String {
@@ -982,6 +1172,12 @@ class SessionCapsuleView(
         stopFrameDriver()
         pressAnimator?.cancel()
         flashAnimator?.cancel()
+        // [T-overlay-flash] Clear the held dismiss pose with the view, not
+        // before it — a frozen jellyProgress=1 on a re-attached view would
+        // render the collapsed pose instead of the capsule.
+        jellyProgress = -1f
+        birthProgress = -1f
+        trailSpots.clear()
         super.onDetachedFromWindow()
     }
 }

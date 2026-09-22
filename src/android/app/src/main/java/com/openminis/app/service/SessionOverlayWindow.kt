@@ -693,23 +693,34 @@ class SessionOverlayWindow(
      * least 55% stays inside, so it can always be grabbed back. The
      * position is persisted (screen fractions) on every move.
      */
+    private var moveUpdateScheduled = false
+
     private fun moveCapsuleBy(dx: Float, dy: Float) {
         val view = capsule ?: return
         val params = capsuleParams ?: return
         params.x += dx.toInt()
         params.y += dy.toInt()
         clampCapsuleIntoReach(params)
-        try {
-            windowManager.updateViewLayout(view, params)
-        } catch (_: Exception) {
+        // [T-overlay-drag-perf] ONE updateViewLayout per frame. A drag
+        // delivers several ACTION_MOVE events per vsync and each used to do
+        // its own synchronous WindowManager binder round-trip on the UI
+        // thread — under load those queued IPCs are exactly the "window
+        // freezes while I drag it" feel. Accumulate into params, flush the
+        // layout once on the next animation frame.
+        if (moveUpdateScheduled) return
+        moveUpdateScheduled = true
+        view.postOnAnimation {
+            moveUpdateScheduled = false
+            val v = capsule ?: return@postOnAnimation
+            val p = capsuleParams ?: return@postOnAnimation
+            try {
+                windowManager.updateViewLayout(v, p)
+            } catch (_: Exception) {
+            }
+            // [T-overlay-v3-panel-anchor] the panel follows the orb while
+            // dragged ("they never moved" — the user's exact complaint).
+            if (panelOpen) repositionPanel()
         }
-        // [T-overlay-v3-prefs-spam] savePosition() used to run on EVERY
-        // move event (60/s SharedPreferences writes during a drag) — it
-        // now persists only once, when the gesture ends (see
-        // notifyDragEnded).
-        // [T-overlay-v3-panel-anchor] the panel follows the orb while
-        // dragged ("they never moved" — the user's exact complaint).
-        if (panelOpen) repositionPanel()
     }
 
     /** [T-overlay-v3-prefs-spam] One save per gesture, on release. */
@@ -894,9 +905,12 @@ class SessionOverlayWindow(
         // leaked a duplicate capsule: when a new session re-shows the window
         // mid-animation, `capsule` is already the NEW view — the guard
         // skipped the detach and the OLD view stayed attached forever.
-        view.playJelly {
-            mainHandler.post { detachView(view) }
-        }
+        // [T-overlay-flash] The callback fires on the UI thread from the
+        // animator's onAnimationEnd — detach DIRECTLY, in the same frame as
+        // the last jelly pose. The old mainHandler.post {} wrapper deferred
+        // the removeView by at least one frame, and that gap is exactly
+        // where a redraw could flash the view again.
+        view.playJelly { detachView(view) }
         // Safety: force-detach if jelly somehow never completes.
         mainHandler.postDelayed({ detachView(view) }, 450)
         capsuleAttached = false
