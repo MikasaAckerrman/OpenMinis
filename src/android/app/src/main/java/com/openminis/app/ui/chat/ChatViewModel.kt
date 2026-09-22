@@ -9089,7 +9089,12 @@ class ChatViewModel(
                             fallbackStrategy = activeFallbackStrategy,
                         )
                         AppLogger.info(TAG_STREAM, "retryLast runAgentLoop RETURN normal")
-                        drainQueuedPrompts(provider, systemPrompt, fallbackProviders, activeFallbackStrategy)
+                        // [T-auto-mode] A retry ends a turn too: an armed run
+                        // must survive a user-initiated retry, not stall.
+                        maybeAutoContinue()
+                        if (!autoModeCompactPending) {
+                            drainQueuedPrompts(provider, systemPrompt, fallbackProviders, activeFallbackStrategy)
+                        }
                         AppLogger.info(TAG_STREAM, "retryLast drainQueuedPrompts RETURN")
                     } catch (e: CancellationException) {
                         AppLogger.info(TAG_STREAM, "retryLast runAgentLoop CANCELLED")
@@ -9134,6 +9139,9 @@ class ChatViewModel(
                 if (streamJob === coroutineContext[Job]) {
                     AppLogger.info(TAG_STREAM, "retryLast _isStreaming=false (about to set)")
                     _isStreaming.value = false
+                    // [T-auto-mode] Symmetric with the send tail: a pending
+                    // compact fires once the stream is closed.
+                    autoModeCompactAndResume()
                 } else {
                     AppLogger.info(TAG_STREAM, "retryLast _isStreaming SKIPPED (stale job)")
                 }
