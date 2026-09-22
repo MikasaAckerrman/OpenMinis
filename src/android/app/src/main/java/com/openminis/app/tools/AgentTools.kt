@@ -108,20 +108,27 @@ object AgentTools {
             if (permitted("browser_use")) add(browserUseDefinition())
             // [T-spawn-subagent] Claude Code + OpenAI Agents SDK pattern:
             // the LLM can delegate subtasks to specialist agents at runtime.
-            if (permitted(com.openminis.app.tools.SubagentTools.SPAWN_TOOL_NAME)) {
-                add(com.openminis.app.tools.SubagentTools.spawnSubagentDefinition())
-            }
-            if (permitted(com.openminis.app.tools.SubagentTools.SPAWN_MANY_TOOL_NAME)) {
-                add(com.openminis.app.tools.SubagentTools.spawnManyDefinition())
-            }
-            if (permitted(com.openminis.app.tools.SubagentTools.LIST_AGENTS_TOOL_NAME)) {
-                add(com.openminis.app.tools.SubagentTools.listAgentsDefinition())
+            // [T-subagent-gate] User decision 23.09.2026: subagents are
+            // OPT-IN — the tools leave the schema entirely when the toggle
+            // is off (the model can't even attempt a spawn call), exactly
+            // like the memory gate above. turn_timer is NOT gated: it is a
+            // per-conversation budget tool, not the multi-agent machinery.
+            if (com.openminis.app.data.SubagentPrefs.isEnabled()) {
+                if (permitted(com.openminis.app.tools.SubagentTools.SPAWN_TOOL_NAME)) {
+                    add(com.openminis.app.tools.SubagentTools.spawnSubagentDefinition())
+                }
+                if (permitted(com.openminis.app.tools.SubagentTools.SPAWN_MANY_TOOL_NAME)) {
+                    add(com.openminis.app.tools.SubagentTools.spawnManyDefinition())
+                }
+                if (permitted(com.openminis.app.tools.SubagentTools.LIST_AGENTS_TOOL_NAME)) {
+                    add(com.openminis.app.tools.SubagentTools.listAgentsDefinition())
+                }
+                if (permitted(com.openminis.app.tools.SubagentTools.RUN_GRAPH_TOOL_NAME)) {
+                    add(com.openminis.app.tools.SubagentTools.runGraphDefinition())
+                }
             }
             if (permitted(com.openminis.app.tools.TurnTimerTool.NAME)) {
                 add(com.openminis.app.tools.TurnTimerTool.definition())
-            }
-            if (permitted(com.openminis.app.tools.SubagentTools.RUN_GRAPH_TOOL_NAME)) {
-                add(com.openminis.app.tools.SubagentTools.runGraphDefinition())
             }
             if (memoryEnabled) {
                 if (permitted("memory_write")) add(memoryWriteDefinition())

@@ -25,6 +25,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.BatteryFull
+import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.PlayCircle
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Layers
@@ -201,6 +202,26 @@ fun BackgroundSettingsScreen(onBack: () -> Unit) {
                 },
             )
             BgFooter(stringResource(R.string.settings_auto_mode_footer))
+
+            // [T-subagent-gate] Subagents are opt-in (user decision
+            // 23.09.2026): with the switch off, spawn/spawn_many/run_graph/
+            // list_agents leave the model's tool schema entirely — it can't
+            // even attempt a spawn call. Turn ON to let the model delegate
+            // subtasks to specialist agents.
+            var subagentsEnabled by remember {
+                mutableStateOf(com.openminis.app.data.SubagentPrefs.isEnabled())
+            }
+            BgToggleRow(
+                icon = Icons.Outlined.Groups,
+                iconColor = Color(0xFF30B0C7),
+                title = stringResource(R.string.settings_subagents),
+                checked = subagentsEnabled,
+                onCheckedChange = { wanted ->
+                    subagentsEnabled = wanted
+                    com.openminis.app.data.SubagentPrefs.setEnabled(context, wanted)
+                },
+            )
+            BgFooter(stringResource(R.string.settings_subagents_footer))
 
             // [T-completion-haptics] Double-buzz on turn end. Rendered right
             // under Task Notifications because it answers the same question

@@ -2,18 +2,25 @@ package com.openminis.app.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * [T-auto-mode] App-level persisted Auto Mode toggle (FastModePrefs pattern).
- * Gates the arming phrases: with the toggle off, "авто-режим" in a user
- * message is plain text; with it on, that message arms the autonomous loop.
- * Default OFF — the user enables it deliberately (their explicit contract).
+ * [T-subagent-gate] App-level persisted toggle for the subagent machinery
+ * (spawn_subagent / spawn_many / run_graph / list_agents). User decision
+ * 23.09.2026: subagents are OPT-IN — default OFF, the user enables them
+ * deliberately. Gating the TOOL SCHEMA (not the prompt): with the toggle
+ * off the model can't even attempt a spawn call; with it on, the usual
+ * contract applies (spawn only when a subtask would flood the main
+ * conversation or parallelism is genuinely needed).
  *
- * primed in MinisApp.onCreate, context-free reads afterwards.
+ * FastModePrefs/AutoModePrefs pattern: primed in MinisApp.onCreate,
+ * context-free reads afterwards, [enabledFlow] so UI toggles recompose.
  */
-object AutoModePrefs {
-    private const val PREFS = "minis_auto_mode_prefs"
-    private const val KEY_ENABLED = "autoModeEnabled"
+object SubagentPrefs {
+    private const val PREFS = "minis_subagent_prefs"
+    private const val KEY_ENABLED = "subagentsEnabled"
 
     @Volatile
     private var appContext: Context? = null
@@ -23,12 +30,7 @@ object AutoModePrefs {
 
     private val _enabledFlow = MutableStateFlow(false)
 
-    /**
-     * [T-auto-mode-quick-toggle] Observable state — the in-chat composer
-     * button and the Background-settings switch read the SAME flow, so
-     * flipping either recomposes the other. Until [prime] it is false,
-     * matching a fresh install.
-     */
+    /** Observable state for the settings switch / future in-chat button. */
     val enabledFlow: StateFlow<Boolean> = _enabledFlow.asStateFlow()
 
     private fun prefs(context: Context): SharedPreferences =
@@ -41,7 +43,7 @@ object AutoModePrefs {
         _enabledFlow.value = cachedEnabled
     }
 
-    /** Context-free read. False before [prime] — matches a fresh install. */
+    /** Context-free read. False before [prime] — the safe default. */
     fun isEnabled(): Boolean = cachedEnabled
 
     fun setEnabled(context: Context, enabled: Boolean) {

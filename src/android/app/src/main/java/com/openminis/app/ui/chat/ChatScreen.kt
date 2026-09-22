@@ -5250,6 +5250,27 @@ fun ChatScreen(
 
                         Spacer(modifier = Modifier.width(8.dp))
 
+                        // [T-auto-mode-quick-toggle] The user asked for the
+                        // arm switch IN the chat, not only in Settings: one
+                        // tap next to the input flips the same persisted gate
+                        // (AutoModePrefs.enabledFlow) the Background screen
+                        // switch uses — both recompose together. Accent when
+                        // armed: the next "авто-режим" message starts the run.
+                        val autoModeOn by com.openminis.app.data.AutoModePrefs.enabledFlow.collectAsState()
+                        InputCircleButton(onClick = {
+                            com.openminis.app.data.AutoModePrefs.setEnabled(context, !autoModeOn)
+                        }) {
+                            Icon(
+                                Icons.Default.PlayArrow,
+                                contentDescription = "Авто-режим",
+                                tint = if (autoModeOn) ChatColors.sendButton
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(8.dp))
+
                         // Left: "/" slash command button (iOS: italic /, bold)
                         InputCircleButton(onClick = {
                             if (viewModel.showSlashMenu.value) {

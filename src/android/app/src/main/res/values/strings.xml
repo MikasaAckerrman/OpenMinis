@@ -1129,6 +1129,8 @@
     <!-- [T-auto-mode] Autonomous plan execution toggle. -->
     <string name="settings_auto_mode">Auto Mode</string>
     <string name="settings_auto_mode_footer">When on, a message that asks for auto mode ("авто-режим" / "auto mode") starts an autonomous run: the agent keeps working through the plan until it reports TASK_COMPLETE, pausing to compact the session at 100% fullness. Any manual message stops the run.</string>
+    <string name="settings_subagents">Mini-agents</string>
+    <string name="settings_subagents_footer">Off by default. When on, the model can delegate subtasks to specialist agents (spawn_subagent, spawn_many, run_graph): a code reviewer, an implementer, a security auditor and other roles work in isolated sessions and report back. Each spawn costs tokens — the model calls them only when a subtask would flood the chat with detail or genuinely needs parallel work.</string>
     <string name="settings_task_notifications">Task Notifications</string>
     <string name="settings_task_notifications_footer">Notify when an agent task finishes while the app is in the background. Shows progress in the notification shade and on the lock screen.</string>
     <!-- [T-completion-haptics] Double-buzz when a turn ends. -->

@@ -192,6 +192,9 @@ class MinisApp : Application(), ImageLoaderFactory {
         // never pass through a ViewModel.
         com.openminis.app.data.FastModePrefs.prime(this)
         com.openminis.app.data.AutoModePrefs.prime(this)
+        // [T-subagent-gate] Subagents are opt-in (default OFF) — primed
+        // here so makeAgentTools can gate the tool schema context-free.
+        com.openminis.app.data.SubagentPrefs.prime(this)
 
         // T283: install NDK signal handler for native crashes (SIGSEGV/
         // SIGABRT/SIGBUS/SIGFPE/SIGILL/SIGSYS). Writes a one-shot text
