@@ -96,6 +96,93 @@ object SubagentExecutor {
     }
 
     /**
+     * [T-agent-file] Spawn a user-defined agent (role="custom:<name>"). Same
+     * contract as spawn(): foreground waits, background notifies, ephemeral
+     * cleanup. The custom file drives tools/model/budget; the runner role is
+     * DOCUMENTATION_AGENT (not scope-guarded as non-writing, so a custom
+     * agent MAY ship code when its tools allow it).
+     */
+    private suspend fun spawnCustom(
+        context: Context,
+        app: MinisApp,
+        name: String,
+        task: String,
+        foreground: Boolean,
+        onBackgroundResult: ((spawnId: String, role: String, result: String) -> Unit)?,
+    ): String {
+        val agent = AgentFileStore.find(context, name)
+            ?: return "No custom agent '$name' in ${AgentFileStore.SANDBOX_DIR}. " +
+                "Call list_agents to see what exists (or create the file with file_write)."
+        val label = "custom:${agent.name}"
+        val (graph, node) = buildCustomGraph(agent, task)
+        app.providerRepository.saveAgentGraph(graph)
+        val spawnId = node.id
+
+        return if (foreground) {
+            runSingle(context, app, graph, node, label, task)
+        } else {
+            if (activeBackground.size >= MAX_BACKGROUND) {
+                runCatching { app.providerRepository.deleteAgentGraph(graph.id) }
+                return "spawn refused: $MAX_BACKGROUND background subagents are already " +
+                    "running (phone ceiling). Wait for their result notifications first, " +
+                    "then spawn again."
+            }
+            activeBackground[spawnId] = "$label: ${task.take(80)}"
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                try {
+                    val result = AgentGraphRunner.run(context, graph.id, task, taskId = spawnId, ephemeral = true)
+                    val text = formatResult(label, result)
+                    onBackgroundResult?.invoke(spawnId, label, text)
+                } finally {
+                    activeBackground.remove(spawnId)
+                    runCatching { app.providerRepository.deleteAgentGraph(graph.id) }
+                }
+            }
+            "spawned: $spawnId ($label, running in background — result will arrive as notification)"
+        }
+    }
+
+    /**
+     * [T-agent-file] Resolve a role string (builtin enum or "custom:<name>")
+     * to its ephemeral graph. Null = unresolvable (bad custom name).
+     */
+    private fun buildGraphFor(context: Context, role: String, task: String): Pair<AgentGraph, AgentNode>? {
+        if (role.startsWith("custom:")) {
+            val agent = AgentFileStore.find(context, role.removePrefix("custom:").trim()) ?: return null
+            return buildCustomGraph(agent, task)
+        }
+        val agentRole = runCatching { AgentRole.valueOf(role) }.getOrNull() ?: return null
+        return buildEphemeralGraph(agentRole, task)
+    }
+
+    /** [T-agent-file] The ephemeral graph for a user-defined agent. */
+    private fun buildCustomGraph(agent: AgentFileParser.AgentFile, task: String): Pair<AgentGraph, AgentNode> {
+        val node = AgentNode(
+            id = "spawn-${UUID.randomUUID().toString().take(8)}",
+            role = AgentRole.DOCUMENTATION_AGENT,
+            systemPrompt = agent.instructions + handoffToGuidance(AgentRole.DOCUMENTATION_AGENT),
+            allowedTools = agent.tools ?: defaultToolsForRole(AgentRole.DOCUMENTATION_AGENT),
+            maxTurns = agent.maxTurns,
+            modelEntryId = agent.modelEntryId.orEmpty(),
+            modelRole = if (agent.modelEntryId != null) "" else (agent.modelRole ?: "analyst"),
+        )
+        val graph = AgentGraph(
+            id = "ephemeral-${node.id}",
+            name = "Agent: ${agent.name}",
+            nodes = listOf(node),
+            edges = emptyList(),
+            entryNodeId = node.id,
+            exitNodeIds = listOf(node.id),
+            config = GraphConfig(
+                maxParallelNodes = 1,
+                defaultTimeoutMs = 180_000,
+                defaultMaxOutputTokens = 8_192,
+            ),
+        )
+        return graph to node
+    }
+
+    /**
      * [T-spawn-many] Claude Code's "N Task calls, one join point", with the
      * conflict safety the prompt cannot guarantee:
      *
@@ -110,9 +197,16 @@ object SubagentExecutor {
     suspend fun spawnMany(context: Context, agents: List<SpawnSpec>, serial: Boolean = false): String {
         if (agents.isEmpty()) return "spawn_many: no agents given"
         val app = context.applicationContext as MinisApp
-        val roles = agents.map { spec ->
-            runCatching { AgentRole.valueOf(spec.role) }.getOrElse {
-                return "Unknown role '${spec.role}'. Valid: ${SubagentRoles.SPAWNABLE.joinToString()}"
+        // [T-agent-file] Validation: builtin enum or an existing custom agent.
+        for (spec in agents) {
+            if (spec.role.startsWith("custom:")) {
+                if (AgentFileStore.find(context, spec.role.removePrefix("custom:").trim()) == null) {
+                    return "No custom agent '${spec.role.removePrefix("custom:")}' in " +
+                        "${AgentFileStore.SANDBOX_DIR}. Call list_agents to see what exists."
+                }
+            } else if (runCatching { AgentRole.valueOf(spec.role) }.isFailure) {
+                return "Unknown role '${spec.role}'. Valid: ${SubagentRoles.SPAWNABLE.joinToString()} " +
+                    "or custom:<name> (see list_agents)"
             }
         }
         val tasks = agents.mapIndexed { i, spec -> TaskConflictDetector.Task(i, spec.role, spec.task) }
@@ -135,10 +229,12 @@ object SubagentExecutor {
             plan.batches.forEach { batch ->
                 val sections = batch.map { task ->
                     val spec = agents[task.index]
-                    val agentRole = roles[task.index]
                     async(kotlinx.coroutines.Dispatchers.IO) {
                         parallelLimiter.withPermit {
-                            val (graph, node) = buildEphemeralGraph(agentRole, spec.task)
+                            val pair = buildGraphFor(context, spec.role, spec.task)
+                                ?: return@withPermit "No custom agent '${spec.role.removePrefix("custom:")}' " +
+                                    "in ${AgentFileStore.SANDBOX_DIR} (call list_agents)."
+                            val (graph, node) = pair
                             app.providerRepository.saveAgentGraph(graph)
                             runCatching {
                                 runSingle(context, app, graph, node, spec.role, spec.task)
@@ -177,9 +273,17 @@ object SubagentExecutor {
         onBackgroundResult: ((spawnId: String, role: String, result: String) -> Unit)? = null,
     ): String {
         val app = context.applicationContext as MinisApp
+        // [T-agent-file] role="custom:<name>" routes to a user-defined agent
+        // file — new agents without code, the Codex v2 pattern.
+        if (role.startsWith("custom:")) {
+            return spawnCustom(
+                context, app, role.removePrefix("custom:").trim(), task, foreground, onBackgroundResult,
+            )
+        }
         val agentRole = runCatching { AgentRole.valueOf(role) }
             .getOrElse {
-                return "Unknown role '$role'. Valid: ${SubagentRoles.SPAWNABLE.joinToString()}"
+                return "Unknown role '$role'. Valid: ${SubagentRoles.SPAWNABLE.joinToString()} " +
+                    "or custom:<name> (call list_agents to see user-defined agents)"
             }
 
         val (graph, node) = buildEphemeralGraph(agentRole, task)

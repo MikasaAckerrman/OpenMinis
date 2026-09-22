@@ -25,6 +25,27 @@ object SubagentTools {
     const val SPAWN_TOOL_NAME = "spawn_subagent"
     const val RUN_GRAPH_TOOL_NAME = "run_graph"
     const val SPAWN_MANY_TOOL_NAME = "spawn_many"
+    const val LIST_AGENTS_TOOL_NAME = "list_agents"
+
+    /**
+     * [T-agent-file] Discovery for user-defined agents (Codex v2 pattern:
+     * agents as files, no code). The orchestrator calls this before spawning
+     * a custom:<name> agent.
+     */
+    fun listAgentsDefinition(): AgentToolDefinition = AgentToolDefinition(
+        name = LIST_AGENTS_TOOL_NAME,
+        description = "List the user's CUSTOM subagents — markdown files in " +
+            "/var/minis/agents/<name>.md. Each one can be spawned via spawn_subagent " +
+            "or spawn_many with role=\"custom:<name>\". Call this FIRST when you need " +
+            "a specialist that the builtin roles do not cover, or when the user says " +
+            "'use my <X> agent'. If none exist, the result explains the file format — " +
+            "you can create a new agent with file_write and spawn it in the same turn.",
+        parameters = mapOf(
+            "tool_title" to AgentToolParam("string", "A concise 5-10 word summary (e.g. 'List custom agents'). Use the user's language."),
+        ),
+        required = listOf("tool_title"),
+        propertyOrdering = listOf("tool_title"),
+    )
 
     /**
      * Roles the LLM can spawn. Maps 1:1 to AgentRole enum values that have
@@ -53,6 +74,8 @@ object SubagentTools {
             "Foreground (default): blocks until the subagent finishes and returns its output. " +
             "Background: the subagent runs concurrently while you continue working; " +
             "its result arrives as a notification you can check later. " +
+            "CUSTOM AGENTS: role can also be \"custom:<name>\" for user-defined agents " +
+            "(files in /var/minis/agents/) — call list_agents first to see what exists. " +
             "Use this when a subtask would flood the main conversation with details, " +
             "or when you need parallel work (spawn multiple background subagents). " +
             "Example: spawn_subagent(role='CODE_CORRECTNESS_REVIEWER', task='Review the auth module for logic errors', background=true)",

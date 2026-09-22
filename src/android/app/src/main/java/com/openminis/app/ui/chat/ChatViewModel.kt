@@ -11474,6 +11474,7 @@ class ChatViewModel(
             // [T-spawn-subagent] Runtime subagent spawning (Claude Code pattern).
             com.openminis.app.tools.SubagentTools.SPAWN_TOOL_NAME -> executeSpawnSubagent(argsJson)
             com.openminis.app.tools.SubagentTools.SPAWN_MANY_TOOL_NAME -> executeSpawnMany(argsJson)
+            com.openminis.app.tools.SubagentTools.LIST_AGENTS_TOOL_NAME -> executeListAgents(argsJson)
             com.openminis.app.tools.SubagentTools.RUN_GRAPH_TOOL_NAME -> executeRunGraph(argsJson)
             "memory_write" -> executeMemoryWriteTool(argsJson)
             "memory_get" -> executeMemoryGetTool(argsJson)
@@ -11812,6 +11813,38 @@ class ChatViewModel(
             } } else null,
         )
         return ToolExecutionResult(result, true)
+    }
+
+    /**
+     * [T-agent-file] Discovery of user-defined agents. See AgentFileStore.
+     */
+    private fun executeListAgents(argsJson: String): ToolExecutionResult {
+        val agents = com.openminis.app.offload.AgentFileStore.list(context)
+        if (agents.isEmpty()) {
+            return ToolExecutionResult(
+                "No custom agents installed yet. To create one, write a markdown file to " +
+                    "${com.openminis.app.offload.AgentFileStore.SANDBOX_DIR}/<name>.md with this shape:\n" +
+                    "---\nname: my-auditor\ndescription: What this agent does, one line\n" +
+                    "modelRole: reviewer        # optional: planner|analyst|architect|coder|reviewer|tester\n" +
+                    "tools: shell_execute, file_read, file_write   # optional allowlist\n" +
+                    "maxTurns: 10               # optional tool budget\n" +
+                    "---\nThe body below the frontmatter is the agent's instructions, verbatim.\n" +
+                    "Then spawn it: spawn_subagent(role=\"custom:my-auditor\", task=\"...\").",
+                true,
+            )
+        }
+        val text = buildString {
+            appendLine("Custom agents (${agents.size}) — spawn with role=\"custom:<name>\":")
+            for (a in agents) {
+                appendLine("- ${a.name}: ${a.description.ifBlank { "(no description)" }.take(180)}")
+                appendLine(
+                    "  tools=${a.tools?.joinToString(",") ?: "default"} | maxTurns=${a.maxTurns} | " +
+                        "model=${a.modelEntryId ?: a.modelRole ?: "session model"}",
+                )
+            }
+            appendLine("Files: ${com.openminis.app.offload.AgentFileStore.SANDBOX_DIR}/<name>.md")
+        }
+        return ToolExecutionResult(text, true)
     }
 
     /**
