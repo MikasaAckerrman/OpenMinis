@@ -1559,6 +1559,8 @@ class ChatViewModel(
     /** [T-auto-mode-verify] Consecutive failed verifications of the current approach. */
     private var autoModeVerifyFails = 0
     private var autoModeChallenges = 0
+    /** [T-output-limit-auto-extend] Consecutive output-limit continuations for the CURRENT user message; reset in sendMessage, capped in OutputLimitPolicy. */
+    private var outputLimitExtensions = 0
 
     /** [T-auto-mode-verify] Strategy changes already spent (cap = MAX_REPLANS). */
     private var autoModeReplans = 0
@@ -8122,6 +8124,10 @@ class ChatViewModel(
 
     fun sendMessage(text: String) {
         val trimmed = text.trim()
+        // [T-output-limit-auto-extend] Fresh user message → fresh extension
+        // budget: a long reasoning chain that needed 3 continuations last
+        // time must not start this one already capped.
+        outputLimitExtensions = 0
         // While streaming, enqueue instead of silently dropping (iOS: send vs enqueuePrompt).
         if (_isStreaming.value) {
             enqueuePrompt(text)
@@ -11244,16 +11250,48 @@ class ChatViewModel(
                     withContext(Dispatchers.Main) { setInlineError(hint) }
                 }
                 if (com.openminis.app.provider.OutputLimitPolicy.reachedLimit(turnFinishReason)) {
-                    // The provider stopped because it exhausted the output
-                    // budget. The partial answer is valid and remains
-                    // persisted, but treating this as a normal completion
-                    // makes it look as if the model stopped by itself. Surface
-                    // the real reason and let the user resume deliberately.
-                    withContext(Dispatchers.Main) {
-                        setInlineError(
-                            context.getString(R.string.error_output_limit_reached),
+                    // [T-output-limit-auto-extend] The provider stopped on
+                    // the output budget. The partial answer is valid and
+                    // stays persisted — so the RIGHT next step is to
+                    // continue seamlessly: park a continuation (the model
+                    // sees its own truncated reply in context and resumes
+                    // at the cut), the queue pump sends it immediately.
+                    // Bounded: after MAX_AUTO_EXTENSIONS a model stuck in
+                    // a reasoning loop gets the manual resume banner.
+                    if (outputLimitExtensions <
+                        com.openminis.app.provider.OutputLimitPolicy.MAX_AUTO_EXTENSIONS
+                    ) {
+                        outputLimitExtensions++
+                        AppLogger.info(
+                            TAG_STREAM,
+                            "[OutputLimit] auto-extend $outputLimitExtensions/" +
+                                "${com.openminis.app.provider.OutputLimitPolicy.MAX_AUTO_EXTENSIONS} " +
+                                "(finishReason=$turnFinishReason)",
                         )
-                        _canResume.value = true
+                        appendSystemInfo(
+                            text = "Лимит выходных токенов — продолжаю автоматически " +
+                                "($outputLimitExtensions/${com.openminis.app.provider.OutputLimitPolicy.MAX_AUTO_EXTENSIONS}).",
+                            iconKind = "compact",
+                        )
+                        // _isStreaming is still true here (we are inside the
+                        // streamJob try) — the parked continuation is drained
+                        // by the queue pump right after runAgentLoop returns.
+                        enqueuePrompt(
+                            com.openminis.app.provider.OutputLimitPolicy
+                                .continuationPrompt(outputLimitExtensions),
+                        )
+                    } else {
+                        // The provider stopped because it exhausted the output
+                        // budget. The partial answer is valid and remains
+                        // persisted, but treating this as a normal completion
+                        // makes it look as if the model stopped by itself. Surface
+                        // the real reason and let the user resume deliberately.
+                        withContext(Dispatchers.Main) {
+                            setInlineError(
+                                context.getString(R.string.error_output_limit_reached),
+                            )
+                            _canResume.value = true
+                        }
                     }
                 }
                 // Auto-title after first exchange
