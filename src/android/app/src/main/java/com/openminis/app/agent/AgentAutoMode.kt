@@ -73,7 +73,10 @@ object AgentAutoMode {
 
     /**
      * The continuation prompt — the whole behavioural contract of the loop,
-     * refreshed every turn so long runs never drift from it.
+     * refreshed every turn so long runs never drift from it. The VERIFY
+     * block is the machine half of completion: the engine executes the
+     * criteria itself (see [AutoModeVerification]) — TASK_COMPLETE counts
+     * only when they pass.
      */
     fun continuationPrompt(turn: Int): String = buildString {
         appendLine("⟳ Авто-режим · продолжение $turn из $MAX_AUTO_TURNS")
@@ -82,9 +85,35 @@ object AgentAutoMode {
         appendLine("1. Не спрашивай меня ничего: принимай решения сам, фиксируй их в памяти (memory_write) и продолжай.")
         appendLine("2. Каждые $CHECKPOINT_EVERY_TURNS продолжений — чекпоинт: запиши прогресс в память и сделай git-коммит, затем продолжай.")
         appendLine("3. Не останавливайся на «примерно готово»: доводи каждый пункт до проверенного результата.")
-        appendLine("4. Когда план выполнен наилучшим образом — напиши финальный итог (что сделано, чем подтверждено, что осталось вне охвата) и последней строкой отправь ровно:")
+        appendLine("4. Каждое продолжение с реальной работой заканчивай блоком (движок проверит его сам):")
+        appendLine("   VERIFY:")
+        appendLine("   files: <пути через запятую — обязаны существовать>")
+        appendLine("   absent: <пути — обязаны отсутствовать>")
+        appendLine("   cmd: <однострочная команда; код выхода 0 = пройдено>")
+        appendLine("   Ключи опциональны — но по крайней мере один, для проверяемой части работы.")
+        appendLine("5. Когда план выполнен наилучшим образом — напиши финальный итог (что сделано, чем подтверждено, что осталось вне охвата), приведи финальный VERIFY-блок и последней строкой отправь ровно:")
         appendLine(SENTINEL)
-        appendLine("5. Никогда не пиши $SENTINEL раньше реального завершения.")
-        appendLine("6. Если упёрся в блокер, который сам обойти не можешь — опиши его, зафиксируй в памяти и продолжай доступную часть плана.")
+        appendLine("   TASK_COMPLETE засчитывается только если VERIFY прошёл: менеджер проверяет, а не верит. Никогда не пиши $SENTINEL раньше реального завершения.")
+        appendLine("6. Если VERIFY провалился — исправь причину и добейся прохождения; после ${AutoModeVerification.MAX_FAILS} провалов подряд движок потребует смены стратегии.")
+        appendLine("7. Если упёрся в блокер, который сам обойти не можешь — опиши его, зафиксируй в памяти и продолжай доступную часть плана.")
+    }
+
+    /**
+     * The replan prompt: forced strategy change after [AutoModeVerification.MAX_FAILS]
+     * consecutive verification failures. A fourth identical attempt is
+     * token burn; the supervisor turn must find the ROOT CAUSE, propose a
+     * different approach and continue under it.
+     */
+    fun replanPrompt(replanIndex: Int, failures: List<String>): String = buildString {
+        appendLine("⟳ Авто-режим · REPLAN #$replanIndex из ${AutoModeVerification.MAX_REPLANS} — смена стратегии")
+        appendLine()
+        appendLine("Текущий подход провалил машинную проверку ${AutoModeVerification.MAX_FAILS} раз подряд:")
+        failures.forEach { appendLine("- $it") }
+        appendLine()
+        appendLine("Четвёртая попытка тем же путём запрещена. Твоя задача сейчас:")
+        appendLine("1. Назвать ПЕРВОПРИЧИНУ (не симптом): почему подход не проходит проверку.")
+        appendLine("2. Предложить ДРУГУЮ стратегию — не вариацию той же, а принципиально иную (другой путь, другой механизм, другой порядок).")
+        appendLine("3. Обновить план в памяти (memory_write) и продолжить работу уже по новой стратегии.")
+        appendLine("Правила продолжений действуют как раньше: VERIFY-блок, чекпоинты, TASK_COMPLETE только после прохождения проверки.")
     }
 }

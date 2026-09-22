@@ -1556,6 +1556,12 @@ class ChatViewModel(
     val autoModeArmed: StateFlow<Boolean> = _autoModeArmed.asStateFlow()
     private var autoModeTurns = 0
 
+    /** [T-auto-mode-verify] Consecutive failed verifications of the current approach. */
+    private var autoModeVerifyFails = 0
+
+    /** [T-auto-mode-verify] Strategy changes already spent (cap = MAX_REPLANS). */
+    private var autoModeReplans = 0
+
     /** Continuation parked in the queue, waiting for a pump. */
     @Volatile
     private var autoModeParked = false
@@ -1571,11 +1577,36 @@ class ChatViewModel(
     fun maybeAutoContinue() {
         if (!_autoModeArmed.value || autoModeParked) return
         val last = _messages.value.lastOrNull { it.role == "assistant" } ?: return
-        if (com.openminis.app.agent.AgentAutoMode.isPlanComplete(last.content)) {
+
+        // [T-auto-mode-verify] The manager checks, doesn't ask: a VERIFY
+        // block in the turn's text is EXECUTED (files, absence, command exit
+        // code) before any decision. A failing check under TASK_COMPLETE is
+        // a rejected claim, not a finish line. No block (research turns) —
+        // legacy behaviour, trust the sentinel.
+        val criteria = com.openminis.app.agent.AutoModeVerification.parse(last.content)
+        val claimedComplete = com.openminis.app.agent.AgentAutoMode.isPlanComplete(last.content)
+        if (criteria != null) {
+            val report = runAutoModeVerification(criteria)
+            if (!report.passed) {
+                val failNote = if (claimedComplete) {
+                    "TASK_COMPLETE отклонён: машинная проверка не прошла — план НЕ завершён."
+                } else {
+                    "Продолжение не прошло машинную проверку."
+                }
+                AppLogger.info(TAG_STREAM, "[AutoMode] verification failed: ${report.failures.size} check(s)")
+                handleAutoModeVerificationFailure(failNote, report.failures)
+                return
+            }
+            // Passed: a TASK_COMPLETE claim is now credible.
+            autoModeVerifyFails = 0
+        }
+
+        if (claimedComplete) {
             _autoModeArmed.value = false
             AppLogger.info(TAG_STREAM, "[AutoMode] COMPLETE after $autoModeTurns continuations")
             appendSystemInfo(
-                text = "Авто-режим завершён: план выполнен (продолжений: $autoModeTurns).",
+                text = "Авто-режим завершён: план выполнен и проверен " +
+                    "(продолжений: $autoModeTurns).",
                 iconKind = "compact",
             )
             return
@@ -1604,6 +1635,100 @@ class ChatViewModel(
             AppLogger.info(TAG_STREAM, "[AutoMode] park continuation $autoModeTurns")
         }
         enqueuePrompt(com.openminis.app.agent.AgentAutoMode.continuationPrompt(autoModeTurns))
+    }
+
+    /**
+     * [T-auto-mode-verify] Failure path: state machine decides retry the
+     * same approach / force a replan / disarm. Each outcome parks a message
+     * that carries the failure report, so the next turn knows exactly what
+     * the engine observed.
+     */
+    private fun handleAutoModeVerificationFailure(
+        note: String,
+        failures: List<String>,
+    ) {
+        autoModeVerifyFails++
+        when (com.openminis.app.agent.AutoModeVerification.nextStep(autoModeVerifyFails, autoModeReplans)) {
+            com.openminis.app.agent.AutoModeVerification.Step.RETRY_SAME -> {
+                autoModeParked = true
+                appendSystemInfo(text = "$note ${com.openminis.app.agent.AutoModeVerification.failureReport(failures)}", iconKind = "compact")
+                enqueuePrompt(
+                    "⟳ Авто-режим · предыдущее продолжение не прошло проверку. " +
+                        com.openminis.app.agent.AutoModeVerification.failureReport(failures) +
+                        "\nИсправь причину (файл существует? команда проходит? путь верный?) и добейся прохождения VERIFY.",
+                )
+            }
+            com.openminis.app.agent.AutoModeVerification.Step.REPLAN -> {
+                autoModeReplans++
+                autoModeVerifyFails = 0
+                autoModeParked = true
+                appendSystemInfo(
+                    text = "$note ${com.openminis.app.agent.AutoModeVerification.MAX_FAILS} раз подряд — принудительная смена стратегии (REPLAN #${autoModeReplans}).",
+                    iconKind = "compact",
+                )
+                enqueuePrompt(
+                    com.openminis.app.agent.AgentAutoMode.replanPrompt(autoModeReplans, failures),
+                )
+            }
+            com.openminis.app.agent.AutoModeVerification.Step.DISARM -> {
+                _autoModeArmed.value = false
+                AppLogger.info(TAG_STREAM, "[AutoMode] DISARM: verification stuck after ${autoModeReplans} replans")
+                appendSystemInfo(
+                    text = "Авто-режим остановлен: машинная проверка не проходит даже после " +
+                        "${autoModeReplans} смен стратегии. Последние причины:\n" +
+                        com.openminis.app.agent.AutoModeVerification.failureReport(failures),
+                    iconKind = "compact",
+                )
+            }
+            com.openminis.app.agent.AutoModeVerification.Step.CONTINUE -> {
+                // Unreachable from nextStep today; kept explicit for future
+                // table changes rather than silently swallowing a step.
+            }
+        }
+    }
+
+    /**
+     * [T-auto-mode-verify] Execute the criteria in the session's own sandbox
+     * shell — same filesystem, same cwd as the agent's work, so paths the
+     * model verified against are verified by the engine identically.
+     * File probes: 30s each (PRoot cold boot included). The command: 300s,
+     * gated by the same DestructiveCommandPolicy as the shell tool — a
+     * verify line is model-authored text, it gets no trust discount.
+     */
+    private suspend fun runAutoModeVerification(
+        criteria: com.openminis.app.agent.AutoModeVerification.Criteria,
+    ): com.openminis.app.agent.AutoModeVerification.Report {
+        val failures = mutableListOf<String>()
+        val sid = activeSessionId.ifEmpty { sessionId }
+        for (path in criteria.filesExist) {
+            val r = com.openminis.app.sandbox.ExecutionCoordinator.execute(
+                sid, com.openminis.app.agent.AutoModeVerification.existsCommand(path), 30_000L,
+            )
+            if (r.exitCode != 0) failures.add("файл не существует: $path")
+        }
+        for (path in criteria.filesAbsent) {
+            val r = com.openminis.app.sandbox.ExecutionCoordinator.execute(
+                sid, com.openminis.app.agent.AutoModeVerification.notExistsCommand(path), 30_000L,
+            )
+            if (r.exitCode != 0) failures.add("файл всё ещё существует: $path")
+        }
+        val cmd = criteria.command
+        if (cmd != null) {
+            when (com.openminis.app.sandbox.DestructiveCommandPolicy.classify(cmd).verdict) {
+                com.openminis.app.sandbox.DestructiveCommandPolicy.Verdict.ALLOW -> {
+                    val r = com.openminis.app.sandbox.ExecutionCoordinator.execute(sid, cmd, 300_000L)
+                    if (r.exitCode != 0) {
+                        failures.add(
+                            "команда завершилась с кодом ${r.exitCode}: ${cmd.take(120)} — вывод: ${r.output.take(300)}",
+                        )
+                    }
+                }
+                else -> failures.add(
+                    "проверочная команда не прошла защитный фильтр (не рискованно ли она?): ${cmd.take(120)}",
+                )
+            }
+        }
+        return com.openminis.app.agent.AutoModeVerification.Report(failures.isEmpty(), failures)
     }
 
     /** Same pressure computation as checkContextBeforeSend, boolean form. */
@@ -7928,6 +8053,8 @@ class ChatViewModel(
             ) {
                 _autoModeArmed.value = true
                 autoModeTurns = 0
+                autoModeVerifyFails = 0
+                autoModeReplans = 0
                 AppLogger.info(TAG_STREAM, "[AutoMode] ARMED by user message")
                 appendSystemInfo(
                     text = "Авто-режим включён: выполняю план до полного завершения " +

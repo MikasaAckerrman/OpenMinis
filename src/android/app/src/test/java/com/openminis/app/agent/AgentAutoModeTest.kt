@@ -100,5 +100,18 @@ class AgentAutoModeTest {
         assertTrue(p.contains(AgentAutoMode.SENTINEL))
         assertTrue(p.contains("чекпоинт"))
         assertTrue(p.contains("наилучш"))
+        // [T-auto-mode-verify] The machine half: every work turn must end
+        // with a VERIFY block the engine executes itself.
+        assertTrue(p.contains("VERIFY:"))
+        assertTrue(p.contains("менеджер проверяет"))
+    }
+
+    @Test
+    fun `replan prompt demands root cause and a different strategy`() {
+        val p = AgentAutoMode.replanPrompt(1, listOf("файл не существует: /a.kt"))
+        assertTrue(p.contains("REPLAN #1"))
+        assertTrue(p.contains("ПЕРВОПРИЧИНУ"))
+        assertTrue(p.contains("другую стратегию") || p.contains("ДРУГУЮ стратегию"))
+        assertTrue(p.contains("/a.kt"))
     }
 }
