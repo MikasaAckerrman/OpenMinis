@@ -444,6 +444,10 @@ fun ChatScreen(
     // [T-auto-resume] Hoisted here (same scope as isStreaming) so the banner
     // can read them inside LazyListScope (which is not a composable scope).
     val autoResumeCountdown by viewModel.autoResumeCountdown.collectAsState()
+    // [T-turn-timer] Hoisted HERE (composable scope) — LazyListScope cannot
+    // collect flows; the strip item inside the LazyColumn reads these values.
+    val turnDeadline by viewModel.turnDeadlineMs.collectAsState()
+    val turnTimerTotal by viewModel.turnTimerTotalMs.collectAsState()
     val autoResumeAttempt by viewModel.autoResumeAttempt.collectAsState()
     // [T-resume-banner-false-stopped] Process-wide streaming truth. `isStreaming`
     // above belongs to ONE ViewModel instance; SessionActivityTracker is
@@ -3238,10 +3242,6 @@ fun ChatScreen(
                     verticalArrangement = Arrangement.spacedBy(2.dp, Alignment.Bottom),
                     overscrollEffect = sharedEffect,
                 ) {
-                    // [T-turn-timer] Hoisted above the LazyColumn — LazyListScope
-                    // is not a composable scope, flows cannot be collected there.
-                    val turnDeadline by viewModel.turnDeadlineMs.collectAsState()
-                    val turnTimerTotal by viewModel.turnTimerTotalMs.collectAsState()
                     // T13 Resume banner — placed BEFORE items() so reverseLayout
                     // renders it at the visual bottom of the list (just below
                     // the last assistant message). Mirrors iOS resumeBanner in
