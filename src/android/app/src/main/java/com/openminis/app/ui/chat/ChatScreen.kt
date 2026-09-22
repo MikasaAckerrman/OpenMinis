@@ -3238,6 +3238,10 @@ fun ChatScreen(
                     verticalArrangement = Arrangement.spacedBy(2.dp, Alignment.Bottom),
                     overscrollEffect = sharedEffect,
                 ) {
+                    // [T-turn-timer] Hoisted above the LazyColumn — LazyListScope
+                    // is not a composable scope, flows cannot be collected there.
+                    val turnDeadline by viewModel.turnDeadlineMs.collectAsState()
+                    val turnTimerTotal by viewModel.turnTimerTotalMs.collectAsState()
                     // T13 Resume banner — placed BEFORE items() so reverseLayout
                     // renders it at the visual bottom of the list (just below
                     // the last assistant message). Mirrors iOS resumeBanner in
@@ -3294,6 +3298,17 @@ fun ChatScreen(
                                     tracedScrollToItem("RESUME-BANNER/settle", 0, 0)
                                 }
                             })
+                        }
+                    }
+                    // [T-turn-timer] The countdown strip at the visual bottom of
+                    // the chat (reverseLayout: first item in code = bottom on
+                    // screen) — always in view while the work budget is armed.
+                    if (turnDeadline != null) {
+                        item(key = "__turn_timer_strip__", contentType = "turn_timer_strip") {
+                            TurnTimerStrip(
+                                deadlineMs = turnDeadline ?: 0L,
+                                totalMs = if (turnTimerTotal > 0) turnTimerTotal else 60_000L,
+                            )
                         }
                     }
                     items(

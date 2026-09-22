@@ -1526,7 +1526,8 @@ class ChatViewModel(
      */
     private val _turnDeadlineMs = MutableStateFlow<Long?>(null)
     val turnDeadlineMs: StateFlow<Long?> = _turnDeadlineMs.asStateFlow()
-    private var turnTotalMs: Long = 0
+    private val _turnTimerTotalMs = MutableStateFlow(0L)
+    val turnTimerTotalMs: StateFlow<Long> = _turnTimerTotalMs.asStateFlow()
     private var postExpiryToolCalls = 0
 
     /** [T-turn-timer] Turn-end bookkeeping shared by all send/retry/rerun paths. */
@@ -1548,13 +1549,13 @@ class ChatViewModel(
         return if (remaining > 0) {
             result.copy(
                 output = result.output + "\n\n" +
-                    TurnTimerPolicy.line(remaining, turnTotalMs),
+                    TurnTimerPolicy.line(remaining, _turnTimerTotalMs.value),
             )
         } else {
             postExpiryToolCalls++
             if (postExpiryToolCalls <= TurnTimerPolicy.GRACE_TOOL_CALLS) {
                 result.copy(
-                    output = result.output + "\n\n" + TurnTimerPolicy.line(remaining, turnTotalMs),
+                    output = result.output + "\n\n" + TurnTimerPolicy.line(remaining, _turnTimerTotalMs.value),
                 )
             } else {
                 ToolExecutionResult(TurnTimerPolicy.refusal(), false)
@@ -11877,8 +11878,8 @@ class ChatViewModel(
                         false,
                     )
                 }
-                turnTotalMs = minutes * 60_000L
-                _turnDeadlineMs.value = System.currentTimeMillis() + turnTotalMs
+                _turnTimerTotalMs.value = minutes * 60_000L
+                _turnDeadlineMs.value = System.currentTimeMillis() + _turnTimerTotalMs.value
                 postExpiryToolCalls = 0
                 return ToolExecutionResult(
                     "⏳ Turn timer ARMED: $minutes minute(s). Every tool result will show the " +
@@ -11893,7 +11894,7 @@ class ChatViewModel(
                 val remaining = TurnTimerPolicy.remainingMs(deadline, System.currentTimeMillis())
                 return ToolExecutionResult(
                     "⏳ Turn timer: ${TurnTimerPolicy.format(remaining)} left of " +
-                        TurnTimerPolicy.format(turnTotalMs) + ".",
+                        TurnTimerPolicy.format(_turnTimerTotalMs.value) + ".",
                     true,
                 )
             }
