@@ -1558,6 +1558,7 @@ class ChatViewModel(
 
     /** [T-auto-mode-verify] Consecutive failed verifications of the current approach. */
     private var autoModeVerifyFails = 0
+    private var autoModeChallenges = 0
 
     /** [T-auto-mode-verify] Strategy changes already spent (cap = MAX_REPLANS). */
     private var autoModeReplans = 0
@@ -1614,6 +1615,35 @@ class ChatViewModel(
         }
 
         if (claimedComplete) {
+            // [T-auto-mode-budget-challenge] «выдал 2 часа = работай все 2
+            // часа»: a completion claimed while a fat slice of an armed
+            // turn-timer budget remains gets ONE bounded challenge — improve
+            // further, or repeat TASK_COMPLETE in the same reply to insist.
+            // No timer armed → nothing to honor, accept immediately.
+            val budgetRemaining = _turnDeadlineMs.value?.let {
+                com.openminis.app.offload.TurnTimerPolicy.remainingMs(
+                    it, System.currentTimeMillis(),
+                )
+            } ?: -1L
+            if (com.openminis.app.agent.AutoModeBudgetChallenge.shouldChallenge(
+                    budgetRemaining, autoModeChallenges,
+                )
+            ) {
+                autoModeChallenges++
+                autoModeTurns++
+                autoModeParked = true
+                AppLogger.info(
+                    TAG_STREAM,
+                    "[AutoMode] completion challenged: ${budgetRemaining / 60_000}m of budget left " +
+                        "(challenge $autoModeChallenges/${com.openminis.app.agent.AutoModeBudgetChallenge.MAX_CHALLENGES})",
+                )
+                enqueuePrompt(
+                    com.openminis.app.agent.AutoModeBudgetChallenge.prompt(
+                        budgetRemaining, autoModeChallenges,
+                    ),
+                )
+                return
+            }
             _autoModeArmed.value = false
             AppLogger.info(TAG_STREAM, "[AutoMode] COMPLETE after $autoModeTurns continuations")
             appendSystemInfo(
@@ -8130,6 +8160,7 @@ class ChatViewModel(
                 autoModeTurns = 0
                 autoModeVerifyFails = 0
                 autoModeReplans = 0
+                autoModeChallenges = 0
                 autoModeTokensUsed = 0L
                 AppLogger.info(TAG_STREAM, "[AutoMode] ARMED by user message")
                 appendSystemInfo(
