@@ -745,6 +745,26 @@ class ChatViewModel(
      * см. её doc-комментарий про четыре пути в мёртвое состояние и про то,
      * почему состояний три, а не два.
      */
+    /**
+     * [T-headless-send-gate] Suspend until a sendMessage would pass the send
+     * gate: history fully loaded, or degraded (SendGatePolicy allows a send
+     * in both — see [requireFullSessionHistory]). Returns false if the gate
+     * did not open within [timeoutMs].
+     *
+     * The race this closes: activeEntryId flips BEFORE the history finishes
+     * loading (measured 13 ms apart), so a caller that waited only for the
+     * model to resolve can still hit the gate and have its message silently
+     * stashed instead of streamed. Must be called OFF Main — loadSession
+     * populates the gate on Main.immediate, and suspending Main here would
+     * deadlock the very thing being awaited.
+     */
+    suspend fun awaitSendGateReady(timeoutMs: Long = 5_000L): Boolean =
+        kotlinx.coroutines.withTimeoutOrNull(timeoutMs) {
+            combine(fullHistoryReady, historyDegraded) { ready, degraded ->
+                ready || degraded
+            }.first { it }
+        } ?: false
+
     private fun requireFullSessionHistory(
         operation: com.openminis.app.data.SendGatePolicy.Operation =
             com.openminis.app.data.SendGatePolicy.Operation.SEND,

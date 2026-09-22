@@ -212,6 +212,26 @@ internal object HeadlessChatRunner {
                 timedOut = false,
             )
         }
+        // [T-headless-send-gate] The model resolving is NOT the last gate:
+        // sendMessage also refuses while the session history is still loading
+        // (fullHistoryReady=false) — it stashes the text into the composer and
+        // returns WITHOUT streaming. activeEntryId flips ~13 ms BEFORE the
+        // history lands (measured on spawn-6b317aab), so the ready-wait above
+        // passes and the send still dies. prompt() then saw isStreaming never
+        // flip true, returned "Completed" with a null response, and the graph
+        // node failed as "All attempts exhausted" 20 ms in — no model call,
+        // no evidence. Wait for the gate; if it never opens, say so in a
+        // status the runner will retry ("Error" is in RetryPolicy.retryOn).
+        val gateOpen = withContext(Dispatchers.Default) {
+            vm.awaitSendGateReady(5_000L)
+        }
+        if (!gateOpen) {
+            return@withContext PromptResult(
+                status = "Error",
+                responseText = "send_gate_not_ready_in_5s",
+                timedOut = false,
+            )
+        }
         for (att in attachments) vm.addAttachment(att)
         vm.sendMessage(text)
         if (!wait) return@withContext PromptResult(status = "Running", responseText = null, timedOut = false)
@@ -240,11 +260,31 @@ internal object HeadlessChatRunner {
         val lastAssistant = msgs.lastOrNull { it.role == "assistant" }
         val responseText = lastAssistant?.let { extractText(it.partsJson) }
         PromptResult(
-            status = if (finished) "Completed" else "Timeout",
-            responseText = responseText,
+            status = decidePromptStatus(
+                finished = finished,
+                started = started,
+                hasResponse = responseText != null,
+            ),
+            responseText = responseText
+                ?: if (finished && !started) "send_dropped_not_streaming" else null,
             timedOut = !finished,
         )
     }
+
+    /**
+     * [T-headless-send-gate] Pure decision for prompt()'s terminal status so
+     * the dropped-send case is testable off-device. A wait that "finished"
+     * without ever seeing streaming start is a send that a guard refused —
+     * reporting "Completed" turned it into a silent null-response success
+     * and made the graph runner fail the node as non-retryable.
+     */
+    internal fun decidePromptStatus(finished: Boolean, started: Boolean, hasResponse: Boolean): String =
+        when {
+            finished && started -> "Completed"
+            finished && hasResponse -> "Completed" // stream finished before we looked
+            finished -> "Error"                     // dropped by a sendMessage guard
+            else -> "Timeout"
+        }
 
     suspend fun retry(
         context: Context,

@@ -33,4 +33,42 @@ class HeadlessRetryStatusTest {
         assertEquals("Timeout", runner.decideRetryStatus(finished = false, regenerated = false))
         assertEquals("Timeout", runner.decideRetryStatus(finished = false, regenerated = true))
     }
+
+    // [T-headless-send-gate] prompt()'s terminal status, same honesty
+    // contract. The dropped-send case below was the live failure mode of
+    // spawn-6b317aab: a sendMessage guard refused the send (send gate not
+    // open yet), isStreaming never flipped true, and the old code reported
+    // "Completed" with a null response — the graph runner treated that as a
+    // non-retryable result and failed the node 20 ms in with no evidence.
+    @Test
+    fun `prompt status is Completed when streaming started and finished`() {
+        assertEquals(
+            "Completed",
+            runner.decidePromptStatus(finished = true, started = true, hasResponse = true),
+        )
+    }
+
+    @Test
+    fun `prompt status is Completed when the stream finished before we looked`() {
+        assertEquals(
+            "Completed",
+            runner.decidePromptStatus(finished = true, started = false, hasResponse = true),
+        )
+    }
+
+    @Test
+    fun `prompt status is Error when the send never started streaming`() {
+        assertEquals(
+            "Error",
+            runner.decidePromptStatus(finished = true, started = false, hasResponse = false),
+        )
+    }
+
+    @Test
+    fun `prompt status is Timeout when the wait timed out`() {
+        assertEquals(
+            "Timeout",
+            runner.decidePromptStatus(finished = false, started = true, hasResponse = false),
+        )
+    }
 }
