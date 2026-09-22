@@ -1574,7 +1574,7 @@ class ChatViewModel(
      * Fires right after every successful turn (send path + drain loop).
      * Parks the next continuation — the queue pump drives the actual send.
      */
-    fun maybeAutoContinue() {
+    suspend fun maybeAutoContinue() {
         if (!_autoModeArmed.value || autoModeParked) return
         val last = _messages.value.lastOrNull { it.role == "assistant" } ?: return
 
