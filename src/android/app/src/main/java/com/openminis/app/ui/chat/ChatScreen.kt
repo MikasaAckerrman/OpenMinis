@@ -3769,7 +3769,9 @@ fun ChatScreen(
                                     onRevert = null,
                                 )
                             }
-                            is FlatChatItem.AssistantTyping -> TypingIndicator()
+                            is FlatChatItem.AssistantTyping -> TypingIndicator(
+                                sessionId = viewModel.realSessionId.ifEmpty { sessionId },
+                            )
                     is FlatChatItem.DeletedPlaceholder -> false
                             is FlatChatItem.AgentRunCard -> {
                                 // Subscribed here, not in the flat list, so a node

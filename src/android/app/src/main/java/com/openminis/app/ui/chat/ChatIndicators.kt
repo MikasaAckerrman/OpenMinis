@@ -88,8 +88,20 @@ internal fun StreamingDotsText() {
 // ─── Typing Indicator (three dots pulsing) ────────────────────────────────────
 
 @Composable
-internal fun TypingIndicator() {
+internal fun TypingIndicator(sessionId: String = "") {
     val infiniteTransition = rememberInfiniteTransition(label = "typing")
+    // [T-queue-visibility] The 11th+ concurrent session waits FIFO in
+    // SessionConcurrencyManager's semaphore queue — until now it showed an
+    // eternal "thinking…" with no explanation. Surface the queue position so
+    // the user knows the session is admitted, just queued behind others.
+    val suspendedSessions by com.openminis.app.service.SessionConcurrencyManager
+        .suspendedSessions.collectAsState()
+    val queuePos = suspendedSessions.indexOf(sessionId)
+    val queueNote = if (sessionId.isNotEmpty() && queuePos >= 0) {
+        " · в очереди: ${queuePos + 1}-я из ${suspendedSessions.size}"
+    } else {
+        ""
+    }
     // Live Soul name → "<custom name> is thinking…" when the user renamed
     // the assistant in Soul settings. SoulStore.cachedMetadata is a StateFlow
     // that's updated on save (SoulSettingsScreen) and at app start
@@ -103,7 +115,7 @@ internal fun TypingIndicator() {
         verticalAlignment = Alignment.Bottom,
     ) {
         Text(
-            text = stringResource(R.string.chat_typing_indicator, soulName),
+            text = stringResource(R.string.chat_typing_indicator, soulName) + queueNote,
             fontSize = 15.sp,
             color = ChatColors.tertiaryText,
         )
