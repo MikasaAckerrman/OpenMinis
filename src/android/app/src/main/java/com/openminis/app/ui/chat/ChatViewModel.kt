@@ -1519,6 +1519,49 @@ class ChatViewModel(
     val memoryEnabled: StateFlow<Boolean> = _memoryEnabled.asStateFlow()
 
     /**
+     * [T-turn-timer] The armed work budget (epoch ms), total for share
+     * display, and the post-expiry grace counter. Survives turns; auto-cleared
+     * at the end of the wrap-up turn (see [onTurnEnded]).
+     */
+    private val _turnDeadlineMs = MutableStateFlow<Long?>(null)
+    val turnDeadlineMs: StateFlow<Long?> = _turnDeadlineMs.asStateFlow()
+    private var turnTotalMs: Long = 0
+    private var postExpiryToolCalls = 0
+
+    /** [T-turn-timer] Turn-end bookkeeping shared by all send/retry/rerun paths. */
+    private fun onTurnEnded() {
+        memoryNudgeToolCalls = 0
+        if ((_turnDeadlineMs.value ?: Long.MAX_VALUE) <= System.currentTimeMillis()) {
+            _turnDeadlineMs.value = null
+            postExpiryToolCalls = 0
+        }
+    }
+
+    /**
+     * [T-turn-timer] Timer line on every tool result + the hard refusal once
+     * the grace window is spent. See TurnTimerPolicy for the contract.
+     */
+    private fun applyTurnTimer(result: ToolExecutionResult): ToolExecutionResult {
+        val deadline = _turnDeadlineMs.value ?: return result
+        val remaining = TurnTimerPolicy.remainingMs(deadline, System.currentTimeMillis())
+        return if (remaining > 0) {
+            result.copy(
+                output = result.output + "\n\n" +
+                    TurnTimerPolicy.line(remaining, turnTotalMs),
+            )
+        } else {
+            postExpiryToolCalls++
+            if (postExpiryToolCalls <= TurnTimerPolicy.GRACE_TOOL_CALLS) {
+                result.copy(
+                    output = result.output + "\n\n" + TurnTimerPolicy.line(remaining, turnTotalMs),
+                )
+            } else {
+                ToolExecutionResult(TurnTimerPolicy.refusal(), false)
+            }
+        }
+    }
+
+    /**
      * [T-proactive-memory] Tool calls since the turn started. Every
      * NUDGE_INTERVAL-th call of the MAIN session gets a memory reminder
      * appended to its tool result — the model sees it mid-turn, where a
@@ -7246,7 +7289,7 @@ class ChatViewModel(
                     SessionConcurrencyManager.releaseSlot(activeSessionId)
                     // [T-proactive-memory] Same hook as sendMessage's
                     // finally — a rerun turn is still a turn.
-                    memoryNudgeToolCalls = 0
+                    onTurnEnded()
                     viewModelScope.launch(Dispatchers.IO) {
                         runCatching {
                             com.openminis.app.offload.TurnMemoryDistiller.maybeDistill(
@@ -8172,7 +8215,7 @@ class ChatViewModel(
                         // (fire-and-forget, silent, ephemeral — see
                         // TurnMemoryDistiller). Never blocks the user's next
                         // message, never shows in the chat list.
-                        memoryNudgeToolCalls = 0
+                        onTurnEnded()
                         viewModelScope.launch(Dispatchers.IO) {
                             runCatching {
                                 com.openminis.app.offload.TurnMemoryDistiller.maybeDistill(
@@ -8797,7 +8840,7 @@ class ChatViewModel(
                         SessionConcurrencyManager.releaseSlot(activeSessionId)
                         // [T-proactive-memory] Same hook as sendMessage's
                         // finally — a retried turn is still a turn.
-                        memoryNudgeToolCalls = 0
+                        onTurnEnded()
                         viewModelScope.launch(Dispatchers.IO) {
                             runCatching {
                                 com.openminis.app.offload.TurnMemoryDistiller.maybeDistill(
@@ -11475,14 +11518,16 @@ class ChatViewModel(
             com.openminis.app.tools.SubagentTools.SPAWN_TOOL_NAME -> executeSpawnSubagent(argsJson)
             com.openminis.app.tools.SubagentTools.SPAWN_MANY_TOOL_NAME -> executeSpawnMany(argsJson)
             com.openminis.app.tools.SubagentTools.LIST_AGENTS_TOOL_NAME -> executeListAgents(argsJson)
+            com.openminis.app.tools.TurnTimerTool.NAME -> executeTurnTimer(argsJson)
             com.openminis.app.tools.SubagentTools.RUN_GRAPH_TOOL_NAME -> executeRunGraph(argsJson)
             "memory_write" -> executeMemoryWriteTool(argsJson)
             "memory_get" -> executeMemoryGetTool(argsJson)
             else -> ToolExecutionResult("Unknown tool: $name", false)
             }
             // [T-proactive-memory] Single choke point for the periodic
-            // reminder — see maybeAppendMemoryNudge.
-            return maybeAppendMemoryNudge(toolResult)
+            // reminder — see maybeAppendMemoryNudge. [T-turn-timer] and the
+            // timer line/refusal on the same path.
+            return applyTurnTimer(maybeAppendMemoryNudge(toolResult))
         } finally {
             // Clear the tool marker whether the call succeeded, failed, or threw.
             // A row that keeps naming a finished tool is worse than naming none:
@@ -11813,6 +11858,54 @@ class ChatViewModel(
             } } else null,
         )
         return ToolExecutionResult(result, true)
+    }
+
+    /**
+     * [T-turn-timer] Arm / inspect / clear the work budget. See TurnTimerTool.
+     */
+    private fun executeTurnTimer(argsJson: String): ToolExecutionResult {
+        val args = runCatching { JSONObject(argsJson) }.getOrNull()
+            ?: return ToolExecutionResult("Invalid JSON for turn_timer", false)
+        val action = args.optString("action").trim().lowercase()
+        when (action) {
+            "set" -> {
+                val minutes = args.optString("minutes").trim().toIntOrNull()
+                if (minutes == null || minutes !in 1..1440) {
+                    return ToolExecutionResult(
+                        "turn_timer: 'minutes' must be an integer 1..1440 for action=set",
+                        false,
+                    )
+                }
+                turnTotalMs = minutes * 60_000L
+                _turnDeadlineMs.value = System.currentTimeMillis() + turnTotalMs
+                postExpiryToolCalls = 0
+                return ToolExecutionResult(
+                    "⏳ Turn timer ARMED: $minutes minute(s). Every tool result will show the " +
+                        "remaining time; at expiry wrap up with the final summary " +
+                        "(done / not done / what remains) — no new work after that.",
+                    true,
+                )
+            }
+            "status" -> {
+                val deadline = _turnDeadlineMs.value
+                    ?: return ToolExecutionResult("⏳ Turn timer: not armed.", true)
+                val remaining = TurnTimerPolicy.remainingMs(deadline, System.currentTimeMillis())
+                return ToolExecutionResult(
+                    "⏳ Turn timer: ${TurnTimerPolicy.format(remaining)} left of " +
+                        TurnTimerPolicy.format(turnTotalMs) + ".",
+                    true,
+                )
+            }
+            "clear" -> {
+                _turnDeadlineMs.value = null
+                postExpiryToolCalls = 0
+                return ToolExecutionResult("⏳ Turn timer cleared.", true)
+            }
+            else -> return ToolExecutionResult(
+                "turn_timer: unknown action '$action' (set | status | clear)",
+                false,
+            )
+        }
     }
 
     /**

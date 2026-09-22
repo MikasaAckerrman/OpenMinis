@@ -117,6 +117,9 @@ object AgentTools {
             if (permitted(com.openminis.app.tools.SubagentTools.LIST_AGENTS_TOOL_NAME)) {
                 add(com.openminis.app.tools.SubagentTools.listAgentsDefinition())
             }
+            if (permitted(com.openminis.app.tools.TurnTimerTool.NAME)) {
+                add(com.openminis.app.tools.TurnTimerTool.definition())
+            }
             if (permitted(com.openminis.app.tools.SubagentTools.RUN_GRAPH_TOOL_NAME)) {
                 add(com.openminis.app.tools.SubagentTools.runGraphDefinition())
             }
