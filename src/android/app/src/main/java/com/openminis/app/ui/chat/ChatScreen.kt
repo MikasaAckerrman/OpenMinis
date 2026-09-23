@@ -5257,13 +5257,16 @@ fun ChatScreen(
                         // switch uses — both recompose together. Accent when
                         // armed: the next "авто-режим" message starts the run.
                         val autoModeOn by com.openminis.app.data.AutoModePrefs.enabledFlow.collectAsState()
-                        InputCircleButton(onClick = {
-                            com.openminis.app.data.AutoModePrefs.setEnabled(context, !autoModeOn)
-                        }) {
+                        InputCircleButton(
+                            onClick = {
+                                com.openminis.app.data.AutoModePrefs.setEnabled(context, !autoModeOn)
+                            },
+                            isAccent = autoModeOn,
+                        ) {
                             Icon(
                                 Icons.Default.PlayArrow,
                                 contentDescription = "Авто-режим",
-                                tint = if (autoModeOn) ChatColors.sendButton
+                                tint = if (autoModeOn) MaterialTheme.colorScheme.onPrimary
                                 else MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.size(20.dp),
                             )

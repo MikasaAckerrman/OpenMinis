@@ -416,13 +416,24 @@ internal fun AttachmentChip(
 @Composable
 internal fun InputCircleButton(
     onClick: () -> Unit,
+    // [T-auto-mode-quick-toggle] ON-state fills the circle with the accent
+    // color so the armed state is unmistakable at a glance (a tint-only
+    // change was easy to miss on dark themes).
+    isAccent: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     Box(
         modifier = Modifier
             .size(38.dp)
-            .background(ChatColors.inputIconBg, CircleShape)
-            .border(0.5.dp, ChatColors.inputIconBorder, CircleShape)
+            .background(
+                if (isAccent) ChatColors.sendButton else ChatColors.inputIconBg,
+                CircleShape,
+            )
+            .border(
+                0.5.dp,
+                if (isAccent) ChatColors.sendButton else ChatColors.inputIconBorder,
+                CircleShape,
+            )
             .clip(CircleShape)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
