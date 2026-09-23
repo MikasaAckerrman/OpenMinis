@@ -1,7 +1,5 @@
 package com.openminis.app.memory
 
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
@@ -18,7 +16,13 @@ import java.net.URL
  * GLOBAL.md) remains the source of truth; supermemory is the
  * long-term associative layer on top.
  *
- * WRITE path: TurnMemoryDistiller pushes each distilled digest in.
+ * Blocking BY DESIGN (called only from background threads — the
+ * distiller's IO coroutine and the prompt builder inside the stream
+ * job): a suspend signature would exclude the non-suspend prompt
+ * builder, the natural injection point. Every call is bounded at 3.5s
+ * by the HTTP timeouts, so a dead server can not stall a turn.
+ *
+ * WRITE path: TurnMemoryDistiller pushes each distilled exchange in.
  * READ path: buildInjection() shapes the top matches into a compact
  * context block for the next turn.
  */
@@ -35,9 +39,9 @@ object SupermemoryBridge {
     data class Hit(val id: String, val content: String, val score: Double)
 
     /** Fire-and-forget ingest; true only on a confirmed 2xx. */
-    suspend fun add(content: String, port: Int = DEFAULT_PORT): Boolean = withContext(Dispatchers.IO) {
-        if (content.isBlank()) return@withContext false
-        runCatching {
+    fun add(content: String, port: Int = DEFAULT_PORT): Boolean {
+        if (content.isBlank()) return false
+        return runCatching {
             val conn = (URL("http://127.0.0.1:$port/api/add").openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
                 connectTimeout = TIMEOUT_MS
@@ -53,9 +57,9 @@ object SupermemoryBridge {
     }
 
     /** Associative search; empty list on any failure (server down etc). */
-    suspend fun search(query: String, port: Int = DEFAULT_PORT): List<Hit> = withContext(Dispatchers.IO) {
-        if (query.isBlank()) return@withContext emptyList()
-        runCatching {
+    fun search(query: String, port: Int = DEFAULT_PORT): List<Hit> {
+        if (query.isBlank()) return emptyList()
+        return runCatching {
             val conn = (URL("http://127.0.0.1:$port/api/search?q=" +
                 java.net.URLEncoder.encode(query.take(400), "UTF-8")).openConnection() as HttpURLConnection).apply {
                 connectTimeout = TIMEOUT_MS
