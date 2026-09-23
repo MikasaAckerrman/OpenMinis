@@ -4599,19 +4599,24 @@ class ChatViewModel(
     ): String {
         val first = generateCompactSummary(text, reporter, chunkIndex, chunkCount, maxTokensOverride = budgetTokens)
         if (first.isBlank()) return first
-        if (first.length >= targetChars / 2 || first.length >= 12_000) return first.trim()
+        // [T-compact-no-inflate] A summary SHORTER than the target is a
+        // SUCCESS, not a defect: the level budget is a CAP, not a floor.
+        // The old "expansion demand" retry re-inflated a legitimately
+        // compressed 0.8k-char part back up to its 9k target — the exact
+        // water the user forbade ("ты сжимаешь контекст сессии", not
+        // expand it). A genuine crumb (non-summary like "готово") is
+        // caught by the ≥200-char sanity floor with a plain regenerate;
+        // length alone no longer triggers any inflation.
+        if (first.length >= 200) return first.trim()
         AppLogger.info(
             TAG,
-            "[Compact] window $chunkIndex/$chunkCount undersized: ${first.length}/$targetChars chars — retrying with expansion demand",
+            "[Compact] window $chunkIndex/$chunkCount suspiciously tiny: ${first.length} chars — plain regenerate (no inflation)",
         )
-        reporter?.note("Часть $chunkIndex вышла короткой (${first.length / 1000}к/${targetChars / 1000}к) — дорасширяю")
         val retryPrompt = text +
-            "\n\n=== SECOND ATTEMPT — EXPAND ===\n" +
-            "Your previous summary was only ${first.length} characters — TOO SHORT. " +
-            "The target for this segment is ${targetChars} characters. " +
-            "Expand the summary: cover EVERY file, command, decision, error, number and outcome " +
-            "from the source above with concrete detail. The result MUST be at least " +
-            "${targetChars} characters. Do not stop early."
+            "\n\n=== SECOND ATTEMPT ===\n" +
+            "Your previous answer was too short to be a usable summary. " +
+            "Write a proper summary of the source above: key files, commands, decisions, " +
+            "errors and outcomes, concisely."
         val second = try {
             generateCompactSummary(retryPrompt, reporter, chunkIndex, chunkCount, maxTokensOverride = budgetTokens)
         } catch (e: Exception) {
