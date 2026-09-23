@@ -38,10 +38,69 @@ object SupermemoryBridge {
 
     data class Hit(val id: String, val content: String, val score: Double)
 
+    /**
+     * [T-supermemory-perf] Circuit breaker: a dead/slow server must cost
+     * NOTHING after the first two failures — 10 minutes of fast skips
+     * instead of a 3.5s timeout on every prompt build (auto-mode runs
+     * would pay it 500×). Success resets the counter. Thread-safe via
+     * atomics; `nowMs` is a parameter so the logic is unit-testable.
+     */
+    private val breakerFailures = java.util.concurrent.atomic.AtomicInteger(0)
+    private val breakerOpenedAtMs = java.util.concurrent.atomic.AtomicLong(0)
+
+    private const val BREAKER_THRESHOLD = 2
+    private const val BREAKER_OPEN_MS = 10L * 60 * 1000
+
+    private fun breakerIsOpen(nowMs: Long): Boolean {
+        val openedAt = breakerOpenedAtMs.get()
+        if (openedAt == 0L) return false
+        if (nowMs - openedAt >= BREAKER_OPEN_MS) {
+            // Half-open: allow ONE probe to re-check the server.
+            breakerOpenedAtMs.set(0)
+            breakerFailures.set(0)
+            return false
+        }
+        return true
+    }
+
+    private fun recordFailure(nowMs: Long) {
+        if (breakerFailures.incrementAndGet() >= BREAKER_THRESHOLD) {
+            breakerOpenedAtMs.compareAndSet(0, nowMs)
+        }
+    }
+
+    private fun recordSuccess() {
+        breakerFailures.set(0)
+        breakerOpenedAtMs.set(0)
+    }
+
+    /**
+     * [T-supermemory-perf] Query cache: within one agent loop the LAST USER
+     * MESSAGE does not change, so the identical search would re-run on
+     * every iteration. Small bounded LRU with TTL — one network search per
+     * user message, the rest are memory hits.
+     */
+    private val queryCache = object {
+        private val lock = Any()
+        private val map = LinkedHashMap<String, Pair<Long, List<Hit>>>(8, 0.75f, true)
+        fun get(query: String, nowMs: Long): List<Hit>? = synchronized(lock) {
+            val e = map[query] ?: return null
+            if (nowMs - e.first > BREAKER_OPEN_MS) { map.remove(query); null } else e.second
+        }
+        fun put(query: String, hits: List<Hit>, nowMs: Long) = synchronized(lock) {
+            map[query] = nowMs to hits
+            if (map.size > 8) map.remove(map.keys.first())
+        }
+    }
+
     /** Fire-and-forget ingest; true only on a confirmed 2xx. */
     fun add(content: String, port: Int = DEFAULT_PORT): Boolean {
         if (content.isBlank()) return false
-        return runCatching {
+        val now = System.currentTimeMillis()
+        // Fast fail while the breaker is open (fire-and-forget, but no
+        // point paying timeouts into a dead server 500 times).
+        if (breakerIsOpen(now)) return false
+        val ok = runCatching {
             val conn = (URL("http://127.0.0.1:$port/api/add").openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
                 connectTimeout = TIMEOUT_MS
@@ -50,15 +109,23 @@ object SupermemoryBridge {
                 setRequestProperty("Content-Type", "application/json")
             }
             conn.outputStream.use { it.write(JSONObject().put("content", content).toString().toByteArray()) }
-            val ok = conn.responseCode in 200..299
+            val ok2 = conn.responseCode in 200..299
             conn.disconnect()
-            ok
+            ok2
         }.getOrDefault(false)
+        if (ok) recordSuccess() else recordFailure(now)
+        return ok
     }
 
     /** Associative search; empty list on any failure (server down etc). */
     fun search(query: String, port: Int = DEFAULT_PORT): List<Hit> {
         if (query.isBlank()) return emptyList()
+        val now = System.currentTimeMillis()
+        // Fast path: cached answer for the same query within TTL.
+        queryCache.get(query, now)?.let { return it }
+        // Fast fail: breaker open after repeated failures — skip the
+        // 3.5s timeout entirely.
+        if (breakerIsOpen(now)) return emptyList()
         return runCatching {
             val conn = (URL("http://127.0.0.1:$port/api/search?q=" +
                 java.net.URLEncoder.encode(query.take(400), "UTF-8")).openConnection() as HttpURLConnection).apply {
@@ -80,7 +147,13 @@ object SupermemoryBridge {
                     score = o.optDouble("score", 0.0),
                 )
             }.filter { it.content.isNotBlank() }
-        }.getOrDefault(emptyList())
+        }.getOrElse {
+            recordFailure(now)
+            return emptyList()
+        }
+        recordSuccess()
+        queryCache.put(query, hits, now)
+        return hits
     }
 
     /**
