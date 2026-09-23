@@ -40,6 +40,7 @@ android {
         // device runs the vc55 clone APK (built before f71cac0 reverted the
         // bump), and Android refuses to install vc54 over vc55. 56 clears it.
         versionCode = 63
+        // vc63: accent auto-mode toggle visibility fix
         versionName = "0.41-preview"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
