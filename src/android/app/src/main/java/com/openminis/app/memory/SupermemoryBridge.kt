@@ -126,7 +126,7 @@ object SupermemoryBridge {
         // Fast fail: breaker open after repeated failures — skip the
         // 3.5s timeout entirely.
         if (breakerIsOpen(now)) return emptyList()
-        return runCatching {
+        val hits = runCatching {
             val conn = (URL("http://127.0.0.1:$port/api/search?q=" +
                 java.net.URLEncoder.encode(query.take(400), "UTF-8")).openConnection() as HttpURLConnection).apply {
                 connectTimeout = TIMEOUT_MS
