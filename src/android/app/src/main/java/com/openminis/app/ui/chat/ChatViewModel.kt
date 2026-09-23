@@ -77,6 +77,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
@@ -11304,13 +11305,14 @@ class ChatViewModel(
             // [T-parallel-read-tools] When the model issues MULTIPLE
             // read-only tool calls in one response (a common exploration
             // pattern: "read file A, read file B"), execute them
-            // CONCURRENTLY instead of one-by-one. These two tools are pure
+            // CONCURRENTLY instead of one-by-one. These tools are pure
             // functions — no shared mutable state inside executeTool
             // (verified: FileReadTool and ReadImageTool return
             // ToolExecutionResult and never touch toolBlocks or the UI).
-            // memory_get is EXCLUDED: executeMemoryGetTool appends to
-            // _memoryToolRecords (a read-modify-write on a StateFlow that
-            // would race under parallel dispatch).
+            // memory_get JOINED the batch after its record append became an
+            // atomic CAS update (_memoryToolRecords.update) — the old
+            // read-modify-write `value = value + x` raced under parallel
+            // dispatch and could drop records.
             // The preflight, loop-detector, and toolBlock UI updates below
             // stay SEQUENTIAL — only the executeTool call itself moves to
             // Dispatchers.IO. Skill-use recording is also done in the
@@ -11322,7 +11324,7 @@ class ChatViewModel(
             // is preserved in toolCalls — sequential execution of mixed
             // batches keeps the same semantics as before.
             val resultParts = mutableListOf<AgentContentPart>()
-            val READ_PARALLEL_TOOLS = setOf(FileReadTool.NAME, ReadImageTool.NAME)
+            val READ_PARALLEL_TOOLS = setOf(FileReadTool.NAME, ReadImageTool.NAME, "memory_get")
             val canParallelize = toolCalls.size > 1 &&
                 toolCalls.all { (id, name, args) -> name in READ_PARALLEL_TOOLS }
             if (canParallelize) {
@@ -12592,13 +12594,19 @@ class ChatViewModel(
         val keywords = try {
             JSONObject(argsJson).optString("keywords", "")
         } catch (_: Exception) { "" }
-        _memoryToolRecords.value = _memoryToolRecords.value + MemoryToolRecord(
-            title = result.toolTitle,
-            isWrite = false,
-            preview = if (keywords.isNotBlank()) "Search: $keywords" else result.output.take(100),
-            output = result.output,
-            keywords = keywords,
-        )
+        // [T-parallel-read-tools] Atomic CAS update: memory_get now runs in
+        // the parallel batch (read-only repo query + this record append —
+        // the old `value = value + x` read-modify-write lost records under
+        // concurrent appends).
+        _memoryToolRecords.update { records ->
+            records + MemoryToolRecord(
+                title = result.toolTitle,
+                isWrite = false,
+                preview = if (keywords.isNotBlank()) "Search: $keywords" else result.output.take(100),
+                output = result.output,
+                keywords = keywords,
+            )
+        }
         return ToolExecutionResult(result.output, result.success, toolTitle = result.toolTitle)
     }
 
@@ -13283,6 +13291,20 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                 ?.takeIf { it.isNotBlank() && !it.startsWith("No memory") }
                 ?.let { "Relevant memories (keyword-matched to this message):\n$it" }
         }.getOrNull() else null
+        // [T-supermemory] Associative tier ABOVE keyword matching: the local
+        // supermemory server (semantic search over everything the distiller
+        // pushed). Degrades to null silently — server down / empty / slow
+        // means this tier simply contributes nothing; the keyword tier and
+        // daily logs above already cover the essentials. 3.5s bound keeps a
+        // dead server from stalling every turn start.
+        val supermemoryFragment = if (memoryOn) runCatching {
+            val lastUserText = agentHistory.lastOrNull {
+                it.role == LLMMessage.Role.USER && it.content.isNotBlank()
+            }?.content
+            if (lastUserText.isNullOrBlank()) null
+            else com.openminis.app.memory.SupermemoryBridge.search(lastUserText)
+                .let { com.openminis.app.memory.SupermemoryBridge.buildInjection(it) }
+        }.getOrNull() else null
         val dailyMemoryFragment = if (memoryOn) memoryRepository?.loadRecentDailyMemoryFragment(memoryInjectBudget) else null
 
         // [T-env-names-injection] Inject the NAMES (never the values) of the
@@ -13351,6 +13373,10 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
             if (relevantMemoryFragment != null) {
                 append("\n\n")
                 append(relevantMemoryFragment)
+            }
+            if (supermemoryFragment != null) {
+                append("\n\n")
+                append(supermemoryFragment)
             }
             if (dailyMemoryFragment != null) {
                 append("\n\n")

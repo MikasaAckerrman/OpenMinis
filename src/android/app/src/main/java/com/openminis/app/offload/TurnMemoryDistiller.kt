@@ -106,6 +106,16 @@ object TurnMemoryDistiller {
         )
         if (!shouldDistill(digest, memoryEnabled)) return
 
+        // [T-supermemory] WRITE path: push the RAW exchange — supermemory's
+        // own memory-agent extracts the facts server-side, so no tokens are
+        // spent here. Fire-and-forget: a down/slow server costs nothing
+        // (3.5s bound, silent false). The subagent below keeps distilling
+        // into the daily logs — the two stores serve different recall modes
+        // (associative vs recent+recency).
+        com.openminis.app.memory.SupermemoryBridge.add(
+            "USER MESSAGE:\n${userText.take(2000)}\n\nASSISTANT TURN:\n${assistantText.take(6000)}",
+        )
+
         val input = buildString {
             appendLine("USER MESSAGE:")
             appendLine(userText.take(2000))
