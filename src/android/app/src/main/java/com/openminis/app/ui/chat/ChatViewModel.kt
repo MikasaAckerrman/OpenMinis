@@ -11323,10 +11323,38 @@ class ChatViewModel(
             // depend on execution order. The LLM's tool_calls array order
             // is preserved in toolCalls — sequential execution of mixed
             // batches keeps the same semantics as before.
+            // [T-conflict-aware-parallel] v2: WRITES joined the parallel
+            // batch. When the model issues MULTIPLE independent tool calls
+            // in one response, execute them CONCURRENTLY instead of
+            // one-by-one. Safe set (no shared mutable state, per-file
+            // scoping verified in the tool implementations):
+            //   file_read / read_image / memory_get — pure reads;
+            //   file_write / file_edit — each write is atomic
+            //     per target file, and all file tools resolve through the
+            //     pure per-session path resolver (no shell session).
+            // THE CONFLICT RULE: a batch goes parallel ONLY IF every call is
+            // in the safe set AND no two calls target the SAME path. A
+            // read+write (or write+write) on one path depends on order —
+            // the model's sequencing intent must be preserved, so any
+            // duplicate path demotes the whole batch to sequential. Calls
+            // without a path (memory_get) cannot conflict.
+            // shell/browser/offload/subagent tools NEVER join: shared
+            // session state, ordered side effects. Mixed batches (safe +
+            // shell) also stay sequential for the same reason.
             val resultParts = mutableListOf<AgentContentPart>()
-            val READ_PARALLEL_TOOLS = setOf(FileReadTool.NAME, ReadImageTool.NAME, "memory_get")
+            val CONFLICT_PARALLEL_TOOLS = setOf(
+                FileReadTool.NAME, ReadImageTool.NAME, "memory_get",
+                FileWriteTool.NAME, FileEditTool.NAME,
+            )
+            val batchTargetPaths = toolCalls.map { (id, name, args) ->
+                if (name in CONFLICT_PARALLEL_TOOLS && name != "memory_get") {
+                    args.optString("path", "")
+                } else ""
+            }
+            val pathsInPlay = batchTargetPaths.filter { it.isNotEmpty() }
             val canParallelize = toolCalls.size > 1 &&
-                toolCalls.all { (id, name, args) -> name in READ_PARALLEL_TOOLS }
+                toolCalls.all { (id, name, args) -> name in CONFLICT_PARALLEL_TOOLS } &&
+                pathsInPlay.size == pathsInPlay.distinct().size
             if (canParallelize) {
                 val parallelStart = System.currentTimeMillis()
                 // Mark ALL blocks RUNNING first (sequential UI update, no
@@ -11349,7 +11377,7 @@ class ChatViewModel(
                     deferred.awaitAll()
                 }
                 AppLogger.info(TAG_STREAM,
-                    "parallel-read: ${toolCalls.size} tool(s) in ${System.currentTimeMillis() - parallelStart}ms")
+                    "parallel-batch: ${toolCalls.size} tool(s) in ${System.currentTimeMillis() - parallelStart}ms")
                 // Post-process sequentially — loop detector, block status,
                 // result parts — in the model's original order.
                 for ((idx, call) in toolCalls.withIndex()) {
@@ -11979,10 +12007,18 @@ class ChatViewModel(
         runCatching {
             val path = JSONObject(argsJson).optString("path", "")
             if (path.contains("/skills/") && path.endsWith("SKILL.md")) {
-                skillRepository?.reloadFromDisk()
+                // [T-conflict-aware-parallel] Parallel file_writes can hit
+                // different SKILL.md files in one batch — reloadFromDisk is
+                // a read-modify-write, so serialize reloads on a dedicated
+                // lock (idempotent, cheap, racy-free).
+                synchronized(skillsReloadLock) {
+                    skillRepository?.reloadFromDisk()
+                }
             }
         }
     }
+
+    private val skillsReloadLock = Any()
 
     /** Sentinel returned by the bash wrapper when bash is missing at run time,
      *  distinct from a script that legitimately exits 127 (T-bash-on-demand M5). */
