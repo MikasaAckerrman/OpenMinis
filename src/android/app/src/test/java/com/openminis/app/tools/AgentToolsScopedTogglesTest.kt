@@ -52,7 +52,7 @@ class AgentToolsScopedTogglesTest {
         val on = names(subagentsEnabled = true).toSet()
         // The gate must remove ONLY the subagent pair: everything else —
         // shell, file tools, browser, memory — is identical in both sets.
-        val diff = off.symmetricDifference(on)
+        val diff = off.union(on).subtract(off.intersect(on))
         assertTrue(
             "gate must strip exactly the subagent tools, got diff=$diff",
             diff == setOf(SubagentTools.SPAWN_TOOL_NAME, SubagentTools.RUN_GRAPH_TOOL_NAME),
