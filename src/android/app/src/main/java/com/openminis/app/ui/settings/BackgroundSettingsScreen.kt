@@ -5,6 +5,8 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import com.openminis.app.offload.ShizukuManager
+import com.openminis.app.service.BackgroundExemptionPolicy
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -28,6 +30,7 @@ import androidx.compose.material.icons.outlined.BatteryFull
 import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.PlayCircle
 import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.MusicNote
 import androidx.compose.material.icons.outlined.NotificationsActive
@@ -100,6 +103,8 @@ fun BackgroundSettingsScreen(onBack: () -> Unit) {
     val backgroundRepo = app.backgroundSettingsRepository
     val taskNotificationsEnabled by backgroundRepo.taskNotificationsEnabled.collectAsState()
     val backgroundOverlayEnabled by backgroundRepo.backgroundOverlayEnabled.collectAsState()
+    val backgroundExemptionEnabled by backgroundRepo.backgroundExemptionEnabled.collectAsState()
+    val shizukuReady = com.openminis.app.offload.ShizukuManager.isReady()
     // [T-completion-haptics] Toggle state + device capability. `hasVibrator`
     // is remembered rather than re-probed on resume: unlike an overlay grant,
     // a device cannot grow a vibration motor while the screen is open.
@@ -410,6 +415,37 @@ fun BackgroundSettingsScreen(onBack: () -> Unit) {
                     stringResource(R.string.settings_bg_overlay_permission_needed)
                 } else {
                     stringResource(R.string.settings_bg_overlay_footer)
+                },
+            )
+
+            // [T-background-survival] System background exemptions toggle:
+            // phantom-process monitor off, doze whitelist, active standby
+            // bucket — everything that keeps the agent + PRoot sandbox
+            // actually WORKING when the app is backgrounded / screen off.
+            // Applied via the Shizuku shell; re-applied automatically on
+            // every Shizuku READY transition while ON. No Shizuku → the
+            // toggle persists the intent, the policy applies it the moment
+            // Shizuku appears.
+            Spacer(Modifier.size(8.dp))
+            BgToggleRow(
+                icon = Icons.Outlined.Shield,
+                iconColor = Color(0xFF34C759),
+                title = stringResource(R.string.settings_bg_exemption),
+                checked = backgroundExemptionEnabled,
+                onCheckedChange = { wanted ->
+                    backgroundRepo.setBackgroundExemptionEnabled(wanted)
+                    if (wanted && ShizukuManager.isReady()) {
+                        // Immediate effect for this session; later boots are
+                        // covered by the READY-transition collector.
+                        BackgroundExemptionPolicy.apply(context.packageName)
+                    }
+                },
+            )
+            BgFooter(
+                if (!shizukuReady) {
+                    stringResource(R.string.settings_bg_exemption_shizuku_needed)
+                } else {
+                    stringResource(R.string.settings_bg_exemption_footer)
                 },
             )
 

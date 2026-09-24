@@ -1201,6 +1201,9 @@
     <!-- T-bg-overlay phase 2 — floating tool-status overlay toggle. -->
     <string name="settings_bg_overlay">Background Task Overlay</string>
     <string name="settings_bg_overlay_footer">Show a small floating capsule with the current tool while Minis is in the background. Requires permission to display over other apps. Tap the capsule to bring Minis to the foreground; drag to move it.</string>
+        <string name="settings_bg_exemption">Background Survival Exemptions</string>
+    <string name="settings_bg_exemption_footer">Keep Minis working in the background: disables the phantom-process killer for app children (the sandbox and tools), adds Minis to the Doze whitelist and pins an active standby bucket. Applied via Shizuku whenever it is running.</string>
+    <string name="settings_bg_exemption_shizuku_needed">Requires a running Shizuku to apply — the toggle is saved and will take effect as soon as Shizuku is available</string>
     <string name="settings_bg_overlay_permission_needed">Allow drawing over other apps to enable</string>
     <!-- [T-android-dynamic-island] Android 16 Live Updates / dynamic-island toggle. -->
     <string name="settings_dynamic_island">Dynamic Island (Live Updates)</string>

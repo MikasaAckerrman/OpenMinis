@@ -944,6 +944,9 @@
     <string name="selection_copied_as_rich_text_toast">Скопировано как форматированный текст</string>
     <string name="settings_bg_overlay">Оверлей фоновых задач</string>
     <string name="settings_bg_overlay_footer">Показывать небольшую плавающую капсулу с текущим инструментом, пока Minis в фоне. Требуется разрешение на отображение поверх других приложений. Нажмите капсулу, чтобы вывести Minis на передний план; перетащите, чтобы переместить её.</string>
+        <string name="settings_bg_exemption">Фоновые исключения системы</string>
+    <string name="settings_bg_exemption_footer">Minis продолжает работу в фоне: отключает убийцу фантомных процессов (песочница и инструменты), добавляет Minis в белый список Doze и держит активный standby-бакет. Применяется через Shizuku, когда он запущен.</string>
+    <string name="settings_bg_exemption_shizuku_needed">Требуется запущенный Shizuku — тумблер сохранён и включится, как только Shizuku появится</string>
     <string name="settings_bg_overlay_permission_needed">Разрешите отображение поверх других приложений для включения</string>
     <string name="settings_dynamic_island">Динамический остров (Live Updates)</string>
     <string name="settings_dynamic_island_footer">Показывать статус агента на чипе состояния Android 16. Когда включено, заменяет плавающий оверлей, чтобы не было двух индикаторов сразу.</string>
