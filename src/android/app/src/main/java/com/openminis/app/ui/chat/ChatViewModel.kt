@@ -11184,8 +11184,12 @@ class ChatViewModel(
                         thbLastLen = 0
                         // [T-thinking-durability] The rolled-back attempt's opaque
                         // reasoning blob is obsolete — drop it so a terminator during
-                        // the retry cannot persist stale reasoning.
+                        // the retry cannot persist stale reasoning. The LOCAL var
+                        // must reset too: if attempt 2 does not re-emit
+                        // reasoning_content, round-end would otherwise persist
+                        // attempt 1's stale blob as this turn's reasoning.
                         liveTurnReasoningBlob = null
+                        turnReasoningBlob = null
                         toolCalls.clear()
                         // T94 fix 2 + T256: throttle bookkeeping is per-stream
                         // attempt; reset alongside the partial-block rollback so
@@ -11292,8 +11296,12 @@ class ChatViewModel(
                         thbLastLen = 0
                         // [T-thinking-durability] The rolled-back attempt's opaque
                         // reasoning blob is obsolete — drop it so a terminator during
-                        // the retry cannot persist stale reasoning.
+                        // the retry cannot persist stale reasoning. The LOCAL var
+                        // must reset too: if attempt 2 does not re-emit
+                        // reasoning_content, round-end would otherwise persist
+                        // attempt 1's stale blob as this turn's reasoning.
                         liveTurnReasoningBlob = null
+                        turnReasoningBlob = null
                         toolCalls.clear()
                         pendingChunkSb.setLength(0)
                         lastUiUpdateMs = 0L
@@ -11461,8 +11469,12 @@ class ChatViewModel(
                         thbLastLen = 0
                         // [T-thinking-durability] The rolled-back attempt's opaque
                         // reasoning blob is obsolete — drop it so a terminator during
-                        // the retry cannot persist stale reasoning.
+                        // the retry cannot persist stale reasoning. The LOCAL var
+                        // must reset too: if attempt 2 does not re-emit
+                        // reasoning_content, round-end would otherwise persist
+                        // attempt 1's stale blob as this turn's reasoning.
                         liveTurnReasoningBlob = null
+                        turnReasoningBlob = null
                         toolCalls.clear()
                         // loop continues — will retry collect with currentProvider
                     } else {
@@ -14944,16 +14956,17 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
             // allToolInputs) and the orphaned CANCELLED tool_results are
             // already handled downstream by PayloadPairingGuard.
             // [T-thinking-durability] The round's reasoning rides along
-            // (reasoningContent), and a thinking-only round (no text yet)
-            // persists as a marker+reasoning row instead of vanishing.
+            // (reasoningContent) whenever a row is written. Boundary (iOS
+            // #566/#569 parity, same as Case 0 / Case 2): a MANUAL Stop with
+            // no text yet → clean drop, no row; thinking-only rounds survive
+            // on the error/background path (persistPartialStreamTurn), which
+            // is where the user's "reasoning disappears in background" lived.
             val roundText = currentLiveTurnText()
             val textParts = roundText.takeIf { it.isNotEmpty() }?.let { rt ->
                 listOf(
                     AgentContentPart.Text(rt),
                     AgentContentPart.Text(STREAM_INTERRUPTED_REMINDER),
                 )
-            } ?: survivingThinking?.let {
-                listOf(AgentContentPart.Text(STREAM_INTERRUPTED_REMINDER))
             }
             if (textParts != null) {
                 agentHistory.add(
