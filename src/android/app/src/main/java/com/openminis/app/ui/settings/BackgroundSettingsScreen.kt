@@ -539,6 +539,38 @@ fun BackgroundSettingsScreen(onBack: () -> Unit) {
                 )
             }
 
+            // [T-bg-freeze-guidance] Live-proven 24.09 (vivo, logcat +
+            // watchdog evidence): the vendor layer freezes a backgrounded
+            // process within seconds — even with FGS + wake lock + Doze
+            // whitelist + EXEMPTED bucket. The app auto-recovers (watchdog +
+            // retry, zero data loss — [T-android-stale-conn-retry-hang]),
+            // but the work itself stalls for the whole backgrounded window.
+            // The ONLY fix is vendor settings no API can flip: the per-app
+            // background-power allowance + the recents lock. Deep-link what
+            // exists (app details → Батарея — OriginOS 4/5 moved the toggle
+            // there), instruct the manual path for the rest. Not gated on
+            // needsOemGuidance: the freeze class exists on most OEM ROMs
+            // (vivo/OPPO/realme/Huawei/Xiaomi), and the row costs one tap.
+            Spacer(Modifier.size(16.dp))
+            BgSectionTitle("Фоновая работа (заморозка системой)")
+            BgRow(
+                icon = Icons.Outlined.BatteryFull,
+                iconColor = Color(0xFF34C759),
+                title = "Разрешить фоновую работу",
+                subtitle = "Настройки приложения → Батарея → «Фоновое энергопотребление» → Разрешить",
+                onClick = {
+                    if (activity != null) PowerOptimizationManager.openAppDetailsSettings(activity)
+                },
+            )
+            BgFooter(
+                "vivo/OPPO/Huawei/Xiaomi замораживают приложение в фоне — несмотря на " +
+                    "уведомление-сервис, Wake Lock и разрешение Doze. Разрешите фоновый расход " +
+                    "батареи для Minis (строка выше). Дополнительно: в «Недавних» потяните " +
+                    "карточку Minis вниз и закрепите (замок); i Manager → Автозапуск → Minis. " +
+                    "После включения: уход в фон (даже открытием другого окна) не останавливает " +
+                    "работу агента; с выключенным экраном работа тоже продолжается.",
+            )
+
             Spacer(Modifier.size(16.dp))
         }
     }

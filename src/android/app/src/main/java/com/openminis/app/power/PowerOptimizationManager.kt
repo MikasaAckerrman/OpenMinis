@@ -149,8 +149,15 @@ object PowerOptimizationManager {
                 ComponentName("com.oppo.safe", "com.oppo.safe.permission.startup.StartupAppListActivity"),
             )
             Vendor.VIVO -> listOf(
+                // Funtouch / OriginOS ≤3 (background-start manager)
                 ComponentName("com.iqoo.secure", "com.iqoo.secure.ui.phoneoptimize.AddWhiteListActivity"),
                 ComponentName("com.vivo.permissionmanager", "com.vivo.permissionmanager.activity.BgStartUpManagerActivity"),
+                // OriginOS 4/5 (2024+): the two above were removed on these
+                // ROMs (user-verified 24.09: «автозапуск не нашёл» — the old
+                // Activities no longer resolve). Newer entry points: the
+                // purview (права) tab and the renamed bg-start manager.
+                ComponentName("com.vivo.permissionmanager", "com.vivo.permissionmanager.activity.PurviewTabActivity"),
+                ComponentName("com.vivo.permissionmanager", "com.vivo.permissionmanager.activity.BgStartUpActivity"),
             )
             Vendor.SAMSUNG -> listOf(
                 // OneUI 5+
