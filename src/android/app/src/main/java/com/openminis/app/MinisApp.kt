@@ -511,6 +511,13 @@ class MinisApp : Application(), ImageLoaderFactory {
         // posts a tap-to-open notification when the app is backgrounded.
         // Mirrors iOS BackgroundKeepAliveManager.postBackgroundTaskNotification.
         backgroundSettingsRepository = BackgroundSettingsRepository(this)
+        // [T-background-survival] Apply the system-level background
+        // exemptions (phantom-killer off, doze whitelist, active bucket)
+        // whenever Shizuku becomes READY. Gated by the Settings toggle
+        // (default ON). Idempotent + self-healing across OEM resets.
+        com.openminis.app.service.BackgroundExemptionPolicy.init(this) {
+            backgroundSettingsRepository.backgroundExemptionEnabled.value
+        }
         backgroundTaskNotifier = BackgroundTaskNotifier(
             context = this,
             chatRepository = chatRepository,

@@ -54,6 +54,23 @@ class BackgroundSettingsRepository(context: Context) {
     }
 
     /**
+     * [T-background-survival] "System background exemptions via Shizuku"
+     * toggle — phantom-process-monitor off, doze whitelist, active standby
+     * bucket. Defaults to ON: the user's explicit requirement is that Minis
+     * keeps working in background/screen-off; the toggle exists so a strict
+     * battery policy can opt out.
+     */
+    private val _backgroundExemptionEnabled =
+        MutableStateFlow(prefs.getBoolean(KEY_BG_EXEMPTION_ENABLED, true))
+    val backgroundExemptionEnabled: StateFlow<Boolean> =
+        _backgroundExemptionEnabled.asStateFlow()
+
+    fun setBackgroundExemptionEnabled(value: Boolean) {
+        prefs.edit().putBoolean(KEY_BG_EXEMPTION_ENABLED, value).apply()
+        _backgroundExemptionEnabled.value = value
+    }
+
+    /**
      * [T-android-dynamic-island] "Show live status on the dynamic island"
      * toggle (Android 16 Live Updates). Defaults to OFF — the capability only
      * exists on Android 16+ with the per-app grant, and when ON it REPLACES the
@@ -241,6 +258,7 @@ class BackgroundSettingsRepository(context: Context) {
         private const val KEY_TASK_NOTIFICATIONS = "taskNotificationsEnabled"
         private const val DEFAULT_TASK_NOTIFICATIONS = true
         private const val KEY_BG_OVERLAY_ENABLED = "backgroundOverlayEnabled"
+        private const val KEY_BG_EXEMPTION_ENABLED = "backgroundExemptionEnabled"
         // [T-overlay-portrait-offscreen] Per-orientation position slots. The old
         // shared keys are deliberately left unread: a value saved by a previous
         // build may be a landscape x, and inheriting it into portrait recreates
