@@ -28,7 +28,16 @@ import java.net.URL
  */
 object SupermemoryBridge {
     /** Default local port of the sandbox supermemory server. */
-    const val DEFAULT_PORT = 6333
+    // [T-supermemory-port-fix] 6767, NOT 6333: the deployed local server
+    // (run.sh, README_SETUP «веб-морда на 6767») has always listened on 6767 —
+    // verified live 24.09: POST /v3/documents 200, POST /v3/search 200. The
+    // bridge shipped with 6333, so EVERY distilled turn since then failed
+    // silently (circuit breaker opened, zero distills ever reached the
+    // store). The compact path (8a0a961) hardcoded the correct 6767 inline —
+    // which masked the divergence until the user's «supermemory после
+    // первого "сжать"» report (compact ingest was the only working path,
+    // and even that just enqueued while the server was down).
+    const val DEFAULT_PORT = 6767
 
     private const val TIMEOUT_MS = 3500
 
@@ -101,7 +110,10 @@ object SupermemoryBridge {
         // point paying timeouts into a dead server 500 times).
         if (breakerIsOpen(now)) return false
         val ok = runCatching {
-            val conn = (URL("http://127.0.0.1:$port/api/add").openConnection() as HttpURLConnection).apply {
+            // [T-supermemory-api-fix] REAL endpoint: POST /v3/documents with
+            // {"content": ...} — verified live (24.09, 200 {"id","status":"queued"}).
+            // The old /api/add never existed on the deployed server.
+            val conn = (URL("http://127.0.0.1:$port/v3/documents").openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
                 connectTimeout = TIMEOUT_MS
                 readTimeout = TIMEOUT_MS
@@ -127,25 +139,40 @@ object SupermemoryBridge {
         // 3.5s timeout entirely.
         if (breakerIsOpen(now)) return emptyList()
         val hits = runCatching {
-            val conn = (URL("http://127.0.0.1:$port/api/search?q=" +
-                java.net.URLEncoder.encode(query.take(400), "UTF-8")).openConnection() as HttpURLConnection).apply {
+            // [T-supermemory-api-fix] REAL endpoint: POST /v3/search with a
+            // JSON body {"q": ...} — verified live (24.09, 200). The old
+            // GET /api/search?q= never existed. Response shape (captured
+            // live): {"results":[{"documentId","score","title","chunks":
+            // [{"content","score","isRelevant","position"}]}],"timing","total"}
+            // — chunks are NESTED inside each result, one chunk per hit.
+            val conn = (URL("http://127.0.0.1:$port/v3/search").openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
                 connectTimeout = TIMEOUT_MS
                 readTimeout = TIMEOUT_MS
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+            }
+            conn.outputStream.use {
+                it.write(JSONObject().put("q", query.take(400)).toString().toByteArray())
             }
             val body = BufferedReader(InputStreamReader(conn.inputStream)).use { it.readText() }
             conn.disconnect()
-            // Tolerant parsing: [ {id, content, score?}, ... ] or {results: [...]}.
-            val arr: JSONArray = when {
-                body.trimStart().startsWith("[") -> JSONArray(body)
-                else -> JSONObject(body).optJSONArray("results") ?: JSONArray()
-            }
-            (0 until arr.length()).mapNotNull { i ->
-                val o = arr.optJSONObject(i) ?: return@mapNotNull null
-                Hit(
-                    id = o.optString("id", i.toString()),
-                    content = o.optString("content", o.optString("text", "")),
-                    score = o.optDouble("score", 0.0),
-                )
+            val results = JSONObject(body).optJSONArray("results") ?: JSONArray()
+            (0 until results.length()).flatMap { ri ->
+                val r = results.optJSONObject(ri) ?: return@flatMap emptyList()
+                val docId = r.optString("documentId", ri.toString())
+                val chunks = r.optJSONArray("chunks") ?: JSONArray()
+                (0 until chunks.length()).mapNotNull { ci ->
+                    val c = chunks.optJSONObject(ci) ?: return@mapNotNull null
+                    // isRelevant=false = the server's memory agent judged the
+                    // chunk noise — respect its judgement, don't inject it.
+                    if (c.optBoolean("isRelevant", true) == false) return@mapNotNull null
+                    Hit(
+                        id = docId,
+                        content = c.optString("content", ""),
+                        score = c.optDouble("score", 0.0),
+                    )
+                }
             }.filter { it.content.isNotBlank() }
         }.getOrElse {
             recordFailure(now)
