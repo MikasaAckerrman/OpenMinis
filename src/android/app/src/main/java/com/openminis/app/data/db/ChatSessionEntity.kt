@@ -27,6 +27,18 @@ data class ChatSessionEntity(
     @ColumnInfo(name = "thinking_override") val thinkingOverride: String? = null,
 
     /**
+     * [T-scoped-agent-toggles] Per-session Auto Mode / Subagents overrides
+     * (user request 24.09: "авто режим и мини агенты не работали во всех
+     * сессиях при включении, а только в определенной сессии"). null = unset
+     * → fall back to the legacy app-level AutoModePrefs/SubagentPrefs value
+     * (pre-scoping behaviour, so existing installs change nothing until the
+     * user toggles inside a session). 1 = explicitly ON for THIS session,
+     * 0 = explicitly OFF — both distinct from unset and survive cold-start.
+     */
+    @ColumnInfo(name = "auto_mode_enabled") val autoModeEnabled: Int? = null,
+    @ColumnInfo(name = "subagents_enabled") val subagentsEnabled: Int? = null,
+
+    /**
      * [T-agent-graph-showcase] Non-null when this session belongs to a
      * multi-agent run: the value is the run's taskId. The main chat list hides
      * these; the showcase session for that taskId links to them.

@@ -415,6 +415,14 @@ interface ChatDao {
     @Query("UPDATE sessions SET thinking_override = :value, updated_at = :updatedAt WHERE id = :id")
     suspend fun updateThinkingOverride(id: String, value: String?, updatedAt: Long = System.currentTimeMillis())
 
+    // [T-scoped-agent-toggles] Per-session Auto Mode / Subagents overrides.
+    // 1 = on for THIS session, 0 = off, null = unset (legacy global fallback).
+    @Query("UPDATE sessions SET auto_mode_enabled = :value, updated_at = :updatedAt WHERE id = :id")
+    suspend fun updateAutoModeEnabled(id: String, value: Int?, updatedAt: Long = System.currentTimeMillis())
+
+    @Query("UPDATE sessions SET subagents_enabled = :value, updated_at = :updatedAt WHERE id = :id")
+    suspend fun updateSubagentsEnabled(id: String, value: Int?, updatedAt: Long = System.currentTimeMillis())
+
     // Session: pinned_at
     @Query("UPDATE sessions SET pinned_at = :pinnedAt, updated_at = :updatedAt WHERE id = :id")
     suspend fun updatePinnedAt(id: String, pinnedAt: Long?, updatedAt: Long = System.currentTimeMillis())

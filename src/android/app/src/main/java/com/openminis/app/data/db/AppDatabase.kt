@@ -15,7 +15,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         WebAppShortcutEntity::class,
         DeletedMessageEntity::class,
     ],
-    version = 12,
+    version = 13,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -192,6 +192,16 @@ abstract class AppDatabase : RoomDatabase() {
          * old message wiped a week of work. Pure additive: no existing table
          * is touched, no row is rewritten.
          */
+        val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // [T-scoped-agent-toggles] Auto Mode / Subagents become
+                // per-session columns. NULL = unset (legacy global fallback),
+                // 1 = explicitly on for this session, 0 = explicitly off.
+                db.execSQL("ALTER TABLE sessions ADD COLUMN auto_mode_enabled INTEGER")
+                db.execSQL("ALTER TABLE sessions ADD COLUMN subagents_enabled INTEGER")
+            }
+        }
+
         val MIGRATION_11_12 = object : Migration(11, 12) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(
@@ -256,7 +266,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "minis.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13)
                     .build()
                     .also { INSTANCE = it }
             }
