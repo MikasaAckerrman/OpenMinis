@@ -5819,14 +5819,22 @@ class ChatViewModel(
                         com.openminis.app.data.StreamHeartbeat.dirFor(context.filesDir, sessionId),
                     )
                     for (o in orphans) {
+                        // [T-thinking-durability] Round out the recovered
+                        // row with surviving reasoning: a backgrounded
+                        // reasoning turn killed by the OS restores its
+                        // thinking block instead of losing it.
                         val parts = listOf(
                             AgentContentPart.Text(o.text),
                             AgentContentPart.Text(STREAM_CRASH_RECOVERED_REMINDER),
                         )
-                        chatRepository.appendMessage(sessionId, "assistant", buildAssistantPartsJson(parts))
+                        chatRepository.appendMessage(
+                            sessionId, "assistant", buildAssistantPartsJson(parts),
+                            reasoningContent = o.thinking.takeIf { it.isNotEmpty() },
+                        )
                         AppLogger.info(
                             TAG,
-                            "[StreamDurability] recovered ${o.text.length} chars from stream ${o.streamId.take(12)} after process death",
+                            "[StreamDurability] recovered ${o.text.length} chars " +
+                                "(+${o.thinking.length} thinking) from stream ${o.streamId.take(12)} after process death",
                         )
                     }
                 }.onFailure {
@@ -10188,6 +10196,12 @@ class ChatViewModel(
             liveStreamTurnText = ""
             var hbLastMs = 0L
             var hbLastLen = 0
+            // [T-thinking-durability] Same heartbeat cadence machinery for
+            // the REASONING buffer: independent watermarks so text and
+            // thinking journal at their own paces (thinking often leads
+            // text by thousands of chars in reasoning models).
+            var thbLastMs = 0L
+            var thbLastLen = 0
             // [T-android-tool-splits-reply-fix] Index (into allToolBlocks) of
             // THIS turn's single text block, used only when the provider's
             // streamed content is monolithic (streamTextIsMonolithic — OpenAI
@@ -10343,6 +10357,29 @@ class ChatViewModel(
                 when (chunk) {
                     is LLMStreamChunk.ThinkingDelta -> {
                         turnThinking.append(chunk.text)
+                        // [T-thinking-durability] Crash journal for the
+                        // reasoning stream: identical policy to the text
+                        // journal (StreamDurability cadence + size gate),
+                        // separate .thinklog file. Without this, thinking
+                        // existed ONLY in the process heap: background the
+                        // app mid-reasoning → Android kills the process →
+                        // recovery materialized the text but the reasoning
+                        // "just disappeared" (the user's critical report).
+                        val thbLen = turnThinking.length
+                        val thbNow = System.currentTimeMillis()
+                        if (com.openminis.app.data.StreamDurability.shouldHeartbeat(
+                                thbNow, thbLastMs, thbLen, thbLastLen,
+                            )
+                        ) {
+                            thbLastMs = thbNow
+                            val thbFrom = thbLastLen
+                            thbLastLen = thbLen
+                            com.openminis.app.data.StreamHeartbeat.appendThinking(
+                                streamHeartbeatDir(),
+                                assistantId,
+                                turnThinking.substring(thbFrom, thbLen),
+                            )
+                        }
                         // Update thinking block in UI
                         val thinkIdx = allToolBlocks.indexOfFirst { it.kind == "thinking" && it.id == "thinking_$turn" }
                         if (thinkIdx < 0) {
@@ -13174,16 +13211,28 @@ class ChatViewModel(
             AgentContentPart.Text(text),
             AgentContentPart.Text(STREAM_INTERRUPTED_REMINDER),
         )
+        // [T-thinking-durability] The thinking journal is the authoritative
+        // reasoning copy at stream death (written on heartbeat cadence);
+        // the in-memory buffer is unreachable from here — it is a local of
+        // the dead runAgentLoop invocation. Drain it into the row so the
+        // interrupted turn keeps its reasoning block after the error.
+        val survivingThinking = liveStreamId
+            ?.let { com.openminis.app.data.StreamHeartbeat.readThinking(streamHeartbeatDir(), it) }
+            ?.takeIf { it.isNotEmpty() }
         agentHistory.add(
             LLMMessage(
                 role = LLMMessage.Role.ASSISTANT,
                 content = text,
                 contentParts = parts,
+                reasoningContent = survivingThinking,
             )
         )
         withContext(Dispatchers.IO) {
             runCatching {
-                chatRepository.appendMessage(sid, "assistant", buildAssistantPartsJson(parts))
+                chatRepository.appendMessage(
+                    sid, "assistant", buildAssistantPartsJson(parts),
+                    reasoningContent = survivingThinking,
+                )
             }.onFailure {
                 Log.w(TAG, "[StreamDurability] partial-turn persist failed: ${it.message}")
             }
@@ -13191,7 +13240,11 @@ class ChatViewModel(
         liveTurnTextSb = null
         liveStreamTurnText = ""
         liveStreamId?.let { com.openminis.app.data.StreamHeartbeat.delete(streamHeartbeatDir(), it) }
-        AppLogger.info(TAG_STREAM, "[StreamDurability] committed partial round: ${text.length} chars after loop death")
+        AppLogger.info(
+            TAG_STREAM,
+            "[StreamDurability] committed partial round: ${text.length} chars " +
+                "(+${survivingThinking?.length ?: 0} thinking) after loop death",
+        )
         return true
     }
 

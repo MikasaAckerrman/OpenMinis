@@ -43,16 +43,36 @@ object StreamHeartbeat {
     const val DIR_NAME = "stream-heartbeat"
     const val FILE_SUFFIX = ".streamlog"
 
+    /**
+     * [T-thinking-durability] Companion journal for REASONING deltas, one
+     * file per stream (`<streamId>.thinklog`), identical escaping and
+     * lifecycle. The text journal already survives process death, but
+     * thinking streamed into an in-memory buffer died with the process —
+     * the user's report: background the app during a reasoning turn, come
+     * back, the reasoning "just disappears". A separate file (rather than
+     * inlining kind markers into .streamlog) keeps the legacy format
+     * untouched: old sessions recover exactly as before, and a reader that
+     * knows nothing about .thinklog ignores it harmlessly.
+     */
+    const val THINK_SUFFIX = ".thinklog"
+
     /** Journal dir for a session: `<filesDir>/minis-sessions/<sid>/stream-heartbeat`. */
     fun dirFor(filesDir: File, sessionId: String): File =
         File(File(filesDir, "minis-sessions/$sessionId"), DIR_NAME)
 
     /** Append one escaped delta line. Cheap: open-append-close, a few syscalls. */
-    fun appendDelta(dir: File, streamId: String, delta: String) {
+    fun appendDelta(dir: File, streamId: String, delta: String) =
+        appendTo(dir, streamId, FILE_SUFFIX, delta)
+
+    /** [T-thinking-durability] Append one escaped REASONING delta line. */
+    fun appendThinking(dir: File, streamId: String, delta: String) =
+        appendTo(dir, streamId, THINK_SUFFIX, delta)
+
+    private fun appendTo(dir: File, streamId: String, suffix: String, delta: String) {
         if (delta.isEmpty()) return
         runCatching {
             dir.mkdirs()
-            File(dir, streamId + FILE_SUFFIX).appendText(escape(delta) + "\n")
+            File(dir, streamId + suffix).appendText(escape(delta) + "\n")
         }
     }
 
@@ -60,8 +80,15 @@ object StreamHeartbeat {
      * Concatenated journal text for one stream, or null when no journal
      * exists / nothing survived. A truncated final line is dropped.
      */
-    fun readText(dir: File, streamId: String): String? {
-        val f = File(dir, streamId + FILE_SUFFIX)
+    fun readText(dir: File, streamId: String): String? =
+        readJournal(dir, streamId, FILE_SUFFIX)
+
+    /** [T-thinking-durability] Concatenated REASONING journal for one stream. */
+    fun readThinking(dir: File, streamId: String): String? =
+        readJournal(dir, streamId, THINK_SUFFIX)
+
+    private fun readJournal(dir: File, streamId: String, suffix: String): String? {
+        val f = File(dir, streamId + suffix)
         if (!f.exists() || f.length() == 0L) return null
         val lines = runCatching { f.readText().split('\n') }.getOrNull() ?: return null
         if (lines.size <= 1) return null // "" only — no complete line
@@ -75,9 +102,12 @@ object StreamHeartbeat {
         return sb.toString().ifEmpty { null }
     }
 
-    /** Remove the journal for one stream. No-op when absent. */
+    /** Remove the journal for one stream (both text and thinking). No-op when absent. */
     fun delete(dir: File, streamId: String) {
-        runCatching { File(dir, streamId + FILE_SUFFIX).delete() }
+        runCatching {
+            File(dir, streamId + FILE_SUFFIX).delete()
+            File(dir, streamId + THINK_SUFFIX).delete()
+        }
     }
 
     /** Remove every journal for the session (clear-chat / session delete). */
@@ -85,26 +115,48 @@ object StreamHeartbeat {
         runCatching { dir.deleteRecursively() }
     }
 
-    data class Orphan(val streamId: String, val text: String)
+    data class Orphan(
+        val streamId: String,
+        val text: String,
+        /** [T-thinking-durability] Surviving reasoning — "" when none. */
+        val thinking: String = "",
+    )
 
     /**
-     * Read + delete every surviving journal, oldest first (file mtime — the
-     * write order). Files below [minChars] are deleted WITHOUT recovery: the
-     * only sub-threshold files come from the cancel race (an append landing
-     * between read and delete), and materializing those would spam the chat
-     * with fragments.
+     * Read + delete every surviving journal (text AND thinking), oldest
+     * first (file mtime — the write order). A stream materializes when its
+     * TEXT or its THINKING crossed [minChars] — a turn that spent 10k chars
+     * reasoning and died before emitting prose recovers its thinking block
+     * too, not just a bare "interrupted" row. Sub-threshold files are
+     * deleted WITHOUT recovery: the only sub-threshold files come from the
+     * cancel race (an append landing between read and delete), and
+     * materializing those would spam the chat with fragments.
      */
     fun recoverOrphans(dir: File, minChars: Int = StreamDurability.FIRST_WRITE_CHARS): List<Orphan> {
-        val files = runCatching {
-            dir.listFiles { f -> f.name.endsWith(FILE_SUFFIX) }?.sortedBy { it.lastModified() }
+        val ids = runCatching {
+            (dir.listFiles { f -> f.name.endsWith(FILE_SUFFIX) }?.map { it.name.removeSuffix(FILE_SUFFIX) } ?: emptyList()) +
+                (dir.listFiles { f -> f.name.endsWith(THINK_SUFFIX) }?.map { it.name.removeSuffix(THINK_SUFFIX) } ?: emptyList())
         }.getOrNull() ?: return emptyList()
+        // (streamId, earliest mtime across its two files)
+        val ordered = ids.distinct().mapNotNull { id ->
+            val mt = listOf(FILE_SUFFIX, THINK_SUFFIX)
+                .map { File(dir, id + it) }
+                .filter { it.exists() }
+                .minOfOrNull { it.lastModified() } ?: return@mapNotNull null
+            id to mt
+        }.sortedBy { it.second }
         val out = mutableListOf<Orphan>()
-        for (f in files) {
-            val text = readText(dir, f.name.removeSuffix(FILE_SUFFIX))
-            if (text != null && text.length >= minChars) {
-                out.add(Orphan(f.name.removeSuffix(FILE_SUFFIX), text))
+        for ((id, _) in ordered) {
+            val text = readJournal(dir, id, FILE_SUFFIX) ?: ""
+            val thinking = readJournal(dir, id, THINK_SUFFIX) ?: ""
+            val survives = text.length >= minChars || thinking.length >= minChars
+            if (survives) {
+                out.add(Orphan(id, text, thinking))
             }
-            runCatching { f.delete() }
+            runCatching {
+                File(dir, id + FILE_SUFFIX).delete()
+                File(dir, id + THINK_SUFFIX).delete()
+            }
         }
         if (out.isEmpty()) runCatching { dir.delete() } // keep the tree tidy
         return out

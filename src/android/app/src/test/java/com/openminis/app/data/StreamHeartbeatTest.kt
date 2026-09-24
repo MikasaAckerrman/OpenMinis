@@ -124,4 +124,69 @@ class StreamHeartbeatTest {
         assertNull(StreamHeartbeat.readText(dir, "s2"))
         assertTrue(!dir.exists())
     }
+
+    // ─── [T-thinking-durability] reasoning journal ──────────────────────────
+
+    @Test
+    fun `appendThinking and readThinking round-trip reasoning deltas`() {
+        val dir = tmp.newFolder()
+        StreamHeartbeat.appendThinking(dir, "s", "reasoning ")
+        StreamHeartbeat.appendThinking(dir, "s", "part two\nwith newline")
+        assertEquals("reasoning part two\nwith newline", StreamHeartbeat.readThinking(dir, "s"))
+    }
+
+    @Test
+    fun `thinking journal lives beside text journal under same id`() {
+        val dir = tmp.newFolder()
+        StreamHeartbeat.appendDelta(dir, "s", "the text")
+        StreamHeartbeat.appendThinking(dir, "s", "the reasoning")
+        assertEquals("the text", StreamHeartbeat.readText(dir, "s"))
+        assertEquals("the reasoning", StreamHeartbeat.readThinking(dir, "s"))
+    }
+
+    @Test
+    fun `delete removes both text and thinking journals`() {
+        val dir = tmp.newFolder()
+        StreamHeartbeat.appendDelta(dir, "s", "text")
+        StreamHeartbeat.appendThinking(dir, "s", "thinking")
+        StreamHeartbeat.delete(dir, "s")
+        assertNull(StreamHeartbeat.readText(dir, "s"))
+        assertNull(StreamHeartbeat.readThinking(dir, "s"))
+    }
+
+    @Test
+    fun `orphan recovery returns thinking alongside text`() {
+        val dir = tmp.newFolder()
+        val f = dir.resolve("s" + StreamHeartbeat.FILE_SUFFIX)
+        f.writeText(StreamHeartbeat.escape("survived text") + "\n")
+        val t = dir.resolve("s" + StreamHeartbeat.THINK_SUFFIX)
+        t.writeText(StreamHeartbeat.escape("survived reasoning") + "\n")
+        val orphans = StreamHeartbeat.recoverOrphans(dir, minChars = 1)
+        assertEquals(1, orphans.size)
+        assertEquals("survived text", orphans[0].text)
+        assertEquals("survived reasoning", orphans[0].thinking)
+        assertTrue(!f.exists() && !t.exists())
+    }
+
+    @Test
+    fun `thinking-only orphan above threshold recovers with empty text`() {
+        val dir = tmp.newFolder()
+        val t = dir.resolve("s" + StreamHeartbeat.THINK_SUFFIX)
+        t.writeText(StreamHeartbeat.escape("a very long reasoning stream that crossed the threshold") + "\n")
+        val orphans = StreamHeartbeat.recoverOrphans(dir, minChars = 10)
+        assertEquals(1, orphans.size)
+        assertEquals("", orphans[0].text)
+        assertTrue(orphans[0].thinking.startsWith("a very long"))
+        assertTrue(!t.exists())
+    }
+
+    @Test
+    fun `thinking-only orphan below threshold is deleted without recovery`() {
+        val dir = tmp.newFolder()
+        val t = dir.resolve("s" + StreamHeartbeat.THINK_SUFFIX)
+        t.writeText(StreamHeartbeat.escape("tiny") + "\n")
+        val orphans = StreamHeartbeat.recoverOrphans(dir, minChars = 10)
+        assertTrue(orphans.isEmpty())
+        assertTrue(!t.exists())
+    }
 }
