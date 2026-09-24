@@ -1396,6 +1396,8 @@ class ChatViewModel(
         get() = AgentTools.makeAgentTools(
             memoryEnabled = _memoryEnabled.value,
             allowedTools = com.openminis.app.tools.AgentToolPolicyStore.policyFor(sessionId),
+            // [T-scoped-agent-toggles] session override → legacy global.
+            subagentsEnabled = isSubagentsEnabled(),
         )
 
     /**
@@ -1957,6 +1959,65 @@ class ChatViewModel(
 
     internal val _thinkingLevel = MutableStateFlow(ThinkingLevel.OFF)
     val thinkingLevel: StateFlow<ThinkingLevel> = _thinkingLevel.asStateFlow()
+
+    // [T-scoped-agent-toggles] Auto Mode / Subagents are PER-SESSION (user
+    // request 24.09): toggling them in one chat must not flip the others.
+    // null = this session has no override → the legacy app-level prefs
+    // (AutoModePrefs/SubagentPrefs) decide — so existing installs behave
+    // exactly as before until the user toggles inside a specific session.
+    // The gate readers below resolve override→global into ONE boolean.
+    private val _sessionAutoMode = MutableStateFlow<Boolean?>(null)
+    private val _sessionSubagents = MutableStateFlow<Boolean?>(null)
+
+    /** Effective Auto Mode for THIS session (override, else legacy global). */
+    fun isAutoModeEnabled(): Boolean =
+        _sessionAutoMode.value ?: com.openminis.app.data.AutoModePrefs.isEnabled()
+
+    /** Effective Subagents for THIS session (override, else legacy global). */
+    fun isSubagentsEnabled(): Boolean =
+        _sessionSubagents.value ?: com.openminis.app.data.SubagentPrefs.isEnabled()
+
+    /**
+     * Per-session Auto Mode override — persists immediately to the session
+     * row (ensureSession materialises drafts, same contract as
+     * [persistThinkingOverride]). Flipping it in chat A leaves chat B on
+     * whatever B was set to (or the global default).
+     */
+    fun setSessionAutoMode(enabled: Boolean) {
+        if (_sessionAutoMode.value == enabled) return
+        _sessionAutoMode.value = enabled
+        AppLogger.info(TAG_STREAM, "[ScopedToggles] autoMode=$enabled (sid=${activeSessionId.take(8)})")
+        viewModelScope.launch {
+            val sid = ensureSession()
+            chatRepository.dao.updateAutoModeEnabled(sid, if (enabled) 1 else 0)
+        }
+    }
+
+    /** Per-session Subagents override — same contract as [setSessionAutoMode]. */
+    fun setSessionSubagents(enabled: Boolean) {
+        if (_sessionSubagents.value == enabled) return
+        _sessionSubagents.value = enabled
+        AppLogger.info(TAG_STREAM, "[ScopedToggles] subagents=$enabled (sid=${activeSessionId.take(8)})")
+        viewModelScope.launch {
+            val sid = ensureSession()
+            chatRepository.dao.updateSubagentsEnabled(sid, if (enabled) 1 else 0)
+        }
+    }
+
+    /**
+     * Reactive RESOLVED Auto Mode for THIS session: session override, else
+     * the legacy global pref. The composer's ▶ button collects this so it
+     * recomposes for both sources (a session toggle AND a legacy global
+     * change while unset), mirroring the pre-scoping enabledFlow contract.
+     */
+    val resolvedAutoMode: StateFlow<Boolean> =
+        combine(_sessionAutoMode, com.openminis.app.data.AutoModePrefs.enabledFlow) { o, g -> o ?: g }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), com.openminis.app.data.AutoModePrefs.isEnabled())
+
+    /** Reactive RESOLVED Subagents for THIS session (override ?: legacy global). */
+    val resolvedSubagents: StateFlow<Boolean> =
+        combine(_sessionSubagents, com.openminis.app.data.SubagentPrefs.enabledFlow) { o, g -> o ?: g }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), com.openminis.app.data.SubagentPrefs.isEnabled())
 
     /**
      * [T-android-enhanced-cache] Enhanced Cache (1-hour Anthropic cache TTL)
@@ -5979,6 +6040,14 @@ class ChatViewModel(
                 ?.let { runCatching { ThinkingLevel.valueOf(it) }.getOrNull() }
                 ?: ThinkingLevel.OFF
 
+            // [T-scoped-agent-toggles] Hydrate this session's Auto Mode /
+            // Subagents overrides. null = unset → the legacy global prefs
+            // decide (pre-scoping behaviour); 1/0 = the user's explicit
+            // per-session choice, surviving cold-start.
+            _sessionAutoMode.value = session.autoModeEnabled?.let { it == 1 }
+            _sessionSubagents.value = session.subagentsEnabled?.let { it == 1 }
+            AppLogger.info(TAG, "[ScopedToggles] load sid=${session.id.take(8)} autoMode=${_sessionAutoMode.value ?: "global"} subagents=${_sessionSubagents.value ?: "global"}")
+
             // Priority 1: restore from persisted model_binding (group or entry)
             var resolved = restoreFromBinding(session.modelBinding)
 
@@ -8403,9 +8472,12 @@ class ChatViewModel(
         // [T-auto-mode] The user's own words arm the autonomous run (gated by
         // the AutoModePrefs toggle); ANY other manual message from the user
         // disarms it — their live control always wins over the loop.
+        // [T-scoped-agent-toggles] The gate reads the SESSION override
+        // (null → legacy global), so arming "авто-режим" in chat A does not
+        // arm chat B.
         if (!trimmed.startsWith("⟳")) {
             if (com.openminis.app.agent.AgentAutoMode.wantsAutoMode(trimmed) &&
-                com.openminis.app.data.AutoModePrefs.isEnabled()
+                isAutoModeEnabled()
             ) {
                 _autoModeArmed.value = true
                 autoModeTurns = 0

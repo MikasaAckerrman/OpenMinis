@@ -92,6 +92,13 @@ object AgentTools {
          * [canonicalToolName]. `memory` expands to both memory halves.
          */
         allowedTools: List<String>? = null,
+        /**
+         * [T-scoped-agent-toggles] Session-scoped subagents gate: the caller
+         * (ChatViewModel) resolves session-override → legacy global. Defaults
+         * to the global pref so non-session callers (DebugRPCHandler) keep
+         * the previous behaviour.
+         */
+        subagentsEnabled: Boolean = com.openminis.app.data.SubagentPrefs.isEnabled(),
     ): List<AgentToolDefinition> {
         val allow = expandAllowlist(allowedTools)
 
@@ -113,7 +120,12 @@ object AgentTools {
             // is off (the model can't even attempt a spawn call), exactly
             // like the memory gate above. turn_timer is NOT gated: it is a
             // per-conversation budget tool, not the multi-agent machinery.
-            if (com.openminis.app.data.SubagentPrefs.isEnabled()) {
+            // [T-scoped-agent-toggles] the gate is now session-scoped: the
+            // ChatViewModel passes its resolved per-session value, so
+            // enabling subagents in one chat leaves other chats' schemas
+            // clean. The parameter default keeps the legacy global for
+            // non-session callers.
+            if (subagentsEnabled) {
                 if (permitted(com.openminis.app.tools.SubagentTools.SPAWN_TOOL_NAME)) {
                     add(com.openminis.app.tools.SubagentTools.spawnSubagentDefinition())
                 }

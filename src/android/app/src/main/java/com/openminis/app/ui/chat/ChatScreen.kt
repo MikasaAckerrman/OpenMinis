@@ -2353,17 +2353,24 @@ fun ChatScreen(
                             // Background. State is read fresh per menu open
                             // and flipped in place; the composer's ▶ button
                             // and the arming phrase remain alternative paths
-                            // to the same AutoModePrefs gate.
-                            val menuContext = LocalContext.current
-                            var menuAutoMode by remember { mutableStateOf(com.openminis.app.data.AutoModePrefs.isEnabled()) }
+                            // to the same gate.
+                            // [T-scoped-agent-toggles] User request 24.09:
+                            // "авто режим и мини агенты — только в
+                            // определённой сессии". The toggles now read and
+                            // write the SESSION override (null → legacy
+                            // global), so flipping them here scopes Auto
+                            // Mode / Subagents to THIS chat only — other
+                            // sessions keep their own state (or the global
+                            // default) instead of following along.
+                            var menuAutoMode by remember { mutableStateOf(viewModel.isAutoModeEnabled()) }
                             var menuSubagents by remember {
-                                mutableStateOf(com.openminis.app.data.SubagentPrefs.isEnabled())
+                                mutableStateOf(viewModel.isSubagentsEnabled())
                             }
                             DropdownMenuItem(
                                 text = { Text(stringResource(R.string.settings_auto_mode)) },
                                 onClick = {
                                     menuAutoMode = !menuAutoMode
-                                    com.openminis.app.data.AutoModePrefs.setEnabled(menuContext, menuAutoMode)
+                                    viewModel.setSessionAutoMode(menuAutoMode)
                                 },
                                 leadingIcon = {
                                     Icon(Icons.Default.PlayArrow, contentDescription = null)
@@ -2376,7 +2383,7 @@ fun ChatScreen(
                                 text = { Text(stringResource(R.string.settings_subagents)) },
                                 onClick = {
                                     menuSubagents = !menuSubagents
-                                    com.openminis.app.data.SubagentPrefs.setEnabled(menuContext, menuSubagents)
+                                    viewModel.setSessionSubagents(menuSubagents)
                                 },
                                 leadingIcon = {
                                     Icon(Icons.AutoMirrored.Filled.CallSplit, contentDescription = null)
@@ -5291,14 +5298,16 @@ fun ChatScreen(
 
                         // [T-auto-mode-quick-toggle] The user asked for the
                         // arm switch IN the chat, not only in Settings: one
-                        // tap next to the input flips the same persisted gate
-                        // (AutoModePrefs.enabledFlow) the Background screen
-                        // switch uses — both recompose together. Accent when
+                        // tap next to the input flips the gate. Accent when
                         // armed: the next "авто-режим" message starts the run.
-                        val autoModeOn by com.openminis.app.data.AutoModePrefs.enabledFlow.collectAsState()
+                        // [T-scoped-agent-toggles] The button now drives the
+                        // SESSION override (resolvedAutoMode = override ?:
+                        // legacy global), so arming auto mode here arms THIS
+                        // chat only — other sessions are untouched.
+                        val autoModeOn by viewModel.resolvedAutoMode.collectAsState()
                         InputCircleButton(
                             onClick = {
-                                com.openminis.app.data.AutoModePrefs.setEnabled(context, !autoModeOn)
+                                viewModel.setSessionAutoMode(!autoModeOn)
                             },
                             isAccent = autoModeOn,
                         ) {
