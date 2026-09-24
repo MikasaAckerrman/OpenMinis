@@ -194,39 +194,12 @@ fun BackgroundSettingsScreen(onBack: () -> Unit) {
             // decision 22.09.2026): default OFF; when on, the user's own
             // message arms a run that continues until TASK_COMPLETE.
             // Sits in Background because it governs unattended work.
-            Spacer(Modifier.size(8.dp))
-            var autoModeEnabled by remember { mutableStateOf(AutoModePrefs.isEnabled()) }
-            BgToggleRow(
-                icon = Icons.Outlined.PlayCircle,
-                iconColor = Color(0xFF5856D6),
-                title = stringResource(R.string.settings_auto_mode),
-                checked = autoModeEnabled,
-                onCheckedChange = { wanted ->
-                    autoModeEnabled = wanted
-                    AutoModePrefs.setEnabled(context, wanted)
-                },
-            )
-            BgFooter(stringResource(R.string.settings_auto_mode_footer))
-
-            // [T-subagent-gate] Subagents are opt-in (user decision
-            // 23.09.2026): with the switch off, spawn/spawn_many/run_graph/
-            // list_agents leave the model's tool schema entirely — it can't
-            // even attempt a spawn call. Turn ON to let the model delegate
-            // subtasks to specialist agents.
-            var subagentsEnabled by remember {
-                mutableStateOf(com.openminis.app.data.SubagentPrefs.isEnabled())
-            }
-            BgToggleRow(
-                icon = Icons.Outlined.Groups,
-                iconColor = Color(0xFF30B0C7),
-                title = stringResource(R.string.settings_subagents),
-                checked = subagentsEnabled,
-                onCheckedChange = { wanted ->
-                    subagentsEnabled = wanted
-                    com.openminis.app.data.SubagentPrefs.setEnabled(context, wanted)
-                },
-            )
-            BgFooter(stringResource(R.string.settings_subagents_footer))
+            // [T-chat-menu-agent-toggles] Auto-mode + subagents toggles
+            // MOVED to the chat screen's "..." menu (user request 24.09):
+            // both are agent-behaviour features and belong one tap away
+            // from the conversation, not under Background & Notifications.
+            // Gate semantics (arm phrase, tool-schema stripping) unchanged —
+            // only the UI surface moved.
 
             // [T-completion-haptics] Double-buzz on turn end. Rendered right
             // under Task Notifications because it answers the same question

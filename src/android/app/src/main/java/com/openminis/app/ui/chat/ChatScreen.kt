@@ -42,6 +42,7 @@ import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.VideoFile
 import androidx.compose.material.icons.automirrored.filled.Article
+import androidx.compose.material.icons.automirrored.filled.CallSplit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.conflate
@@ -2343,6 +2344,46 @@ fun ChatScreen(
                                 leadingIcon = {
                                     Icon(Icons.Default.Memory, contentDescription = null)
                                 },
+                            )
+                            // [T-chat-menu-agent-toggles] Auto-mode and
+                            // subagents are CHAT-AGENT features, not
+                            // background/notification settings — the user's
+                            // request: both toggles live here (the "..." menu),
+                            // one tap on/off, no detour into Settings →
+                            // Background. State is read fresh per menu open
+                            // and flipped in place; the composer's ▶ button
+                            // and the arming phrase remain alternative paths
+                            // to the same AutoModePrefs gate.
+                            val menuContext = LocalContext.current
+                            var menuAutoMode by remember { mutableStateOf(com.openminis.app.data.AutoModePrefs.isEnabled()) }
+                            var menuSubagents by remember {
+                                mutableStateOf(com.openminis.app.data.SubagentPrefs.isEnabled())
+                            }
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.settings_auto_mode)) },
+                                onClick = {
+                                    menuAutoMode = !menuAutoMode
+                                    com.openminis.app.data.AutoModePrefs.setEnabled(menuContext, menuAutoMode)
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.Default.PlayArrow, contentDescription = null)
+                                },
+                                trailingIcon = if (menuAutoMode) {
+                                    { Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary) }
+                                } else null,
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.settings_subagents)) },
+                                onClick = {
+                                    menuSubagents = !menuSubagents
+                                    com.openminis.app.data.SubagentPrefs.setEnabled(menuContext, menuSubagents)
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.AutoMirrored.Filled.CallSplit, contentDescription = null)
+                                },
+                                trailingIcon = if (menuSubagents) {
+                                    { Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary) }
+                                } else null,
                             )
                             // [T-provider-ux] Move to… — moved here from a
                             // floating capsule pinned over the composer's
