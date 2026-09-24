@@ -5004,6 +5004,9 @@ class ChatViewModel(
                 conn.inputStream.use { it.readBytes() }
                 true
             } else {
+                // Drain the error body so the socket returns to the pool
+                // (an unread stream pins the connection until GC).
+                runCatching { conn.errorStream?.use { it.readBytes() } }
                 AppLogger.warning(TAG, "[Compact] supermemory ingest HTTP $code")
                 false
             }
@@ -11117,6 +11120,20 @@ class ChatViewModel(
                         // this turn's partial blocks.
                         turnTextBlockIdx = -1
                         turnThinking.clear()
+                        // [T-journal-watermark-reset] This attempt's buffers
+                        // are rolled back — its journaled content is obsolete
+                        // (the retry re-streams from scratch) and its watermarks
+                        // MUST reset with them. Without this, shouldHeartbeat's
+                        // `len <= lastLen` guard silently skipped journaling
+                        // for any retry shorter than the previous attempt — a
+                        // crash then lost exactly the text the user was
+                        // watching. Delete the journal (old attempt's content)
+                        // AND zero the watermarks: journal == live attempt.
+                        com.openminis.app.data.StreamHeartbeat.delete(streamHeartbeatDir(), assistantId)
+                        hbLastMs = 0L
+                        hbLastLen = 0
+                        thbLastMs = 0L
+                        thbLastLen = 0
                         toolCalls.clear()
                         // T94 fix 2 + T256: throttle bookkeeping is per-stream
                         // attempt; reset alongside the partial-block rollback so
@@ -11213,6 +11230,14 @@ class ChatViewModel(
                         currentTextBlockSb = null
                         turnTextBlockIdx = -1
                         turnThinking.clear()
+                        // [T-journal-watermark-reset] Retry after backoff
+                        // re-streams from scratch: old journal content is
+                        // obsolete, watermarks must zero with the buffers.
+                        com.openminis.app.data.StreamHeartbeat.delete(streamHeartbeatDir(), assistantId)
+                        hbLastMs = 0L
+                        hbLastLen = 0
+                        thbLastMs = 0L
+                        thbLastLen = 0
                         toolCalls.clear()
                         pendingChunkSb.setLength(0)
                         lastUiUpdateMs = 0L
@@ -11370,6 +11395,14 @@ class ChatViewModel(
                         // shifted every block index anyway.
                         turnTextBlockIdx = -1
                         turnThinking.clear()
+                        // [T-journal-watermark-reset] Provider-switch re-stream
+                        // from scratch: drop the old attempt's journal and
+                        // zero the watermarks with the buffers.
+                        com.openminis.app.data.StreamHeartbeat.delete(streamHeartbeatDir(), assistantId)
+                        hbLastMs = 0L
+                        hbLastLen = 0
+                        thbLastMs = 0L
+                        thbLastLen = 0
                         toolCalls.clear()
                         // loop continues — will retry collect with currentProvider
                     } else {
@@ -12059,6 +12092,17 @@ class ChatViewModel(
                     // [T-partial-turn-durability] journal key follows the new
                     // bubble (old round's file was deleted at its persist).
                     liveStreamId = handled.newAssistantId
+                    // [T-journal-watermark-reset] New turn = new journal file
+                    // under the new id, but the SHARED watermarks (loop-scope
+                    // vars) still carry the previous turn's lengths — without
+                    // zeroing them, `len <= lastLen` would skip journaling any
+                    // new turn shorter than the previous one. The journal and
+                    // the watermarks must switch turns together.
+                    com.openminis.app.data.StreamHeartbeat.delete(streamHeartbeatDir(), assistantId)
+                    hbLastMs = 0L
+                    hbLastLen = 0
+                    thbLastMs = 0L
+                    thbLastLen = 0
                     accumulatedText = ""
                     allToolBlocks.clear()
                     allToolInputs.clear()
