@@ -9306,7 +9306,10 @@ class ChatViewModel(
 
     private fun maybeShowBackgroundFreezeGuidance(requestStartMs: Long, error: Exception) {
         if (bgFreezeGuidanceShown) return
-        val fgResumeMs = com.openminis.app.MinisApp.lastForegroundResumeAtMs()
+        // applicationContext IS the MinisApp instance (Application class) —
+        // the lifecycle tracker lives there.
+        val fgResumeMs = (context.applicationContext as? com.openminis.app.MinisApp)
+            ?.lastForegroundResumeAtMs() ?: 0L
         if (fgResumeMs <= requestStartMs) return // never backgrounded during this turn
         val transportShaped = error is java.io.IOException ||
             error.javaClass.simpleName.contains("Timeout", ignoreCase = true) ||
