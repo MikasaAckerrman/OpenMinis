@@ -110,6 +110,20 @@ class MinisApp : Application(), ImageLoaderFactory {
     fun isAppForeground(): Boolean = foregroundActivityCount > 0
 
     /**
+     * [T-bg-freeze-guidance] Wall clock of the LATEST background→foreground
+     * resume (0 = none yet). Lets a stream-failure handler answer "was the
+     * app backgrounded at some point during THIS request?" with a cheap
+     * timestamp comparison — the live reproduction (24.09) proved the OEM
+     * power layer freezes the process within seconds of backgrounding, and
+     * the failure surfaces only on the unfreeze; this timestamp is the
+     * marker of that unfreeze.
+     */
+    @Volatile
+    private var lastFgResumeAtMs: Long = 0L
+
+    fun lastForegroundResumeAtMs(): Long = lastFgResumeAtMs
+
+    /**
      * T-bg-overlay phase 2: live "is the app foreground?" stream so the
      * AgentForegroundService can react to background ↔ foreground
      * transitions and toggle the floating tool-status overlay. Same
@@ -611,6 +625,10 @@ class MinisApp : Application(), ImageLoaderFactory {
                 }
                 if (wasBackgrounded) {
                     _isAppForegroundFlow.value = true
+                    // [T-bg-freeze-guidance] Mark the unfreeze moment — the
+                    // stream-failure detector compares this against the
+                    // request's start time.
+                    lastFgResumeAtMs = System.currentTimeMillis()
                     // [T-android-stale-conn-fg-evict] Evict the shared LLM
                     // connection pool the instant we return to the foreground,
                     // BEFORE the user can fire the first request. A background

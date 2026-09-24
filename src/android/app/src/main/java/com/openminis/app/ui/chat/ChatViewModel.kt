@@ -7796,6 +7796,11 @@ class ChatViewModel(
 
         // _isStreaming was already set synchronously by the caller.
         val launchedProvider = provider
+        // [T-bg-freeze-guidance] Request window start: the stream-failure
+        // detector below compares MinisApp.lastForegroundResumeAtMs() against
+        // this timestamp to learn whether the app was backgrounded (and hence
+        // OEM-frozen — live-proven 24.09) at some point inside THIS turn.
+        val streamTurnStartedAtMs = System.currentTimeMillis()
         streamJob = viewModelScope.launch(Dispatchers.IO) {
             AppLogger.info(TAG_STREAM, "$label streamJob ENTER sid=$activeSessionId")
             try {
@@ -7831,7 +7836,11 @@ class ChatViewModel(
                     runCatching { persistPartialStreamTurn() }
                         .onFailure { Log.w(TAG, "partial-turn persist failed: ${it.message}") }
                     setInlineError(e.message ?: "Unknown error")
-                    
+
+                    // [T-bg-freeze-guidance] Background-freeze signature →
+                    // one actionable banner (see maybeShowBackgroundFreezeGuidance).
+                    maybeShowBackgroundFreezeGuidance(streamTurnStartedAtMs, e)
+
                     // [T-auto-resume] Decide whether to resume automatically.
                     // Only transport faults may be resumed, and only when the user
                     // has not moved on. The policy is pure: it decides, the VM
@@ -9278,6 +9287,49 @@ class ChatViewModel(
         }
         val suffix = context.getString(R.string.compact_hint_suffix)
         return if (errorText.contains(suffix)) errorText else "$errorText\n\n$suffix"
+    }
+
+    /**
+     * [T-bg-freeze-guidance] One-shot actionable banner when a stream failure
+     * carries the background-freeze signature: the app went background→
+     * foreground DURING the turn (MinisApp.lastForegroundResumeAtMs inside the
+     * request window) AND the exception is transport-shaped. Live proof
+     * (24.09, logcat + watchdog): the OEM power layer freezes the process
+     * seconds after backgrounding — the failure surfaces only on the unfreeze
+     * (a 120s TTFB watchdog fired at 205s), the user experiences "уходишь в
+     * фон — всё останавливается". The ONE fix is the vendor settings this
+     * banner points at. Once per ViewModel instance (per session load) — no
+     * nagging; the same freeze without a background stint (Doze edge) stays
+     * silent rather than guessing.
+     */
+    private var bgFreezeGuidanceShown = false
+
+    private fun maybeShowBackgroundFreezeGuidance(requestStartMs: Long, error: Exception) {
+        if (bgFreezeGuidanceShown) return
+        val fgResumeMs = com.openminis.app.MinisApp.lastForegroundResumeAtMs()
+        if (fgResumeMs <= requestStartMs) return // never backgrounded during this turn
+        val transportShaped = error is java.io.IOException ||
+            error.javaClass.simpleName.contains("Timeout", ignoreCase = true) ||
+            error.javaClass.simpleName.contains("Socket", ignoreCase = true) ||
+            (error.message ?: "").contains("Canceled", ignoreCase = true) ||
+            (error.message ?: "").contains("reset", ignoreCase = true) ||
+            (error.message ?: "").contains("timed out", ignoreCase = true)
+        if (!transportShaped) return
+        bgFreezeGuidanceShown = true
+        AppLogger.info(
+            TAG_STREAM,
+            "[BgFreezeGuidance] transport failure after background stint " +
+                "(requestStart=$requestStartMs fgResume=$fgResumeMs) — showing settings banner",
+        )
+        appendSystemInfo(
+            text = "Запрос был приостановлен: приложение находилось в фоне, и система " +
+                "заморозила процесс (работа агента останавливается до возврата — данные не " +
+                "теряются, ход продолжается автоматически). Чтобы агент работал в фоне и с " +
+                "выключенным экраном: Настройки → Фон и уведомления → «Разрешить фоновую " +
+                "работу», там же — пошаговая инструкция для vivo (закрепление в недавних, " +
+                "автозапуск).",
+            iconKind = "info",
+        )
     }
 
     private fun setInlineError(errorText: String) {
