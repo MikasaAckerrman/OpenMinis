@@ -831,7 +831,19 @@ internal fun ToolCallPill(
     // Pill stretches up to the full row width so long titles can ellipsize
     // without pushing the duration out of view. Title takes the remaining
     // space via weight(1f), duration stays fixed-width (softWrap=false).
-    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+    // [T-step-timestamp v3] (user request 24.09: «в tool ах писало время,
+    // в какое время начал, под каждое, ч:м:с, слева снизу, мелким текстом,
+    // чтобы умещался и не пришлось увеличивать платформу»). v1 (aa8b1128)
+    // was an INLINE PREFIX inside the pill title — rejected as visually
+    // noisy and removed; v3 is a different placement: a 10sp monospace
+    // caption BELOW the pill (bottom-left), NOT inside it — the pill
+    // geometry is untouched. Purpose (user's): verify the agent keeps
+    // executing tools while backgrounded / screen-off — each step carries
+    // its visible clock. Column wrapper is REQUIRED (not a Box overlay):
+    // the pill Box uses RowScope.weight, and a Box sibling would stack
+    // the caption ON TOP of the pill instead of below it.
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+    Row(modifier = Modifier.fillMaxWidth()) {
       Box(modifier = Modifier.weight(1f, fill = false)) {
         Row(
             modifier = Modifier
@@ -993,6 +1005,24 @@ internal fun ToolCallPill(
         // any more. retryLast() / retryFromMessage() remain reachable from
         // other entry points (long-press menu, etc.).
         // iOS: Spacer(minLength: 0) — pill stays content-width, not full-row-width
+    }
+    // [T-step-timestamp v3] Start-time caption under the pill (user 24.09:
+    // «под каждое, ч:м:с, слева снизу, мелким»). Bottom-LEFT, 10sp monospace,
+    // 55% alpha — quiet but present; the pill itself is untouched.
+    // startTimeMs is set at block creation (ToolCallStart handler) and is
+    // NOT serialized into partsJson — restored-from-DB blocks have 0 and
+    // correctly render no caption, so old turns look unchanged.
+    if (block.startTimeMs > 0) {
+        Text(
+            text = formatStepTimestamp(block.startTimeMs),
+            fontSize = 10.sp,
+            fontFamily = FontFamily.Monospace,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
+            softWrap = false,
+            maxLines = 1,
+            modifier = Modifier.padding(start = 14.dp, top = 1.dp),
+        )
+    }
     }
 }
 
