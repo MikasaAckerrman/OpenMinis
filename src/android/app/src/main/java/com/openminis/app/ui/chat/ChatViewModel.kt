@@ -1649,9 +1649,19 @@ class ChatViewModel(
             }
             _autoModeArmed.value = false
             AppLogger.info(TAG_STREAM, "[AutoMode] COMPLETE after $autoModeTurns continuations")
+            // [T-auto-mode-honest-complete] "и проверен" only when a VERIFY
+            // block actually ran and passed; a legacy-trust completion
+            // (research turns, no criteria) says so honestly instead of
+            // claiming machine verification that never executed.
             appendSystemInfo(
-                text = "Авто-режим завершён: план выполнен и проверен " +
-                    "(продолжений: $autoModeTurns).",
+                text = if (criteria != null) {
+                    "Авто-режим завершён: план выполнен и проверен " +
+                        "(продолжений: $autoModeTurns)."
+                } else {
+                    "Авто-режим завершён: план выполнен, завершение принято " +
+                        "по слову модели без машинных критериев " +
+                        "(продолжений: $autoModeTurns)."
+                },
                 iconKind = "compact",
             )
             return
