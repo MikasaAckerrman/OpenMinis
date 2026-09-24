@@ -4657,6 +4657,7 @@ class ChatViewModel(
         if (windows.size >= 2) {
             AppLogger.info(TAG, "[Compact] parallel map: ${windows.size} windows, level=${compactLevel.value} fraction=$levelFractionForWindows")
             reporter?.note("Сжимаю ${windows.size} частей параллельно (${compactLevel.value.displayName})")
+            val parallelT0 = System.nanoTime()
             val parallelSummaries: List<String?> = kotlinx.coroutines.coroutineScope {
                 windows.mapIndexed { i, w ->
                     async(Dispatchers.IO) {
@@ -4697,7 +4698,21 @@ class ChatViewModel(
             }.filter { it.isNotEmpty() }
 
             if (fixed.isEmpty()) throw java.io.IOException("all parallel windows failed")
-            if (fixed.size == 1) return fixed[0]
+            // [T-compact-timing] TRUE parallelism proof: wall-clock of the
+            // batch vs the SUM of per-window durations. If wall ≈ sum, the
+            // relay serialized the calls; if wall ≈ max, it's real parallel
+            // speedup. Logged per compact — the user asked for measured
+            // speedup, not assumed.
+            val parallelWallMs = (System.nanoTime() - parallelT0) / 1_000_000
+            AppLogger.info(
+                TAG,
+                "[Compact] timing: ${windows.size} windows | wall(incl. failed-retries)=${parallelWallMs}ms | level=${compactLevel.value}",
+            )
+            val sidNow = realSessionId.ifEmpty { sessionId }
+            if (fixed.size == 1) {
+                writeCompactArtifacts(sidNow, transcript.length, fixed[0].length, windows, fixed, "single-window")
+                return fixed[0]
+            }
 
             // [T-compact-level-proportional] LIGHT/MEDIUM/ULTRA: CONCATENATE
             // the per-window summaries directly — each window already
@@ -4719,6 +4734,7 @@ class ChatViewModel(
                         "(${combined.length * 100 / transcript.length.coerceAtLeast(1)}%)",
                 )
                 reporter?.note("Готово: ${transcript.length / 1000}к → ${combined.length / 1000}к символов")
+                writeCompactArtifacts(sidNow, transcript.length, combined.length, windows, fixed, "concat-${compactLevel.value}")
                 return combined
             }
 
@@ -4740,12 +4756,16 @@ class ChatViewModel(
                 append("Output the unified summary. Be COMPLETE but TERSE — every bullet earns its place.")
             }
             return try {
-                generateCompactSummary(mergePrompt, reporter, windows.size + 1, windows.size + 1).trim()
+                val merged = generateCompactSummary(mergePrompt, reporter, windows.size + 1, windows.size + 1).trim()
                     .ifEmpty { fixed.joinToString("\n\n") }
+                writeCompactArtifacts(sidNow, transcript.length, merged.length, windows, fixed, "merge-auto")
+                merged
             } catch (e: Exception) {
                 // Merge failed — concatenated parts are a valid degraded result.
                 AppLogger.warning(TAG, "[Compact] merge failed: ${(e.message ?: "").take(80)} — using concatenated parts")
-                fixed.joinToString("\n\n")
+                val degraded = fixed.joinToString("\n\n")
+                writeCompactArtifacts(sidNow, transcript.length, degraded.length, windows, fixed, "merge-failed-concat")
+                degraded
             }
         }
 
@@ -4816,7 +4836,88 @@ class ChatViewModel(
             }
             idx += 1
         }
-        return summary.orEmpty()
+        val seqResult = summary.orEmpty()
+        // [T-compact-artifacts] Sequential fallback path gets the same
+        // on-disk ledger as the parallel path (single-window sessions are
+        // the common case; their compact history must be greppable too).
+        writeCompactArtifacts(
+            realSessionId.ifEmpty { sessionId },
+            transcript.length, seqResult.length,
+            seqWindows.filter { it.isNotBlank() },
+            listOf(seqResult).filter { it.isNotBlank() },
+            "sequential",
+        )
+        return seqResult
+    }
+
+    /**
+     * [T-compact-artifacts] Persist compaction by-products to the session's
+     * sandbox workspace (`/var/minis/workspace/compact/…` as seen from inside
+     * the sandbox; `<filesDir>/minis-sessions/<sid>/workspace/compact/…` on
+     * the host). Two artifacts per compact run:
+     *
+     *  1. `chunks/<stamp>-part<N>.md` — the chunk LEDGER: one small file per
+     *     window with a 2-3 sentence "what was done" digest, its sizes and
+     *     the run stamp. Future sessions (and the user) can audit exactly
+     *     what each compact chunk preserved without re-reading the DB.
+     *  2. `knowledge-<stamp>.md` — the full compacted summaries joined: the
+     *     durable, greppable knowledge copy of the compacted range. The
+     *     in-context summary is working state; this file is the archive.
+     *     `chunks/index.md` appends one line per run (date, mode, in→out).
+     *
+     * Best-effort: a write failure logs and never breaks compaction.
+     */
+    private fun writeCompactArtifacts(
+        sid: String,
+        transcriptChars: Int,
+        resultChars: Int,
+        windows: List<String>,
+        summaries: List<String>,
+        mode: String,
+    ) {
+        if (sid.isEmpty() || summaries.isEmpty()) return
+        runCatching {
+            val stamp = java.text.SimpleDateFormat("yyyy-MM-dd-HHmmss", java.util.Locale.US).format(java.util.Date())
+            val base = java.io.File(
+                java.io.File(java.io.File(context.filesDir, "minis-sessions"), sid),
+                "workspace/compact",
+            )
+            val chunksDir = java.io.File(base, "chunks")
+            if (!chunksDir.exists() && !chunksDir.mkdirs()) {
+                AppLogger.warning(TAG, "[Compact] artifacts: cannot create $chunksDir")
+                return@runCatching
+            }
+            summaries.forEachIndexed { i, s ->
+                // 2-3 sentence digest: first non-heading, non-marker lines.
+                val digest = s.lineSequence()
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() && !it.startsWith("===") && !it.startsWith("#") }
+                    .take(3)
+                    .joinToString(" ")
+                    .take(400)
+                java.io.File(chunksDir, "$stamp-part${i + 1}.md").writeText(
+                    buildString {
+                        appendLine("# Chunk ${i + 1}/${summaries.size}")
+                        appendLine("- stamp: $stamp")
+                        appendLine("- session: $sid")
+                        appendLine("- mode: $mode")
+                        appendLine("- in: ${windows.getOrNull(i)?.length ?: 0} chars, out: ${s.length} chars")
+                        appendLine()
+                        appendLine("What was done: $digest")
+                    },
+                )
+            }
+            java.io.File(base, "knowledge-$stamp.md").writeText(summaries.joinToString("\n\n"))
+            java.io.File(chunksDir, "index.md").appendText(
+                "--- $stamp mode=$mode in=${transcriptChars}c out=${resultChars}c parts=${summaries.size}\n",
+            )
+            AppLogger.info(
+                TAG,
+                "[Compact] artifacts: ${summaries.size} chunk ledger(s) + knowledge archive → workspace/compact/ (mode=$mode)",
+            )
+        }.onFailure {
+            AppLogger.warning(TAG, "[Compact] artifacts write failed: ${it.message}")
+        }
     }
 
     /**
