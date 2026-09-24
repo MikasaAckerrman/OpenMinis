@@ -435,6 +435,17 @@ interface ChatDao {
     @Query("UPDATE messages SET parts_json = :partsJson, updated_at = :updatedAt WHERE id = :id")
     suspend fun updateMessageParts(id: String, partsJson: String, updatedAt: Long = System.currentTimeMillis())
 
+    // [T-edit-keeps-date] Rewrite parts_json WITHOUT touching updated_at.
+    // The chat UI renders an assistant row's finish time from updated_at
+    // (see toChatMessages' finishedAtMs), so the legacy single update that
+    // stamped `now` moved the message's displayed date on every EDIT —
+    // the user edits text, the bubble's clock jumps to edit-time. Edit
+    // paths rewrite history CONTENT, not history TIME: keep the original
+    // finish stamp. Durability is unaffected: the row id and updated_at
+    // semantics for durability backfills stay as-is.
+    @Query("UPDATE messages SET parts_json = :partsJson WHERE id = :id")
+    suspend fun updateMessagePartsPreserveStamp(id: String, partsJson: String)
+
     // [T-error-persist-android] Write/clear the terminal error sticker on a
     // specific message row by id. Used when the persisted DB id is known
     // (clear-on-retry via sourceDbIds).

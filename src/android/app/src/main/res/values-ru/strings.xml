@@ -1040,7 +1040,6 @@
     <string name="msg_longpress_rewrite">Переписать текст</string>
     <string name="msg_delete_busy_streaming">Остановите текущий ответ, прежде чем менять историю.</string>
     <string name="msg_delete_busy_compacting">Дождитесь окончания сжатия, прежде чем менять историю.</string>
-    <string name="msg_delete_not_found">Этого сообщения больше нет в сессии.</string>
     <string name="msg_delete_done">Удалено сообщений: %1$d — и из чата, и из истории, которую видит модель.</string>
     <string name="msg_delete_done_with_notes">Удалено сообщений: %1$d. Чтобы история осталась корректной: %2$s.</string>
     <string name="msg_delete_failed">Не удалось удалить: %1$s</string>

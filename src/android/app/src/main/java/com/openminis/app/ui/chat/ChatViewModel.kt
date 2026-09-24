@@ -3347,24 +3347,17 @@ class ChatViewModel(
                 // reappeared on reload, which reads as "delete didn't work".
                 val targetIds = candidateIds.distinct().filter { cand -> surgical.any { it.id == cand } }
                 if (targetIds.isEmpty()) {
+                    // [T-no-delete-capsule] Silent resolution failure — the
+                    // user asked for NO chat capsule on this path; a log line
+                    // is the full diagnostic surface.
                     AppLogger.warning(TAG, "[Surgery] delete: id=${messageId.take(8)} not in DB rows")
-                    withContext(Dispatchers.Main) {
-                        appendSystemInfo(
-                            text = context.getString(R.string.msg_delete_not_found),
-                            iconKind = "compact",
-                        )
-                    }
                     return@launch
                 }
 
                 val plan = com.openminis.app.data.MessageSurgery.planDelete(surgical, targetIds)
                 if (plan.isNoOp) {
-                    withContext(Dispatchers.Main) {
-                        appendSystemInfo(
-                            text = context.getString(R.string.msg_delete_not_found),
-                            iconKind = "compact",
-                        )
-                    }
+                    // [T-no-delete-capsule] Silent no-op — logged, not shown.
+                    AppLogger.warning(TAG, "[Surgery] delete no-op for ids=${targetIds.joinToString { it.take(8) }}")
                     return@launch
                 }
                 AppLogger.info(
@@ -3560,12 +3553,8 @@ class ChatViewModel(
                     }
                 } ?: candidateIds.firstNotNullOfOrNull { cand -> rows.firstOrNull { it.id == cand } }
                 if (row == null) {
-                    withContext(Dispatchers.Main) {
-                        appendSystemInfo(
-                            text = context.getString(R.string.msg_delete_not_found),
-                            iconKind = "compact",
-                        )
-                    }
+                    // [T-no-delete-capsule] Silent resolution failure — logged.
+                    AppLogger.warning(TAG, "[Surgery] rewrite: id=${messageId.take(8)} not in DB rows")
                     return@launch
                 }
                 val rewritten = com.openminis.app.data.MessageSurgery
@@ -3594,7 +3583,7 @@ class ChatViewModel(
                     val sib = rows.firstOrNull { it.id == cand } ?: continue
                     if (com.openminis.app.data.MessageSurgery.textOf(sib.partsJson).isEmpty()) continue
                     val stripped = com.openminis.app.data.MessageSurgery.removeTextParts(sib.partsJson)
-                    runCatching { chatRepository.dao.updateMessageParts(sib.id, stripped) }
+                    runCatching { chatRepository.dao.updateMessagePartsPreserveStamp(sib.id, stripped) }
                         .onSuccess { siblingsCleared++ }
                         .onFailure {
                             siblingsFailed++
@@ -3640,7 +3629,9 @@ class ChatViewModel(
                 // A verification failure surfaces a real error and does NOT
                 // mark edited / reload, so the UI never lies about state.
                 val updateOutcome = runCatching {
-                    chatRepository.dao.updateMessageParts(row.id, rewritten)
+                    // [T-edit-keeps-date] Preserve the original finish stamp —
+                    // an edit changes content, not the message's date.
+                    chatRepository.dao.updateMessagePartsPreserveStamp(row.id, rewritten)
                 }
                 if (updateOutcome.isFailure) {
                     val reason = updateOutcome.exceptionOrNull()
@@ -8835,7 +8826,46 @@ class ChatViewModel(
         }
         _messages.value = _messages.value.map { msg ->
             if (msg.id == placeholderId) {
-                msg.copy(id = dbId, sourceDbIds = listOf(dbId))
+                // [T-delete-full-turn] Keep every row id already accumulated
+                // by [appendTurnRowToBubble] — a multi-round tool turn is
+                // persisted as ONE row PER ROUND, so [listOf(dbId)] here used
+                // to drop all earlier round rows from the bubble's DB
+                // mapping. Delete/rewrite then only ever found the final
+                // row: the tool rounds survived and re-merged into the same
+                // bubble on reload ("delete didn't work"), and a turn that
+                // ended via error/cancel kept the PLACEHOLDER id (no final
+                // reconcile at all) → delete found nothing → the "message
+                // no longer in session" capsule while the bubble was on
+                // screen. Accumulate, never replace.
+                msg.copy(
+                    id = dbId,
+                    sourceDbIds = (msg.sourceDbIds + dbId).distinct(),
+                )
+            } else {
+                msg
+            }
+        }
+    }
+
+    /**
+     * [T-delete-full-turn] Live-accumulate a persisted round row into the
+     * streaming bubble's [ChatMessage.sourceDbIds].
+     *
+     * Every tool ROUND of one assistant turn is its own DB row (the loop
+     * commits each round the moment its tools finished executing — see the
+     * persistAssistantTurn site in runAgentLoop). Until the final
+     * no-tool-call round swaps the bubble id via [reconcileAssistantUiId],
+     * the bubble's sourceDbIds stay EMPTY; an error/cancel abort keeps them
+     * empty forever. Deleting such a bubble resolved ZERO candidate ids →
+     * nothing was deleted and the user got the not-found capsule.
+     *
+     * Accumulating live means delete/rewrite can resolve the turn's rows at
+     * ANY point of its lifecycle: mid-stream, aborted, or completed.
+     */
+    private fun appendTurnRowToBubble(placeholderId: String, dbId: String) {
+        _messages.value = _messages.value.map { msg ->
+            if (msg.id == placeholderId && msg.sourceDbIds.none { it == dbId }) {
+                msg.copy(sourceDbIds = msg.sourceDbIds + dbId)
             } else {
                 msg
             }
@@ -11712,6 +11742,11 @@ class ChatViewModel(
                 if (lastIdx >= 0) {
                     agentHistory[lastIdx] = agentHistory[lastIdx].copy(dbMessageId = assistantDbId)
                 }
+                // [T-delete-full-turn] Accumulate this round row into the
+                // bubble's DB mapping NOW (not at final reconcile): an
+                // error/cancel ending the turn here must still leave the
+                // bubble deletable/rewritable through sourceDbIds.
+                appendTurnRowToBubble(assistantId, assistantDbId)
             }
             liveTurnTextSb = null
             liveStreamTurnText = ""
