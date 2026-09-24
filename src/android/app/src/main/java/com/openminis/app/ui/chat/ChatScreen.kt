@@ -3042,7 +3042,6 @@ fun ChatScreen(
                     is FlatChatItem.AssistantHeader -> grayedMap[originalMessageId(messageId)] == true
                     is FlatChatItem.AssistantFooter -> grayedMap[originalMessageId(messageId)] == true
                     is FlatChatItem.AssistantText -> grayedMap[originalMessageId(messageId)] == true
-                    is FlatChatItem.DeletedPlaceholder -> false
                     is FlatChatItem.AssistantMarkdownBlock -> grayedMap[originalMessageId(messageId)] == true
                     is FlatChatItem.AssistantThinking -> grayedMap[originalMessageId(messageId)] == true
                     is FlatChatItem.AssistantToolUse -> grayedMap[originalMessageId(messageId)] == true
@@ -3772,7 +3771,6 @@ fun ChatScreen(
                             is FlatChatItem.AssistantTyping -> TypingIndicator(
                                 sessionId = viewModel.realSessionId.ifEmpty { sessionId },
                             )
-                    is FlatChatItem.DeletedPlaceholder -> false
                             is FlatChatItem.AgentRunCard -> {
                                 // Subscribed here, not in the flat list, so a node
                                 // state change repaints just this card instead of
