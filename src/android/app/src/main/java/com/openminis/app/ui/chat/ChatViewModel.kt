@@ -544,6 +544,12 @@ class ChatViewModel(
     //                      so no torn reads; cancel falls back to snapshot)
     //  - liveStreamTurnText → throttled String snapshot (cancel-race fallback)
     //  - liveStreamId    → keys the crash journal file (StreamHeartbeat)
+    //  - liveTurnThinkingSb → the current round's REASONING StringBuilder
+    //                      (full fidelity; same export discipline as text —
+    //                      [T-thinking-durability], the reasoning mirror of
+    //                      liveTurnTextSb. Without it only the heartbeat-
+    //                      cadenced journal survives a terminator, and the
+    //                      cancel path had NO reasoning source at all.)
     // Cleared at EVERY round-persist site, so "non-empty" always means
     // "current round not yet persisted" — the exact text a terminator must
     // commit. Earlier rounds are already their own rows; re-committing them
@@ -551,11 +557,39 @@ class ChatViewModel(
     @Volatile private var liveTurnTextSb: StringBuilder? = null
     @Volatile private var liveStreamTurnText: String = ""
     @Volatile private var liveStreamId: String? = null
+    @Volatile private var liveTurnThinkingSb: StringBuilder? = null
+    // Opaque reasoning_content blob (DeepSeek/Kimi emit reasoning as a single
+    // field, not ThinkingDelta events — the journal NEVER sees it). Round-end
+    // gives the blob precedence over the concatenated thinking; the terminators
+    // follow the same precedence so the partial row shows exactly what the
+    // round would have persisted. Nulled at retry-sites: a rolled-back
+    // attempt's blob is obsolete content.
+    @Volatile private var liveTurnReasoningBlob: String? = null
 
     /** Latest current-round text for a terminator (error/cancel path). */
     private fun currentLiveTurnText(): String =
         runCatching { liveTurnTextSb?.toString() }.getOrNull()?.takeIf { it.isNotEmpty() }
             ?: liveStreamTurnText
+
+    /**
+     * Latest current-round REASONING for a terminator (error/cancel path).
+     * [T-thinking-durability] Three sources, in the round-end precedence
+     * order: (1) the opaque reasoning_content blob — providers like DeepSeek
+     * emit reasoning as a single field, invisible to the think-journal;
+     * (2) the live thinking StringBuilder — full fidelity, no heartbeat-cadence
+     * lag, readable from the same coroutine after loop death; (3) the think-
+     * journal — consistent fallback when the export is torn (cancel races a
+     * mid-append on another thread) or already cleared.
+     * Null when this round has no surviving reasoning.
+     */
+    private fun currentLiveTurnThinking(): String? {
+        liveTurnReasoningBlob?.takeIf { it.isNotEmpty() }?.let { return it }
+        runCatching { liveTurnThinkingSb?.toString() }.getOrNull()
+            ?.takeIf { it.isNotEmpty() }?.let { return it }
+        return liveStreamId
+            ?.let { com.openminis.app.data.StreamHeartbeat.readThinking(streamHeartbeatDir(), it) }
+            ?.takeIf { it.isNotEmpty() }
+    }
 
     /** Crash-journal dir for the ACTIVE session (see StreamHeartbeat). */
     private fun streamHeartbeatDir(): java.io.File = com.openminis.app.data.StreamHeartbeat.dirFor(
@@ -10215,6 +10249,8 @@ class ChatViewModel(
         // [T-partial-turn-durability] fresh run → no live round state.
         liveTurnTextSb = null
         liveStreamTurnText = ""
+        liveTurnThinkingSb = null
+        liveTurnReasoningBlob = null
         liveStreamId = assistantId
         val turnThinkingLevel = _thinkingLevel.value
         withContext(Dispatchers.Main) {
@@ -10322,6 +10358,13 @@ class ChatViewModel(
                 }
             }
             val turnThinking = StringBuilder()
+            // [T-thinking-durability] Export THIS round's reasoning accumulator
+            // to the live bridge (same reference — a mutable alias, not a copy).
+            // Retry-sites .clear() it (export then reads "" → null), round-persist
+            // sites null the export. Terminators (error finalize / user-cancel
+            // cleanup) drain it at full fidelity instead of the cadence-lagged
+            // journal — the exact discipline liveTurnTextSb follows for text.
+            liveTurnThinkingSb = turnThinking
             // Opaque reasoning_content blob captured from the provider's
             // ReasoningContent stream chunk. When set (including empty string),
             // takes precedence over turnThinking concatenation so the exact
@@ -10809,6 +10852,11 @@ class ChatViewModel(
                         // turns and we must round-trip exactly that). No live UI surface;
                         // the thinking panel is driven by ThinkingDelta events above.
                         turnReasoningBlob = chunk.content
+                        // [T-thinking-durability] Export to the live bridge so
+                        // terminators (error/cancel) can persist this reasoning
+                        // too — the think-journal only sees ThinkingDelta
+                        // events, never the opaque blob.
+                        liveTurnReasoningBlob = chunk.content
                     }
                     is LLMStreamChunk.Finished -> {
                         // T321: stash for empty-turn diagnostic logging below.
@@ -11134,6 +11182,10 @@ class ChatViewModel(
                         hbLastLen = 0
                         thbLastMs = 0L
                         thbLastLen = 0
+                        // [T-thinking-durability] The rolled-back attempt's opaque
+                        // reasoning blob is obsolete — drop it so a terminator during
+                        // the retry cannot persist stale reasoning.
+                        liveTurnReasoningBlob = null
                         toolCalls.clear()
                         // T94 fix 2 + T256: throttle bookkeeping is per-stream
                         // attempt; reset alongside the partial-block rollback so
@@ -11238,6 +11290,10 @@ class ChatViewModel(
                         hbLastLen = 0
                         thbLastMs = 0L
                         thbLastLen = 0
+                        // [T-thinking-durability] The rolled-back attempt's opaque
+                        // reasoning blob is obsolete — drop it so a terminator during
+                        // the retry cannot persist stale reasoning.
+                        liveTurnReasoningBlob = null
                         toolCalls.clear()
                         pendingChunkSb.setLength(0)
                         lastUiUpdateMs = 0L
@@ -11403,6 +11459,10 @@ class ChatViewModel(
                         hbLastLen = 0
                         thbLastMs = 0L
                         thbLastLen = 0
+                        // [T-thinking-durability] The rolled-back attempt's opaque
+                        // reasoning blob is obsolete — drop it so a terminator during
+                        // the retry cannot persist stale reasoning.
+                        liveTurnReasoningBlob = null
                         toolCalls.clear()
                         // loop continues — will retry collect with currentProvider
                     } else {
@@ -11493,6 +11553,8 @@ class ChatViewModel(
                 // journal and the live-round export are obsolete.
                 liveTurnTextSb = null
                 liveStreamTurnText = ""
+                liveTurnThinkingSb = null
+                liveTurnReasoningBlob = null
                 com.openminis.app.data.StreamHeartbeat.delete(streamHeartbeatDir(), assistantId)
                 // [T-error-persist-android] Empty-response hint: the model ended a
                 // turn (finish=stop/end_turn) with no visible text anywhere in the
@@ -12023,6 +12085,8 @@ class ChatViewModel(
             }
             liveTurnTextSb = null
             liveStreamTurnText = ""
+            liveTurnThinkingSb = null
+            liveTurnReasoningBlob = null
             com.openminis.app.data.StreamHeartbeat.delete(streamHeartbeatDir(), assistantId)
 
             // Persist tool results as user-role message (mirrors iOS)
@@ -12174,6 +12238,8 @@ class ChatViewModel(
         // no orphan journal may outlive the loop.
         liveTurnTextSb = null
         liveStreamTurnText = ""
+        liveTurnThinkingSb = null
+        liveTurnReasoningBlob = null
         com.openminis.app.data.StreamHeartbeat.delete(streamHeartbeatDir(), assistantId)
         setInlineError(
             "Stopped after $MAX_AGENT_TURNS agent turns to prevent runaway " +
@@ -13327,34 +13393,41 @@ class ChatViewModel(
 
     /**
      * [T-partial-turn-durability] Commit the current round's streamed text
-     * when the agent loop died mid-round (provider error / auto-resume
-     * failure). The text lived only in memory before this existed — a
-     * transport error at 90% of a 15k-line answer destroyed all of it.
+     * and/or reasoning when the agent loop died mid-round (provider error /
+     * auto-resume failure). The round lived only in memory before this
+     * existed — a transport error at 90% of a 15k-line answer destroyed all
+     * of it; the same held for a pure REASONING phase (reasoning models
+     * think first, text arrives much later — bailing on empty text dropped
+     * the whole reasoning block).
      *
-     * Persists an assistant row (text + incompleteness marker) and appends it
-     * to agentHistory so retry/resume continues from it. Called INLINE
-     * (suspend, same coroutine as the dead loop) before [setInlineError], so
-     * the error sticker's "update last assistant row" lands on THIS row.
+     * Persists an assistant row (text + incompleteness marker, or the marker
+     * alone when only reasoning streamed) and appends it to agentHistory so
+     * retry/resume continues from it. Called INLINE (suspend, same coroutine
+     * as the dead loop) before [setInlineError], so the error sticker's
+     * "update last assistant row" lands on THIS row.
      *
      * No-op when the round was already committed (export cleared at both
-     * round-persist sites) or produced no text.
+     * round-persist sites) or produced neither text nor reasoning.
      */
     private suspend fun persistPartialStreamTurn(): Boolean {
         val text = currentLiveTurnText()
         val sid = realSessionId.ifEmpty { sessionId }
-        if (text.isEmpty() || sid.isEmpty()) return false
-        val parts = listOf(
-            AgentContentPart.Text(text),
-            AgentContentPart.Text(STREAM_INTERRUPTED_REMINDER),
-        )
-        // [T-thinking-durability] The thinking journal is the authoritative
-        // reasoning copy at stream death (written on heartbeat cadence);
-        // the in-memory buffer is unreachable from here — it is a local of
-        // the dead runAgentLoop invocation. Drain it into the row so the
-        // interrupted turn keeps its reasoning block after the error.
-        val survivingThinking = liveStreamId
-            ?.let { com.openminis.app.data.StreamHeartbeat.readThinking(streamHeartbeatDir(), it) }
-            ?.takeIf { it.isNotEmpty() }
+        // [T-thinking-durability] Memory-first (the live bridge exported the
+        // round's thinking StringBuilder — full fidelity, no heartbeat lag,
+        // readable from this same coroutine after loop death); the think-
+        // journal is the fallback when the export was torn or cleared.
+        val survivingThinking = currentLiveTurnThinking()
+        if ((text.isEmpty() && survivingThinking == null) || sid.isEmpty()) return false
+        val parts = if (text.isNotEmpty()) {
+            listOf(
+                AgentContentPart.Text(text),
+                AgentContentPart.Text(STREAM_INTERRUPTED_REMINDER),
+            )
+        } else {
+            // Thinking-only phase: the reasoning IS the round's output —
+            // keep it with the incompleteness marker instead of dropping it.
+            listOf(AgentContentPart.Text(STREAM_INTERRUPTED_REMINDER))
+        }
         agentHistory.add(
             LLMMessage(
                 role = LLMMessage.Role.ASSISTANT,
@@ -13375,6 +13448,8 @@ class ChatViewModel(
         }
         liveTurnTextSb = null
         liveStreamTurnText = ""
+        liveTurnThinkingSb = null
+        liveTurnReasoningBlob = null
         liveStreamId?.let { com.openminis.app.data.StreamHeartbeat.delete(streamHeartbeatDir(), it) }
         AppLogger.info(
             TAG_STREAM,
@@ -14639,12 +14714,15 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         handleUserCancelledCleanup()
 
         // [T-partial-turn-durability] The cancel paths above committed the
-        // round text from memory (authoritative, full-fidelity) — the crash
-        // journal and the live-round export are obsolete. Clear AFTER
-        // handleUserCancelledCleanup, which reads them.
+        // round text from memory (authoritative, full-fidelity) — and, with
+        // [T-thinking-durability], the round's reasoning via the thinking
+        // export. The crash journal and both live-round exports are obsolete.
+        // Clear AFTER handleUserCancelledCleanup, which reads them.
         liveStreamId?.let { com.openminis.app.data.StreamHeartbeat.delete(streamHeartbeatDir(), it) }
         liveTurnTextSb = null
         liveStreamTurnText = ""
+        liveTurnThinkingSb = null
+        liveTurnReasoningBlob = null
         liveStreamId = null
 
         // T189: iOS parity (AIChatViewModel.swift L2592-2610). If the user
@@ -14813,6 +14891,15 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         if (lastIdx < 0) return
         var last = msgs[lastIdx]
 
+        // [T-thinking-durability] Resolve the round's surviving reasoning
+        // ONCE, before either case mutates/persists rows: memory-first via
+        // the live bridge, think-journal fallback (cancelStream deletes the
+        // journal only AFTER this returns, so both sources are still live).
+        // Without this the cancel path committed round text with no
+        // reasoningContent — the reasoning block vanished on reload after a
+        // Stop, mirroring the pre-fix error path.
+        val survivingThinking = currentLiveTurnThinking()
+
         // T73: clear "Minis is thinking…" the moment the user taps Stop.
         // isAwaitingModelResponse is set true at runAgentLoop entry (≈ line
         // 2785) so the typing indicator shows during the initial request
@@ -14856,12 +14943,17 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
             // inputs are not recoverable here (they live in the loop's
             // allToolInputs) and the orphaned CANCELLED tool_results are
             // already handled downstream by PayloadPairingGuard.
+            // [T-thinking-durability] The round's reasoning rides along
+            // (reasoningContent), and a thinking-only round (no text yet)
+            // persists as a marker+reasoning row instead of vanishing.
             val roundText = currentLiveTurnText()
             val textParts = roundText.takeIf { it.isNotEmpty() }?.let { rt ->
                 listOf(
                     AgentContentPart.Text(rt),
                     AgentContentPart.Text(STREAM_INTERRUPTED_REMINDER),
                 )
+            } ?: survivingThinking?.let {
+                listOf(AgentContentPart.Text(STREAM_INTERRUPTED_REMINDER))
             }
             if (textParts != null) {
                 agentHistory.add(
@@ -14869,6 +14961,7 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                         role = LLMMessage.Role.ASSISTANT,
                         content = roundText,
                         contentParts = textParts,
+                        reasoningContent = survivingThinking,
                     )
                 )
             }
@@ -14876,7 +14969,10 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
             viewModelScope.launch(Dispatchers.IO) {
                 if (textParts != null) {
                     runCatching {
-                        chatRepository.appendMessage(sidNow, "assistant", buildAssistantPartsJson(textParts))
+                        chatRepository.appendMessage(
+                            sidNow, "assistant", buildAssistantPartsJson(textParts),
+                            reasoningContent = survivingThinking,
+                        )
                     }
                 }
                 persistToolResultMessage(parts)
@@ -14932,16 +15028,25 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                     "<system-reminder>The user stopped this response. Content may be incomplete.</system-reminder>"
                 ),
             )
+            // [T-thinking-durability] The same round's reasoning rides along:
+            // memory-first via the live bridge (the loop coroutine was just
+            // cancelled — may be mid-append, runCatching + journal fallback
+            // inside currentLiveTurnThinking()), so a Stop during reasoning
+            // no longer blanks the thinking block on the next reload.
             agentHistory.add(
                 LLMMessage(
                     role = LLMMessage.Role.ASSISTANT,
                     content = partialText,
                     contentParts = parts,
+                    reasoningContent = survivingThinking,
                 )
             )
             viewModelScope.launch(Dispatchers.IO) {
                 val partsJson = buildAssistantPartsJson(parts)
-                chatRepository.appendMessage(activeSessionId, "assistant", partsJson)
+                chatRepository.appendMessage(
+                    activeSessionId, "assistant", partsJson,
+                    reasoningContent = survivingThinking,
+                )
             }
             _canResume.value = true
         } else if (historyEndsWithAssistant) {
