@@ -24,7 +24,7 @@ class CoreMemoryStoreTest {
     val tmp = TemporaryFolder()
 
     private fun freshStore() {
-        CoreMemoryStore.primeDirForTest(File(tmp.newFolder("memory${System.nanoTime()}").path))
+        CoreMemoryStore.primeDir(File(tmp.newFolder("memory${System.nanoTime()}").path))
     }
 
     private fun upsertOk(id: String, label: String, value: String, pinned: Boolean = false) {

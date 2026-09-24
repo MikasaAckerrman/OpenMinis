@@ -81,7 +81,7 @@ object CoreMemoryStore {
      * have no Context — they point the store at a JUnit TemporaryFolder (or
      * null for cache-only mode) and get a deterministic fresh state.
      */
-    internal fun primeDirForTest(directory: File?) {
+    internal fun primeDir(directory: File?) {
         synchronized(this) {
             dir = directory
             cached = null
