@@ -3941,7 +3941,16 @@ class ChatViewModel(
         val rawSummary = _compactSummary.value
         val marker = _cachedLatestMarker
         // No compact in play → return full history untouched.
-        if (rawSummary.isNullOrBlank() || marker == null) return agentHistory.toList()
+        if (rawSummary.isNullOrBlank() || marker == null) {
+            // [T-tool-microcompact] No compact marker yet: the FULL history
+            // goes out on the wire, and in an agent loop that history is
+            // dominated by old tool_result bodies (shell dumps, browser
+            // extracts). Truncating the fat old ones keeps every message and
+            // every tool_use↔tool_result pairing intact — protocol-safe —
+            // while stretching how far the session runs before a real
+            // compaction is needed. Recent entries stay verbatim.
+            return com.openminis.app.data.ToolResultMicrocompact.apply(agentHistory.toList())
+        }
 
         // [T-summary-budget] Bound the stored summary to the CURRENT model's
         // window before it is inlined. The summary was sized by the model that
@@ -4925,8 +4934,91 @@ class ChatViewModel(
                 TAG,
                 "[Compact] artifacts: ${summaries.size} chunk ledger(s) + knowledge archive → workspace/compact/ (mode=$mode)",
             )
+            // [T-supermemory-compact] The knowledge archive is the compaction's
+            // durable output — push it into the LOCAL supermemory service
+            // (localhost:6767, deployed at minis-global/shared/supermemory)
+            // so future sessions can recall compacted knowledge by search
+            // instead of re-reading the summary. Best-effort with a queue
+            // fallback: server down → file lands in shared/supermemory/pending/
+            // and run.sh drains the queue on next server boot — ingestion is
+            // guaranteed eventually, latency is the only variable.
+            ingestKnowledgeToSupermemory(
+                java.io.File(base, "knowledge-$stamp.md"),
+                sessionId = sid,
+            )
         }.onFailure {
             AppLogger.warning(TAG, "[Compact] artifacts write failed: ${it.message}")
+        }
+    }
+
+    /**
+     * [T-supermemory-compact] POST one knowledge file to the local supermemory
+     * service. Success path: content becomes searchable long-term memory
+     * (chunked → embedded → fact-extracted by the memory agent server-side).
+     * Any failure (server down, timeout, network hiccup) enqueues the file in
+     * `<filesDir>/minis-global/shared/supermemory/pending/` — the same global
+     * dir the service's run.sh reads, so the next server boot drains it. The
+     * API key lives in `supermemory/api.key`, written by run.sh at boot.
+     */
+    private fun ingestKnowledgeToSupermemory(file: java.io.File, sessionId: String) {
+        val sharedSupermemory = java.io.File(
+            java.io.File(java.io.File(context.filesDir, "minis-global"), "shared"),
+            "supermemory",
+        )
+        fun enqueue(reason: String) {
+            runCatching {
+                val pending = java.io.File(sharedSupermemory, "pending")
+                if (!pending.exists() && !pending.mkdirs()) return
+                file.copyTo(java.io.File(pending, file.name), overwrite = true)
+                AppLogger.info(
+                    TAG,
+                    "[Compact] supermemory unavailable ($reason) — knowledge queued: ${file.name}",
+                )
+            }
+        }
+        val key = runCatching {
+            java.io.File(sharedSupermemory, "api.key").readText().trim()
+        }.getOrNull()
+        if (key.isNullOrEmpty()) return enqueue("api.key missing")
+        val content = runCatching { file.readText() }.getOrNull() ?: return
+        val started = System.currentTimeMillis()
+        val ok = runCatching {
+            val url = java.net.URL("http://127.0.0.1:6767/v3/documents")
+            val conn = url.openConnection() as java.net.HttpURLConnection
+            conn.connectTimeout = 4_000
+            conn.readTimeout = 15_000
+            conn.requestMethod = "POST"
+            conn.doOutput = true
+            conn.setRequestProperty("Authorization", "Bearer $key")
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.outputStream.use { os ->
+                os.write(
+                    org.json.JSONObject()
+                        .put("content", content)
+                        .put("metadata", org.json.JSONObject().put("source", "compact:$sessionId"))
+                        .toString().toByteArray(Charsets.UTF_8),
+                )
+            }
+            val code = conn.responseCode
+            if (code in 200..299) {
+                conn.inputStream.use { it.readBytes() }
+                true
+            } else {
+                AppLogger.warning(TAG, "[Compact] supermemory ingest HTTP $code")
+                false
+            }
+        }.getOrElse {
+            AppLogger.warning(TAG, "[Compact] supermemory ingest failed: ${it.message}")
+            false
+        }
+        if (ok) {
+            AppLogger.info(
+                TAG,
+                "[Compact] supermemory ingest OK: ${content.length} chars in " +
+                    "${System.currentTimeMillis() - started}ms → searchable memory",
+            )
+        } else {
+            enqueue("ingest failed")
         }
     }
 
