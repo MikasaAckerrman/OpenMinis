@@ -19,8 +19,12 @@ import kotlinx.coroutines.launch
  *
  *  1. **Phantom process monitor** (Android 12+): kills CHILD processes of a
  *     backgrounded app — the PRoot sandbox and every shell tool are children.
- *     One `settings put global settings_enable_monitor_phantom_proc false`
- *     disables it globally; verified live on this device (24.09).
+ *     One `settings put global settings_enable_monitor_phantom_procs false`
+ *     disables it globally. [T-phantom-typo-fix] The key ends in `procs`
+ *     (PLURAL): the original `..._phantom_proc` wrote a meaningless key —
+ *     `settings put` succeeds for ANY name, so the "verified" check passed
+ *     while the real monitor stayed ON. Live proof (24.09): typo-key=false
+ *     AND real-key=null on-device while sandbox children kept dying.
  *  2. **Doze**: defers jobs/network for unlisted apps even with an FGS.
  *     `dumpsys deviceidle whitelist +<pkg>` exempts us.
  *  3. **App Standby bucket**: a "rare"/"restricted" bucket throttles the app
@@ -68,7 +72,13 @@ object BackgroundExemptionPolicy {
     /** Run the exemption commands. Idempotent; every failure is logged, none is fatal. */
     fun apply(pkg: String) {
         val cmds = listOf(
-            listOf("settings", "put", "global", "settings_enable_monitor_phantom_proc", "false"),
+            // [T-phantom-typo-fix] `..._monitor_phantom_procs` — PLURAL. The
+            // singular spelling created a no-op key; the monitor stayed on
+            // and kept killing backgrounded sandbox/tool children.
+            listOf("settings", "put", "global", "settings_enable_monitor_phantom_procs", "false"),
+            // Belt-and-braces: the DeviceConfig source of truth (the global
+            // settings key is the cached mirror; A12+ may read either first).
+            listOf("device_config", "put", "activity_manager", "settings_enable_monitor_phantom_procs", "false"),
             listOf("dumpsys", "deviceidle", "whitelist", "+$pkg"),
             listOf("am", "set-standby-bucket", pkg, "active"),
         )
