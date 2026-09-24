@@ -97,6 +97,36 @@ fun MemoryManagementScreen(
         }
         Spacer(modifier = Modifier.height(16.dp))
 
+        // [T-letta-core-memory] Core-memory blocks gate (plan 24.09: the gate
+        // lives HERE in settings, not in the chat "..." menu — this is
+        // infrastructure, not a per-conversation knob). Off → the block tools
+        // leave the schema AND the 4th-layer history injection is skipped.
+        // The model curates the blocks itself via memory_blocks_view/edit
+        // once the layer is on.
+        var coreMemoryOn by remember {
+            mutableStateOf(com.openminis.app.data.CoreMemoryPrefs.isEnabled())
+        }
+        SettingsSection(
+            header = "Блоки основной памяти (core memory)",
+            footer = "Небольшой набор постоянных фактов (≤16 блоков), которые модель видит " +
+                "в КАЖДОМ запросе и редактирует сама тулами memory_blocks_view / " +
+                "memory_blocks_edit. В отличие от ежедневного журнала памяти — это " +
+                "всегда-в-контексте слой (Letta-style). Выключено — инструменты " +
+                "исчезают из схемы, запросы не несут заголовок.",
+        ) {
+            SettingsSwitchRow(
+                title = "Включить core-memory слой",
+                subtitle = "Инъекция «== CORE MEMORY ==» в начало каждого запроса",
+                checked = coreMemoryOn,
+                onCheckedChange = { newValue ->
+                    coreMemoryOn = newValue
+                    com.openminis.app.data.CoreMemoryPrefs.setEnabled(context, newValue)
+                },
+                showDivider = false,
+            )
+        }
+        Spacer(modifier = Modifier.height(16.dp))
+
         if (files.isEmpty()) {
             Column(
                 modifier = Modifier

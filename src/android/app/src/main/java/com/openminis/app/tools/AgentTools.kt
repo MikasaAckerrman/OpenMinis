@@ -99,6 +99,14 @@ object AgentTools {
          * the previous behaviour.
          */
         subagentsEnabled: Boolean = com.openminis.app.data.SubagentPrefs.isEnabled(),
+        /**
+         * [T-letta-core-memory] App-level core-memory gate (CoreMemoryPrefs,
+         * settings row — NOT a per-session toggle: this is infrastructure).
+         * Off → the block tools leave the schema entirely AND the
+         * effectiveAgentHistory injection is skipped (zero cost), exactly
+         * the [T-subagent-gate] discipline.
+         */
+        coreMemoryEnabled: Boolean = com.openminis.app.data.CoreMemoryPrefs.isEnabled(),
     ): List<AgentToolDefinition> {
         val allow = expandAllowlist(allowedTools)
 
@@ -145,6 +153,15 @@ object AgentTools {
             if (memoryEnabled) {
                 if (permitted("memory_write")) add(memoryWriteDefinition())
                 if (permitted("memory_get")) add(memoryGetDefinition())
+            }
+            // [T-letta-core-memory] Letta-style core blocks: the gate is
+            // app-level (CoreMemoryPrefs, Memory management settings row),
+            // independent of the daily-log memory gate above — a user can
+            // keep the searchable daily log off while running curated
+            // always-in-context blocks, and vice versa.
+            if (coreMemoryEnabled) {
+                if (permitted("memory_blocks_view")) add(memoryBlocksViewDefinition())
+                if (permitted("memory_blocks_edit")) add(memoryBlocksEditDefinition())
             }
         }
     }
@@ -242,5 +259,44 @@ object AgentTools {
         ),
         required = listOf("tool_title"),
         propertyOrdering = listOf("tool_title", "scope", "keywords"),
+    )
+
+    /**
+     * [T-letta-core-memory] Letta-style core memory blocks — a SMALL set of
+     * standing facts injected into EVERY request payload (4th layer of the
+     * agent history). Unlike memory_write (append-only daily log searched on
+     * demand), core blocks are always in-context: the model reads them as
+     * standing instructions and edits them when the facts change.
+     */
+    private fun memoryBlocksViewDefinition(): AgentToolDefinition = AgentToolDefinition(
+        name = "memory_blocks_view",
+        description = "List ALL core-memory blocks (id, label, value, pinned, last edited). Core blocks are standing facts " +
+            "injected into every request. Use this when the injection header was truncated by the budget, " +
+            "or to check a block's exact current value before editing.",
+        parameters = mapOf(
+            "tool_title" to AgentToolParam("string", "A concise 5-10 word summary of this tool call, shown to the user (e.g. 'List core memory blocks'). Use the same language as the user."),
+        ),
+        required = listOf("tool_title"),
+        propertyOrdering = listOf("tool_title"),
+    )
+
+    /** [T-letta-core-memory] Create/update/delete a core-memory block by id. */
+    private fun memoryBlocksEditDefinition(): AgentToolDefinition = AgentToolDefinition(
+        name = "memory_blocks_edit",
+        description = "Create, update, or delete a core-memory block. Core blocks are standing facts in every request — " +
+            "keep them few, stable and high-signal (user preferences, project conventions, key constraints). " +
+            "To CREATE: pass a NEW id (b1..b16), label, value. To UPDATE: pass an existing id with changed fields. " +
+            "To DELETE: action=delete with the id. Caps: 16 blocks, 4000 chars per value — oversized edits are REJECTED " +
+            "with an explicit error (shorten, don't truncate silently).",
+        parameters = mapOf(
+            "tool_title" to AgentToolParam("string", "A concise 5-10 word summary of this tool call, shown to the user (e.g. 'Update core memory: user prefers Kotlin'). Use the same language as the user."),
+            "action" to AgentToolParam("string", "upsert (create or update) or delete", enumValues = listOf("upsert", "delete")),
+            "id" to AgentToolParam("string", "Block id: existing to update/delete, new (b1..b16) to create."),
+            "label" to AgentToolParam("string", "One-line title (max 80 chars), e.g. 'Project conventions'."),
+            "value" to AgentToolParam("string", "The fact itself (max 4000 chars). Omit for delete."),
+            "pinned" to AgentToolParam("boolean", "Pinned blocks survive injection-budget cuts and lead the header."),
+        ),
+        required = listOf("tool_title", "action", "id"),
+        propertyOrdering = listOf("tool_title", "action", "id", "label", "value", "pinned"),
     )
 }

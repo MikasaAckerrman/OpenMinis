@@ -4032,7 +4032,24 @@ class ChatViewModel(
      *   that describes the request actually sent, and on a long session the
      *   log volume itself becomes a cost.
      */
+    /**
+     * [T-letta-core-memory] 4th layer: the Letta core-memory header,
+     * prepended to the payload head BEFORE the pre-anchor region (plan
+     * 24.09). Wire-only — the injected text part is never persisted to
+     * agentHistory/DB (the compaction-summary layer follows the same
+     * discipline), so reloads and compaction see no core-memory residue.
+     * Gate off / empty store → the base result untouched, zero cost.
+     * The cache inside CoreMemoryStore makes this safe for the hot
+     * estimation path (verbose=false runs several times per turn).
+     */
     private fun effectiveAgentHistory(verbose: Boolean): List<LLMMessage> {
+        val base = effectiveAgentHistoryBase(verbose)
+        if (!com.openminis.app.data.CoreMemoryPrefs.isEnabled()) return base
+        val header = com.openminis.app.data.CoreMemoryStore.injectHeaderText() ?: return base
+        return com.openminis.app.data.CoreMemoryInjector.inject(base, header)
+    }
+
+    private fun effectiveAgentHistoryBase(verbose: Boolean): List<LLMMessage> {
         val rawSummary = _compactSummary.value
         val marker = _cachedLatestMarker
         // No compact in play → return full history untouched.
@@ -12453,6 +12470,8 @@ class ChatViewModel(
             com.openminis.app.tools.SubagentTools.RUN_GRAPH_TOOL_NAME -> executeRunGraph(argsJson)
             "memory_write" -> executeMemoryWriteTool(argsJson)
             "memory_get" -> executeMemoryGetTool(argsJson)
+            "memory_blocks_view" -> executeCoreMemoryViewTool(argsJson)
+            "memory_blocks_edit" -> executeCoreMemoryEditTool(argsJson)
             else -> ToolExecutionResult("Unknown tool: $name", false)
             }
             // [T-proactive-memory] Single choke point for the periodic
@@ -13118,6 +13137,67 @@ class ChatViewModel(
             )
         }
         return ToolExecutionResult(result.output, result.success, toolTitle = result.toolTitle)
+    }
+
+    // ─── [T-letta-core-memory] tool executors ──────────────────────────────
+
+    /**
+     * memory_blocks_view: full listing (no budget cut — the injection header
+     * is the bounded view, this is the complete one). Read-only, no args
+     * beyond tool_title.
+     */
+    private fun executeCoreMemoryViewTool(argsJson: String): ToolExecutionResult {
+        val title = try {
+            JSONObject(argsJson).optString("tool_title", "").ifEmpty { "View core memory" }
+        } catch (_: Exception) { "View core memory" }
+        return ToolExecutionResult(
+            com.openminis.app.data.CoreMemoryStore.viewText(),
+            true,
+            toolTitle = title,
+        )
+    }
+
+    /**
+     * memory_blocks_edit: upsert/delete by id. Caps are enforced INSIDE the
+     * store with explicit errors (the model shortens on rejection — silent
+     * truncation would teach it nothing). The success output returns the
+     * full listing so the model sees the resulting state in one round trip.
+     */
+    private fun executeCoreMemoryEditTool(argsJson: String): ToolExecutionResult {
+        val args = try {
+            JSONObject(argsJson)
+        } catch (e: Exception) {
+            return ToolExecutionResult("Error: unparsable arguments (${e.message})", false)
+        }
+        val fallbackTitle = "Core memory: ${args.optString("id", "?")}"
+        val title = args.optString("tool_title", "").ifEmpty { fallbackTitle }
+        val action = args.optString("action", "upsert")
+        val id = args.optString("id", "")
+        val editedTurn = java.text.SimpleDateFormat("HH:mm", java.util.Locale.US)
+            .format(java.util.Date()) + " model"
+        val error: String? = when (action) {
+            "delete" -> com.openminis.app.data.CoreMemoryStore.delete(id)
+            "upsert" -> {
+                val label = args.optString("label", "").trim()
+                val value = args.optString("value", "").trim()
+                val pinned = args.optBoolean("pinned", false)
+                if (label.isEmpty() || value.isEmpty()) {
+                    "upsert requires non-empty label and value"
+                } else {
+                    com.openminis.app.data.CoreMemoryStore.upsert(id, label, value, pinned, editedTurn)
+                }
+            }
+            else -> "unknown action '$action' (upsert|delete)"
+        }
+        return if (error == null) {
+            ToolExecutionResult(
+                "core memory updated:\n" + com.openminis.app.data.CoreMemoryStore.viewText(),
+                true,
+                toolTitle = title,
+            )
+        } else {
+            ToolExecutionResult("Error: $error", false, toolTitle = title)
+        }
     }
 
     // ─── UI Helpers ──────────────────────────────────────────────────────
@@ -15851,6 +15931,8 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         "read_image" -> "Read Image"
         "memory_write" -> "Write Memory"
         "memory_get" -> "Read Memory"
+        "memory_blocks_view" -> "Core Memory"
+        "memory_blocks_edit" -> "Core Memory Edit"
         "web_search" -> "Search Web"
         else -> toolName
             .split('_')

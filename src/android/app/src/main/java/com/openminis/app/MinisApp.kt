@@ -195,6 +195,12 @@ class MinisApp : Application(), ImageLoaderFactory {
         // [T-subagent-gate] Subagents are opt-in (default OFF) — primed
         // here so makeAgentTools can gate the tool schema context-free.
         com.openminis.app.data.SubagentPrefs.prime(this)
+        // [T-letta-core-memory] Core-memory blocks (4th history layer + the
+        // memory_blocks_* tools): gate primed for context-free schema checks;
+        // store primed so the request path and the tools share one cached
+        // file location (filesDir/memory/core_blocks.json).
+        com.openminis.app.data.CoreMemoryPrefs.prime(this)
+        com.openminis.app.data.CoreMemoryStore.prime(this)
 
         // T283: install NDK signal handler for native crashes (SIGSEGV/
         // SIGABRT/SIGBUS/SIGFPE/SIGILL/SIGSYS). Writes a one-shot text
