@@ -424,6 +424,33 @@ class ChatRepository(internal val dao: ChatDao) {
         } else {
             partsJson
         }
+        // [T-reasoning-row-budget] reasoning_content is a separate column in
+        // the SAME Room row: uncapped, a multi-megabyte thinking blob (long
+        // reasoning turns, pathological provider output) blows the 2 MB
+        // CursorWindow on the NEXT query and the whole session fails to load.
+        // Same budget discipline as partsJson: cap at insert time, journal
+        // the rewrite ("the bytes are not what the model produced"), and
+        // keep a truncation marker inside the content so the thinking panel
+        // shows the cut instead of silently ending mid-sentence.
+        val cappedReasoning = if (reasoningContent != null &&
+            reasoningContent.length > MAX_REASONING_CONTENT_LENGTH
+        ) {
+            com.openminis.app.data.MutationJournal.recordRewrite(
+                sessionId = sessionId,
+                op = "append-capped(reasoning,$role)",
+                messageId = "pending",
+                oldLength = reasoningContent.length,
+                newLength = MAX_REASONING_CONTENT_LENGTH,
+            )
+            android.util.Log.w(
+                "ChatRepository",
+                "[T-reasoning-row-budget] capping reasoning for ${sessionId.take(8)}: " +
+                    "${reasoningContent.length} → $MAX_REASONING_CONTENT_LENGTH chars",
+            )
+            buildTruncatedReasoning(reasoningContent)
+        } else {
+            reasoningContent
+        }
         val message = MessageEntity(
             id = UUID.randomUUID().toString(),
             sessionId = sessionId,
@@ -432,7 +459,7 @@ class ChatRepository(internal val dao: ChatDao) {
             createdAt = now,
             tokenUsage = tokenUsage,
             sortOrder = sortOrder,
-            reasoningContent = reasoningContent,
+            reasoningContent = cappedReasoning,
             // [T-msg-timestamps-writer] The assistant row is INSERTED AT TURN
             // END ("the agent loop persists the authoritative assistant row
             // only at turn end", see updateLastMessageLivePreview), so `now`
@@ -899,6 +926,22 @@ class ChatRepository(internal val dao: ChatDao) {
         // and replaced with a single text part carrying a marker, so
         // they remain JSON-parseable downstream.
         internal const val MAX_MESSAGE_PARTS_JSON_LENGTH = 500_000
+
+        // [T-reasoning-row-budget] Budget for the reasoning_content column —
+        // mirrors MAX_MESSAGE_PARTS_JSON_LENGTH: 500_000 chars ≈ 500 KB ASCII
+        // (worst-case ~2 MB UTF-8 on 4-byte runs, same accepted math as the
+        // partsJson cap). Keeps a row's partsJson+reasoning combined inside
+        // a single CursorWindow so the session query can never fail on read.
+        internal const val MAX_REASONING_CONTENT_LENGTH = 500_000
+
+        /** Truncate a reasoning blob with an in-content marker (honest display). */
+        internal fun buildTruncatedReasoning(original: String): String {
+            val keep = original.take(MAX_REASONING_CONTENT_LENGTH)
+            val marker = "\n\n[… reasoning truncated at " +
+                "${MAX_REASONING_CONTENT_LENGTH / 1000} KB — original length " +
+                "${original.length} chars]"
+            return keep + marker
+        }
 
         internal fun buildTruncatedPartsJson(original: String): String {
             val keep = original.take(MAX_MESSAGE_PARTS_JSON_LENGTH)

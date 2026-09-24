@@ -1,6 +1,7 @@
 package com.openminis.app.data.repository
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -15,6 +16,56 @@ class ChatRepositoryTest {
     fun `stripSystemReminders removes inline reminder block`() {
         val raw = "Hello <system-reminder>do this thing</system-reminder> world"
         assertEquals("Hello  world", ChatRepository.stripSystemReminders(raw))
+    }
+
+    // [T-reasoning-row-budget] reasoning_content must never land in the Room
+    // row uncapped: a multi-megabyte thinking blob breaks the 2 MB
+    // CursorWindow on the next session query. The truncation keeps a marker
+    // inside the content so the thinking panel shows the cut honestly.
+    @Test
+    fun `buildTruncatedReasoning keeps prefix, adds marker, reports original length`() {
+        val original = "x".repeat(ChatRepository.MAX_REASONING_CONTENT_LENGTH + 12345)
+        val truncated = ChatRepository.buildTruncatedReasoning(original)
+        assertTrue("prefix must survive", truncated.startsWith("x".repeat(1000)))
+        assertTrue(
+            "marker must carry the original length",
+            truncated.contains("original length ${original.length} chars"),
+        )
+        assertTrue(
+            "result must stay near the cap (cap + marker overhead)",
+            truncated.length <= ChatRepository.MAX_REASONING_CONTENT_LENGTH + 100,
+        )
+    }
+
+    @Test
+    fun `buildTruncatedReasoning marker is appended not prepended`() {
+        val original = "start" + "y".repeat(ChatRepository.MAX_REASONING_CONTENT_LENGTH)
+        val truncated = ChatRepository.buildTruncatedReasoning(original)
+        assertTrue(
+            "the cap must cut the tail, not the head",
+            truncated.startsWith("start"),
+        )
+        assertTrue(
+            "marker lands at the end",
+            truncated.endsWith("chars]"),
+        )
+    }
+
+    @Test
+    fun `buildTruncatedReasoning on multibyte content counts chars not bytes`() {
+        // Cyrillic reasoning: 2 bytes/char in UTF-8. The budget is denominated
+        // in CHARS (same convention as MAX_MESSAGE_PARTS_JSON_LENGTH), so a
+        // 500_001-char cyrillic blob is capped identically to ASCII.
+        val original = "д".repeat(ChatRepository.MAX_REASONING_CONTENT_LENGTH + 1)
+        val truncated = ChatRepository.buildTruncatedReasoning(original)
+        assertTrue(
+            "char-denominated cap",
+            truncated.length <= ChatRepository.MAX_REASONING_CONTENT_LENGTH + 100,
+        )
+        assertTrue(
+            "no mojibake: the cut must land on a char boundary",
+            truncated.take(10) == "д".repeat(10),
+        )
     }
 
     @Test
