@@ -39,8 +39,8 @@ android {
         // [T-vc56] Jump (not increment) over the installed base: the user's
         // device runs the vc55 clone APK (built before f71cac0 reverted the
         // bump), and Android refuses to install vc54 over vc55. 56 clears it.
-        versionCode = 63
-        // vc63: accent auto-mode toggle visibility fix
+        versionCode = 64
+        // vc64: thinking-durability + supermemory@compact + microcompact + bg-exemptions + review fixes
         versionName = "0.41-preview"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
