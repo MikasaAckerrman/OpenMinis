@@ -153,6 +153,12 @@ object AgentTools {
             if (memoryEnabled) {
                 if (permitted("memory_write")) add(memoryWriteDefinition())
                 if (permitted("memory_get")) add(memoryGetDefinition())
+                // [T-supermemory-tool] Semantic tier for the model: the
+                // local supermemory service (associative recall over every
+                // distilled turn + compacted knowledge). Complements
+                // memory_get (keyword scan of the daily logs) — this is
+                // meaning-based recall.
+                if (permitted("supermemory_search")) add(supermemorySearchDefinition())
             }
             // [T-letta-core-memory] Letta-style core blocks: the gate is
             // app-level (CoreMemoryPrefs, Memory management settings row),
@@ -296,7 +302,20 @@ object AgentTools {
             "value" to AgentToolParam("string", "The fact itself (max 4000 chars). Omit for delete."),
             "pinned" to AgentToolParam("boolean", "Pinned blocks survive injection-budget cuts and lead the header."),
         ),
-        required = listOf("tool_title", "action", "id"),
-        propertyOrdering = listOf("tool_title", "action", "id", "label", "value", "pinned"),
+    /** [T-supermemory-tool] Semantic search over the local supermemory service. */
+    private fun supermemorySearchDefinition(): AgentToolDefinition = AgentToolDefinition(
+        name = "supermemory_search",
+        description = "Semantic (meaning-based) search over the long-term associative memory store. " +
+            "Unlike memory_get (keyword scan of daily logs), this recalls by MEANING across every " +
+            "distilled turn and compacted knowledge archive. Use when keyword search misses: " +
+            "'what did we decide about background freezes' finds it even without the exact words. " +
+            "Empty result = nothing semantically close (or the local service is down — prefer " +
+            "memory_get then).",
+        parameters = mapOf(
+            "tool_title" to AgentToolParam("string", "A concise 5-10 word summary of this tool call, shown to the user (e.g. 'Search long-term memory'). Use the same language as the user."),
+            "query" to AgentToolParam("string", "Natural-language query, e.g. 'решение по заморозке фона' or 'supermemory port contract'."),
+        ),
+        required = listOf("tool_title", "query"),
+        propertyOrdering = listOf("tool_title", "query"),
     )
 }

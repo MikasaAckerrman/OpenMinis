@@ -12525,6 +12525,7 @@ class ChatViewModel(
             com.openminis.app.tools.SubagentTools.RUN_GRAPH_TOOL_NAME -> executeRunGraph(argsJson)
             "memory_write" -> executeMemoryWriteTool(argsJson)
             "memory_get" -> executeMemoryGetTool(argsJson)
+            "supermemory_search" -> executeSupermemorySearchTool(argsJson)
             "memory_blocks_view" -> executeCoreMemoryViewTool(argsJson)
             "memory_blocks_edit" -> executeCoreMemoryEditTool(argsJson)
             else -> ToolExecutionResult("Unknown tool: $name", false)
@@ -13195,6 +13196,41 @@ class ChatViewModel(
     }
 
     // ─── [T-letta-core-memory] tool executors ──────────────────────────────
+
+    /**
+     * [T-supermemory-tool] supermemory_search: semantic recall for the model.
+     * Output is bounded (top 5 chunks, 500 chars each) — the full doc is one
+     * memory_blocks-style round trip away if ever needed; server-down or
+     * empty store degrades to an explicit empty result the model can read.
+     */
+    private fun executeSupermemorySearchTool(argsJson: String): ToolExecutionResult {
+        val args = try {
+            JSONObject(argsJson)
+        } catch (e: Exception) {
+            return ToolExecutionResult("Error: unparsable arguments (${e.message})", false)
+        }
+        val title = args.optString("tool_title", "").ifEmpty { "Semantic memory search" }
+        val query = args.optString("query", "").trim()
+        if (query.isEmpty()) {
+            return ToolExecutionResult("Error: query is required", false, toolTitle = title)
+        }
+        val hits = com.openminis.app.memory.SupermemoryBridge.search(query)
+        if (hits.isEmpty()) {
+            return ToolExecutionResult(
+                "no semantic matches (store may be empty or the local service is down — try memory_get)",
+                true,
+                toolTitle = title,
+            )
+        }
+        val text = hits.take(5).joinToString("\n\n") { hit ->
+            "- [score ${"%.2f".format(hit.score)}] ${hit.content.take(500)}"
+        }
+        return ToolExecutionResult(
+            "semantic memory (${hits.size} hits, showing ${minOf(5, hits.size)}):\n$text",
+            true,
+            toolTitle = title,
+        )
+    }
 
     /**
      * memory_blocks_view: full listing (no budget cut — the injection header
@@ -15986,6 +16022,7 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         "read_image" -> "Read Image"
         "memory_write" -> "Write Memory"
         "memory_get" -> "Read Memory"
+        "supermemory_search" -> "Semantic Memory"
         "memory_blocks_view" -> "Core Memory"
         "memory_blocks_edit" -> "Core Memory Edit"
         "web_search" -> "Search Web"
