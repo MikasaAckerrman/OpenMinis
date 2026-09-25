@@ -382,6 +382,12 @@ class MinisApp : Application(), ImageLoaderFactory {
         RootfsManager.getInstance(this)
         ExecutionCoordinator.init(this)
         ExecutionCoordinator.envVarRepository = envVarRepository
+        // [T-supermemory-autostart] The server's lifecycle = the app's
+        // (user 25.09: boot WITH Minis, not with the phone). Probes the
+        // port, kicks run.sh through the persistent shell when dead, waits
+        // bounded for the boot. Down-server consumers degrade honestly
+        // (compact → pending, bridge → circuit breaker).
+        com.openminis.app.memory.SupermemoryAutostart.bootIfNeeded()
 
         // Privacy Mode store + redactor wiring. Mirrors iOS
         // EnvVarPrivacyStore.init / EnvVarRedactor static handoff.
