@@ -70,6 +70,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -7807,6 +7809,11 @@ class ChatViewModel(
                 SessionConcurrencyManager.acquireSlot(activeSessionId)
                 AppLogger.debug(TAG_STREAM, "$label streamJob slot acquired")
                 SessionActivityTracker.setActive(activeSessionId, onStop = { cancelStream() })
+                // [T-turnguard-heartbeat] Root-TurnGuard contract: keep
+                // turn.heartbeat's mtime fresh for the whole turn — see
+                // startTurnHeartbeat(). Stopped in the streamJob finally,
+                // mirroring setInactive below.
+                startTurnHeartbeat()
                 val activeFallbackStrategy = run {
                     val groupId = _selectedGroupId.value
                     groupId?.let { providerRepository.config.value.modelGroups.find { g -> g.id == it }?.fallbackStrategy }
@@ -7944,6 +7951,9 @@ class ChatViewModel(
                     SessionActivityTracker.markStreamError(activeSessionId)
                 } finally {
                     AppLogger.info(TAG_STREAM, "$label streamJob FINALLY enter")
+                    // [T-turnguard-heartbeat] Stop the guard contract before
+                    // the teardown — the mtime ages out in the guard's window.
+                    stopTurnHeartbeat()
                     // [T-android-overlay-reply-status-34599] Surface
                     // the assistant's most recent reply text to the
                     // overlay BEFORE setInactive so the post-completion
@@ -9303,6 +9313,39 @@ class ChatViewModel(
      * silent rather than guessing.
      */
     private var bgFreezeGuidanceShown = false
+
+    // ─── [T-turnguard-heartbeat] root-guard contract ───────────────────────
+
+    /**
+     * Root-TurnGuard contract: keep `files/turn.heartbeat`'s mtime fresh
+     * while THIS turn is in flight. The guard module (minis_turnguard ≥v1.2)
+     * watches the mtime instead of the FGS dumpsys check — this survives
+     * the vendor stopping the foreground SERVICE while the agent loop still
+     * runs (an FGS-gated guard would silently drop protection), and covers
+     * minutes-long tool calls where no stream chunks flow.
+     *
+     * A SIDEAR coroutine — deliberately not the loop thread: blocked-in-tool
+     * is exactly the state we must keep reporting. mtime-only writes
+     * (File.setLastModified — a metadata op, no data write, no fsync):
+     * ~0 cost every 15s. Guard freshness window: 45s (3 missed beats).
+     */
+    private var turnHeartbeatJob: Job? = null
+
+    private fun startTurnHeartbeat() {
+        turnHeartbeatJob?.cancel()
+        turnHeartbeatJob = viewModelScope.launch(Dispatchers.IO) {
+            val marker = java.io.File(context.filesDir, "turn.heartbeat")
+            while (isActive) {
+                runCatching { marker.setLastModified(System.currentTimeMillis()) }
+                delay(15_000)
+            }
+        }
+    }
+
+    private fun stopTurnHeartbeat() {
+        turnHeartbeatJob?.cancel()
+        turnHeartbeatJob = null
+    }
 
     private fun maybeShowBackgroundFreezeGuidance(requestStartMs: Long, error: Exception) {
         if (bgFreezeGuidanceShown) return
