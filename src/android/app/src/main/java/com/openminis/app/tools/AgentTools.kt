@@ -302,6 +302,10 @@ object AgentTools {
             "value" to AgentToolParam("string", "The fact itself (max 4000 chars). Omit for delete."),
             "pinned" to AgentToolParam("boolean", "Pinned blocks survive injection-budget cuts and lead the header."),
         ),
+        required = listOf("tool_title", "action", "id"),
+        propertyOrdering = listOf("tool_title", "action", "id", "label", "value", "pinned"),
+    )
+
     /** [T-supermemory-tool] Semantic search over the local supermemory service. */
     private fun supermemorySearchDefinition(): AgentToolDefinition = AgentToolDefinition(
         name = "supermemory_search",
