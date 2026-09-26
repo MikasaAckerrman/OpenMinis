@@ -6067,6 +6067,15 @@ class ChatViewModel(
             _sessionSubagents.value = session.subagentsEnabled?.let { it == 1 }
             AppLogger.info(TAG, "[ScopedToggles] load sid=${session.id.take(8)} autoMode=${_sessionAutoMode.value ?: "global"} subagents=${_sessionSubagents.value ?: "global"}")
 
+            // [T-session-digest] Snapshot the PLAN-STATE digest once at
+            // session open: the head of the active plan file (what's done /
+            // what remains — the curated signal). The daily LOGS are already
+            // injected per-request by loadRecentDailyMemoryFragment (8K
+            // budget); this fragment adds the one piece that loader does NOT
+            // cover. Snapshot (not per-request read) keeps the prompt prefix
+            // byte-stable even when the plan file is updated mid-session.
+            sessionMemoryDigest = buildPlanStateDigest()
+
             // Priority 1: restore from persisted model_binding (group or entry)
             var resolved = restoreFromBinding(session.modelBinding)
 
@@ -9313,6 +9322,34 @@ class ChatViewModel(
      * silent rather than guessing.
      */
     private var bgFreezeGuidanceShown = false
+
+    // ─── [T-session-digest] session-open memory snapshot ───────────────────
+
+    /**
+     * [T-session-digest] The PLAN-STATE digest — the head of the active plan
+     * file (what's done / what remains). This is the continuity layer the
+     * user asked for 25.09 («ты ничего не запоминаешь будто»): a NEW session
+     * opens knowing the current state of the work, not just a wall of raw
+     * daily-log lines (those are injected separately by
+     * loadRecentDailyMemoryFragment).
+     *
+     * Snapshot at session open (byte-stable prefix); bounded ~700 chars;
+     * null when memory is off or no plan exists.
+     */
+    private var sessionMemoryDigest: String? = null
+
+    private fun buildPlanStateDigest(): String? {
+        if (!_memoryEnabled.value) return null
+        return runCatching {
+            val plan = java.io.File(context.filesDir, "minis-global/shared/COMPACT_CHAT_PLAN.md")
+            if (!plan.exists()) return@runCatching null
+            val lines = runCatching { plan.readLines() }.getOrNull() ?: return@runCatching null
+            if (lines.isEmpty()) return@runCatching null
+            val head = lines.take(30).joinToString("\n").take(700)
+            "=== PLAN STATE (snapshot at session open) ===\n$head" +
+                if (lines.size > 30) "\n(plan cut at 30 lines — full file at /var/minis/shared/COMPACT_CHAT_PLAN.md)" else ""
+        }.getOrNull()
+    }
 
     // ─── [T-turnguard-heartbeat] root-guard contract ───────────────────────
 
@@ -14138,6 +14175,13 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
             if (dailyMemoryFragment != null) {
                 append("\n\n")
                 append(dailyMemoryFragment)
+            }
+            // [T-session-digest] The plan-state snapshot (session-open):
+            // the curated "done / remains" signal the raw log lines don't
+            // carry. Stable for the whole session (cacheable prefix).
+            if (sessionMemoryDigest != null) {
+                append("\n\n")
+                append(sessionMemoryDigest)
             }
             if (envNamesFragment != null) {
                 append("\n\n")
