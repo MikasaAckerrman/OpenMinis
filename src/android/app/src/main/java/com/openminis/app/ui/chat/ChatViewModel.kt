@@ -9336,7 +9336,15 @@ class ChatViewModel(
         turnHeartbeatJob = viewModelScope.launch(Dispatchers.IO) {
             val marker = java.io.File(context.filesDir, "turn.heartbeat")
             while (isActive) {
-                runCatching { marker.setLastModified(System.currentTimeMillis()) }
+                runCatching {
+                    // [hotfix] File.setLastModified returns FALSE and creates
+                    // NOTHING on a missing file — the first beat must
+                    // materialise the marker, otherwise the TurnGuard
+                    // contract is dead on arrival (verified live 25.09:
+                    // no file existed while a turn was running).
+                    if (!marker.exists()) marker.createNewFile()
+                    marker.setLastModified(System.currentTimeMillis())
+                }
                 delay(15_000)
             }
         }
