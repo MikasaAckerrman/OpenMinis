@@ -97,12 +97,13 @@ interface ChatDao {
     suspend fun markAsAgentWorker(id: String, runId: String, role: String)
 
     /**
-     * [T-subagent-nesting] True when the session is an agent worker (spawned
-     * subagent) — the structural depth cap: a worker's own spawns get the
-     * delegation tools stripped, capping the tree at ONE nesting level.
+     * [T-subagent-nesting] The agent role of a worker session (null for the
+     * main chat / showcase sessions) — the second half of the structural
+     * depth cap: the delegation matrix needs BOTH "is the spawner a worker"
+     * and "WHICH role is it" (see SubagentExecutor.mayDelegate).
      */
-    @Query("SELECT agent_run_id IS NOT NULL AND is_agent_showcase = 0 FROM sessions WHERE id = :id")
-    suspend fun isAgentWorker(id: String): Boolean
+    @Query("SELECT agent_role FROM sessions WHERE id = :id AND agent_run_id IS NOT NULL AND is_agent_showcase = 0")
+    suspend fun agentWorkerRole(id: String): String?
 
     /**
      * Mark a session as the readable face of [runId]. It keeps the run id (so the
