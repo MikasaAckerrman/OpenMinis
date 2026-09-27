@@ -215,6 +215,10 @@ class MinisApp : Application(), ImageLoaderFactory {
         // file location (filesDir/memory/core_blocks.json).
         com.openminis.app.data.CoreMemoryPrefs.prime(this)
         com.openminis.app.data.CoreMemoryStore.prime(this)
+        // [T-auto-mistake] Failed tool calls auto-append to today's memory
+        // log (MNL-style capture) — the daily-memory fragment and memory_get
+        // surface them without the model deciding to save.
+        com.openminis.app.data.AutoMistakeLog.prime(this)
 
         // T283: install NDK signal handler for native crashes (SIGSEGV/
         // SIGABRT/SIGBUS/SIGFPE/SIGILL/SIGSYS). Writes a one-shot text

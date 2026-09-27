@@ -12618,6 +12618,20 @@ class ChatViewModel(
             "memory_blocks_edit" -> executeCoreMemoryEditTool(argsJson)
             else -> ToolExecutionResult("Unknown tool: $name", false)
             }
+            // [T-auto-mistake] MNL-style auto-capture (MistakeNotebookLearning
+            // concept): a failed tool call lands in today's memory log BEFORE
+            // the nudge/timer decorators — the error text is the model's own
+            // output, not the decorated one. Capture is automatic; distillation
+            // into core-memory blocks stays model-curated. Throttled (60s per
+            // toolName+error-prefix) so retry loops don't spam the log.
+            if (!toolResult.success) {
+                com.openminis.app.data.AutoMistakeLog.capture(
+                    toolName = name,
+                    toolTitle = toolResult.toolTitle,
+                    errorOutput = toolResult.output,
+                    sessionId = activeSessionId,
+                )
+            }
             // [T-proactive-memory] Single choke point for the periodic
             // reminder — see maybeAppendMemoryNudge. [T-turn-timer] and the
             // timer line/refusal on the same path.
