@@ -579,14 +579,12 @@ fun BackgroundSettingsScreen(onBack: () -> Unit) {
             BgToggleRow(
                 icon = Icons.Outlined.Shield,
                 iconColor = Color(0xFFFF453A),
-                title = "Разрешить модели root-команды",
-                subtitle = "Инструмент root_shell (su 0, KernelSU): системные настройки, dumpsys, /proc, pm. Выключено — инструмента нет в схеме. Разрушающие команды всегда требуют подтверждения в диалоге",
+                title = "Разрешить модели root-команды (su 0)",
                 checked = rootShellOn,
                 onCheckedChange = { wanted ->
                     rootShellOn = wanted
                     com.openminis.app.data.RootShellPrefs.setEnabled(context, wanted)
                 },
-                showDivider = false,
             )
             BgFooter(
                 "Максимальные привилегии: модель сможет читать/менять системные файлы и " +

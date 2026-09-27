@@ -13363,8 +13363,8 @@ class ChatViewModel(
         // with the weight of root: DENY outright for the forbidden class,
         // CONFIRM raises the interactive dialog (the user sees the exact
         // command + reason before a root-level destructive action runs).
-        val verdict = com.openminis.app.sandbox.DestructiveCommandPolicy.assess(command)
-        when (verdict) {
+        val verdict = com.openminis.app.sandbox.DestructiveCommandPolicy.classify(command)
+        when (verdict.verdict) {
             com.openminis.app.sandbox.DestructiveCommandPolicy.Verdict.REFUSE -> {
                 return ToolExecutionResult(
                     "Отказано (политика разрушающих команд): ${verdict.reason}\n" +
