@@ -59,6 +59,25 @@ object AgentWorkerPrompt {
             "- memory_get: recall notes from earlier sessions by keyword.",
         "memory_write" to
             "- memory_write: save a note for later sessions.",
+        // [T-subagent-nesting] The delegation trio — only the orchestrator
+        // and reviewers have these; the notes state the traps that actually
+        // waste turns (incomplete task text, invisible workers, duplicate
+        // spawns of already-done work).
+        "spawn_subagent" to
+            "- spawn_subagent: delegate ONE subtask to a specialist. The worker " +
+            "sees ONLY the task text you pass — not this conversation — so include " +
+            "file paths, the exact change and acceptance criteria. depends_on (JSON " +
+            "array of task ids) makes the spawn wait for board tasks; unmet deps are " +
+            "refused with the wait-set named.",
+        "spawn_many" to
+            "- spawn_many: batch of INDEPENDENT subtasks, up to 3 concurrently. " +
+            "Tasks touching the same file are serialized automatically; state it in " +
+            "the texts anyway. The result header includes the team's CROSS-TURN " +
+            "history — re-delegate failed tails instead of redoing the plan.",
+        "task_board" to
+            "- task_board: view this team's durable board — every spawn this chat " +
+            "ever made, statuses, results, unmet deps, dependency cycles. READ it " +
+            "before continuing multi-step work from earlier turns.",
     )
 
     /**
@@ -93,13 +112,26 @@ object AgentWorkerPrompt {
                 "doing only your part and reporting it in the agreed format.",
         )
 
+        // [T-env-snapshot] Operational context as FACTS, not inheritance: the
+        // worker gets the environment it runs in stated once, compactly — the
+        // review's 'lost operational context' failure mode. What is NOT here,
+        // on purpose: git branch and repo state (workers cannot git, and the
+        // spawner's repo context belongs in the TASK text where it is
+        // explicit) — a worker that guesses the environment is a worker that
+        // burns turns rediscovering it.
+        appendLine()
+        appendLine(
+            "Environment: an Android phone (aarch64), Linux sandbox = Alpine via PRoot, " +
+                "shell = BusyBox ash (NOT bash). Your tools are ONLY the ones listed below. " +
+                "Write access: your own workspace, /var/minis/attachments and /tmp.",
+        )
+
         val notes = allowedTools.mapNotNull { TOOL_NOTES[it] }
         if (notes.isNotEmpty()) {
             appendLine()
             appendLine("Your tools (the schema contains ONLY these — nothing else is callable):")
             notes.forEach { appendLine(it) }
         }
-
         if (workspaceDir != null) {
             appendLine()
             appendLine(

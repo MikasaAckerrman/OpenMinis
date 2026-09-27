@@ -77,6 +77,31 @@ class AgentWorkerPromptTest {
     }
 
     @Test
+    fun `environment snapshot states the operational facts once`() {
+        val p = build()
+        assertTrue(p.contains("Android phone (aarch64)"))
+        assertTrue(p.contains("Alpine via PRoot"))
+        assertTrue(p.contains("BusyBox ash (NOT bash)"))
+        assertTrue(p.contains("Write access: your own workspace"))
+    }
+
+    @Test
+    fun `delegation tools are described for those who have them`() {
+        val p = build(
+            tools = listOf(
+                "shell_execute", "file_read", "spawn_subagent", "spawn_many", "task_board",
+            ),
+        )
+        assertTrue(p.contains("spawn_subagent: delegate ONE subtask"))
+        assertTrue(p.contains("spawn_many: batch of INDEPENDENT subtasks"))
+        assertTrue(p.contains("task_board: view this team's durable board"))
+        // And absent for plain workers:
+        val worker = build()
+        assertFalse(worker.contains("spawn_subagent:"))
+        assertFalse(worker.contains("task_board:"))
+    }
+
+    @Test
     fun `unrestricted worker gets no tool dump`() {
         // Empty allowlist means "no restriction" elsewhere in the code; emitting
         // every tool's docs here would reintroduce the cost this class removes.
