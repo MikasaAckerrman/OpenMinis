@@ -46,7 +46,11 @@ object SubagentExecutor {
      * [T-spawn-many] The ephemeral single-node graph every spawned subagent
      * runs in (was inline in spawn()).
      */
-    private fun buildEphemeralGraph(agentRole: AgentRole, task: String): Pair<AgentGraph, AgentNode> {
+    private fun buildEphemeralGraph(
+        agentRole: AgentRole,
+        task: String,
+        allowNesting: Boolean = true,
+    ): Pair<AgentGraph, AgentNode> {
         val node = AgentNode(
             id = "spawn-${UUID.randomUUID().toString().take(8)}",
             role = agentRole,
@@ -55,7 +59,14 @@ object SubagentExecutor {
             // value the parser will reject (it must be an exact AgentRole enum
             // name). Name the one target that always exists: the caller.
             systemPrompt = promptForRole(agentRole, task) + handoffToGuidance(agentRole),
-            allowedTools = defaultToolsForRole(agentRole),
+            // [T-subagent-nesting] Depth cap, structurally: a worker's spawn
+            // (allowNesting=false) strips the delegation tools from the
+            // grandchild's schema — the orchestrator delegation lives ONE
+            // level deep, exactly as designed.
+            allowedTools = defaultToolsForRole(agentRole).let { tools ->
+                if (allowNesting) tools
+                else tools.filterNot { it == "spawn_subagent" || it == "spawn_many" }
+            },
             maxTurns = 8,
             modelRole = modelRoleFor(agentRole),
         )
@@ -179,13 +190,18 @@ object SubagentExecutor {
      * [T-agent-file] Resolve a role string (builtin enum or "custom:<name>")
      * to its ephemeral graph. Null = unresolvable (bad custom name).
      */
-    private fun buildGraphFor(context: Context, role: String, task: String): Pair<AgentGraph, AgentNode>? {
+    private fun buildGraphFor(
+        context: Context,
+        role: String,
+        task: String,
+        allowNesting: Boolean = true,
+    ): Pair<AgentGraph, AgentNode>? {
         if (role.startsWith("custom:")) {
             val agent = AgentFileStore.find(context, role.removePrefix("custom:").trim()) ?: return null
             return buildCustomGraph(agent, task)
         }
         val agentRole = runCatching { AgentRole.valueOf(role) }.getOrNull() ?: return null
-        return buildEphemeralGraph(agentRole, task)
+        return buildEphemeralGraph(agentRole, task, allowNesting)
     }
 
     /** [T-agent-file] The ephemeral graph for a user-defined agent. */
@@ -233,9 +249,14 @@ object SubagentExecutor {
         serial: Boolean = false,
         synthesize: Boolean = false,
         review: Boolean = false,
+        /** [T-subagent-nesting] Depth cap — see spawn(spawnerSessionId). */
+        spawnerSessionId: String? = null,
     ): String {
         if (agents.isEmpty()) return "spawn_many: no agents given"
         val app = context.applicationContext as MinisApp
+        // [T-subagent-nesting] Resolve the depth cap once per batch.
+        val allowNesting = spawnerSessionId == null ||
+            !app.chatRepository.dao.isAgentWorker(spawnerSessionId)
         // [T-agent-file] Validation: builtin enum or an existing custom agent.
         for (spec in agents) {
             if (spec.role.startsWith("custom:")) {
@@ -284,7 +305,11 @@ object SubagentExecutor {
                     val spec = agents[task.index]
                     async(kotlinx.coroutines.Dispatchers.IO) {
                         parallelLimiter.withPermit {
-                            val pair = buildGraphFor(context, spec.role, spec.task)
+                            // [T-subagent-nesting] spawnMany resolves the depth
+                            // cap ONCE per batch (the spawner is fixed): workers
+                            // spawned from a worker session get the delegation
+                            // tools stripped, same rule as spawn().
+                            val pair = buildGraphFor(context, spec.role, spec.task, allowNesting)
                                 ?: return@withPermit "No custom agent '${spec.role.removePrefix("custom:")}' " +
                                     "in ${AgentFileStore.SANDBOX_DIR} (call list_agents)."
                             val (graph, node) = pair
@@ -386,6 +411,16 @@ object SubagentExecutor {
         task: String,
         foreground: Boolean,
         onBackgroundResult: ((spawnId: String, role: String, result: String) -> Unit)? = null,
+        /**
+         * [T-subagent-nesting] The CALLER's session id — the structural depth
+         * cap. When the caller is itself an agent worker (a spawned
+         * subagent session), the child's tool set is stripped of the
+         * delegation tools (spawn_subagent / spawn_many): an orchestrator
+         * spawned from the MAIN chat can delegate (2-level tree, the Cursor
+         * pattern), but a worker's spawn cannot — exactly ONE nesting
+         * level, no counters, no runaway recursion.
+         */
+        spawnerSessionId: String? = null,
     ): String {
         val app = context.applicationContext as MinisApp
         // [T-agent-file] role="custom:<name>" routes to a user-defined agent
@@ -401,7 +436,13 @@ object SubagentExecutor {
                     "or custom:<name> (call list_agents to see user-defined agents)"
             }
 
-        val (graph, node) = buildEphemeralGraph(agentRole, task)
+        // [T-subagent-nesting] Resolve the depth cap BEFORE building the
+        // graph: a worker caller's spawn gets the delegation tools stripped
+        // from the child schema. isAgentWorker is a DB read (suspend, IO-safe
+        // here — spawn is already on Dispatchers.IO).
+        val allowNesting = spawnerSessionId == null ||
+            !app.chatRepository.dao.isAgentWorker(spawnerSessionId)
+        val (graph, node) = buildEphemeralGraph(agentRole, task, allowNesting)
         app.providerRepository.saveAgentGraph(graph)
         val spawnId = node.id
 
@@ -581,6 +622,15 @@ object SubagentExecutor {
         AgentRole.INDEPENDENT_TEST_DESIGNER,
         AgentRole.DOCUMENTATION_AGENT ->
             listOf("shell_execute", "file_read", "file_write", "file_edit")
+        // [T-subagent-nesting] The orchestrator is the ONE role that may
+        // delegate: it plans, splits the task and spawns worker subagents
+        // (spawn_subagent / spawn_many — the Cursor 2-level tree pattern).
+        // The structural depth cap lives in spawn(): a spawn issued FROM a
+        // worker session (agent_run_id set in the DB) strips the spawn tools
+        // from the grandchild's set — exactly ONE nesting level, no runaway
+        // recursion, no depth counters to maintain.
+        AgentRole.ORCHESTRATOR ->
+            listOf("shell_execute", "file_read", "spawn_subagent", "spawn_many")
         else ->
             listOf("shell_execute", "file_read", "browser_use")
     }

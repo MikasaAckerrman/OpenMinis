@@ -12976,6 +12976,10 @@ class ChatViewModel(
             role = role,
             task = task,
             foreground = !background,
+            // [T-subagent-nesting] Pass OUR session id: the executor strips
+            // the delegation tools from the child when the spawner is itself
+            // an agent worker (one nesting level, structural cap).
+            spawnerSessionId = activeSessionId,
             onBackgroundResult = if (background) { { _, subRole, subResult ->
                 // Deliver the background result as a system info line the
                 // next turn will see. The callback runs on an IO coroutine;
@@ -13113,7 +13117,11 @@ class ChatViewModel(
         val serial = args.optString("mode").trim().lowercase() == "serial"
         val synthesize = args.optBoolean("synthesize", false)
         val review = args.optBoolean("review", false)
-        val result = com.openminis.app.offload.SubagentExecutor.spawnMany(context, specs, serial, synthesize, review)
+        val result = com.openminis.app.offload.SubagentExecutor.spawnMany(
+            context, specs, serial, synthesize, review,
+            // [T-subagent-nesting] Depth cap — see spawn(spawnerSessionId).
+            spawnerSessionId = activeSessionId,
+        )
         return ToolExecutionResult(result, true)
     }
 
