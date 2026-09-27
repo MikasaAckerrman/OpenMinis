@@ -28,7 +28,7 @@ class AutoMistakeLogTest {
     private fun freshLog(): File {
         val d = tmp.newFolder("m${System.nanoTime()}")
         logDir = d
-        AutoMistakeLog.primeDirForTest(d)
+        AutoMistakeLog.primeDir(d)
         return d
     }
 
@@ -87,7 +87,7 @@ class AutoMistakeLogTest {
 
     @Test
     fun `unprimed log captures nothing and never throws`() {
-        AutoMistakeLog.primeDirForTest(null)
+        AutoMistakeLog.primeDir(null)
         assertFalse(AutoMistakeLog.capture("shell_execute", "t", "error", "s"))
     }
 }

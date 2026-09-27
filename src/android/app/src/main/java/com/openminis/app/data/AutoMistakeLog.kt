@@ -41,8 +41,12 @@ object AutoMistakeLog {
         primeDir(File(context.applicationContext.filesDir, "minis-global/memory"))
     }
 
-    /** Test seam: JVM tests point the log at a TemporaryFolder. */
-    internal fun primeDirForTest(directory: File?) {
+    /**
+     * Test seam: set/replace the storage dir and reset the throttle state.
+     * JVM tests have no Context — they point the log at a TemporaryFolder
+     * (or null for the unprimed no-op case).
+     */
+    internal fun primeDir(directory: File?) {
         synchronized(this) {
             dir = directory
             lastEmit.clear()
