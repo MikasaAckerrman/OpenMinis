@@ -153,6 +153,12 @@ object AgentTools {
                 if (permitted(com.openminis.app.tools.SubagentTools.RUN_GRAPH_TOOL_NAME)) {
                     add(com.openminis.app.tools.SubagentTools.runGraphDefinition())
                 }
+                // [T-task-board] The board view rides with the spawn tools:
+                // delegation without sight of the team's history is how
+                // duplicate spawns happen — same tool gate, same session scope.
+                if (permitted(com.openminis.app.tools.SubagentTools.TASK_BOARD_TOOL_NAME)) {
+                    add(com.openminis.app.tools.SubagentTools.taskBoardDefinition())
+                }
             }
             if (permitted(com.openminis.app.tools.TurnTimerTool.NAME)) {
                 add(com.openminis.app.tools.TurnTimerTool.definition())

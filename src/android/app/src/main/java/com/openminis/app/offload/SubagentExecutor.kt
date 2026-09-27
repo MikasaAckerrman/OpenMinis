@@ -102,6 +102,8 @@ object SubagentExecutor {
         task: String,
         /** [T-task-board] The spawner's session id — the team the run records under. */
         teamId: String? = null,
+        /** [T-task-board] JSON array of predecessor task ids (enforced before the run). */
+        dependsOnJson: String = "[]",
     ): String = try {
         // [T-task-board] Durable ledger: the run exists from THIS moment, not
         // from completion — a crash mid-run leaves a RUNNING row with history
@@ -110,7 +112,7 @@ object SubagentExecutor {
             AgentBoardRecorder.taskStarted(
                 context, taskId = node.id, teamId = teamId,
                 roleRequired = role, title = task.lineSequence().firstOrNull().orEmpty(),
-                description = task, workspaceDir = null,
+                description = task, workspaceDir = null, dependsOnJson = dependsOnJson,
             )
         }
         val result = AgentGraphRunner.run(context, graph.id, task, taskId = node.id, ephemeral = true)
@@ -147,6 +149,8 @@ object SubagentExecutor {
         onBackgroundResult: ((spawnId: String, role: String, result: String) -> Unit)?,
         /** [T-task-board] The spawner's session id — the team the run records under. */
         teamId: String? = null,
+        /** [T-task-board] JSON array of predecessor task ids (enforced before the run). */
+        dependsOnJson: String = "[]",
     ): String {
         activeBackground[spawnId] = "$role: ${task.take(80)}"
         kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
@@ -158,7 +162,7 @@ object SubagentExecutor {
                     AgentBoardRecorder.taskStarted(
                         context, taskId = spawnId, teamId = teamId,
                         roleRequired = role, title = task.lineSequence().firstOrNull().orEmpty(),
-                        description = task, workspaceDir = null,
+                        description = task, workspaceDir = null, dependsOnJson = dependsOnJson,
                     )
                 }
                 val text = try {
@@ -516,6 +520,34 @@ object SubagentExecutor {
                     "or custom:<name> (call list_agents to see user-defined agents)"
             }
 
+        // [T-task-board] Enforced dependency gate: the orchestrator declared
+        // predecessors; while any is unfinished (or unknown/pruned) this spawn
+        // does not run — better a deterministic refusal naming the wait-set
+        // than a worker starting on top of half-done input.
+        if (dependsOn.isNotEmpty()) {
+            if (spawnerSessionId.isNullOrBlank()) {
+                return "depends_on refused: no team context (this spawn has no spawner session " +
+                    "to read the board of). Drop depends_on or spawn from the team's chat."
+            }
+            val teamTasks = com.openminis.app.data.db.ProviderDatabase
+                .getInstance(context).agentBoardDao()
+                .tasksForTeam(spawnerSessionId, limit = 100)
+            val statusById = teamTasks.associate { it.id to it.status }
+            val unmet = dependsOn.filter { statusById[it] != AgentBoardLogic.STATUS_COMPLETED }
+            if (unmet.isNotEmpty()) {
+                val detail = unmet.joinToString { dep ->
+                    when (statusById[dep]) {
+                        null -> "$dep (unknown/pruned)"
+                        AgentBoardLogic.STATUS_RUNNING -> "$dep (still running)"
+                        AgentBoardLogic.STATUS_FAILED -> "$dep (FAILED — re-delegate it or drop the dependency)"
+                        else -> "$dep (${statusById[dep]})"
+                    }
+                }
+                return "spawn refused: dependencies not satisfied — $detail. " +
+                    "Call task_board to see the board, then re-spawn when they are COMPLETED."
+            }
+        }
+
         // [T-subagent-nesting] Resolve the delegation matrix BEFORE building
         // the graph: agentWorkerRole is a suspend DB read (IO-safe here —
         // spawn is already on Dispatchers.IO), returning null for the main
@@ -528,8 +560,10 @@ object SubagentExecutor {
         app.providerRepository.saveAgentGraph(graph)
         val spawnId = node.id
 
+        val dependsJson = if (dependsOn.isEmpty()) "[]" else
+            dependsOn.joinToString(prefix = "[", postfix = "]") { "\"${it}\"" }
         return if (foreground) {
-            runSingle(context, app, graph, node, role, task, teamId = spawnerSessionId)
+            runSingle(context, app, graph, node, role, task, teamId = spawnerSessionId, dependsOnJson = dependsJson)
         } else {
             // [T-spawn-many] Phone ceiling: unbounded background spawns would
             // multiply live sessions, VMs and model calls on a device with
@@ -540,7 +574,7 @@ object SubagentExecutor {
                     "running (phone ceiling). Wait for their result notifications first, " +
                     "then spawn again."
             }
-            return launchBackground(context, app, graph, spawnId, role, task, onBackgroundResult, spawnerSessionId)
+            return launchBackground(context, app, graph, spawnId, role, task, onBackgroundResult, spawnerSessionId, dependsJson)
         }
     }
 
@@ -755,7 +789,7 @@ object SubagentExecutor {
         // REVIEWER -> leaf). The matrix that grants these tools lives in
         // mayDelegate() — see the depth-cap comment there.
         AgentRole.ORCHESTRATOR ->
-            listOf("shell_execute", "file_read", "spawn_subagent", "spawn_many")
+            listOf("shell_execute", "file_read", "spawn_subagent", "spawn_many", "task_board")
         AgentRole.CODE_CORRECTNESS_REVIEWER,
         AgentRole.SECURITY_REVIEWER,
         AgentRole.PERFORMANCE_REVIEWER,

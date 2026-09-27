@@ -90,6 +90,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 
@@ -12646,7 +12647,7 @@ class ChatViewModel(
             com.openminis.app.tools.SubagentTools.LIST_AGENTS_TOOL_NAME -> executeListAgents(argsJson)
             com.openminis.app.tools.TurnTimerTool.NAME -> executeTurnTimer(argsJson)
             com.openminis.app.tools.SubagentTools.RUN_GRAPH_TOOL_NAME -> executeRunGraph(argsJson)
-            "memory_write" -> executeMemoryWriteTool(argsJson)
+            com.openminis.app.tools.SubagentTools.TASK_BOARD_TOOL_NAME -> executeTaskBoard(argsJson)            "memory_write" -> executeMemoryWriteTool(argsJson)
             "memory_get" -> executeMemoryGetTool(argsJson)
             "supermemory_search" -> executeSupermemorySearchTool(argsJson)
             "root_shell" -> executeRootShellTool(argsJson)
@@ -13016,11 +13017,21 @@ class ChatViewModel(
         if (role.isEmpty() || task.isEmpty()) {
             return ToolExecutionResult("spawn_subagent: 'role' and 'task' are required", false)
         }
+        // [T-task-board] depends_on: JSON array of team task ids. Parsed
+        // defensively — a malformed array is a schema-noise error, not a
+        // crash; the spawn proceeds without deps and says what was ignored.
+        val dependsOn = runCatching {
+            val arr = JSONArray(args.optString("depends_on", "[]"))
+            (0 until arr.length()).mapNotNull { i ->
+                arr.optString(i).trim().takeIf { it.isNotEmpty() }
+            }
+        }.getOrElse { emptyList() }
         val result = com.openminis.app.offload.SubagentExecutor.spawn(
             context = context,
             role = role,
             task = task,
             foreground = !background,
+            dependsOn = dependsOn,
             // [T-subagent-nesting] Pass OUR session id: the executor strips
             // the delegation tools from the child when the spawner is itself
             // an agent worker (one nesting level, structural cap).
@@ -13100,8 +13111,53 @@ class ChatViewModel(
     /**
      * [T-agent-file] Discovery of user-defined agents. See AgentFileStore.
      */
-    private fun executeListAgents(argsJson: String): ToolExecutionResult {
-        val agents = com.openminis.app.offload.AgentFileStore.list(context)
+    /**
+     * [T-task-board] The durable team board view — this session's history of
+     * every spawned subagent (statuses, results, unmet deps, ready set).
+     * Cross-turn by construction: Room, not the chat transcript.
+     */
+    private suspend fun executeTaskBoard(argsJson: String): ToolExecutionResult {
+        val toolTitle = runCatching {
+            JSONObject(argsJson).optString("tool_title", "task_board")
+        }.getOrDefault("task_board")
+        val limit = runCatching {
+            JSONObject(argsJson).optInt("limit", 20).coerceIn(1, 100)
+        }.getOrDefault(20)
+        return try {
+            val dao = com.openminis.app.data.db.ProviderDatabase
+                .getInstance(context).agentBoardDao()
+            val tasks = dao.tasksForTeam(activeSessionId, limit = limit)
+            if (tasks.isEmpty()) {
+                ToolExecutionResult(
+                    "Team board is empty — no subagent has been spawned from this chat yet. " +
+                        "Every spawn_subagent/spawn_many call lands here with status and result, " +
+                        "surviving turns and restarts.",
+                    true, toolTitle = toolTitle,
+                )
+            } else {
+                val summary = com.openminis.app.offload.AgentBoardLogic.teamSummary(tasks, tail = limit)
+                val unmet = com.openminis.app.offload.AgentBoardLogic.unmetDeps(tasks)
+                val cycle = com.openminis.app.offload.AgentBoardLogic.findCycle(tasks)
+                val sb = StringBuilder(summary)
+                if (unmet.isNotEmpty()) {
+                    sb.appendLine().appendLine("waiting (task -> unmet deps):")
+                    unmet.entries.sortedBy { it.key }.forEach { (task, deps) ->
+                        sb.appendLine("  $task -> ${deps.joinToString()}")
+                    }
+                }
+                if (cycle != null) {
+                    sb.appendLine()
+                        .append("⚠ dependency CYCLE: ${cycle.joinToString(" -> ")} — these tasks can never run; ")
+                        .appendLine("drop one dependency or re-spawn with a corrected depends_on.")
+                }
+                ToolExecutionResult(sb.toString().trim(), true, toolTitle = toolTitle)
+            }
+        } catch (e: Exception) {
+            ToolExecutionResult("task_board failed: ${e.message}", false, toolTitle = toolTitle)
+        }
+    }
+
+    private fun executeListAgents(argsJson: String): ToolExecutionResult {        val agents = com.openminis.app.offload.AgentFileStore.list(context)
         if (agents.isEmpty()) {
             return ToolExecutionResult(
                 "No custom agents installed yet. To create one, write a markdown file to " +

@@ -33,6 +33,7 @@ internal object AgentBoardRecorder {
         title: String,
         description: String,
         workspaceDir: String?,
+        dependsOnJson: String = "[]",
     ): Unit = withContext(Dispatchers.IO) {
         runCatching {
             val now = System.currentTimeMillis()
@@ -45,6 +46,7 @@ internal object AgentBoardRecorder {
                     description = description,
                     roleRequired = roleRequired,
                     status = AgentBoardLogic.STATUS_RUNNING,
+                    dependsOnTaskIds = dependsOnJson,
                     workspaceDir = workspaceDir,
                     createdAt = now,
                     updatedAt = now,

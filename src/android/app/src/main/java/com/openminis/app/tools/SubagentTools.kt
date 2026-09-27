@@ -27,6 +27,8 @@ object SubagentTools {
     const val RUN_GRAPH_TOOL_NAME = "run_graph"
     const val SPAWN_MANY_TOOL_NAME = "spawn_many"
     const val LIST_AGENTS_TOOL_NAME = "list_agents"
+    /** [T-task-board] The durable board view — cross-turn team memory. */
+    const val TASK_BOARD_TOOL_NAME = "task_board"
 
     /**
      * [T-agent-file] Discovery for user-defined agents (Codex v2 pattern:
@@ -74,9 +76,42 @@ object SubagentTools {
                 enumValues = SPAWNABLE_ROLES),
             "task" to AgentToolParam("string", "The specific subtask to delegate. Be detailed — the subagent sees ONLY this prompt plus the shared context, not the full conversation."),
             "background" to AgentToolParam("boolean", "false (default) = foreground: wait for result and return it. true = background: run concurrently, result arrives as notification later."),
+            "depends_on" to AgentToolParam(
+                "string",
+                "Optional JSON array of task ids from the team board this spawn must wait for, " +
+                    "e.g. [\"spawn-ab12cd34\"]. The spawn is REFUSED while any listed task is not " +
+                    "COMPLETED — the refusal names exactly which. Call task_board first to get " +
+                    "the ids. Use for cross-turn pipelines: run A today, run B tomorrow on top " +
+                    "of A's result.",
+            ),
         ),
         required = listOf("tool_title", "role", "task"),
-        propertyOrdering = listOf("tool_title", "role", "task", "background"),
+        propertyOrdering = listOf("tool_title", "role", "task", "background", "depends_on"),
+    )
+
+    /**
+     * [T-task-board] The durable team board, cross-turn. The in-chat
+     * notifications answer "what finished THIS turn"; this answers "what
+     * has my team EVER done here and what failed" — the input the
+     * orchestrator needs before spawning, so it re-delegates failed tails
+     * instead of redoing the whole plan blind.
+     */
+    fun taskBoardDefinition(): AgentToolDefinition = AgentToolDefinition(
+        name = TASK_BOARD_TOOL_NAME,
+        description = "View this session's durable AGENT TEAM board — every subagent this " +
+            "chat has ever spawned (foreground, background, batches), with statuses, " +
+            "results and dependency structure. Survives process restarts and turns. " +
+            "READ it BEFORE spawning when continuing multi-step work from earlier " +
+            "turns: it shows which tasks completed, which FAILED (re-delegate those " +
+            "with a fixed task text), which are still RUNNING. Also lists each task's " +
+            "unmet dependencies and the ready-to-run set. Example: task_board() → " +
+            "'12 task(s) — 9 ok, 2 failed, 1 running; READY: spawn-xy98…'.",
+        parameters = mapOf(
+            "tool_title" to AgentToolParam("string", "A concise 5-10 word summary (e.g. 'Show team board'). Use the user's language."),
+            "limit" to AgentToolParam("integer", "How many most-recent tasks to show (default 20, max 100)."),
+        ),
+        required = listOf("tool_title"),
+        propertyOrdering = listOf("tool_title", "limit"),
     )
 
     fun spawnManyDefinition(): AgentToolDefinition = AgentToolDefinition(
