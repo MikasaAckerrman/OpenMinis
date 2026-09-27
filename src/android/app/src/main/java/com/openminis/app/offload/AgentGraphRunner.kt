@@ -32,9 +32,10 @@ internal object AgentGraphRunner {
     private const val LOG_TAG = "AgentGraph"
     private const val ARTIFACT_DIR_BASE = "/var/minis/workspace"
     private const val TRACE_DIR = "/var/minis/offloads"
-    /** [T-checkpoint] Snapshots live in <workspace>/.checkpoints/<runtimeId>/ — newest 5 kept. */
+    /** [T-checkpoint] Snapshots live in <workspace>/.checkpoints/<runtimeId>/ — newest 5 kept, 64 MiB each. */
     private const val CHECKPOINT_DIR = ".checkpoints"
     private const val MAX_CHECKPOINTS = 5
+    private const val MAX_CHECKPOINT_BYTES = 64L * 1024 * 1024
 
     /** In-memory state for a running graph. */
     data class GraphState(
@@ -557,6 +558,11 @@ internal object AgentGraphRunner {
      * modification time, and record the snapshot in the mission log. A failed
      * copy is logged and swallowed — a checkpoint is recovery insurance, and
      * insurance that blocks the insured work is worse than none.
+     *
+     * Deep-analysis fix: a size cap ([MAX_CHECKPOINT_BYTES]). The count cap
+     * alone let a single huge workspace × 5 snapshots eat gigabytes on a
+     * phone. Over the cap → skip (traced) — the workspace is too big to
+     * cheaply insure; recovery there is the spawner's explicit business.
      */
     private suspend fun checkpointWorkspace(
         execContext: ExecutionContext,
@@ -571,6 +577,15 @@ internal object AgentGraphRunner {
                     ?.filter { it.name != CHECKPOINT_DIR }
                     .orEmpty()
                 if (entries.isEmpty()) return@runCatching
+                val totalBytes = entries.sumOf { it.length() + dirSize(it) }
+                if (totalBytes > MAX_CHECKPOINT_BYTES) {
+                    addTrace(
+                        state, runtimeId, node.role, "CHECKPOINT-SKIP",
+                        "workspace ${totalBytes / 1024} KiB exceeds the ${MAX_CHECKPOINT_BYTES / 1024} KiB " +
+                            "checkpoint budget — snapshot skipped (explicit copy is the recovery path)",
+                    )
+                    return@runCatching
+                }
                 val checkRoot = java.io.File(ws, CHECKPOINT_DIR)
                 val dir = java.io.File(checkRoot, runtimeId).apply { mkdirs() }
                 entries.forEach { src -> src.copyRecursively(java.io.File(dir, src.name)) }
@@ -583,7 +598,7 @@ internal object AgentGraphRunner {
                     "CHECKPOINTED",
                     state.taskId,
                     node.role.name,
-                    "dir=$CHECKPOINT_DIR/$runtimeId entries=${entries.size}",
+                    "dir=$CHECKPOINT_DIR/$runtimeId entries=${entries.size} bytes=$totalBytes",
                 )
                 addTrace(
                     state, runtimeId, node.role, "CHECKPOINT",
@@ -597,6 +612,10 @@ internal object AgentGraphRunner {
             }
         }
     }
+
+    /** File length, or the recursive sum for a directory (checkpoint sizing). */
+    private fun dirSize(file: java.io.File): Long =
+        if (file.isDirectory) file.walkTopDown().filter { it.isFile }.sumOf { it.length() } else 0L
 
     private suspend fun executeNode(        execContext: ExecutionContext,
         node: AgentNode,

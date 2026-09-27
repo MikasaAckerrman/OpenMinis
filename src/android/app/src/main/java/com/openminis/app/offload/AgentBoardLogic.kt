@@ -84,8 +84,12 @@ object AgentBoardLogic {
 
         for (node in graph.keys) {
             if (color[node] == WHITE && visit(node)) {
-                val cycle = stack.dropLastWhile { it != stack.last() }
-                return cycle.ifEmpty { stack.toList() }
+                // The grey-stack at the moment of re-entry is the DFS path,
+                // cycle included — not necessarily the minimal cycle, but a
+                // superset that NAMES every node involved, which is all a
+                // warning needs. (A previous dropLastWhile here was a no-op
+                // and only obscured that.)
+                return stack.toList()
             }
         }
         return null

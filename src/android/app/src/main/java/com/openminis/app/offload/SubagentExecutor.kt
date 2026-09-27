@@ -210,6 +210,39 @@ object SubagentExecutor {
      * DOCUMENTATION_AGENT (not scope-guarded as non-writing, so a custom
      * agent MAY ship code when its tools allow it).
      */
+    /**
+     * [T-task-board] The dependency gate, shared by the builtin and custom
+     * spawn paths (deep-analysis fix: customs previously bypassed it).
+     * Returns the refusal text, or null when the spawn may proceed.
+     */
+    private suspend fun dependencyRefusal(
+        context: Context,
+        spawnerSessionId: String?,
+        dependsOn: List<String>,
+    ): String? {
+        if (dependsOn.isEmpty()) return null
+        if (spawnerSessionId.isNullOrBlank()) {
+            return "depends_on refused: no team context (this spawn has no spawner session " +
+                "to read the board of). Drop depends_on or spawn from the team's chat."
+        }
+        val teamTasks = com.openminis.app.data.db.ProviderDatabase
+            .getInstance(context).agentBoardDao()
+            .tasksForTeam(spawnerSessionId, limit = 100)
+        val statusById = teamTasks.associate { it.id to it.status }
+        val unmet = dependsOn.filter { statusById[it] != AgentBoardLogic.STATUS_COMPLETED }
+        if (unmet.isEmpty()) return null
+        val detail = unmet.joinToString { dep ->
+            when (statusById[dep]) {
+                null -> "$dep (unknown/pruned)"
+                AgentBoardLogic.STATUS_RUNNING -> "$dep (still running)"
+                AgentBoardLogic.STATUS_FAILED -> "$dep (FAILED — re-delegate it or drop the dependency)"
+                else -> "$dep (${statusById[dep]})"
+            }
+        }
+        return "spawn refused: dependencies not satisfied — $detail. " +
+            "Call task_board to see the board, then re-spawn when they are COMPLETED."
+    }
+
     private suspend fun spawnCustom(
         context: Context,
         app: MinisApp,
@@ -219,6 +252,8 @@ object SubagentExecutor {
         onBackgroundResult: ((spawnId: String, role: String, result: String) -> Unit)?,
         /** [T-subagent-nesting] Depth cap — see spawn(spawnerSessionId). */
         spawnerSessionId: String? = null,
+        /** [T-task-board] JSON array of predecessor task ids (gate enforced). */
+        dependsOnJson: String = "[]",
     ): String {
         val agent = AgentFileStore.find(context, name)
             ?: return "No custom agent '$name' in ${AgentFileStore.SANDBOX_DIR}. " +
@@ -233,7 +268,7 @@ object SubagentExecutor {
         app.providerRepository.saveAgentGraph(graph)
 
         return if (foreground) {
-            runSingle(context, app, graph, node, label, task, teamId = spawnerSessionId)
+            runSingle(context, app, graph, node, label, task, teamId = spawnerSessionId, dependsOnJson = dependsOnJson)
         } else {
             if (activeBackground.size >= MAX_BACKGROUND) {
                 runCatching { app.providerRepository.deleteAgentGraph(graph.id) }
@@ -241,7 +276,7 @@ object SubagentExecutor {
                     "running (phone ceiling). Wait for their result notifications first, " +
                     "then spawn again."
             }
-            launchBackground(context, app, graph, node.id, label, task, onBackgroundResult, spawnerSessionId)
+            launchBackground(context, app, graph, node.id, label, task, onBackgroundResult, spawnerSessionId, dependsOnJson)
         }
     }
 
@@ -515,9 +550,15 @@ object SubagentExecutor {
         // [T-agent-file] role="custom:<name>" routes to a user-defined agent
         // file — new agents without code, the Codex v2 pattern.
         if (role.startsWith("custom:")) {
+            // [T-task-board] Deep-analysis fix: the custom path previously
+            // bypassed the dependency gate — the schema promises enforcement
+            // for EVERY spawn; a custom agent is not a dep loophole.
+            dependencyRefusal(context, spawnerSessionId, dependsOn)?.let { return it }
             return spawnCustom(
                 context, app, role.removePrefix("custom:").trim(), task, foreground, onBackgroundResult,
                 spawnerSessionId,
+                if (dependsOn.isEmpty()) "[]" else
+                    dependsOn.joinToString(prefix = "[", postfix = "]") { "\"${it}\"" },
             )
         }
         val agentRole = runCatching { AgentRole.valueOf(role) }
@@ -530,29 +571,7 @@ object SubagentExecutor {
         // predecessors; while any is unfinished (or unknown/pruned) this spawn
         // does not run — better a deterministic refusal naming the wait-set
         // than a worker starting on top of half-done input.
-        if (dependsOn.isNotEmpty()) {
-            if (spawnerSessionId.isNullOrBlank()) {
-                return "depends_on refused: no team context (this spawn has no spawner session " +
-                    "to read the board of). Drop depends_on or spawn from the team's chat."
-            }
-            val teamTasks = com.openminis.app.data.db.ProviderDatabase
-                .getInstance(context).agentBoardDao()
-                .tasksForTeam(spawnerSessionId, limit = 100)
-            val statusById = teamTasks.associate { it.id to it.status }
-            val unmet = dependsOn.filter { statusById[it] != AgentBoardLogic.STATUS_COMPLETED }
-            if (unmet.isNotEmpty()) {
-                val detail = unmet.joinToString { dep ->
-                    when (statusById[dep]) {
-                        null -> "$dep (unknown/pruned)"
-                        AgentBoardLogic.STATUS_RUNNING -> "$dep (still running)"
-                        AgentBoardLogic.STATUS_FAILED -> "$dep (FAILED — re-delegate it or drop the dependency)"
-                        else -> "$dep (${statusById[dep]})"
-                    }
-                }
-                return "spawn refused: dependencies not satisfied — $detail. " +
-                    "Call task_board to see the board, then re-spawn when they are COMPLETED."
-            }
-        }
+        dependencyRefusal(context, spawnerSessionId, dependsOn)?.let { return it }
 
         // [T-subagent-nesting] Resolve the delegation matrix BEFORE building
         // the graph: agentWorkerRole is a suspend DB read (IO-safe here —

@@ -139,7 +139,7 @@ abstract class ProviderDatabase : RoomDatabase() {
                         description TEXT NOT NULL,
                         role_required TEXT NOT NULL,
                         status TEXT NOT NULL,
-                        depends_on_task_ids TEXT NOT NULL DEFAULT '[]',
+                        depends_on_task_ids TEXT NOT NULL,
                         assigned_agent_id TEXT,
                         workspace_dir TEXT,
                         result_artifact TEXT,

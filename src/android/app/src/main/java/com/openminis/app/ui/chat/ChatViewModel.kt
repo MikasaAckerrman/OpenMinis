@@ -13523,9 +13523,18 @@ class ChatViewModel(
 
         // The temp script: written on the app side, visible at the SAME
         // physical path on the Android side (su can read /data/data/<pkg>).
+        // [deep-analysis] Opportunistic hygiene: scripts from crashed runs
+        // (the finally-delete never ran) are swept here — each holds the raw
+        // command text, and while filesDir is app-private, stale copies are
+        // pure liability with zero value.
+        val now = System.currentTimeMillis()
+        context.filesDir.listFiles { f ->
+            f.name.startsWith("root_cmd_") && f.name.endsWith(".sh") &&
+                f.lastModified() < now - 3_600_000L
+        }?.forEach { runCatching { it.delete() } }
         val scriptFile = java.io.File(
             context.filesDir,
-            "root_cmd_${System.currentTimeMillis()}.sh",
+            "root_cmd_${now}.sh",
         )
         return try {
             scriptFile.writeText(command + "\n")
