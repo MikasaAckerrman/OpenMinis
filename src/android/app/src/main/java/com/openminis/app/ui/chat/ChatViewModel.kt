@@ -9336,6 +9336,8 @@ class ChatViewModel(
      * Snapshot at session open (byte-stable prefix); bounded ~700 chars;
      * null when memory is off or no plan exists.
      */
+    /** See [buildPlanStateDigest]. @Volatile: lazily initialised from the hot prompt-build path. */
+    @Volatile
     private var sessionMemoryDigest: String? = null
 
     private fun buildPlanStateDigest(): String? {
@@ -14208,9 +14210,16 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
             // [T-session-digest] The plan-state snapshot (session-open):
             // the curated "done / remains" signal the raw log lines don't
             // carry. Stable for the whole session (cacheable prefix).
-            if (sessionMemoryDigest != null) {
+            // Lazy-init: a NEW session (no loadSession path — the fresh-chat
+            // flow creates the row on first send) would otherwise NEVER get
+            // the digest; building once at first prompt use covers both
+            // paths, and the snapshot semantics are preserved (built once,
+            // reused for the session).
+            val planStateFragment = sessionMemoryDigest
+                ?: buildPlanStateDigest()?.also { sessionMemoryDigest = it }
+            if (planStateFragment != null) {
                 append("\n\n")
-                append(sessionMemoryDigest)
+                append(planStateFragment)
             }
             if (envNamesFragment != null) {
                 append("\n\n")
