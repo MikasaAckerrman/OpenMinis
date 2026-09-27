@@ -12979,11 +12979,19 @@ class ChatViewModel(
                 // Deliver the background result as a system info line the
                 // next turn will see. The callback runs on an IO coroutine;
                 // mainExecutor is the one hop to the ViewModel mutation.
+                // [T-subagent-notif-compact] Follow the compact-block contract:
+                // content = the SHORT pill line, payload = the full report.
+                // v1 put the raw report into content — the pill rendered one
+                // ellipsised garbage line AND toolArgs stayed empty, so the
+                // ⓘ affordance never appeared: the report was both noisy and
+                // unreachable (user report 27.09: «тексты вспыхивали, хочу
+                // удалить такую ячейку»).
                 val appCtx = context.applicationContext
                 appCtx.mainExecutor.execute {
                     appendSystemInfo(
-                        text = "[subagent ${subRole.lowercase()}] $subResult",
+                        text = "[subagent ${subRole.lowercase()}] завершён — отчёт ${subResult.length} симв.",
                         iconKind = "compact",
+                        payload = subResult,
                     )
                 }
             } } else null,
