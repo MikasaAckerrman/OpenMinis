@@ -11757,8 +11757,17 @@ class ChatViewModel(
             // `reasoning_content: ""` on non-thinking turns). Fall back to the
             // ThinkingDelta concatenation only when no blob arrived; in that case
             // an empty buffer becomes null (no field to round-trip).
-            val turnReasoningContent: String? = turnReasoningBlob
+            // [T-empty-blob-hazard] A blob of "" (NON-null!) must NOT shadow a
+            // non-empty ThinkingDelta accumulation: providers that emit reasoning
+            // via think-tags inside `content` (glm-5.3 tag mode) leave
+            // reasoningAccum empty while every tool_calls delta still carries
+            // `reasoning_content: ""` — the [DONE] branch then sends
+            // ReasoningContent("") and the plain elvis would persist "" over the
+            // real streamed thinking. Only when BOTH are empty do we keep the
+            // blob verbatim (the DeepSeek ""-round-trip contract).
+            val turnReasoningContent: String? = turnReasoningBlob?.takeIf { it.isNotEmpty() }
                 ?: turnThinking.toString().takeIf { it.isNotEmpty() }
+                ?: turnReasoningBlob
 
             agentHistory.add(LLMMessage(
                 role = LLMMessage.Role.ASSISTANT,
