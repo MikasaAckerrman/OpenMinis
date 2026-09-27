@@ -99,6 +99,10 @@ object AgentBoardLogic {
      * Cross-turn team header for the spawner: counts + the tail of recent
      * tasks with status. Compact by design — it rides along in a spawn
      * result, and every token there is paid on every subsequent call.
+     *
+     * Deep-analysis note: the id MUST be in each line — it is the handle
+     * depends_on references; a board that shows tasks but not their ids
+     * makes the dependency feature unusable end-to-end.
      */
     fun teamSummary(tasks: List<AgentTaskEntity>, tail: Int = 5): String {
         if (tasks.isEmpty()) return ""
@@ -113,7 +117,7 @@ object AgentBoardLogic {
         tasks.take(tail).forEach { t ->
             val depNote = if (t.dependsOnTaskIds != "[]") " deps:${t.dependsOnTaskIds}" else ""
             sb.appendLine()
-                .append("  [${t.status}] ${t.title.take(60)} (${t.roleRequired})$depNote")
+                .append("  [${t.status}] ${t.id}: ${t.title.take(60)} (${t.roleRequired})$depNote")
         }
         return sb.toString()
     }

@@ -134,8 +134,9 @@ class AgentBoardLogicTest {
         val summary = AgentBoardLogic.teamSummary(tasks)
         assertTrue(summary.contains("3 task(s) — 1 ok, 1 failed"))
         assertTrue(summary.contains("1 running"))
-        assertTrue(summary.contains("[COMPLETED] map the codebase"))
-        assertTrue(summary.contains("[FAILED] fix the parser"))
+        // The id is the handle depends_on references — it must be visible.
+        assertTrue(summary.contains("[COMPLETED] a: map the codebase"))
+        assertTrue(summary.contains("[FAILED] b: fix the parser"))
     }
 
     @Test
