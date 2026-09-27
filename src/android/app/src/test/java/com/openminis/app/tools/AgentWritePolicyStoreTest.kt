@@ -1,0 +1,102 @@
+package com.openminis.app.tools
+
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * [T-parallel-write-contract] The write jail is a security boundary for
+ * parallel agent runs — the tests pin its three load-bearing behaviours:
+ * canonicalization (traversal/symlink escapes must not pass), root
+ * semantics (own dirs + /tmp allowed, global surface refused), and the
+ * git-mutation word-scan (mutations caught even behind cd/&&, read-only
+ * git never flagged).
+ *
+ * Pure-JVM: the store is a plain object over ConcurrentHashMap and
+ * java.io.File, so no Robolectric needed. The paths it reasons about are
+ * canonicalized lexically through their existing ancestors (/var, /tmp
+ * exist on any Linux runner), so no fixture directories are required.
+ */
+class AgentWritePolicyStoreTest {
+
+    private val session = "test-session-write-jail"
+
+    @After
+    fun tearDown() {
+        AgentWritePolicyStore.clear(session)
+    }
+
+    @Test
+    fun `unjailed session writes anywhere`() {
+        assertTrue(AgentWritePolicyStore.mayWriteTo(session, "/var/minis/shared/anything"))
+    }
+
+    @Test
+    fun `jailed session writes own dirs and tmp only`() {
+        AgentWritePolicyStore.setJail(session)
+        assertTrue(AgentWritePolicyStore.mayWriteTo(session, "/var/minis/workspace/report.md"))
+        assertTrue(AgentWritePolicyStore.mayWriteTo(session, "/tmp/scratch.txt"))
+        assertTrue(AgentWritePolicyStore.mayWriteTo(session, "/var/minis/attachments/img.png"))
+        assertFalse(AgentWritePolicyStore.mayWriteTo(session, "/var/minis/shared/repo/file.kt"))
+        assertFalse(AgentWritePolicyStore.mayWriteTo(session, "/var/minis/memory/2026-09-27.md"))
+        assertFalse(AgentWritePolicyStore.mayWriteTo(session, "/var/minis/skills/custom/SKILL.md"))
+        assertFalse(AgentWritePolicyStore.mayWriteTo(session, "/etc/passwd"))
+    }
+
+    @Test
+    fun `traversal escape through dots is refused`() {
+        AgentWritePolicyStore.setJail(session)
+        assertFalse(
+            AgentWritePolicyStore.mayWriteTo(session, "/var/minis/workspace/../../../etc/hosts"),
+        )
+        assertFalse(
+            AgentWritePolicyStore.mayWriteTo(session, "/var/minis/workspace/../shared/escape.txt"),
+        )
+    }
+
+    @Test
+    fun `blank path is refused rather than assumed safe`() {
+        AgentWritePolicyStore.setJail(session)
+        assertFalse(AgentWritePolicyStore.mayWriteTo(session, ""))
+    }
+
+    @Test
+    fun `git mutations are caught behind separators and flags`() {
+        val mutations = listOf(
+            "git add .",
+            "cd /repo && git add -A",
+            "git commit -m 'x'",
+            "git -C /repo commit --amend",
+            "git push origin main",
+            "/usr/bin/git stash",
+            "git checkout -- .",
+            "git merge feature/x",
+            "true | git rebase main; git pull",
+        )
+        mutations.forEach { assertTrue("expected mutation: $it", AgentWritePolicyStore.isGitMutation(it)) }
+    }
+
+    @Test
+    fun `read-only git is never flagged`() {
+        val reads = listOf(
+            "git status",
+            "git log --oneline -5",
+            "git diff HEAD~1",
+            "git show abc123",
+            "git blame file.kt",
+            "git rev-parse HEAD",
+            "git ls-files",
+            "cd /repo && git diff --stat",
+            "grep git readme.md",
+        )
+        reads.forEach { assertFalse("expected read-only: $it", AgentWritePolicyStore.isGitMutation(it)) }
+    }
+
+    @Test
+    fun `jail roots fall back to default when empty`() {
+        AgentWritePolicyStore.setJail(session, emptyList())
+        assertEquals(AgentWritePolicyStore.DEFAULT_JAIL_ROOTS, AgentWritePolicyStore.rootsFor(session))
+    }
+}

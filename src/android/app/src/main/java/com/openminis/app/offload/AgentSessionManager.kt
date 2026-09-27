@@ -62,6 +62,11 @@ internal object AgentSessionManager {
         if (agentRunId != null && agentRole != null) {
             val app = context.applicationContext as com.openminis.app.MinisApp
             app.chatRepository.dao.markAsAgentWorker(sessionId, agentRunId, agentRole)
+            // [T-parallel-write-contract] Every marked worker session gets the
+            // write jail: per-session dirs + /tmp only, REFUSE on the global
+            // surface (shared/memory/skills). The spawner integrates results
+            // after the batch — see AgentWritePolicyStore for the contract.
+            com.openminis.app.tools.AgentWritePolicyStore.setJail(sessionId)
         }
         sessionId
     }
@@ -100,6 +105,7 @@ internal object AgentSessionManager {
         AgentSystemPromptStore.clearPrompt(sessionId)
         AgentRuntimePolicyStore.clear(sessionId)
         AgentWorkspaceStore.clear(sessionId)
+        com.openminis.app.tools.AgentWritePolicyStore.clear(sessionId)
         val app = context.applicationContext as com.openminis.app.MinisApp
         app.chatRepository.deleteSession(sessionId)
     }

@@ -107,6 +107,16 @@ object AgentWorkerPrompt {
                     "and writes the SAME directory, so a file you create there is what the " +
                     "reviewer will inspect. Write deliverables there, not to /tmp.",
             )
+            appendLine()
+            appendLine(
+                "Write contract: you may WRITE only /var/minis/workspace, " +
+                    "/var/minis/attachments and /tmp — writes to /var/minis/shared, " +
+                    "/var/minis/memory or /var/minis/skills are refused (they are global; " +
+                    "parallel runs race there), and git index operations (add/commit/push/...) " +
+                    "are refused for the same reason. Reads are unrestricted. Deliver your " +
+                    "result as files in the workspace plus a handoff block naming them; the " +
+                    "agent that spawned this run integrates and commits.",
+            )
         }
 
         appendLine()

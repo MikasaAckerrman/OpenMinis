@@ -12537,6 +12537,30 @@ class ChatViewModel(
             )
         }
 
+        // [T-parallel-write-contract] Write jail for agent worker sessions:
+        // file tools may only target the session's own dirs + /tmp. The
+        // global surface (/var/minis/shared, /memory, /skills) is
+        // READ-friendly, write-hostile — parallel workers integrating into it
+        // themselves is exactly the race the contract exists to prevent.
+        // Canonicalization (incl. ../ traversal and symlinks) happens inside
+        // mayWriteTo. The MAIN chat never has a jail entry — unrestricted.
+        if (name == FileWriteTool.NAME || name == FileEditTool.NAME) {
+            val targetPath = runCatching {
+                JSONObject(argsJson).optString("path", "")
+            }.getOrDefault("")
+            if (targetPath.isNotBlank() &&
+                !com.openminis.app.tools.AgentWritePolicyStore.mayWriteTo(sessionId, targetPath)
+            ) {
+                return ToolExecutionResult(
+                    "Write refused (parallel-write contract): '$targetPath' is on the shared global " +
+                        "surface. Write the artifact under /var/minis/workspace (your own dir) or /tmp, " +
+                        "then name the file in your result — the spawning agent integrates it. " +
+                        "Reads anywhere are fine; this restriction is for writes only.",
+                    false,
+                )
+            }
+        }
+
         // T330: tri-state permission gating moved into the offload IPC
         // handler (OffloadGate). The CLIs land there whether the LLM
         // emitted a named tool call or a raw shell command, so the gate
@@ -12732,6 +12756,27 @@ class ChatViewModel(
 
             if (command.isBlank()) {
                 return ToolExecutionResult("Error: 'command' is required", false, toolTitle = toolTitle)
+            }
+
+            // [T-parallel-write-contract] Git-mutation ban for jailed worker
+            // sessions: `git add/commit/...` mutates the index in a repo that
+            // lives on the GLOBAL surface — parallel workers contend on
+            // index.lock and can commit each other's partially staged state.
+            // Read-only git (status/log/diff/show/blame) stays allowed —
+            // diagnostics never corrupt anything. The main chat is never
+            // jailed and keeps full git access: the SPAWNER owns the
+            // checkpoint commit after the batch (ce-work contract).
+            if (com.openminis.app.tools.AgentWritePolicyStore.isJailed(sessionId) &&
+                com.openminis.app.tools.AgentWritePolicyStore.isGitMutation(command)
+            ) {
+                return ToolExecutionResult(
+                    "Git operation refused (parallel-write contract): workers never mutate the git " +
+                        "index — parallel workers contend on index.lock and stage each other's state. " +
+                        "Read-only git (status/log/diff/show/blame) is fine. Produce your changes as " +
+                        "files in /var/minis/workspace; the spawning agent stages and commits the batch.",
+                    false,
+                    toolTitle = toolTitle,
+                )
             }
 
             // [destructive-command-gate] Ask before deleting, refuse for user data.
