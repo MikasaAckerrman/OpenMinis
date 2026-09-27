@@ -139,4 +139,132 @@ object AgentWritePolicyStore {
         }
         return false
     }
+
+    /**
+     * [T-parallel-write-contract] The shell write-target scanner — the
+     * deterministic layer over the known gap: a jailed worker cannot call
+     * file_write at a global path, but `echo x > /var/minis/shared/f` is
+     * plain shell. This scan catches the COMMON write shapes:
+     *
+     *   - redirects: `> f`, `>> f`, glued (`x>f`, `2>f`, `&>>f`); fd-dup
+     *     targets (`2>&1`) are skipped, as are flag/relative targets —
+     *     relative paths resolve against the shell's CWD, which IS the
+     *     session's own workspace.
+     *   - write commands: cp (last operand), mv (all — moving out of the
+     *     global surface mutates it), rm/touch/mkdir/rmdir/unlink/truncate/
+     *     shred (all path operands), tee (all non-flag), dd of=, ln
+     *     (linkpath), sed with -i (all absolute operands), install (last).
+     *   - `xargs rm/mv/shred` with ANY absolute path in the command: the
+     *     fed paths are unknowable statically, so the whole shape is
+     *     over-approximated — refuse when anything outside the roots
+     *     appears (deleting stdin-fed global paths).
+     *
+     * Honest limits, by design: quoted data containing `>/abs/path` can
+     * false-positive (the refusal text invites rephrasing — printf '%s');
+     * `find -delete`, `xargs cp`, command substitution feeding paths and
+     * app-specific output flags (gcc -o) are NOT caught — the jail's
+     * file-tool layer and the destructive-command gate remain the backstop.
+     * Only ABSOLUTE paths are checked: relative ones land in the session's
+     * own CWD inside the jail, safe by construction.
+     *
+     * Returns the offending absolute paths (deduped, order of appearance).
+     */
+    fun violatingWriteTargets(command: String, sessionId: String): List<String> {
+        val roots = jails[sessionId] ?: return emptyList()
+
+        // Tokenize: whitespace split, then explode ANY token containing a `>`
+        // (glued redirect) so `x>/abs/f` → [x, >, /abs/f] and `2>>/abs/f` →
+        // [2, >>, /abs/f]. Quoted data containing `>` splits too — harmless
+        // unless the right part is absolute (documented false-positive).
+        val raw = command.split(Regex("\\s+")).filter { it.isNotBlank() }
+        val tokens = mutableListOf<String>()
+        for (word in raw) {
+            val gt = word.indexOf('>')
+            if (gt >= 0) {
+                var opEnd = gt + 1
+                if (opEnd < word.length && word[opEnd] == '>') opEnd++
+                val left = word.substring(0, gt)
+                val op = word.substring(gt, opEnd)
+                val right = word.substring(opEnd)
+                if (left.isNotEmpty()) tokens += left
+                tokens += op
+                if (right.isNotEmpty()) tokens += right
+            } else {
+                tokens += word
+            }
+        }
+
+        val suspects = mutableListOf<String>()
+
+        var i = 0
+        while (i < tokens.size) {
+            val t = tokens[i].trim('\'', '"')
+            when {
+                t == ">" || t == ">>" -> {
+                    if (i + 1 < tokens.size) suspects += tokens[i + 1].trim('\'', '"')
+                    i++
+                }
+                t == "cp" || t == "install" || t == "ln" || t.endsWith("/cp") || t.endsWith("/ln") -> {
+                    // Last absolute operand is the destination.
+                    val paths = absoluteOperands(tokens, i + 1)
+                    if (paths.isNotEmpty()) suspects += paths.last()
+                }
+                t == "mv" || t.endsWith("/mv") -> {
+                    // Source removal mutates the source's directory too.
+                    suspects += absoluteOperands(tokens, i + 1)
+                }
+                t == "rm" || t == "tee" || t == "touch" || t == "mkdir" || t == "rmdir" ||
+                    t == "unlink" || t == "truncate" || t == "shred" || t.endsWith("/rm") || t.endsWith("/tee") -> {
+                    suspects += absoluteOperands(tokens, i + 1)
+                }
+                t == "dd" || t.endsWith("/dd") -> {
+                    suspects += tokens.drop(i + 1)
+                        .map { it.trim('\'', '"') }
+                        .filter { it.startsWith("of=") }
+                        .map { it.removePrefix("of=") }
+                }
+                t == "sed" || t.endsWith("/sed") -> {
+                    if (tokens.drop(i + 1).any { it.trim('\'', '"') == "-i" || it.trim('\'', '"').startsWith("--in-place") }) {
+                        suspects += absoluteOperands(tokens, i + 1)
+                    }
+                }
+                t == "xargs" || t.endsWith("/xargs") -> {
+                    // rm/mv/shred fed by stdin: paths are dynamic — if the
+                    // command mentions ANY absolute path outside the roots,
+                    // the deletion targets are unknowable and we refuse.
+                    val destructive = tokens.drop(i + 1).any {
+                        val w = it.trim('\'', '"')
+                        w == "rm" || w == "mv" || w == "shred" || w == "truncate"
+                    }
+                    if (destructive) {
+                        suspects += tokens.map { it.trim('\'', '"') }
+                            .filter { it.startsWith("/") }
+                    }
+                }
+            }
+            i++
+        }
+
+        // Keep only absolute paths outside the jail roots; fd-dup targets
+        // (`&1`) and flags fall out here too — they are not paths.
+        val violations = suspects.filter { suspect ->
+            suspect.startsWith("/") && !isWithinRoots(suspect, roots)
+        }
+        return violations.distinct()
+    }
+
+    /** Absolute, flag-free operands after position [from]. */
+    private fun absoluteOperands(tokens: List<String>, from: Int): List<String> =
+        tokens.drop(from)
+            .map { it.trim('\'', '"') }
+            .filter { it.startsWith("/") && !it.startsWith("//") }
+
+    private fun isWithinRoots(path: String, roots: List<String>): Boolean =
+        runCatching {
+            val target = File(path).canonicalFile
+            roots.any { root ->
+                val rootFile = File(root).canonicalFile
+                target == rootFile || target.startsWith(rootFile)
+            }
+        }.getOrDefault(false)
 }

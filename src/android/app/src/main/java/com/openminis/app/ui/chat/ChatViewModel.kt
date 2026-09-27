@@ -12780,6 +12780,29 @@ class ChatViewModel(
                 )
             }
 
+            // [T-parallel-write-contract] The shell-redirect write check — the
+            // last deterministic layer over the jail's known gap: file tools
+            // are jailed, git is banned, and this catches the plain-shell
+            // writes (`echo x > /var/minis/shared/f`, `cp src /global/dst`,
+            // `xargs rm` fed from global). See violatingWriteTargets for the
+            // caught shapes and the honest limits.
+            if (com.openminis.app.tools.AgentWritePolicyStore.isJailed(sessionId)) {
+                val violations = com.openminis.app.tools.AgentWritePolicyStore
+                    .violatingWriteTargets(command, sessionId)
+                if (violations.isNotEmpty()) {
+                    return ToolExecutionResult(
+                        "Write refused (parallel-write contract): the command writes to the " +
+                            "shared global surface — ${violations.joinToString()}. Workers write only " +
+                            "/var/minis/workspace (their own dir) or /tmp. Produce the artifact " +
+                            "there and name it in your result; the spawning agent integrates it. " +
+                            "If the flagged path is quoted DATA (not a redirect), rephrase with " +
+                            "printf '%s' or single quotes.",
+                        false,
+                        toolTitle = toolTitle,
+                    )
+                }
+            }
+
             // [destructive-command-gate] Ask before deleting, refuse for user data.
             //
             // Born from a real incident: `rm -rf om*` was run meaning to remove

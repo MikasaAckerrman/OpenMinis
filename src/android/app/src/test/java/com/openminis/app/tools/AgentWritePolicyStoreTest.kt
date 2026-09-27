@@ -99,4 +99,82 @@ class AgentWritePolicyStoreTest {
         AgentWritePolicyStore.setJail(session, emptyList())
         assertEquals(AgentWritePolicyStore.DEFAULT_JAIL_ROOTS, AgentWritePolicyStore.rootsFor(session))
     }
+
+    // ---- [T-parallel-write-contract] shell write-target scanner ----
+
+    @Test
+    fun `redirect to global is caught, to own dirs is not`() {
+        AgentWritePolicyStore.setJail(session)
+        val caught = listOf(
+            "echo x > /var/minis/shared/f",
+            "echo x>>/var/minis/memory/log.md",
+            "cat /var/minis/shared/a /var/minis/shared/b > /etc/hosts",
+            "tee /var/minis/shared/out",
+            "cp /var/minis/workspace/src.kt /var/minis/shared/dst.kt",
+            "mv /var/minis/shared/src.kt /var/minis/workspace/dst.kt",
+            "rm /var/minis/shared/junk",
+            "sed -i 's/a/b/' /var/minis/shared/f.kt",
+            "dd if=/dev/zero of=/var/minis/shared/img bs=1 count=1",
+            "truncate -s 0 /var/minis/skills/x/SKILL.md",
+            "ln -s /var/minis/workspace/t /var/minis/shared/link",
+        )
+        caught.forEach { cmd ->
+            val v = AgentWritePolicyStore.violatingWriteTargets(cmd, session)
+            assertTrue("expected violation for: $cmd", v.isNotEmpty())
+        }
+        val clean = listOf(
+            "echo x > /tmp/scratch.txt",
+            "echo x > /var/minis/workspace/report.md",
+            "cp /var/minis/shared/src.kt /var/minis/workspace/dst.kt",
+            "rm /var/minis/workspace/old.md",
+            "grep pattern /var/minis/shared/repo/File.kt",
+            "cat /var/minis/shared/a > /tmp/out",
+            "sed -n '1p' /var/minis/shared/f.kt",
+            "printf '%s' 'value with > inside'",
+        )
+        clean.forEach { cmd ->
+            val v = AgentWritePolicyStore.violatingWriteTargets(cmd, session)
+            assertTrue("expected NO violation for: $cmd (got $v)", v.isEmpty())
+        }
+    }
+
+    @Test
+    fun `glued redirect without spaces is caught`() {
+        AgentWritePolicyStore.setJail(session)
+        val v = AgentWritePolicyStore.violatingWriteTargets(
+            "echo data>/var/minis/shared/glued.txt", session,
+        )
+        assertEquals(listOf("/var/minis/shared/glued.txt"), v)
+    }
+
+    @Test
+    fun `fd duplication target is not a path`() {
+        AgentWritePolicyStore.setJail(session)
+        val v = AgentWritePolicyStore.violatingWriteTargets(
+            "ls /var/minis/shared 2>&1 | tee /tmp/err.log", session,
+        )
+        assertTrue(v.isEmpty())
+    }
+
+    @Test
+    fun `xargs rm with any global path is over-approximated`() {
+        AgentWritePolicyStore.setJail(session)
+        val v = AgentWritePolicyStore.violatingWriteTargets(
+            "ls /var/minis/shared/*.tmp | xargs rm -f", session,
+        )
+        assertTrue(v.isNotEmpty())
+        // xargs with non-destructive fed command stays open (reads allowed).
+        val ok = AgentWritePolicyStore.violatingWriteTargets(
+            "cat /var/minis/shared/list | xargs grep TODO", session,
+        )
+        assertTrue(ok.isEmpty())
+    }
+
+    @Test
+    fun `unjailed session has no write-target violations`() {
+        val v = AgentWritePolicyStore.violatingWriteTargets(
+            "echo x > /var/minis/shared/f", session,
+        )
+        assertTrue(v.isEmpty())
+    }
 }
