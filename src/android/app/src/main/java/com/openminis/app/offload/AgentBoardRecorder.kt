@@ -131,4 +131,34 @@ internal object AgentBoardRecorder {
                 if (tasks.isEmpty()) null else AgentBoardLogic.teamSummary(tasks)
             }.getOrNull()
         }
+
+    /**
+     * [T-checkpoint] Generic append-only event (CHECKPOINTED and future node-
+     * level trace points). Best-effort like every recorder call.
+     */
+    suspend fun missionEvent(
+        context: Context,
+        eventType: String,
+        taskId: String,
+        agentId: String?,
+        payload: String,
+    ): Unit = withContext(Dispatchers.IO) {
+        runCatching {
+            ProviderDatabase.getInstance(context).agentBoardDao()
+                .insertMissionEvent(
+                    MissionLogEntity(
+                        eventType = eventType,
+                        agentId = agentId,
+                        taskId = taskId,
+                        payload = payload,
+                        timestamp = System.currentTimeMillis(),
+                    ),
+                )
+        }.onFailure {
+            com.openminis.app.logging.AppLogger.warning(
+                "AgentBoard",
+                "missionEvent '$eventType' write failed for $taskId (run continues): ${it.message}",
+            )
+        }
+    }
 }

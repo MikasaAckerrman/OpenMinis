@@ -32,6 +32,9 @@ internal object AgentGraphRunner {
     private const val LOG_TAG = "AgentGraph"
     private const val ARTIFACT_DIR_BASE = "/var/minis/workspace"
     private const val TRACE_DIR = "/var/minis/offloads"
+    /** [T-checkpoint] Snapshots live in <workspace>/.checkpoints/<runtimeId>/ — newest 5 kept. */
+    private const val CHECKPOINT_DIR = ".checkpoints"
+    private const val MAX_CHECKPOINTS = 5
 
     /** In-memory state for a running graph. */
     data class GraphState(
@@ -73,6 +76,13 @@ internal object AgentGraphRunner {
         /** Nodes already enqueued or started — guards against double-dispatch
          *  when a fan-in node's predecessors finish at different times. */
         val dispatched: MutableSet<String> = ConcurrentHashMap.newKeySet(),
+        /**
+         * [T-checkpoint] runtimeIds whose PRE-execution workspace snapshot is
+         * taken. A retried node must NOT re-snapshot: the checkpoint is the
+         * state BEFORE the node first ran — mid-retry state is exactly the
+         * broken thing the checkpoint exists to recover from.
+         */
+        val checkpointed: MutableSet<String> = ConcurrentHashMap.newKeySet(),
         /** nodeId -> why the scope guard rejected its handoff. */
         val scopeViolations: ConcurrentHashMap<String, String> = ConcurrentHashMap(),
         /**
@@ -541,8 +551,54 @@ internal object AgentGraphRunner {
             ?: exitHandoffs.firstOrNull()
 
     /** Execute a single agent node. */
-    private suspend fun executeNode(
+    /**
+     * [T-checkpoint] Copy the run workspace into .checkpoints/<runtimeId>/
+     * (minus .checkpoints itself), cap the history at [MAX_CHECKPOINTS] by
+     * modification time, and record the snapshot in the mission log. A failed
+     * copy is logged and swallowed — a checkpoint is recovery insurance, and
+     * insurance that blocks the insured work is worse than none.
+     */
+    private suspend fun checkpointWorkspace(
         execContext: ExecutionContext,
+        node: AgentNode,
+        runtimeId: String,
+    ) {
+        val state = execContext.state
+        val ws = state.artifactHostDir ?: return
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                val entries = ws.listFiles()
+                    ?.filter { it.name != CHECKPOINT_DIR }
+                    .orEmpty()
+                if (entries.isEmpty()) return@runCatching
+                val checkRoot = java.io.File(ws, CHECKPOINT_DIR)
+                val dir = java.io.File(checkRoot, runtimeId).apply { mkdirs() }
+                entries.forEach { src -> src.copyRecursively(java.io.File(dir, src.name)) }
+                checkRoot.listFiles()
+                    ?.sortedByDescending { it.lastModified() }
+                    ?.drop(MAX_CHECKPOINTS)
+                    ?.forEach { it.deleteRecursively() }
+                AgentBoardRecorder.missionEvent(
+                    execContext.context,
+                    "CHECKPOINTED",
+                    state.taskId,
+                    node.role.name,
+                    "dir=$CHECKPOINT_DIR/$runtimeId entries=${entries.size}",
+                )
+                addTrace(
+                    state, runtimeId, node.role, "CHECKPOINT",
+                    "workspace snapshot before node run: $CHECKPOINT_DIR/$runtimeId (${entries.size} entries)",
+                )
+            }.onFailure { e ->
+                com.openminis.app.logging.AppLogger.warning(
+                    LOG_TAG,
+                    "[${state.taskId.take(8)}] checkpoint of $runtimeId failed (run continues): ${e.message}",
+                )
+            }
+        }
+    }
+
+    private suspend fun executeNode(        execContext: ExecutionContext,
         node: AgentNode,
         runtimeId: String = node.id,
         replicaIndex: Int = 0,
@@ -625,6 +681,19 @@ internal object AgentGraphRunner {
             replicaInfo = if (node.replicas > 1) "${replicaIndex + 1}/${node.replicas}" else null,
             model = modelEntryId.take(24),
         )
+        // [T-checkpoint] Coherence Collapse guard (review spec 27.09): every
+        // node of a run shares the run's workspace, so a later write-capable
+        // agent can overwrite an earlier agent's good work — the 60-69%
+        // failure mode. Snapshot the workspace BEFORE the node's first run:
+        // recovery stays possible even when the node trashes the live dir.
+        // Empty workspace = nothing to protect = no snapshot; retried nodes
+        // re-use their first checkpoint (the pre-broken state is the point).
+        if (state.artifactHostDir != null &&
+            node.allowedTools.any { it == "file_write" || it == "file_edit" || it == "shell_execute" } &&
+            state.checkpointed.add(runtimeId)
+        ) {
+            checkpointWorkspace(execContext, node, runtimeId)
+        }
         // [T-agent-graph-live-progress] Same event, second consumer: the chat
         // that started the run renders this so the user sees WHICH agent is
         // working instead of a silent bubble for minutes.
