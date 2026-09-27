@@ -504,6 +504,12 @@ object SubagentExecutor {
          * level, no counters, no runaway recursion.
          */
         spawnerSessionId: String? = null,
+        /**
+         * [T-task-board] Team task ids this run must wait for — enforced, not
+         * advisory: the spawn is refused while any listed task is not
+         * COMPLETED, and the refusal names the unmet ones.
+         */
+        dependsOn: List<String> = emptyList(),
     ): String {
         val app = context.applicationContext as MinisApp
         // [T-agent-file] role="custom:<name>" routes to a user-defined agent
