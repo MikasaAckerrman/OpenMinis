@@ -93,7 +93,11 @@ class AgentBoardLogicTest {
             task("b2"),
             task("join", deps = """["b1","b2"]"""),
         )
-        assertEquals(emptyList<String>(), AgentBoardLogic.readyTaskIds(tasks))
+        // join waits for BOTH branches: b2 pending blocks it. b2 itself is
+        // independent and legitimately ready — the first draft of this test
+        // asserted an empty ready set, which would mean the readiness rule
+        // blocks unrelated tasks (a far worse bug than the one under test).
+        assertEquals(listOf("b2"), AgentBoardLogic.readyTaskIds(tasks))
         val b2Done = tasks.map {
             if (it.id == "b2") it.copy(status = AgentBoardLogic.STATUS_COMPLETED) else it
         }
