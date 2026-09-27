@@ -1,5 +1,6 @@
 package com.openminis.app.data
 
+import com.openminis.app.data.repository.MemoryRepository
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -12,82 +13,86 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * [T-auto-mistake] Contract tests: the MNL-style auto-capture writes ONE
- * compact line per failed tool call into today's daily log (the same file the
- * daily-memory fragment injects), throttles identical failures inside the
- * 60s window, and never throws (a capture failure must not break the tool
- * path it observes).
+ * [T-auto-mistake] Contract tests. The v2 design routes every capture through
+ * a REAL MemoryRepository on a temp dir — pinning the three properties the v1
+ * design broke:
+ *   1. PLACEMENT: the entry lands at the HEAD of today's file (newest-first —
+ *      the daily fragment reads head lines; a tail-append would never inject).
+ *   2. FRAMING: the repo's <!-- ts --> entry framing wraps the mistake line —
+ *      one content line per entry, the fragment's line budget stays dense.
+ *   3. SAME-WRITE-PATH: the model's own memory_write interleaves correctly
+ *      (both go through the repo's read-prepend-write).
+ * Plus the throttle semantics and the never-throws contract.
  */
 class AutoMistakeLogTest {
 
     @get:Rule
     val tmp = TemporaryFolder()
 
-    private var logDir: File? = null
+    private var repoDir: File? = null
 
-    private fun freshLog(): File {
+    private fun freshRepo(): MemoryRepository {
+        AutoMistakeLog.resetForTest()
         val d = tmp.newFolder("m${System.nanoTime()}")
-        logDir = d
-        AutoMistakeLog.primeDir(d)
-        return d
+        repoDir = d
+        return MemoryRepository(d)
     }
 
     private fun todayFile(): File {
         val day = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
-        return File(logDir, "$day.md")
+        return File(repoDir, "$day.md")
     }
 
     @Test
-    fun `capture writes one line into today's daily log`() {
-        freshLog()
-        val ok = AutoMistakeLog.capture("shell_execute", "Run tests", "exit 1: compilation failed", "sess-1234")
+    fun `capture lands at the HEAD of today's log (newest-first placement)`() {
+        val repo = freshRepo()
+        repo.writeMemory("manual note written BEFORE the mistake")
+        val ok = AutoMistakeLog.capture(repo, "shell_execute", "Run tests", "exit 1: compilation failed", "sess-1234")
         assertTrue(ok)
         val text = todayFile().readText()
-        assertTrue(text.contains("MISTAKE"))
+        val mistakeIdx = text.indexOf("MISTAKE")
+        val noteIdx = text.indexOf("manual note written BEFORE")
+        assertTrue(mistakeIdx >= 0)
+        assertTrue("mistake must be ABOVE the older note (newest-first)", mistakeIdx < noteIdx)
         assertTrue(text.contains("shell_execute"))
         assertTrue(text.contains("compilation failed"))
         assertTrue(text.contains("sid=sess-123"))
-        // ONE line — the daily-fragment budget is line-capped, density matters.
-        assertEquals(1, text.trim().lines().size)
+        // The mistake entry is ONE content line.
+        val entryBlock = text.substring(0, noteIdx)
+        assertEquals(1, entryBlock.trim().lines().size)
     }
 
     @Test
     fun `identical failure inside the throttle window is collapsed`() {
-        freshLog()
-        assertTrue(AutoMistakeLog.capture("shell_execute", "t", "same error", "s"))
-        assertFalse("second identical capture must be throttled", AutoMistakeLog.capture("shell_execute", "t2", "same error", "s"))
+        val repo = freshRepo()
+        assertTrue(AutoMistakeLog.capture(repo, "shell_execute", "t", "same error", "s"))
+        assertFalse("second identical capture must be throttled", AutoMistakeLog.capture(repo, "shell_execute", "t2", "same error", "s"))
         // A DIFFERENT tool or a different error is not throttled.
-        assertTrue(AutoMistakeLog.capture("file_read", "t", "same error", "s"))
-        assertTrue(AutoMistakeLog.capture("shell_execute", "t", "another error entirely", "s"))
+        assertTrue(AutoMistakeLog.capture(repo, "file_read", "t", "same error", "s"))
+        assertTrue(AutoMistakeLog.capture(repo, "shell_execute", "t", "another error entirely", "s"))
     }
 
     @Test
-    fun `newlines in the error are flattened to one line`() {
-        freshLog()
-        AutoMistakeLog.capture("shell_execute", "t", "line1\nline2\nline3", "s")
+    fun `newlines in the error are flattened to one content line`() {
+        val repo = freshRepo()
+        AutoMistakeLog.capture(repo, "shell_execute", "t", "line1\nline2\nline3", "s")
         val text = todayFile().readText()
-        assertEquals("flattened", 1, text.trim().lines().size)
+        assertEquals("one content line per entry", 1, text.trim().lines().size)
         assertTrue(text.contains("line1 line2"))
     }
 
     @Test
     fun `empty error is skipped`() {
-        freshLog()
-        assertFalse(AutoMistakeLog.capture("shell_execute", "t", "   ", "s"))
+        val repo = freshRepo()
+        assertFalse(AutoMistakeLog.capture(repo, "shell_execute", "t", "   ", "s"))
         assertFalse(todayFile().exists())
     }
 
     @Test
     fun `error excerpt is bounded`() {
-        freshLog()
-        AutoMistakeLog.capture("shell_execute", "t", "x".repeat(10_000), "s")
+        val repo = freshRepo()
+        AutoMistakeLog.capture(repo, "shell_execute", "t", "x".repeat(10_000), "s")
         val text = todayFile().readText()
         assertTrue("≤240 chars excerpt + formatting", text.length < 400)
-    }
-
-    @Test
-    fun `unprimed log captures nothing and never throws`() {
-        AutoMistakeLog.primeDir(null)
-        assertFalse(AutoMistakeLog.capture("shell_execute", "t", "error", "s"))
     }
 }

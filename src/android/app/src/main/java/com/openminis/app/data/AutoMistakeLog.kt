@@ -1,65 +1,60 @@
 package com.openminis.app.data
 
-import android.content.Context
-import java.io.File
+import com.openminis.app.data.repository.MemoryRepository
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 /**
  * [T-auto-mistake] MNL-style automatic mistake capture (MistakeNotebookLearning
- * concept, adapted 25.09): a FAILED tool call is appended to today's memory
+ * concept, adapted 25.09): a FAILED tool call is written into today's memory
  * log WITHOUT the model deciding to save it — the PostToolUse-hook equivalent.
  * Failures then compound: the daily-memory fragment (injected into every
  * request) and memory_get surface them automatically, and the model distils
  * the recurring ones into core-memory blocks / memory_write notes at its own
- * pace (capture = automatic, distillation = model-curated — the division our
- * whole memory architecture already follows).
+ * pace (capture = automatic, distillation = model-curated).
  *
- * Entry format: ONE line — the 8K daily-fragment budget is line-capped, so a
- * single compact line keeps the signal dense:
- *   ⚠ MISTAKE <HH:mm:ss> <toolName>: <error excerpt ≤240 chars>
+ * v2 (review fix): routes through [MemoryRepository.writeMemory] — the SAME
+ * write path as the model's own memory_write. v1 appended to the file tail:
+ * (a) the repo stores newest-FIRST and the daily fragment reads head lines,
+ * so tail-appended mistakes would NEVER surface; (b) the repo rewrites the
+ * whole file (read→prepend→write) — a concurrent repo write would silently
+ * erase appended tail lines. Going through the repo fixes both: correct
+ * placement, the repo's entry framing, and the same serialization domain as
+ * every other daily-log writer (memory_write is not a parallel tool, so the
+ * capture inside executeTool cannot overlap it).
  *
  * Throttle: identical (toolName + first 80 error chars) within 60s collapses
  * into one entry — a retry loop (CI poll, grep miss) must not spam the log.
- * Thread-safe: parallel tool failures append under a monitor (rare event,
- * negligible contention). Fire-and-forget caller (executeTool, IO dispatcher).
+ * Entry format: ONE content line (the 8K daily fragment is line-capped):
+ *   ⚠ MISTAKE <HH:mm:ss> <toolName> [title]: <error excerpt ≤240> (sid=…)
  */
 object AutoMistakeLog {
 
     private const val THROTTLE_MS = 60_000L
     private const val ERROR_EXCERPT_CHARS = 240
 
-    @Volatile
-    private var dir: File? = null
-
     /** Last emit time per (toolName + error-prefix); in-process dedup state. */
     private val lastEmit = HashMap<String, Long>()
 
-    /** Capture the storage dir. Called from MinisApp.onCreate. */
-    fun prime(context: Context) {
-        primeDir(File(context.applicationContext.filesDir, "minis-global/memory"))
+    /** Test seam: reset the throttle state between tests. */
+    internal fun resetForTest() {
+        synchronized(this) { lastEmit.clear() }
     }
 
     /**
-     * Test seam: set/replace the storage dir and reset the throttle state.
-     * JVM tests have no Context — they point the log at a TemporaryFolder
-     * (or null for the unprimed no-op case).
-     */
-    internal fun primeDir(directory: File?) {
-        synchronized(this) {
-            dir = directory
-            lastEmit.clear()
-        }
-    }
-
-    /**
-     * Append one mistake line for a failed tool call. Returns true when the
-     * entry was written (false = throttled duplicate, no dir, or empty error).
+     * Write one mistake line for a failed tool call. Returns true when the
+     * entry landed (false = throttled duplicate, empty error, or the repo's
+     * write failed — the repo's own result string is the error surface).
      */
     @Synchronized
-    fun capture(toolName: String, toolTitle: String, errorOutput: String, sessionId: String): Boolean {
-        val target = dir ?: return false
+    fun capture(
+        repo: MemoryRepository,
+        toolName: String,
+        toolTitle: String,
+        errorOutput: String,
+        sessionId: String,
+    ): Boolean {
         val error = errorOutput.trim()
         if (error.isEmpty()) return false
         val now = System.currentTimeMillis()
@@ -71,20 +66,17 @@ object AutoMistakeLog {
             val cutoff = now - THROTTLE_MS
             lastEmit.entries.removeIf { it.value < cutoff }
         }
-        val fmt = SimpleDateFormat("HH:mm:ss", Locale.US)
         val stamp = Date(now)
-        val day = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(stamp)
+        val time = SimpleDateFormat("HH:mm:ss", Locale.US).format(stamp)
         val line = buildString {
-            append("<!-- ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(stamp)} --> ")
-            append("⚠ MISTAKE ${fmt.format(stamp)} $toolName")
+            append("⚠ MISTAKE $time $toolName")
             if (toolTitle.isNotBlank() && toolTitle != toolName) append(" [$toolTitle]")
             append(": ")
             append(error.replace('\n', ' ').take(ERROR_EXCERPT_CHARS))
             append("  (sid=${sessionId.take(8)})")
         }
-        return runCatching {
-            File(target, "$day.md").appendText(line + "\n")
-            true
-        }.getOrDefault(false)
+        // The repo prepends (newest-first) with its <!-- ts --> framing and
+        // returns "Memory saved to …" on success / "Error: …" on failure.
+        return !repo.writeMemory(line).startsWith("Error")
     }
 }

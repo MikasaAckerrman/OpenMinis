@@ -12621,16 +12621,22 @@ class ChatViewModel(
             // [T-auto-mistake] MNL-style auto-capture (MistakeNotebookLearning
             // concept): a failed tool call lands in today's memory log BEFORE
             // the nudge/timer decorators — the error text is the model's own
-            // output, not the decorated one. Capture is automatic; distillation
-            // into core-memory blocks stays model-curated. Throttled (60s per
-            // toolName+error-prefix) so retry loops don't spam the log.
+            // output, not the decorated one. Routed through the REPOSITORY
+            // (same write path as the model's memory_write: newest-first
+            // placement the daily fragment actually injects, and the repo's
+            // read-prepend-write domain — no second writer racing it).
+            // Throttled (60s per toolName+error-prefix). memoryRepository is
+            // null only in exotic builds — the capture silently skips then.
             if (!toolResult.success) {
-                com.openminis.app.data.AutoMistakeLog.capture(
-                    toolName = name,
-                    toolTitle = toolResult.toolTitle,
-                    errorOutput = toolResult.output,
-                    sessionId = activeSessionId,
-                )
+                memoryRepository?.let { repo ->
+                    com.openminis.app.data.AutoMistakeLog.capture(
+                        repo = repo,
+                        toolName = name,
+                        toolTitle = toolResult.toolTitle,
+                        errorOutput = toolResult.output,
+                        sessionId = activeSessionId,
+                    )
+                }
             }
             // [T-proactive-memory] Single choke point for the periodic
             // reminder — see maybeAppendMemoryNudge. [T-turn-timer] and the
