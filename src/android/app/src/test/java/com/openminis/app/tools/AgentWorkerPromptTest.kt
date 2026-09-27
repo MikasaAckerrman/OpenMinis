@@ -80,9 +80,9 @@ class AgentWorkerPromptTest {
     fun `environment snapshot states the operational facts once`() {
         val p = build()
         assertTrue(p.contains("Android phone (aarch64)"))
-        assertTrue(p.contains("Alpine via PRoot"))
-        assertTrue(p.contains("BusyBox ash (NOT bash)"))
-        assertTrue(p.contains("Write access: your own workspace"))
+        assertTrue(p.contains("Alpine Linux via PRoot"))
+        assertTrue(p.contains("BusyBox ash shell (NOT bash)"))
+        assertTrue(p.contains("Writes: your own workspace"))
     }
 
     @Test
