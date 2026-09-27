@@ -39,7 +39,7 @@ object AgentBoardLogic {
             .filter { it.status == STATUS_PENDING }
             .sortedBy { it.createdAt }
             .filter { task ->
-                depsOf(task).all { dep -> byStatus[it] == STATUS_COMPLETED }
+                depsOf(task).all { dep -> byStatus[dep] == STATUS_COMPLETED }
             }
             .map { it.id }
     }

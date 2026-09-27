@@ -6,6 +6,7 @@ import com.openminis.app.data.model.AgentNode
 import com.openminis.app.data.model.AgentRole
 import com.openminis.app.data.model.GraphConfig
 import com.openminis.app.data.model.GraphRunResult
+import com.openminis.app.data.model.RunStatus
 import com.openminis.app.MinisApp
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
