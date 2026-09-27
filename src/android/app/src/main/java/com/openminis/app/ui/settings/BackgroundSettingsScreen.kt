@@ -572,6 +572,31 @@ fun BackgroundSettingsScreen(onBack: () -> Unit) {
             )
 
             Spacer(Modifier.size(16.dp))
+            BgSectionTitle("Root shell (привилегированные команды)")
+            var rootShellOn by remember {
+                mutableStateOf(com.openminis.app.data.RootShellPrefs.isEnabled())
+            }
+            BgToggleRow(
+                icon = Icons.Outlined.Shield,
+                iconColor = Color(0xFFFF453A),
+                title = "Разрешить модели root-команды",
+                subtitle = "Инструмент root_shell (su 0, KernelSU): системные настройки, dumpsys, /proc, pm. Выключено — инструмента нет в схеме. Разрушающие команды всегда требуют подтверждения в диалоге",
+                checked = rootShellOn,
+                onCheckedChange = { wanted ->
+                    rootShellOn = wanted
+                    com.openminis.app.data.RootShellPrefs.setEnabled(context, wanted)
+                },
+                showDivider = false,
+            )
+            BgFooter(
+                "Максимальные привилегии: модель сможет читать/менять системные файлы и " +
+                    "данные других приложений. Разрушающие команды (rm, kill, dd, format…) " +
+                    "проходят через политику и диалог подтверждения с точной командой. " +
+                    "Пути — реальные Android (/data, /system), не песочница. Если root " +
+                    "недоступен (KSU не запущен) — инструмент вернёт понятную ошибку."
+            )
+
+            Spacer(Modifier.size(16.dp))
         }
     }
 }

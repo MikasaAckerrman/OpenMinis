@@ -107,6 +107,13 @@ object AgentTools {
          * the [T-subagent-gate] discipline.
          */
         coreMemoryEnabled: Boolean = com.openminis.app.data.CoreMemoryPrefs.isEnabled(),
+        /**
+         * [T-root-shell] Master switch for the kernel-root tool. Default OFF
+         * (RootShellPrefs); ON only by an explicit user decision in Settings.
+         * Off → the tool leaves the schema entirely (the model cannot even
+         * attempt a root call).
+         */
+        rootShellEnabled: Boolean = com.openminis.app.data.RootShellPrefs.isEnabled(),
     ): List<AgentToolDefinition> {
         val allow = expandAllowlist(allowedTools)
 
@@ -168,6 +175,13 @@ object AgentTools {
             if (coreMemoryEnabled) {
                 if (permitted("memory_blocks_view")) add(memoryBlocksViewDefinition())
                 if (permitted("memory_blocks_edit")) add(memoryBlocksEditDefinition())
+            }
+            // [T-root-shell] Kernel-root execution — the most privileged
+            // surface: master-gated (default OFF), plus per-command
+            // destructive screening at the executor (dialog for dangerous
+            // commands even when the master gate is armed).
+            if (rootShellEnabled) {
+                if (permitted("root_shell")) add(rootShellDefinition())
             }
         }
     }
@@ -321,5 +335,39 @@ object AgentTools {
         ),
         required = listOf("tool_title", "query"),
         propertyOrdering = listOf("tool_title", "query"),
+    )
+
+    /**
+     * [T-root-shell] Kernel-root command execution for the model. The user
+     * arms this explicitly (Settings → Background & Notifications → Root
+     * shell; default OFF — the tool leaves the schema when disarmed).
+     *
+     * Contract differences vs shell_execute (the PRoot sandbox):
+     *   • runs on the ANDROID side with `su 0` (KernelSU context u:r:ksu:s0):
+     *     real paths are /data/data/<pkg>/files/…, /sdcard, /system, /data/adb —
+     *     NOT the sandbox's /var/minis/… view;
+     *   • every command passes DestructiveCommandPolicy; destructive ones
+     *     additionally require the interactive approval dialog;
+     *   • root unavailable (KSU down after reboot) → a clean error with the
+     *     recovery hint, never a crash.
+     */
+    private fun rootShellDefinition(): AgentToolDefinition = AgentToolDefinition(
+        name = "root_shell",
+        description = "Execute a shell command with KERNEL ROOT (su 0) on the Android side. " +
+            "Use ONLY when a task genuinely needs privileged access: system settings (settings/device_config), " +
+            "process inspection (dumpsys, /proc), cgroup/power management, package management (pm), " +
+            "reading diagnostics data of other apps, KSU module operations. " +
+            "IMPORTANT: this is NOT the sandbox shell — paths are Android-real (/data/data, /system, /sdcard); " +
+            "/var/minis/... does NOT exist here (the app's own files live at /data/data/com.openminis.app.clone/files/...). " +
+            "Destructive commands (rm/kill/dd/format/flash…) trigger an interactive user approval dialog — " +
+            "prefer read-only diagnostics; announce what you are about to change and why. " +
+            "If root is unavailable (KSU not started), the result says so — tell the user to run root.sh and retry.",
+        parameters = mapOf(
+            "tool_title" to AgentToolParam("string", "A concise 5-10 word summary of this tool call, shown to the user (e.g. 'Check cgroup freeze state'). Use the same language as the user."),
+            "command" to AgentToolParam("string", "The shell command to run as root. Android-side paths; NO sandbox paths. Quoting is safe — the command is executed from a script file."),
+            "timeout_s" to AgentToolParam("number", "Timeout in seconds, 10..300 (default 60)."),
+        ),
+        required = listOf("tool_title", "command"),
+        propertyOrdering = listOf("tool_title", "command", "timeout_s"),
     )
 }

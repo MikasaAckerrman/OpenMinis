@@ -215,6 +215,9 @@ class MinisApp : Application(), ImageLoaderFactory {
         // file location (filesDir/memory/core_blocks.json).
         com.openminis.app.data.CoreMemoryPrefs.prime(this)
         com.openminis.app.data.CoreMemoryStore.prime(this)
+        // [T-root-shell] Master gate for the kernel-root tool (default OFF —
+        // the tool leaves the schema until the user arms it in Settings).
+        com.openminis.app.data.RootShellPrefs.prime(this)
 
         // T283: install NDK signal handler for native crashes (SIGSEGV/
         // SIGABRT/SIGBUS/SIGFPE/SIGILL/SIGSYS). Writes a one-shot text

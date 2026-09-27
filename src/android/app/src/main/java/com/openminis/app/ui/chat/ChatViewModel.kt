@@ -12625,6 +12625,7 @@ class ChatViewModel(
             "memory_write" -> executeMemoryWriteTool(argsJson)
             "memory_get" -> executeMemoryGetTool(argsJson)
             "supermemory_search" -> executeSupermemorySearchTool(argsJson)
+            "root_shell" -> executeRootShellTool(argsJson)
             "memory_blocks_view" -> executeCoreMemoryViewTool(argsJson)
             "memory_blocks_edit" -> executeCoreMemoryEditTool(argsJson)
             else -> ToolExecutionResult("Unknown tool: $name", false)
@@ -13323,6 +13324,115 @@ class ChatViewModel(
     }
 
     // ─── [T-letta-core-memory] tool executors ──────────────────────────────
+
+    // ─── [T-root-shell] executor ──────────────────────────────────────────
+
+    /**
+     * [T-root-shell] Kernel-root command execution (su 0, KernelSU). The
+     * master gate (RootShellPrefs, Settings) keeps the tool OUT of the
+     * schema when disarmed; this is the second, executor-level check.
+     *
+     * Mechanism (no quoting hell): the command is written to a temp script
+     * under filesDir — the SAME physical file the Android side sees at
+     * /data/data/<pkg>/files/… — then executed via the sandbox's adb:
+     * `adb connect localhost:5555 && adb -s localhost:5555 shell su 0 sh <path>`.
+     * Root-unavailable (KSU down) produces a clean error with the recovery
+     * hint (root.sh), never a crash. Output bounded like executeShell.
+     */
+    private suspend fun executeRootShellTool(argsJson: String): ToolExecutionResult {
+        if (!com.openminis.app.data.RootShellPrefs.isEnabled()) {
+            return ToolExecutionResult(
+                "root_shell отключён в настройках (Settings → Background & Notifications → Root shell).",
+                false, toolTitle = "Root shell")
+        }
+        val args = try {
+            JSONObject(argsJson)
+        } catch (e: Exception) {
+            return ToolExecutionResult("Error: unparsable arguments (${e.message})", false)
+        }
+        val toolTitle = args.optString("tool_title", "").ifEmpty { "Root shell" }
+        val command = args.optString("command", "").trim()
+        if (command.isEmpty()) {
+            return ToolExecutionResult("Error: command is required", false, toolTitle = toolTitle)
+        }
+        val timeoutS = args.optDouble("timeout_s", 60.0).let {
+            it.coerceIn(10.0, 300.0).toInt()
+        }
+
+        // Destructive screening — the SAME policy as the sandbox shell, but
+        // with the weight of root: DENY outright for the forbidden class,
+        // CONFIRM raises the interactive dialog (the user sees the exact
+        // command + reason before a root-level destructive action runs).
+        val verdict = com.openminis.app.sandbox.DestructiveCommandPolicy.assess(command)
+        when (verdict) {
+            com.openminis.app.sandbox.DestructiveCommandPolicy.Verdict.REFUSE -> {
+                return ToolExecutionResult(
+                    "Отказано (политика разрушающих команд): ${verdict.reason}\n" +
+                        "Root-команда не выполнена: $command",
+                    false, toolTitle = toolTitle)
+            }
+            com.openminis.app.sandbox.DestructiveCommandPolicy.Verdict.CONFIRM -> {
+                val approved = com.openminis.app.sandbox.DestructiveCommandGate.requestApproval(
+                    sessionId = activeSessionId,
+                    command = "[ROOT] $command",
+                    reason = verdict.reason,
+                    fragment = verdict.fragment,
+                )
+                if (!approved) {
+                    AppLogger.info("RootShell", "denied by user: $command")
+                    return ToolExecutionResult(
+                        "Пользователь не подтвердил РУТ-команду.\nКоманда не выполнена: $command",
+                        false, toolTitle = toolTitle)
+                }
+                AppLogger.info("RootShell", "approved by user: $command")
+            }
+            com.openminis.app.sandbox.DestructiveCommandPolicy.Verdict.ALLOW -> { /* proceed */ }
+        }
+
+        // The temp script: written on the app side, visible at the SAME
+        // physical path on the Android side (su can read /data/data/<pkg>).
+        val scriptFile = java.io.File(
+            context.filesDir,
+            "root_cmd_${System.currentTimeMillis()}.sh",
+        )
+        return try {
+            scriptFile.writeText(command + "\n")
+            val androidPath = scriptFile.absolutePath
+            val adbCmd = "adb connect localhost:5555 >/dev/null 2>&1; " +
+                "adb -s localhost:5555 shell \"su 0 sh $androidPath\" 2>&1"
+            val res = com.openminis.app.sandbox.ExecutionCoordinator.execute(
+                activeSessionId,
+                adbCmd,
+                timeout = timeoutS * 1_000L + 5_000L,
+            )
+            val output = res.output.trim()
+            // Root-unavailable signature: su fails with "su: not found" /
+            // permission denial / the KSU request denied by the manager.
+            val rootDown = output.contains("su: not found") ||
+                output.contains("Permission denied") ||
+                output.contains("request denied") ||
+                (res.exitCode != 0 && output.isBlank())
+            val text = buildString {
+                append("exit=${res.exitCode}\n")
+                append(if (output.length > 8000) output.take(8000) + "\n… (вывод обрезан)" else output)
+            }.ifBlank { "exit=${res.exitCode} (пустой вывод)" }
+            if (rootDown) {
+                ToolExecutionResult(
+                    "ROOT НЕДОСТУПЕН ($text)\n" +
+                        "KSU не запущен или отклонил запрос. Восстановление: " +
+                        "adb shell 'sh /data/local/tmp/root.sh' (см. память/ранбук), затем повтори.",
+                    false, toolTitle = toolTitle)
+            } else {
+                ToolExecutionResult(text, res.exitCode == 0, toolTitle = toolTitle)
+            }
+        } catch (e: Exception) {
+            ToolExecutionResult(
+                "Error: root shell failed (${e.javaClass.simpleName}: ${e.message})",
+                false, toolTitle = toolTitle)
+        } finally {
+            runCatching { scriptFile.delete() }
+        }
+    }
 
     /**
      * [T-supermemory-tool] supermemory_search: semantic recall for the model.
@@ -16164,6 +16274,7 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         "memory_write" -> "Write Memory"
         "memory_get" -> "Read Memory"
         "supermemory_search" -> "Semantic Memory"
+        "root_shell" -> "Root Shell"
         "memory_blocks_view" -> "Core Memory"
         "memory_blocks_edit" -> "Core Memory Edit"
         "web_search" -> "Search Web"
