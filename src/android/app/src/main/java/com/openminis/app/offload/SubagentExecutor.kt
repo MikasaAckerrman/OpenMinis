@@ -99,8 +99,28 @@ object SubagentExecutor {
         node: AgentNode,
         role: String,
         task: String,
+        /** [T-task-board] The spawner's session id — the team the run records under. */
+        teamId: String? = null,
     ): String = try {
+        // [T-task-board] Durable ledger: the run exists from THIS moment, not
+        // from completion — a crash mid-run leaves a RUNNING row with history
+        // instead of vanishing (the "what happened to my agent" answer).
+        if (teamId != null) {
+            AgentBoardRecorder.taskStarted(
+                context, taskId = node.id, teamId = teamId,
+                roleRequired = role, title = task.lineSequence().firstOrNull().orEmpty(),
+                description = task, workspaceDir = null,
+            )
+        }
         val result = AgentGraphRunner.run(context, graph.id, task, taskId = node.id, ephemeral = true)
+        if (teamId != null) {
+            AgentBoardRecorder.taskFinished(
+                context, taskId = node.id, teamId = teamId,
+                assignedAgentId = null,
+                succeeded = result.status == RunStatus.SUCCESS,
+                result = formatResult(role, result),
+            )
+        }
         formatResult(role, result)
     } finally {
         app.providerRepository.deleteAgentGraph(graph.id)
@@ -124,17 +144,44 @@ object SubagentExecutor {
         role: String,
         task: String,
         onBackgroundResult: ((spawnId: String, role: String, result: String) -> Unit)?,
+        /** [T-task-board] The spawner's session id — the team the run records under. */
+        teamId: String? = null,
     ): String {
         activeBackground[spawnId] = "$role: ${task.take(80)}"
         kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
             try {
-                val text = runCatching {
+                // [T-task-board] Durable ledger for background runs too — a
+                // background agent that dies with the process leaves a
+                // RUNNING row explaining WHERE it went instead of silence.
+                if (teamId != null) {
+                    AgentBoardRecorder.taskStarted(
+                        context, taskId = spawnId, teamId = teamId,
+                        roleRequired = role, title = task.lineSequence().firstOrNull().orEmpty(),
+                        description = task, workspaceDir = null,
+                    )
+                }
+                val text = try {
                     val result = AgentGraphRunner.run(context, graph.id, task, taskId = spawnId, ephemeral = true)
+                    if (teamId != null) {
+                        AgentBoardRecorder.taskFinished(
+                            context, taskId = spawnId, teamId = teamId,
+                            assignedAgentId = null,
+                            succeeded = result.status == RunStatus.SUCCESS,
+                            result = formatResult(role, result),
+                        )
+                    }
                     formatResult(role, result)
-                }.getOrElse { e ->
+                } catch (e: Exception) {
                     com.openminis.app.logging.AppLogger.warning(
                         TAG, "background subagent $spawnId failed: ${e.message}",
                     )
+                    if (teamId != null) {
+                        AgentBoardRecorder.taskFinished(
+                            context, taskId = spawnId, teamId = teamId,
+                            assignedAgentId = null, succeeded = false,
+                            result = "background run failed: ${e.message}",
+                        )
+                    }
                     "Subagent (${role.lowercase()}) background run failed: ${e.message}"
                 }
                 runCatching { onBackgroundResult?.invoke(spawnId, role, text) }
@@ -181,7 +228,7 @@ object SubagentExecutor {
         app.providerRepository.saveAgentGraph(graph)
 
         return if (foreground) {
-            runSingle(context, app, graph, node, label, task)
+            runSingle(context, app, graph, node, label, task, teamId = spawnerSessionId)
         } else {
             if (activeBackground.size >= MAX_BACKGROUND) {
                 runCatching { app.providerRepository.deleteAgentGraph(graph.id) }
@@ -189,7 +236,7 @@ object SubagentExecutor {
                     "running (phone ceiling). Wait for their result notifications first, " +
                     "then spawn again."
             }
-            launchBackground(context, app, graph, node.id, label, task, onBackgroundResult)
+            launchBackground(context, app, graph, node.id, label, task, onBackgroundResult, spawnerSessionId)
         }
     }
 
@@ -305,6 +352,16 @@ object SubagentExecutor {
         plan.conflictNotes.forEach { sb.appendLine("⚠ $it") }
         if (synthesize) sb.appendLine("+ synthesizer: ONE integrated answer from the board")
         if (review) sb.appendLine("+ reviewer: verifies the synthesis against the board")
+        // [T-task-board] Cross-turn team memory: what THIS team already did
+        // (durable Room board, not the in-run board below) — the orchestrator
+        // returning next turn sees prior completions and failures and can
+        // re-delegate the failed tail instead of redoing it blind.
+        AgentBoardRecorder.teamSummary(context, spawnerSessionId ?: "")?.let { summary ->
+            if (summary.isNotBlank()) {
+                sb.appendLine(summary)
+                sb.appendLine()
+            }
+        }
         sb.appendLine()
 
         // [T-task-board] The executor owns the board: workers never write it
@@ -342,6 +399,7 @@ object SubagentExecutor {
                                 runSingle(
                                     context, app, graph, node, spec.role,
                                     TaskBoard.inject(spec.task, snapshot),
+                                    teamId = spawnerSessionId,
                                 )
                             }.getOrElse { e ->
                                 "Subagent (${spec.role.lowercase()}) error: ${e.message}"
@@ -470,7 +528,7 @@ object SubagentExecutor {
         val spawnId = node.id
 
         return if (foreground) {
-            runSingle(context, app, graph, node, role, task)
+            runSingle(context, app, graph, node, role, task, teamId = spawnerSessionId)
         } else {
             // [T-spawn-many] Phone ceiling: unbounded background spawns would
             // multiply live sessions, VMs and model calls on a device with
@@ -481,7 +539,7 @@ object SubagentExecutor {
                     "running (phone ceiling). Wait for their result notifications first, " +
                     "then spawn again."
             }
-            return launchBackground(context, app, graph, spawnId, role, task, onBackgroundResult)
+            return launchBackground(context, app, graph, spawnId, role, task, onBackgroundResult, spawnerSessionId)
         }
     }
 

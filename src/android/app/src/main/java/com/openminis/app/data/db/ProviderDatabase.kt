@@ -35,13 +35,18 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ProviderAgentLoopIdEntity::class,
         ProviderConfigMetaEntity::class,
         AgentGraphEntity::class,
+        AgentTaskEntity::class,
+        TaskStatusHistoryEntity::class,
+        AgentMailboxEntity::class,
+        MissionLogEntity::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = false,
 )
 abstract class ProviderDatabase : RoomDatabase() {
     abstract fun providerConfigDao(): ProviderConfigDao
     abstract fun agentGraphDao(): AgentGraphDao
+    abstract fun agentBoardDao(): AgentBoardDao
 
     companion object {
         @Volatile
@@ -111,6 +116,90 @@ abstract class ProviderDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * [T-task-board] The durable agent task board (review spec 27.09):
+         * tasks + append-only status history + typed mailbox + append-only
+         * mission log. Pure CREATE TABLE — additive, no existing table is
+         * touched, so a downgrade path simply leaves four empty tables the
+         * old code never reads.
+         *
+         * FK actions: history cascades with its task; mailbox's task_id
+         * SET NULLs (the message survives its task's pruning — a completion
+         * notice is still a fact after the card is gone); mission_log has no
+         * FK by design (see AgentTaskEntity docs).
+         */
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS agent_tasks (
+                        id TEXT NOT NULL PRIMARY KEY,
+                        team_id TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        description TEXT NOT NULL,
+                        role_required TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        depends_on_task_ids TEXT NOT NULL DEFAULT '[]',
+                        assigned_agent_id TEXT,
+                        workspace_dir TEXT,
+                        result_artifact TEXT,
+                        created_at INTEGER NOT NULL,
+                        updated_at INTEGER NOT NULL
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_agent_tasks_team_id ON agent_tasks(team_id)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_agent_tasks_status ON agent_tasks(status)")
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS task_status_history (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        task_id TEXT NOT NULL,
+                        from_status TEXT NOT NULL,
+                        to_status TEXT NOT NULL,
+                        changed_by_agent_id TEXT,
+                        reason TEXT NOT NULL,
+                        changed_at INTEGER NOT NULL,
+                        FOREIGN KEY(task_id) REFERENCES agent_tasks(id) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_task_status_history_task_id ON task_status_history(task_id)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_task_status_history_task_id_changed_at ON task_status_history(task_id, changed_at)")
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS agent_mailbox (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        from_agent_id TEXT NOT NULL,
+                        to_agent_id TEXT NOT NULL,
+                        task_id TEXT,
+                        message_type TEXT NOT NULL,
+                        body TEXT NOT NULL,
+                        created_at INTEGER NOT NULL,
+                        FOREIGN KEY(task_id) REFERENCES agent_tasks(id) ON UPDATE NO ACTION ON DELETE SET NULL
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_agent_mailbox_to_agent_id ON agent_mailbox(to_agent_id)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_agent_mailbox_task_id ON agent_mailbox(task_id)")
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS mission_log (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        event_type TEXT NOT NULL,
+                        agent_id TEXT,
+                        task_id TEXT,
+                        payload TEXT NOT NULL,
+                        timestamp INTEGER NOT NULL
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_mission_log_task_id ON mission_log(task_id)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_mission_log_agent_id ON mission_log(agent_id)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_mission_log_timestamp ON mission_log(timestamp)")
+            }
+        }
+
         fun getInstance(context: Context): ProviderDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -118,7 +207,7 @@ abstract class ProviderDatabase : RoomDatabase() {
                     ProviderDatabase::class.java,
                     "provider.db",
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                     .build()
                     .also { INSTANCE = it }
             }
