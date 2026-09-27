@@ -113,17 +113,15 @@ object AgentWorkerPrompt {
         )
 
         // [T-env-snapshot] Operational context as FACTS, not inheritance: the
-        // worker gets the environment it runs in stated once, compactly — the
-        // review's 'lost operational context' failure mode. What is NOT here,
-        // on purpose: git branch and repo state (workers cannot git, and the
-        // spawner's repo context belongs in the TASK text where it is
-        // explicit) — a worker that guesses the environment is a worker that
-        // burns turns rediscovering it.
+        // review's 'lost operational context' failure mode — one compact
+        // block, ~50 tokens, the cheapest turn-saver in the prompt. NOT
+        // included, on purpose: git branch / repo state (workers cannot git;
+        // repo context belongs in the TASK text where it is explicit).
         appendLine()
         appendLine(
-            "Environment: an Android phone (aarch64), Linux sandbox = Alpine via PRoot, " +
-                "shell = BusyBox ash (NOT bash). Your tools are ONLY the ones listed below. " +
-                "Write access: your own workspace, /var/minis/attachments and /tmp.",
+            "Environment: Android phone (aarch64), Alpine Linux via PRoot, BusyBox ash " +
+                "shell (NOT bash). Tools: only those listed below. Writes: your own " +
+                "workspace, /var/minis/attachments, /tmp — nothing global.",
         )
 
         val notes = allowedTools.mapNotNull { TOOL_NOTES[it] }

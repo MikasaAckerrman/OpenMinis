@@ -105,9 +105,12 @@ class AgentWorkerPromptTest {
     fun `unrestricted worker gets no tool dump`() {
         // Empty allowlist means "no restriction" elsewhere in the code; emitting
         // every tool's docs here would reintroduce the cost this class removes.
+        // Budget raised 400 → 460 for the [T-env-snapshot] block (~50 tokens):
+        // stating the environment once is the cheapest turn-saver there is —
+        // a worker that guesses it re-derives it every run.
         val p = AgentWorkerPrompt.build("Minis", roleContract, emptyList(), null)
         assertFalse(p.contains("Your tools"))
-        assertTrue(AgentWorkerPrompt.approximateTokens(p) < 400)
+        assertTrue(AgentWorkerPrompt.approximateTokens(p) < 460)
     }
 
     @Test
