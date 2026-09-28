@@ -12871,7 +12871,9 @@ class ChatViewModel(
             com.openminis.app.tools.SubagentTools.LIST_AGENTS_TOOL_NAME -> executeListAgents(argsJson)
             com.openminis.app.tools.TurnTimerTool.NAME -> executeTurnTimer(argsJson)
             com.openminis.app.tools.SubagentTools.RUN_GRAPH_TOOL_NAME -> executeRunGraph(argsJson)
-            com.openminis.app.tools.SubagentTools.TASK_BOARD_TOOL_NAME -> executeTaskBoard(argsJson)            "memory_write" -> executeMemoryWriteTool(argsJson)
+            com.openminis.app.tools.SubagentTools.TASK_BOARD_TOOL_NAME -> executeTaskBoard(argsJson)
+            "session_gc" -> executeSessionGc(argsJson)
+            "memory_write" -> executeMemoryWriteTool(argsJson)
             "memory_get" -> executeMemoryGetTool(argsJson)
             "supermemory_search" -> executeSupermemorySearchTool(argsJson)
             "root_shell" -> executeRootShellTool(argsJson)
@@ -13472,6 +13474,111 @@ class ChatViewModel(
         } catch (e: Exception) {
             ToolExecutionResult("task_board failed: ${e.message}", false, toolTitle = toolTitle)
         }
+    }
+
+    /**
+     * [T-session-gc] Session weight report + SAFE garbage collection.
+     * Dry-run by default; confirm=true performs the lossless rewrite:
+     * every candidate's full body goes to ContextOffload (file_read
+     * reaches it forever), the row's `output` becomes the stub.
+     * Mutations run through MutationJournal + dao.updateMessageParts —
+     * the established rewrite path (reasoning capping uses it).
+     */
+    private suspend fun executeSessionGc(argsJson: String): ToolExecutionResult {
+        val toolTitle = runCatching {
+            JSONObject(argsJson).optString("tool_title", "session_gc")
+        }.getOrDefault("session_gc")
+        val confirm = runCatching { JSONObject(argsJson).optBoolean("confirm", false) }
+            .getOrDefault(false)
+        val sid = activeSessionId.ifEmpty { sessionId }
+        return try {
+            val msgs = chatRepository.dao.loadMessages(sid)
+            val rows = msgs.map { m ->
+                com.openminis.app.data.SessionGC.Row(
+                    id = m.id, role = m.role, sortOrder = m.sortOrder.toLong(), partsJson = m.partsJson,
+                )
+            }
+            val candidates = com.openminis.app.data.SessionGC.selectCandidates(rows)
+            val weight = com.openminis.app.data.SessionGC.weigh(rows, candidates)
+            val sb = StringBuilder()
+            sb.append("Session weight: ${weight.rows} rows, ~${weight.totalChars / 1000}k chars " +
+                "(user ~${weight.userTextChars / 1000}k, assistant ~${weight.assistantChars / 1000}k, " +
+                "tool results ~${weight.toolResultChars / 1000}k).")
+            sb.appendLine()
+            if (candidates.isEmpty()) {
+                sb.append("Garbage: none found (fat old tool results below the 1.2k-char threshold, " +
+                    "outside the protected tail). Nothing to clean — the session is already tight.")
+                ToolExecutionResult(sb.toString().trim(), true, toolTitle = toolTitle)
+            } else {
+                val kb = weight.offloadableChars / 1000
+                sb.append("Garbage: ${candidates.size} fat old tool-result bodies (~${kb}k chars) " +
+                    "can be moved to the session's offloads — lossless, file_read-able, " +
+                    "wire and DB both shrink.")
+                sb.appendLine()
+                if (!confirm) {
+                    sb.append("DRY RUN (no changes made). Re-issue with confirm=true to execute.")
+                    ToolExecutionResult(sb.toString().trim(), true, toolTitle = toolTitle)
+                } else {
+                    var rewritten = 0
+                    var failed = 0
+                    var savedChars = 0
+                    // Group by row: one DB update per row, not per part.
+                    val byRow = candidates.groupBy { it.messageId }
+                    for ((messageId, parts) in byRow) {
+                        val entity = msgs.firstOrNull { it.id == messageId } ?: continue
+                        var partsJson = entity.partsJson ?: continue
+                        for (c in parts) {
+                            val full = extractToolResultOutput(partsJson, c.toolResultId)
+                            if (full == null) { failed++; continue }
+                            val path = com.openminis.app.data.ContextOffload.offloadContent(
+                                context, sid, full, c.toolResultId, c.toolName,
+                            )
+                            if (path.isEmpty()) { failed++; continue }
+                            val stub = com.openminis.app.data.ContextOffload.stub(
+                                approxTokens = full.length / 4, byteCount = full.length, linuxPath = path,
+                            )
+                            val next = com.openminis.app.data.SessionGC.rewritePart(
+                                partsJson, c.toolResultId, stub,
+                            )
+                            if (next == null) { failed++; continue }
+                            savedChars += full.length - stub.length
+                            partsJson = next
+                            rewritten++
+                        }
+                        if (partsJson != entity.partsJson) {
+                            com.openminis.app.data.MutationJournal.recordRewrite(
+                                sessionId = sid, op = "session-gc(offload)",
+                                messageId = messageId,
+                                oldLength = entity.partsJson?.length ?: 0,
+                                newLength = partsJson.length,
+                            )
+                            chatRepository.dao.updateMessageParts(messageId, partsJson)
+                        }
+                    }
+                    sb.append("EXECUTED: $rewritten tool result(s) offloaded, $failed refused on " +
+                        "re-check (drifted shape — safe skip). ~${savedChars.coerceAtLeast(0) / 1000}k " +
+                        "chars removed from the wire payload; every byte preserved on disk.")
+                    ToolExecutionResult(sb.toString().trim(), true, toolTitle = toolTitle)
+                }
+            }
+        } catch (e: Exception) {
+            ToolExecutionResult("session_gc failed: ${e.message}", false, toolTitle = toolTitle)
+        }
+    }
+
+    /** Full `output` body of a tool-result part by id, or null when absent. */
+    private fun extractToolResultOutput(partsJson: String, toolResultId: String): String? {
+        return runCatching {
+            val arr = org.json.JSONArray(partsJson)
+            for (i in 0 until arr.length()) {
+                val part = arr.optJSONObject(i) ?: continue
+                if (part.optString("type") != "toolResult") continue
+                val value = part.optJSONObject("value") ?: continue
+                if (value.optString("toolUseId") != toolResultId) continue
+                return value.optString("output", "")
+            }
+            null
+        }.getOrNull()
     }
 
     private fun executeListAgents(argsJson: String): ToolExecutionResult {        val agents = com.openminis.app.offload.AgentFileStore.list(context)

@@ -173,6 +173,10 @@ object AgentTools {
                 // meaning-based recall.
                 if (permitted("supermemory_search")) add(supermemorySearchDefinition())
             }
+            // [T-session-gc] Session weight + safe GC: ungated — it is
+            // read-only by default (dry-run report) and its write mode is
+            // lossless-by-construction (offload + stub, never a delete).
+            if (permitted("session_gc")) add(sessionGcDefinition())
             // [T-letta-core-memory] Letta-style core blocks: the gate is
             // app-level (CoreMemoryPrefs, Memory management settings row),
             // independent of the daily-log memory gate above — a user can
@@ -341,6 +345,33 @@ object AgentTools {
         ),
         required = listOf("tool_title", "query"),
         propertyOrdering = listOf("tool_title", "query"),
+    )
+
+    /**
+     * [T-session-gc] Safe session garbage collection + weight report. The
+     * agent answers "how heavy is this session and what can be cleaned
+     * WITHOUT losing anything": dry-run (default) reports the weight and
+     * the offloadable candidates; confirm=true rewrites fat OLD tool-result
+     * bodies into on-disk offloads (lossless — file_read reaches them),
+     * never deleting rows, never touching the protected tail, compact
+     * markers, or failed results.
+     */
+    private fun sessionGcDefinition(): AgentToolDefinition = AgentToolDefinition(
+        name = "session_gc",
+        description = "Report this session's weight and optionally collect garbage SAFELY. " +
+            "Default (no confirm): dry-run report — rows, chars by role, tool-result share, " +
+            "offloadable bytes. With confirm=true: every fat OLD successful tool-result body " +
+            "is moved verbatim to the session's offloads dir and replaced by a tiny stub " +
+            "(lossless — the full text stays file_read-able; the session shrinks on the wire " +
+            "AND in the DB). HARD SAFETY: never deletes messages; the last 6 user turns and " +
+            "everything after them are never touched; compact markers and FAILED tool results " +
+            "are never rewritten; already-cleaned parts are skipped (idempotent).",
+        parameters = mapOf(
+            "tool_title" to AgentToolParam("string", "A concise 5-10 word summary (e.g. 'Weigh and clean session'). Use the user's language."),
+            "confirm" to AgentToolParam("boolean", "false (default) = dry-run report only; true = execute the offload+rewrite."),
+        ),
+        required = listOf("tool_title"),
+        propertyOrdering = listOf("tool_title", "confirm"),
     )
 
     /**
