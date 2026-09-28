@@ -439,19 +439,31 @@ object SubagentExecutor {
                     val spec = agents[task.index]
                     async(kotlinx.coroutines.Dispatchers.IO) {
                         parallelLimiter.withPermit {
-                            // [T-subagent-nesting] spawnMany resolves the depth
-                            // cap ONCE per batch (the spawner is fixed): workers
-                            // spawned from a worker session get the delegation
-                            // tools stripped, same rule as spawn().
-                            val pair = buildGraphFor(context, spec.role, spec.task, mayDelegate(resolveRole(spec.role), spawnerRole))
-                                ?: return@withPermit "No custom agent '${spec.role.removePrefix("custom:")}' " +
-                                    "in ${AgentFileStore.SANDBOX_DIR} (call list_agents)."
-                            val (graph, node) = pair
-                            // [T-spawn-crash] Save INSIDE runCatching: a failed
-                            // saveAgentGraph (DB hiccup) used to fail the async,
-                            // cancel every sibling in the batch and throw away
-                            // ALL results. One bad save is one bad agent.
+                            // [T-spawn-crash + event-matrix fix] EVERYTHING
+                            // fallible is inside runCatching: buildGraphFor
+                            // reads agent FILES (IOException possible) and used
+                            // to sit OUTSIDE the guard — one file-read throw
+                            // failed the async, cancelled every sibling and
+                            // threw away the whole batch (the exact class the
+                            // saveAgentGraph fix below was made for). One bad
+                            // agent stays one bad agent.
                             runCatching {
+                                // [T-subagent-nesting] spawnMany resolves the
+                                // depth cap ONCE per batch (the spawner is
+                                // fixed): workers spawned from a worker
+                                // session get the delegation tools stripped,
+                                // same rule as spawn().
+                                val pair = buildGraphFor(
+                                    context, spec.role, spec.task,
+                                    mayDelegate(resolveRole(spec.role), spawnerRole),
+                                )
+                                    ?: return@runCatching "No custom agent '${spec.role.removePrefix("custom:")}' " +
+                                        "in ${AgentFileStore.SANDBOX_DIR} (call list_agents)."
+                                val (graph, node) = pair
+                                // [T-spawn-crash] Save INSIDE the same guard:
+                                // a failed saveAgentGraph (DB hiccup) used to
+                                // fail the async, cancel every sibling in the
+                                // batch and throw away ALL results.
                                 app.providerRepository.saveAgentGraph(graph)
                                 runSingle(
                                     context, app, graph, node, spec.role,
@@ -939,7 +951,12 @@ object SubagentExecutor {
             AgentRole.TEST_QUALITY_AUDITOR,
         )
         return when (spawnerRole) {
-            null -> childRole == AgentRole.ORCHESTRATOR || (childRole != null && childRole in reviewers)
+            // Event-matrix fix (A8 x A3): a custom agent (childRole == null)
+            // spawned from MAIN may delegate — spawnCustom() already grants
+            // exactly that (spawnerRole == null); the batch path disagreed
+            // with the single path for the same user action. Both entry
+            // points now answer identically.
+            null -> childRole == null || childRole == AgentRole.ORCHESTRATOR || childRole in reviewers
             AgentRole.ORCHESTRATOR -> childRole != null && childRole in reviewers
             else -> false
         }
