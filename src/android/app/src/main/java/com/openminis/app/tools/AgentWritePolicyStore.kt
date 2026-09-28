@@ -90,14 +90,7 @@ object AgentWritePolicyStore {
     fun mayWriteTo(sessionId: String, path: String): Boolean {
         val roots = jails[sessionId] ?: return true
         if (path.isBlank()) return false
-        return runCatching {
-            val target = File(path).canonicalFile
-            roots.any { root ->
-                val rootFile = File(root).canonicalFile
-                // Equality: writing the root dir itself (mkdir semantics).
-                target == rootFile || target.startsWith(rootFile)
-            }
-        }.getOrDefault(false)
+        return isWithinRoots(path, roots)
     }
 
     /**
@@ -264,6 +257,7 @@ object AgentWritePolicyStore {
             val target = File(path).canonicalFile
             roots.any { root ->
                 val rootFile = File(root).canonicalFile
+                // Equality: writing the root dir itself (mkdir semantics).
                 target == rootFile || target.startsWith(rootFile)
             }
         }.getOrDefault(false)

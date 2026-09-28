@@ -250,6 +250,16 @@ object SubagentExecutor {
             "Call task_board to see the board, then re-spawn when they are COMPLETED."
     }
 
+    /**
+     * [T-task-board] Deps list → board JSON. Single source: the string was
+     * built in two places (custom + builtin paths) — duplicated builders of
+     * the same wire format drift, and a drifted one corrupts the board's
+     * dependency graph silently.
+     */
+    private fun depsJson(dependsOn: List<String>): String =
+        if (dependsOn.isEmpty()) "[]" else
+            dependsOn.joinToString(prefix = "[", postfix = "]") { "\"${it}\"" }
+
     private suspend fun spawnCustom(
         context: Context,
         app: MinisApp,
@@ -492,7 +502,7 @@ object SubagentExecutor {
             sb.appendLine()
         }
 
-        val boardPath = writeBoardFile(batchId, board.toString())
+        val boardPath = writeBoardFile(batchId, board.toString(), spawnerSessionId, context)
         if (boardPath != null) sb.appendLine("Board artifact: $boardPath")
         sb.appendLine("spawn_many finished.")
         return sb.toString()
@@ -510,10 +520,25 @@ object SubagentExecutor {
         return runSingle(context, app, graph, node, role.name.lowercase(), task)
     }
 
-    /** [T-task-board] Persist the final board as a workspace artifact. */
-    private fun writeBoardFile(batchId: String, board: String): String? = try {
-        val host = com.openminis.app.sandbox.PRootKernel
-            .resolveHostPath("/var/minis/workspace/$batchId/BOARD.md") ?: return null
+    /**
+     * [T-task-board] Persist the final board as a workspace artifact.
+     *
+     * [deep-analysis fix] Previously resolved through the GLOBAL bind-mount
+     * map — last-writer-wins across sessions: by the time a spawn_many batch
+     * finishes, its workers have booted shells and the global
+     * /var/minis/workspace entry points at the LAST worker's dir, so the
+     * BOARD.md landed where the spawning chat could not see it (the same
+     * class as the 'file disappears after first download' bug). Resolve
+     * through the SESSION-scoped map for the spawner; debug callers without
+     * a session fall back to the global resolution unchanged.
+     */
+    private fun writeBoardFile(batchId: String, board: String, sessionId: String?, context: Context): String? = try {
+        val host = when {
+            sessionId != null -> com.openminis.app.sandbox.PRootKernel
+                .resolveSessionHostPath(sessionId, "/var/minis/workspace/$batchId/BOARD.md", context)
+            else -> com.openminis.app.sandbox.PRootKernel
+                .resolveHostPath("/var/minis/workspace/$batchId/BOARD.md")
+        } ?: return null
         host.parentFile?.mkdirs()
         host.writeText(board)
         "/var/minis/workspace/$batchId/BOARD.md"
@@ -563,9 +588,7 @@ object SubagentExecutor {
             dependencyRefusal(context, spawnerSessionId, dependsOn)?.let { return it }
             return spawnCustom(
                 context, app, role.removePrefix("custom:").trim(), task, foreground, onBackgroundResult,
-                spawnerSessionId,
-                if (dependsOn.isEmpty()) "[]" else
-                    dependsOn.joinToString(prefix = "[", postfix = "]") { "\"${it}\"" },
+                spawnerSessionId, depsJson(dependsOn),
             )
         }
         val agentRole = runCatching { AgentRole.valueOf(role) }
@@ -592,10 +615,8 @@ object SubagentExecutor {
         app.providerRepository.saveAgentGraph(graph)
         val spawnId = node.id
 
-        val dependsJson = if (dependsOn.isEmpty()) "[]" else
-            dependsOn.joinToString(prefix = "[", postfix = "]") { "\"${it}\"" }
         return if (foreground) {
-            runSingle(context, app, graph, node, role, task, teamId = spawnerSessionId, dependsOnJson = dependsJson)
+            runSingle(context, app, graph, node, role, task, teamId = spawnerSessionId, dependsOnJson = depsJson(dependsOn))
         } else {
             // [T-spawn-many] Phone ceiling: unbounded background spawns would
             // multiply live sessions, VMs and model calls on a device with
@@ -606,7 +627,7 @@ object SubagentExecutor {
                     "running (phone ceiling). Wait for their result notifications first, " +
                     "then spawn again."
             }
-            return launchBackground(context, app, graph, spawnId, role, task, onBackgroundResult, spawnerSessionId, dependsJson)
+            return launchBackground(context, app, graph, spawnId, role, task, onBackgroundResult, spawnerSessionId, depsJson(dependsOn))
         }
     }
 
@@ -727,6 +748,30 @@ object SubagentExecutor {
             You may spawn_subagent for ONE focused verification of a suspected
             vector (e.g. INDEPENDENT_TEST_DESIGNER to reproduce it). Delegated
             agents are leaves — give them the complete context in the task.
+        """.trimIndent()
+
+        // [T-subagent-nesting] TEST_QUALITY_AUDITOR is in the delegation
+        // matrix's reviewer set (mayDelegate) and carries spawn_subagent —
+        // arming it without instructions was a gap: an agent that has a
+        // tool it was never told how to use correctly either ignores it or
+        // misuses it. The mandate is the reviewer pattern: ONE focused
+        // verification, leaf agent, full context in the task.
+        AgentRole.TEST_QUALITY_AUDITOR -> """
+            You are a test quality auditor. Your ONE job:
+            $task
+
+            Audit the tests (or the plan) for:
+            - Coverage gaps: behaviors with no test, edge cases unasserted
+            - Weak assertions: tests that pass regardless of correctness
+            - Setup/teardown that leaks state between tests
+
+            Do NOT rewrite the tests unless the task says so. Audit and report.
+            Format: numbered findings, each with the test (or gap) and the risk it hides.
+
+            You may spawn_subagent for ONE focused runtime check when a finding
+            needs execution proof you cannot get by reading (e.g.
+            INDEPENDENT_TEST_DESIGNER to run the suspect test). Delegated agents
+            are leaves — give them the complete question and expected outcome.
         """.trimIndent()
 
         AgentRole.PERFORMANCE_REVIEWER -> """

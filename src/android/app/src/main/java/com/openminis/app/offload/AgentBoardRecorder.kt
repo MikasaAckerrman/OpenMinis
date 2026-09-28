@@ -1,7 +1,6 @@
 package com.openminis.app.offload
 
 import android.content.Context
-import com.openminis.app.MinisApp
 import com.openminis.app.data.db.AgentMailboxEntity
 import com.openminis.app.data.db.AgentTaskEntity
 import com.openminis.app.data.db.MissionLogEntity
@@ -170,10 +169,10 @@ internal object AgentBoardRecorder {
     /**
      * [T-task-board] Deep-analysis fix: pruneClosedBefore had NO caller —
      * the board grew forever on a phone. Called opportunistically from
-     * taskFinished, at most once per [PRUNE_INTERVAL_MS]: closed tasks and
-     * mission events older than [PRUNE_AGE_MS] (30 days) go. Failed tasks
-     * stay (their failure is the re-delegation signal); the mission log's
-     * long tail goes (the trace's value decays fastest).
+     * taskFinished, at most once per [PRUNE_INTERVAL_MS]: closed tasks
+     * (COMPLETED *and* FAILED — a 30-day-old failure is history, not a
+     * re-delegation signal; any team's working memory is far shorter) and
+     * mission events older than [PRUNE_AGE_MS] (30 days) go.
      */
     private val lastPrune = java.util.concurrent.atomic.AtomicLong(0)
 
@@ -184,9 +183,7 @@ internal object AgentBoardRecorder {
         runCatching {
             val dao = ProviderDatabase.getInstance(context).agentBoardDao()
             dao.pruneMissionBefore(now - PRUNE_AGE_MS)
-            // NOTE: pruneClosedBefore drops COMPLETED *and FAILED* rows;
-            // failed rows are the re-delegation signal, so only genuinely
-            // old ones go. 30 days is far past any team's working memory.
+            dao.pruneMailboxBefore(now - PRUNE_AGE_MS)
             dao.pruneClosedBefore(now - PRUNE_AGE_MS)
         }.onFailure {
             com.openminis.app.logging.AppLogger.warning(

@@ -90,4 +90,13 @@ interface AgentBoardDao {
 
     @Query("DELETE FROM mission_log WHERE timestamp < :cutoff")
     suspend fun pruneMissionBefore(cutoff: Long): Int
+
+    /**
+     * [T-task-board] Mailbox rows survive their task's pruning by design
+     * (task_id SET NULL — the notice outlives the card), so without this
+     * the table grows forever. Deep-analysis fix: same 30-day horizon as
+     * the rest of the board.
+     */
+    @Query("DELETE FROM agent_mailbox WHERE created_at < :cutoff")
+    suspend fun pruneMailboxBefore(cutoff: Long): Int
 }
