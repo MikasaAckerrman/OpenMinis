@@ -63,6 +63,12 @@ object SupermemoryAutostart {
                 delay(2_000)
                 if (portOpen()) {
                     AppLogger.info(TAG, "server is UP after ${i * 2}s")
+                    // [T-supermemory-autostart] The boot window may have
+                    // already logged breaker failures (the user's first
+                    // message racing the boot) — reset it so the healthy
+                    // server is not fast-skipped for the breaker's full
+                    // 10-minute window.
+                    SupermemoryBridge.onServerUp()
                     return@launch
                 }
             }

@@ -84,6 +84,19 @@ object SupermemoryBridge {
     }
 
     /**
+     * [T-supermemory-autostart] Called by SupermemoryAutostart when the
+     * port comes UP: the boot window (~9-14s) may have already logged two
+     * failures into the breaker (the user's first message racing the boot),
+     * which would keep every call fast-skipped for the breaker's full
+     * 10-minute window even though the server is now healthy. Reset the
+     * breaker and drop the cache (entries from the down-window are stale).
+     */
+    fun onServerUp() {
+        recordSuccess()
+        queryCache.clear()
+    }
+
+    /**
      * [T-supermemory-perf] Query cache: within one agent loop the LAST USER
      * MESSAGE does not change, so the identical search would re-run on
      * every iteration. Small bounded LRU with TTL — one network search per
@@ -100,6 +113,7 @@ object SupermemoryBridge {
             map[query] = nowMs to hits
             if (map.size > 8) map.remove(map.keys.first())
         }
+        fun clear() = synchronized(lock) { map.clear() }
     }
 
     /** Fire-and-forget ingest; true only on a confirmed 2xx. */

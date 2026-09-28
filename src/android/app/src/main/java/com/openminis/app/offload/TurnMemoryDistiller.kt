@@ -108,13 +108,29 @@ object TurnMemoryDistiller {
 
         // [T-supermemory] WRITE path: push the RAW exchange — supermemory's
         // own memory-agent extracts the facts server-side, so no tokens are
-        // spent here. Fire-and-forget: a down/slow server costs nothing
-        // (3.5s bound, silent false). The subagent below keeps distilling
-        // into the daily logs — the two stores serve different recall modes
-        // (associative vs recent+recency).
-        com.openminis.app.memory.SupermemoryBridge.add(
-            "USER MESSAGE:\n${userText.take(2000)}\n\nASSISTANT TURN:\n${assistantText.take(6000)}",
-        )
+        // spent here. [T-supermemory-autostart S9 fix] The compact path
+        // already had a queue guarantee (server down → pending/ file →
+        // run.sh drains on next boot); the distiller's fire-and-forget
+        // LOST the exchange instead — a down server meant the turn never
+        // reached the associative store. Same guarantee now: a failed add
+        // enqueues to pending/, latency instead of loss.
+        val smContent = "USER MESSAGE:\n${userText.take(2000)}\n\nASSISTANT TURN:\n${assistantText.take(6000)}"
+        if (!com.openminis.app.memory.SupermemoryBridge.add(smContent)) {
+            runCatching {
+                val pending = java.io.File(
+                    java.io.File(java.io.File(context.filesDir, "minis-global"), "shared"),
+                    "supermemory/pending",
+                )
+                if (pending.exists() || pending.mkdirs()) {
+                    java.io.File(pending, "distill-${System.currentTimeMillis()}.md")
+                        .writeText(smContent)
+                }
+            }.onFailure {
+                com.openminis.app.logging.AppLogger.warning(
+                    "Distiller", "supermemory pending enqueue failed: ${it.message}",
+                )
+            }
+        }
 
         val input = buildString {
             appendLine("USER MESSAGE:")
