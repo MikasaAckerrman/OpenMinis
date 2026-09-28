@@ -17,6 +17,20 @@ import java.util.Locale
  */
 class MemoryRepository(private val memoryDir: File) {
 
+    /**
+     * [T-parallel-write-contract] The daily log's writers are now MANY:
+     * parallel subagent workers, the auto-mistake capture, the main chat —
+     * all funneling into one read-modify-write per file. Unserialized, two
+     * writers interleave (read-read-write-write) and the first entry is
+     * silently LOST. Deep-analysis fix: the read-modify-write is one
+     * critical section. A plain monitor lock, not a coroutine Mutex, on
+     * purpose: writeMemory is non-suspend and called from arbitrary
+     * tool-executor threads; a Mutex here would need runBlocking or a
+     * rewrite of every caller for zero additional safety in a single
+     * process.
+     */
+    private val dailyWriteLock = Any()
+
     companion object {
         private const val TAG = "MemoryRepository"
         private const val GLOBAL_FILE = "GLOBAL.md"
@@ -78,11 +92,13 @@ class MemoryRepository(private val memoryDir: File) {
         val timestamp = timeFmt.format(Date())
         val entry = "<!-- $timestamp -->\n$content\n\n"
 
-        val existing = if (file.exists()) file.readText() else ""
-        val newContent = entry + existing
-
         return try {
-            file.writeText(newContent)
+            // [T-parallel-write-contract] read-modify-write under the lock —
+            // see dailyWriteLock's doc for who races here.
+            synchronized(dailyWriteLock) {
+                val current = if (file.exists()) file.readText() else ""
+                file.writeText(entry + current)
+            }
             Log.i(TAG, "Memory written to $fileName (${content.length} chars)")
             "Memory saved to $fileName (${content.length} chars)"
         } catch (e: Exception) {

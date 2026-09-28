@@ -23,6 +23,8 @@ import kotlinx.coroutines.withContext
 internal object AgentBoardRecorder {
 
     private const val RESULT_CAP = 4000
+    private const val PRUNE_INTERVAL_MS = 24L * 60 * 60 * 1000
+    private const val PRUNE_AGE_MS = 30L * 24 * 60 * 60 * 1000
 
     /** Task row + SPAWNED mission event + PENDING→RUNNING transition. */
     suspend fun taskStarted(
@@ -113,6 +115,9 @@ internal object AgentBoardRecorder {
                     timestamp = now,
                 ),
             )
+            // [T-task-board] Board maintenance rides on the terminal write —
+            // no separate lifecycle, no new call sites to forget.
+            maybePrune(context)
         }.onFailure {
             com.openminis.app.logging.AppLogger.warning(
                 "AgentBoard",
@@ -158,6 +163,34 @@ internal object AgentBoardRecorder {
             com.openminis.app.logging.AppLogger.warning(
                 "AgentBoard",
                 "missionEvent '$eventType' write failed for $taskId (run continues): ${it.message}",
+            )
+        }
+    }
+
+    /**
+     * [T-task-board] Deep-analysis fix: pruneClosedBefore had NO caller —
+     * the board grew forever on a phone. Called opportunistically from
+     * taskFinished, at most once per [PRUNE_INTERVAL_MS]: closed tasks and
+     * mission events older than [PRUNE_AGE_MS] (30 days) go. Failed tasks
+     * stay (their failure is the re-delegation signal); the mission log's
+     * long tail goes (the trace's value decays fastest).
+     */
+    private val lastPrune = java.util.concurrent.atomic.AtomicLong(0)
+
+    private suspend fun maybePrune(context: Context) {
+        val now = System.currentTimeMillis()
+        if (now - lastPrune.get() < PRUNE_INTERVAL_MS) return
+        if (!lastPrune.compareAndSet(lastPrune.get(), now)) return
+        runCatching {
+            val dao = ProviderDatabase.getInstance(context).agentBoardDao()
+            dao.pruneMissionBefore(now - PRUNE_AGE_MS)
+            // NOTE: pruneClosedBefore drops COMPLETED *and FAILED* rows;
+            // failed rows are the re-delegation signal, so only genuinely
+            // old ones go. 30 days is far past any team's working memory.
+            dao.pruneClosedBefore(now - PRUNE_AGE_MS)
+        }.onFailure {
+            com.openminis.app.logging.AppLogger.warning(
+                "AgentBoard", "board prune failed (non-fatal): ${it.message}",
             )
         }
     }
