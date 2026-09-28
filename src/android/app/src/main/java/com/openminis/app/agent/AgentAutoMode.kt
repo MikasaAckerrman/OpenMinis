@@ -15,12 +15,13 @@ package com.openminis.app.agent
  * Deliberately pure (no Android, no I/O) so the contract is unit-tested:
  * arming phrases, completion detection, budget caps, prompt text.
  *
- * Token budget: v1 bounds the run by turn count + the context-pressure
- * system (auto-compact folds history at 100% instead of letting the session
- * grow forever). A true token ledger lands together with persisting per-turn
- * usage — MessageEntity.tokenUsage exists but is not written yet (dead
- * column), so an exact sum is impossible today; the caps below are the
- * honest bound we can actually enforce.
+ * Token budget: bounded by turn count, the context-pressure system
+ * (auto-compact folds history at 100% instead of letting the session grow
+ * forever), and the real token ledger: per-turn usage IS persisted by
+ * persistAssistantTurn into MessageEntity.tokenUsage (input/output/cache
+ * JSON), and tokenCostOf() below sums exactly that. (An older header here
+ * claimed the column was dead — that predated the persistence; kept only
+ * as this correction note so nobody re-derives the wrong conclusion.)
  */
 object AgentAutoMode {
 
@@ -71,12 +72,24 @@ object AgentAutoMode {
     }
 
     /**
-     * Completion = the sentinel stands alone on a line of the turn's text.
-     * Tolerates surrounding whitespace and case; requires its own line so a
-     * mere mention ("TASK_COMPLETE ниже") cannot end the run.
+     * Completion = the sentinel stands alone on the LAST non-blank line of
+     * the turn's text — the documented contract ("final turn ends with
+     * [SENTINEL] alone on its last line"). Tolerates surrounding whitespace,
+     * case, and trailing blank lines; requires its own line so a mere
+     * mention ("TASK_COMPLETE ниже") cannot end the run.
+     *
+     * [T-auto-mode-sentinel-last] Previously ANY exact-sentinel line
+     * matched; a model that wrote the sentinel mid-response and then kept
+     * going (contract-violating but observed in the wild — models stray)
+     * disarmed the run prematurely while the agent intended to continue.
+     * The last-line check makes the implementation match the contract the
+     * prompt already teaches.
      */
     fun isPlanComplete(lastAssistantText: String): Boolean =
-        lastAssistantText.lineSequence().any { it.trim().equals(SENTINEL, ignoreCase = true) }
+        lastAssistantText.lineSequence()
+            .map { it.trim() }
+            .lastOrNull { it.isNotEmpty() }
+            ?.equals(SENTINEL, ignoreCase = true) == true
 
     /**
      * Gate evaluated after each successful turn.

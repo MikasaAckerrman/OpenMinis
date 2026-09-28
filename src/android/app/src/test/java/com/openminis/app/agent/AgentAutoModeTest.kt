@@ -47,6 +47,22 @@ class AgentAutoModeTest {
         assertFalse(AgentAutoMode.isPlanComplete(""))
     }
 
+    @Test
+    fun `mid-text sentinel with more content does not complete`() {
+        // [T-auto-mode-sentinel-last] The contract is the LAST line. A model
+        // that drops the sentinel mid-response and keeps writing must not
+        // disarm the run prematurely.
+        assertFalse(
+            AgentAutoMode.isPlanComplete("TASK_COMPLETE\n\nа теперь важное дополнение…"),
+        )
+        // Sentinel followed by a code block tail — still not the last line.
+        assertFalse(
+            AgentAutoMode.isPlanComplete("TASK_COMPLETE\n```\nlog tail\n```"),
+        )
+        // Trailing blank lines AFTER the sentinel are still completion.
+        assertTrue(AgentAutoMode.isPlanComplete("done\nTASK_COMPLETE\n\n\n"))
+    }
+
     // ── the gate ───────────────────────────────────────────────────────────
 
     @Test
