@@ -1724,6 +1724,18 @@ class ChatViewModel(
     /** [T-auto-mode-token-budget] Billed tokens spent by the current armed run. */
     private var autoModeTokensUsed = 0L
 
+    /**
+     * [T-auto-mode-fail-retry] Failed-turn self-retries of the current armed
+     * run (night-review wave-1 F4: an armed run that died on provider
+     * exhaustion used to stall silently until morning). Bounded by
+     * [AUTO_MODE_MAX_FAIL_RETRIES], spaced [AUTO_MODE_FAIL_RETRY_DELAY_MS];
+     * reset on every successful turn. Note: the ledger counts THIS
+     * session's turns only — subagent spend lives in the workers' own
+     * sessions and is bounded separately by each node's maxTurns/tool
+     * budget (a cross-session ledger is a deliberate non-goal for now).
+     */
+    private var autoModeFailRetries = 0
+
     /** Continuation parked in the queue, waiting for a pump. */
     @Volatile
     private var autoModeParked = false
@@ -1737,6 +1749,10 @@ class ChatViewModel(
      * Parks the next continuation — the queue pump drives the actual send.
      */
     suspend fun maybeAutoContinue() {
+        // [T-auto-mode-fail-retry] A turn just SUCCEEDED: failure history is
+        // irrelevant now — reset the self-retry counter so the next outage
+        // gets a fresh 3-attempt budget.
+        autoModeFailRetries = 0
         if (!_autoModeArmed.value || autoModeParked) return
         val last = _messages.value.lastOrNull { it.role == "assistant" } ?: return
 
@@ -9060,6 +9076,45 @@ class ChatViewModel(
                         }
                         // T298: completion notifier should show the ❌ variant.
                         SessionActivityTracker.markStreamError(activeSessionId)
+                        // [T-auto-mode-fail-retry] Night-run resilience
+                        // (wave-1 F4): an armed run whose turn died with all
+                        // fallbacks exhausted used to stall silently until
+                        // the user returned — a wasted night. Bounded
+                        // self-retry through the existing retryLast
+                        // machinery, spaced 5 min (long enough for a
+                        // 429/5xx storm to clear). Guards at FIRE time:
+                        // still armed, not streaming, composer empty (never
+                        // stomp a half-typed user message). Retries spent →
+                        // honest disarm; the error sticker above already
+                        // names the failing models.
+                        if (_autoModeArmed.value) {
+                            if (autoModeFailRetries < 3) {
+                                autoModeFailRetries += 1
+                                val attempt = autoModeFailRetries
+                                AppLogger.info(
+                                    TAG_STREAM,
+                                    "[AutoMode] turn failed — self-retry $attempt/3 in 5 min",
+                                )
+                                viewModelScope.launch(Dispatchers.IO) {
+                                    delay(5 * 60_000L)
+                                    if (_autoModeArmed.value && !_isStreaming.value &&
+                                        _inputText.value.isEmpty()
+                                    ) {
+                                        AppLogger.info(
+                                            TAG_STREAM,
+                                            "[AutoMode] firing delayed self-retry $attempt",
+                                        )
+                                        withContext(Dispatchers.Main) { retryLast() }
+                                    }
+                                }
+                            } else {
+                                _autoModeArmed.value = false
+                                AppLogger.info(
+                                    TAG_STREAM,
+                                    "[AutoMode] DISARMED after 3 failed self-retries",
+                                )
+                            }
+                        }
                     } finally {
                         AppLogger.info(TAG_STREAM, "send streamJob FINALLY enter")
                         // [T-android-overlay-reply-status-34599] Surface
