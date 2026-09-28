@@ -12679,6 +12679,33 @@ class ChatViewModel(
             // reminder — see maybeAppendMemoryNudge. [T-turn-timer] and the
             // timer line/refusal on the same path.
             return applyTurnTimer(maybeAppendMemoryNudge(toolResult))
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // Never swallow cancellation — it is cooperative shutdown, not
+            // a tool failure.
+            throw e
+        } catch (e: Exception) {
+            // [event-matrix N16] The executor dispatch previously had
+            // finally-only: a THROWING executor (e.g. a DAO read behind the
+            // dependency gate hitting a corrupted DB) escaped the tool layer
+            // entirely and became the caller's problem. A tool's contract is
+            // ToolExecutionResult, never a throw — one catch converts every
+            // escaped executor error into a model-readable tool error with
+            // the tool name and the executor's own message.
+            AppLogger.warning(
+                "AgentRoute",
+                "tool executor threw for $name: ${e.javaClass.simpleName}: ${e.message}",
+            )
+            if (nodeBinding != null) {
+                com.openminis.app.offload.AgentRunProgress.nodeTool(
+                    nodeBinding.taskId, nodeBinding.runtimeId, null,
+                )
+            }
+            ToolExecutionResult(
+                "Error: internal tool failure ($name: ${e.javaClass.simpleName}: ${e.message}). " +
+                    "The command was not executed. You may retry once; if it repeats, " +
+                    "report the tool name and this message.",
+                false,
+            )
         } finally {
             // Clear the tool marker whether the call succeeded, failed, or threw.
             // A row that keeps naming a finished tool is worse than naming none:
