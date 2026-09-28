@@ -484,8 +484,13 @@ class DebugRPCHandler(private val context: Context) {
         val content = AppLogger.readLog(name)
             ?: throw RPCException(-32602, "Log file not found: $name")
 
-        val offset = params.optInt("offset", 0)
-        val limit = params.optInt("limit", 524_288)
+        val offset = params.optInt("offset", 0).coerceAtLeast(0)
+        val limit = params.optInt("limit", 524_288).coerceAtLeast(0)
+        // [T-debug-rpc-clamp] Night wave-2 F1: a negative offset/limit used
+        // to reach String.substring unclamped → uncaught
+        // StringIndexOutOfBoundsException → an RPC 500 with no diagnosis.
+        // Negative inputs are client mistakes; they clamp to an empty
+        // window with an honest "size" in the envelope, not a crash.
         val sliced = content.substring(
             offset.coerceAtMost(content.length),
             (offset + limit).coerceAtMost(content.length),
@@ -601,7 +606,22 @@ class DebugRPCHandler(private val context: Context) {
     // ── LLM Request Tracking ──────────────────────────────────────────────
 
     private fun handleLLMRequests(params: JSONObject): JSONObject {
-        val last = if (params.has("last") && !params.isNull("last")) params.optInt("last", -1).takeIf { it > 0 } else null
+        // [T-debug-rpc-clamp] Night wave-2 F2/F3: `last` now accepts BOTH
+        // shapes the two aliases documented — an int (count) and a boolean
+        // (true = the single most recent). Previously this handler coerced
+        // `last:true` to fallback -1 (full log) while handleAgentTrace
+        // coerced `last:5` to onlyLast (one trace) — the same key meant
+        // different things on different methods.
+        val last: Int? = when {
+            params.has("last") && !params.isNull("last") -> {
+                val raw = params.opt("last")
+                when (raw) {
+                    is Boolean -> if (raw) 1 else null
+                    else -> params.optInt("last", -1).takeIf { it > 0 }
+                }
+            }
+            else -> null
+        }
         val raw = LLMRequestLog.toJSON(last)
         if (!params.optBoolean("formatted", false)) return raw
         return JSONObject().apply {
@@ -656,16 +676,39 @@ class DebugRPCHandler(private val context: Context) {
      * trace object instead of an array (mirrors iOS docs).
      */
     private fun handleAgentTrace(params: JSONObject): JSONObject {
-        val onlyLast = params.optBoolean("last", false)
-        if (onlyLast) {
-            val tail = LLMRequestLog.getLast(1)
+        // [T-debug-rpc-clamp] Night wave-2 F2/F3 (the mirror side): a
+        // NUMERIC `last` on this alias used to coerce non-zero→true and
+        // silently return ONE trace, discarding the requested count.
+        // Unify: int N = the last N traces; boolean true = 1; anything
+        // else = all.
+        val raw = params.opt("last")
+        val onlyLast: Boolean = when (raw) {
+            is Boolean -> raw
+            is Int -> raw == 1
+            is Long -> raw == 1L
+            else -> false
+        }
+        val count: Int? = when (raw) {
+            is Int -> raw.takeIf { it > 0 }
+            is Long -> raw.toInt().takeIf { it > 0 }
+            else -> if (onlyLast) 1 else null
+        }
+        if (onlyLast || count != null) {
+            val n = count ?: 1
+            val tail = LLMRequestLog.getLast(n)
             if (tail.isEmpty()) return JSONObject().put("traces", org.json.JSONArray())
             // Reuse the same JSON shape `debug.llmRequests` produces so callers
             // get a consistent envelope (the underlying Entry → JSON mapping
             // lives in LLMRequestLog).
-            val full = LLMRequestLog.toJSON(1)
+            val full = LLMRequestLog.toJSON(n)
             val arr = full.optJSONArray("requests")
-            return arr?.optJSONObject(0) ?: JSONObject().put("traces", org.json.JSONArray())
+            // n == 1 → the iOS-compatible single-trace object; n > 1 → the
+            // array envelope (same shape as the no-`last` path).
+            return if (n == 1) {
+                arr?.optJSONObject(0) ?: JSONObject().put("traces", org.json.JSONArray())
+            } else {
+                JSONObject().put("traces", arr ?: org.json.JSONArray())
+            }
         }
         val full = LLMRequestLog.toJSON(null)
         return JSONObject().put("traces", full.optJSONArray("requests") ?: org.json.JSONArray())
