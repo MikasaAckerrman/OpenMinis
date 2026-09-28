@@ -20,9 +20,10 @@ object FileReadTool {
             "lines" to AgentToolParam("integer", "Maximum number of lines to return (default: all lines up to max_length)"),
             "max_length" to AgentToolParam("integer", "Maximum character length of returned content (default: 15000)"),
             "direction" to AgentToolParam("string", "Read direction: 'head' (from start, default) or 'tail' (from end of file)"),
+            "force_read" to AgentToolParam("boolean", "Bypass the unchanged-file cache: when the same path+range was already read and the file is byte-identical, file_read returns a short 'UNCHANGED' stub instead of the content. Set true to always receive full content."),
         ),
         required = listOf("tool_title", "path"),
-        propertyOrdering = listOf("tool_title", "path", "offset", "lines", "direction", "max_length"),
+        propertyOrdering = listOf("tool_title", "path", "offset", "lines", "direction", "max_length", "force_read"),
     )
 
     fun execute(argsJson: String, sessionId: String, context: Context): ToolExecutionResult {
@@ -110,6 +111,31 @@ object FileReadTool {
             }
 
             val header = "[$path | $size bytes | $totalLines lines | showing $showStart-$showEnd of $totalLines]"
+
+            // [T-fileread-cache] Wishlist No.8: identical re-reads of an
+            // UNCHANGED file return a stub. The fingerprint covers the full
+            // file (any edit anywhere invalidates every shape for the path);
+            // the key covers the exact request shape (a new offset is a new
+            // question). The model keeps its earlier content and learns the
+            // one fact it asked for: nothing changed.
+            val contentSha = FileReadCache.sha256(allLines.joinToString("\n"))
+            val requestShape = "o=$offset;l=${requestedLines ?: -1};d=$direction;m=$maxLength"
+            val cacheKey = FileReadCache.key(sessionId, path, requestShape)
+            val forceRead = args.optBoolean("force_read", false)
+            if (!forceRead) {
+                val hit = FileReadCache.lookup(cacheKey, contentSha)
+                if (hit != null) {
+                    val minsAgo = maxOf(0L, (System.currentTimeMillis() - hit.readAtMs) / 60_000)
+                    return ToolExecutionResult(
+                        "$header\n[UNCHANGED since your read ${minsAgo}m ago " +
+                            "(sha256 ${contentSha.take(12)}, identical request). Content elided to save " +
+                            "context — reason from your earlier read, or re-issue with force_read=true.]",
+                        true, toolTitle = toolTitle,
+                    )
+                }
+            }
+            FileReadCache.record(cacheKey, contentSha, System.currentTimeMillis())
+
             ToolExecutionResult("$header\n$content", true, toolTitle = toolTitle)
         } catch (e: Exception) {
             ToolExecutionResult("Error reading file: ${e.message}", false)
