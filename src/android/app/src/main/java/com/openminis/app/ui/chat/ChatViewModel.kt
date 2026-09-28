@@ -210,7 +210,123 @@ class ChatViewModel(
             if (missing.isNotEmpty()) {
                 return "Tool '$name' is missing required parameter(s): ${missing.joinToString(", ")}."
             }
+            // [T-toolargs-typecheck] Declared JSON-schema types were never
+            // enforced: a model sending timeout:"900" (string) or
+            // command:123 (number) slipped straight into the executor,
+            // where org.json's optString/optInt silently coerced — the
+            // malformed call half-worked or failed deep inside the tool,
+            // surfacing as G13-class weirdness instead of a correctable
+            // schema error. Strict rejection with an actionable message
+            // converts that into a one-round self-correction. Optional
+            // params are checked only when PRESENT (required-absence is
+            // already handled above; an optional knob the model omitted is
+            // legal). Unknown extra fields stay non-errors on purpose:
+            // models append harmless keys (tab_id etc.) and the tools use
+            // graceful opt* reads.
+            for ((field, param) in toolDef.parameters) {
+                if (!args.has(field) || args.isNull(field)) continue
+                val raw = args.opt(field)
+                val expected = param.type.lowercase()
+                val typeOk = when (expected) {
+                    "string" -> raw is String
+                    // 900.0 is a whole number some providers emit for
+                    // integer fields — semantically correct, accept it.
+                    // 12.5 is genuinely not an integer and is refused.
+                    "integer" -> raw is Int || raw is Long ||
+                        (raw is Double && raw.isFinite() && raw == Math.floor(raw))
+                    "number" -> raw is Int || raw is Long || raw is Double || raw is Float
+                    "boolean" -> raw is Boolean
+                    "array" -> raw is org.json.JSONArray
+                    "object" -> raw is org.json.JSONObject
+                    else -> true
+                }
+                if (!typeOk) {
+                    return "Tool '$name' parameter '$field' must be ${articleFor(expected)} $expected, " +
+                        "got ${jsonTypeName(raw)}. ${typeFixHint(expected)} " +
+                        "Re-issue the call with the corrected JSON type."
+                }
+                if (param.enumValues != null && raw is String && raw !in param.enumValues!!) {
+                    return "Tool '$name' parameter '$field' must be one of " +
+                        "[${param.enumValues!!.joinToString(", ")}] (got \"$raw\"). " +
+                        "Check the spelling against the list and re-issue the call."
+                }
+            }
             return null
+        }
+
+        /**
+         * Human article for a JSON type name, for the preflight message
+         * grammar ("a string", "an integer").
+         */
+        private fun articleFor(type: String): String =
+            if (type.startsWith("i") || type.startsWith("o") || type.startsWith("a")) "an" else "a"
+
+        /**
+         * JSON type of a raw org.json value, for the preflight message
+         * ("got an integer", "got a boolean"). Deliberately coarse — the
+         * model needs to recognise its own mistake, not a Java class name.
+         */
+        private fun jsonTypeName(raw: Any?): String = when (raw) {
+            is String -> "a string"
+            is Boolean -> "a boolean"
+            is Int, is Long -> "an integer"
+            is Double, is Float -> "a number"
+            is org.json.JSONArray -> "an array"
+            is org.json.JSONObject -> "an object"
+            JSONObject.NULL, null -> "null"
+            else -> raw.javaClass.simpleName
+        }
+
+        /**
+         * One-line concrete instruction for the preflight type message —
+         * WHAT to change, not just that it is wrong (a bare type name makes
+         * weaker models retry the same shape).
+         */
+        private fun typeFixHint(type: String): String = when (type) {
+            "string" -> "Send the value as a JSON string (quoted)."
+            "integer" -> "Send it as a bare JSON number without quotes (e.g. 900)."
+            "number" -> "Send it as a bare JSON number (e.g. 1.5)."
+            "boolean" -> "Send true or false unquoted."
+            "array" -> "Send a JSON array ([...])."
+            "object" -> "Send a JSON object ({...})."
+            else -> ""
+        }
+
+        /**
+         * [T-tool-budget-indicator] Post-call footer line for budgeted graph
+         * workers (wishlist №4). Pure companion form for tests; the executor
+         * computes the status right after recordCall and threads it to the
+         * success return through [maybeAppendBudgetLineImpl].
+         *
+         * Pacing signal: the limit refusal (AgentToolBudget.check) arrives too
+         * late for the model to plan — it discovers the ceiling exists only
+         * when it hits it mid-task. One short line per tool result keeps the
+         * remaining-call count visible at exactly the decision point, the
+         * same discipline as token-usage reminders. Main chat has no budget
+         * → null → output untouched.
+         */
+        internal fun budgetStatusLine(usedAfter: Int, limit: Int): String? {
+            if (limit <= 0) return null
+            return if (usedAfter >= limit) {
+                "[tool budget: $usedAfter/$limit — that was the LAST permitted call: " +
+                    "no further tool calls will run; deliver your result now]"
+            } else {
+                "[tool budget: $usedAfter/$limit calls used, ${limit - usedAfter} left]"
+            }
+        }
+
+        /**
+         * Appends the budget status to a SUCCESS-path tool result. Null
+         * status passes the result through untouched (main chat, unlimited
+         * nodes). Companion + internal so tests cover it without a
+         * ChatViewModel instance.
+         */
+        internal fun maybeAppendBudgetLineImpl(
+            result: ToolExecutionResult,
+            status: String?,
+        ): ToolExecutionResult {
+            if (status == null) return result
+            return result.copy(output = result.output + "\n\n" + status)
         }
         // [T-android-stream-flush-dualpath] Newline fast-path thresholds (iOS parity).
         private const val NEWLINE_FLUSH_MIN_CHARS = 50
@@ -12515,6 +12631,15 @@ class ChatViewModel(
         tools: List<AgentToolDefinition>,
     ): String? = preflightValidateToolCallImpl(name, args, tools)
 
+    /**
+     * Appends the budget status to a SUCCESS-path tool result. Null status
+     * passes the result through untouched (main chat, unlimited nodes).
+     */
+    private fun maybeAppendBudgetLine(
+        result: ToolExecutionResult,
+        status: String?,
+    ): ToolExecutionResult = maybeAppendBudgetLineImpl(result, status)
+
     private suspend fun executeTool(
         name: String,
         argsJson: String,
@@ -12588,6 +12713,9 @@ class ChatViewModel(
         // finish with what it read, which beats a cancelled run. Measured need —
         // run 9eb70345's planner made 14 calls and produced no plan.
         val budgetLimit = com.openminis.app.tools.AgentToolBudgetStore.limitFor(sessionId)
+        // [T-tool-budget-indicator] Set inside the budget block after
+        // recordCall; threaded to the success-path decorator chain below.
+        var budgetStatus: String? = null
         if (budgetLimit != null) {
             val used = com.openminis.app.tools.AgentToolBudgetStore.usedBy(sessionId)
             val verdict = com.openminis.app.offload.AgentToolBudget.check(
@@ -12609,6 +12737,14 @@ class ChatViewModel(
                 return ToolExecutionResult(verdict.message, false)
             }
             com.openminis.app.tools.AgentToolBudgetStore.recordCall(sessionId)
+            // [T-tool-budget-indicator] Post-call remaining count for the
+            // success-path footer (budgetStatusLine): computed AFTER
+            // recordCall so the line reflects THIS call too. Null keeps
+            // unbudgeted sessions' results undecorated.
+            budgetStatus = budgetStatusLine(
+                com.openminis.app.tools.AgentToolBudgetStore.usedBy(sessionId),
+                budgetLimit,
+            )
         }
         try {
             val toolResult = when (name) {
@@ -12678,7 +12814,10 @@ class ChatViewModel(
             // [T-proactive-memory] Single choke point for the periodic
             // reminder — see maybeAppendMemoryNudge. [T-turn-timer] and the
             // timer line/refusal on the same path.
-            return applyTurnTimer(maybeAppendMemoryNudge(toolResult))
+            // [T-tool-budget-indicator] the budget footer rides the same
+            // decorator chain (nudge → budget → turn-timer); the error path
+            // below keeps its deliberate no-decoration discipline.
+            return applyTurnTimer(maybeAppendBudgetLine(maybeAppendMemoryNudge(toolResult), budgetStatus))
         } catch (e: kotlinx.coroutines.CancellationException) {
             // Never swallow cancellation — it is cooperative shutdown, not
             // a tool failure.

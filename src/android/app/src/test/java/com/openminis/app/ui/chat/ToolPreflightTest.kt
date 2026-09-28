@@ -2,6 +2,7 @@ package com.openminis.app.ui.chat
 
 import com.openminis.app.data.model.AgentToolDefinition
 import com.openminis.app.data.model.AgentToolParam
+import com.openminis.app.tools.ToolExecutionResult
 import org.json.JSONObject
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -202,5 +203,183 @@ class ToolPreflightTest {
                 "numeric_tool", JSONObject("""{"count":0}"""), listOf(numeric),
             ),
         )
+    }
+
+    // ── [T-toolargs-typecheck] JSON-schema type enforcement ──
+
+    @Test
+    fun `a string field given a number is blocked with a concrete fix`() {
+        val err = validate("shell_execute", """{"command":123}""")
+        assertNotNull(err)
+        assertTrue("got: $err", err!!.contains("must be a string"))
+        assertTrue("got: $err", err.contains("got an integer"))
+        assertTrue("got: $err", err.contains("quoted"))
+    }
+
+    @Test
+    fun `an integer field given a quoted number is blocked`() {
+        val timed = AgentToolDefinition(
+            name = "shell_execute",
+            description = "Run a shell command",
+            parameters = mapOf(
+                "command" to param("Command"),
+                "timeout" to AgentToolParam("integer", "Seconds"),
+            ),
+            required = listOf("command"),
+        )
+        val err = ChatViewModel.preflightValidateToolCallImpl(
+            "shell_execute", JSONObject("""{"command":"ls","timeout":"900"}"""), listOf(timed),
+        )
+        assertNotNull(err)
+        assertTrue("got: $err", err!!.contains("timeout"))
+        assertTrue("got: $err", err.contains("without quotes"))
+    }
+
+    @Test
+    fun `an integer field given a whole double is accepted`() {
+        val timed = AgentToolDefinition(
+            name = "shell_execute",
+            description = "Run a shell command",
+            parameters = mapOf(
+                "command" to param("Command"),
+                "timeout" to AgentToolParam("integer", "Seconds"),
+            ),
+            required = listOf("command"),
+        )
+        assertNull(
+            ChatViewModel.preflightValidateToolCallImpl(
+                "shell_execute", JSONObject("""{"command":"ls","timeout":900.0}"""), listOf(timed),
+            ),
+        )
+    }
+
+    @Test
+    fun `a boolean field given a quoted true is blocked`() {
+        val flaggy = AgentToolDefinition(
+            name = "flag_tool",
+            description = "Has a flag",
+            parameters = mapOf(
+                "command" to param("Command"),
+                "reset" to AgentToolParam("boolean", "Reset or not"),
+            ),
+            required = listOf("command"),
+        )
+        val err = ChatViewModel.preflightValidateToolCallImpl(
+            "flag_tool", JSONObject("""{"command":"ls","reset":"true"}"""), listOf(flaggy),
+        )
+        assertNotNull(err)
+        assertTrue("got: $err", err!!.contains("boolean"))
+    }
+
+    @Test
+    fun `a wrong enum value is blocked with the allowed list`() {
+        val enummed = AgentToolDefinition(
+            name = "browser_use",
+            description = "Browser",
+            parameters = mapOf(
+                "action" to AgentToolParam(
+                    "string", "Action",
+                    enumValues = listOf("navigate", "click", "screenshot"),
+                ),
+            ),
+            required = listOf("action"),
+        )
+        val err = ChatViewModel.preflightValidateToolCallImpl(
+            "browser_use", JSONObject("""{"action":"screnshot"}"""), listOf(enummed),
+        )
+        assertNotNull(err)
+        assertTrue("got: $err", err!!.contains("navigate, click, screenshot"))
+        assertTrue("got: $err", err.contains("screnshot"))
+    }
+
+    @Test
+    fun `a valid enum value passes`() {
+        val enummed = AgentToolDefinition(
+            name = "browser_use",
+            description = "Browser",
+            parameters = mapOf(
+                "action" to AgentToolParam(
+                    "string", "Action",
+                    enumValues = listOf("navigate", "click", "screenshot"),
+                ),
+            ),
+            required = listOf("action"),
+        )
+        assertNull(
+            ChatViewModel.preflightValidateToolCallImpl(
+                "browser_use", JSONObject("""{"action":"click"}"""), listOf(enummed),
+            ),
+        )
+    }
+
+    @Test
+    fun `an optional field with a wrong type is still blocked`() {
+        val timed = AgentToolDefinition(
+            name = "shell_execute",
+            description = "Run a shell command",
+            parameters = mapOf(
+                "command" to param("Command"),
+                "timeout" to AgentToolParam("integer", "Seconds (optional)"),
+            ),
+            required = listOf("command"),
+        )
+        // timeout omitted entirely → fine
+        assertNull(
+            ChatViewModel.preflightValidateToolCallImpl(
+                "shell_execute", JSONObject("""{"command":"ls"}"""), listOf(timed),
+            ),
+        )
+        // timeout present but typed wrong → blocked even though optional
+        assertNotNull(
+            ChatViewModel.preflightValidateToolCallImpl(
+                "shell_execute", JSONObject("""{"command":"ls","timeout":"soon"}"""), listOf(timed),
+            ),
+        )
+    }
+
+    @Test
+    fun `missing required fields are reported before type errors`() {
+        // path is missing AND command-adjacent fields are absent: the
+        // missing-fields report wins (it is the primary signal), not a
+        // type complaint about a field the model never sent.
+        val err = validate("file_edit", """{"old_string":42}""")
+        assertNotNull(err)
+        assertTrue("got: $err", err!!.contains("missing required parameter"))
+    }
+
+    // ── [T-tool-budget-indicator] footer line ──
+
+    @Test
+    fun `budget status line counts down and flags the last call`() {
+        val mid = ChatViewModel.budgetStatusLine(usedAfter = 3, limit = 12)
+        assertTrue("got: $mid", mid!!.contains("3/12"))
+        assertTrue("got: $mid", mid.contains("9 left"))
+
+        val last = ChatViewModel.budgetStatusLine(usedAfter = 12, limit = 12)
+        assertTrue("got: $last", last!!.contains("12/12"))
+        assertTrue("got: $last", last.contains("LAST permitted call"))
+    }
+
+    @Test
+    fun `budget status line is null for unlimited nodes`() {
+        assertNull(ChatViewModel.budgetStatusLine(usedAfter = 5, limit = 0))
+    }
+
+    @Test
+    fun `budget footer appends only when a status exists`() {
+        val result = ToolExecutionResult("done", true)
+        assertNullStatusPassesThrough(result)
+        val decorated = ChatViewModel.maybeAppendBudgetLineImpl(
+            result, ChatViewModel.budgetStatusLine(4, 10),
+        )
+        assertTrue("got: ${decorated.output}", decorated.output.contains("done"))
+        assertTrue("got: ${decorated.output}", decorated.output.contains("[tool budget: 4/10"))
+        // The original result is untouched (copy, not mutation).
+        assertTrue(result.output == "done")
+    }
+
+    private fun assertNullStatusPassesThrough(result: ToolExecutionResult) {
+        val out = ChatViewModel.maybeAppendBudgetLineImpl(result, null)
+        assertTrue("output must be unchanged", out.output == result.output)
     }
 }
