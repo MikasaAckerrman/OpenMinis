@@ -13040,15 +13040,38 @@ class ChatViewModel(
         if (role.isEmpty() || task.isEmpty()) {
             return ToolExecutionResult("spawn_subagent: 'role' and 'task' are required", false)
         }
-        // [T-task-board] depends_on: JSON array of team task ids. Parsed
-        // defensively — a malformed array is a schema-noise error, not a
-        // crash; the spawn proceeds without deps and says what was ignored.
-        val dependsOn = runCatching {
-            val arr = JSONArray(args.optString("depends_on", "[]"))
-            (0 until arr.length()).mapNotNull { i ->
-                arr.optString(i).trim().takeIf { it.isNotEmpty() }
+        // [T-task-board] depends_on: JSON array of team task ids. Event-matrix
+        // fix (G13): a malformed value previously degraded to emptyList()
+        // SILENTLY — the spawn ran without the declared dependency while the
+        // model believed it was enforced, exactly the failure the gate
+        // exists to prevent. Now a wrong-typed depends_on is a LOUD schema
+        // error; only a genuinely absent field means "no deps".
+        val dependsOn: List<String> = when {
+            !args.has("depends_on") || args.isNull("depends_on") -> emptyList()
+            else -> {
+                val raw = args.get("depends_on")
+                if (raw is org.json.JSONArray) {
+                    runCatching {
+                        (0 until raw.length()).mapNotNull { i ->
+                            raw.optString(i).trim().takeIf { it.isNotEmpty() }
+                        }
+                    }.getOrElse {
+                        return ToolExecutionResult(
+                            "spawn_subagent: 'depends_on' is not a valid array of task ids " +
+                                "(${it.message}). Use [\"task-id\", ...] — ids are visible in task_board output.",
+                            false,
+                        )
+                    }
+                } else {
+                    return ToolExecutionResult(
+                        "spawn_subagent: 'depends_on' must be a JSON ARRAY of task ids, got " +
+                            "${raw.javaClass.simpleName} ($raw). Example: [\"spawn-ab12cd34\"]. " +
+                                "Ids are visible in task_board output.",
+                        false,
+                    )
+                }
             }
-        }.getOrElse { emptyList() }
+        }
         val result = com.openminis.app.offload.SubagentExecutor.spawn(
             context = context,
             role = role,

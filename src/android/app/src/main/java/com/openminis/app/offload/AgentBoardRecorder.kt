@@ -43,8 +43,14 @@ internal object AgentBoardRecorder {
                 AgentTaskEntity(
                     id = taskId,
                     teamId = teamId,
-                    title = title,
-                    description = description,
+                    // [event-matrix L1/H8 fix] Caps on the stored text: a
+                    // model can emit a 100K-char task into one spawn, and
+                    // title/description were stored WHOLESALE — unbounded
+                    // rows in a phone DB. The description keeps enough to
+                    // re-delegate (4K); the title is a label (120), and
+                    // teamSummary already truncates it to 60 for display.
+                    title = title.take(120),
+                    description = description.take(4000),
                     roleRequired = roleRequired,
                     status = AgentBoardLogic.STATUS_RUNNING,
                     dependsOnTaskIds = dependsOnJson,

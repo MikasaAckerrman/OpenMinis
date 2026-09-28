@@ -31,6 +31,9 @@ import java.util.concurrent.ConcurrentHashMap
 object SubagentExecutor {
 
     private const val TAG = "SubagentExecutor"
+    /** [event-matrix M2] Assembled spawn_many result cap + per-handoff cap. */
+    private const val RESULT_CAP_CHARS = 24_000
+    private const val HANDOFF_CAP = 6_000
 
     /** Active background subagents: spawnId → role + task preview. */
     private val activeBackground = ConcurrentHashMap<String, String>()
@@ -311,7 +314,7 @@ object SubagentExecutor {
             val agent = AgentFileStore.find(context, role.removePrefix("custom:").trim()) ?: return null
             return buildCustomGraph(agent, task, allowNesting)
         }
-        val agentRole = runCatching { AgentRole.valueOf(role) }.getOrNull() ?: return null
+        val agentRole = resolveRole(role) ?: return null
         return buildEphemeralGraph(agentRole, task, allowNesting)
     }
 
@@ -382,13 +385,17 @@ object SubagentExecutor {
             ?.let { app.chatRepository.dao.agentWorkerRole(it) }
             ?.let { runCatching { AgentRole.valueOf(it) }.getOrNull() }
         // [T-agent-file] Validation: builtin enum or an existing custom agent.
+        // [event-matrix G12] Same lenient resolution as the single-spawn path
+        // — batch validation previously used strict valueOf, so a lowercase
+        // role passed the single spawn and failed the batch (path
+        // inconsistency, the A8xA3 class).
         for (spec in agents) {
             if (spec.role.startsWith("custom:")) {
                 if (AgentFileStore.find(context, spec.role.removePrefix("custom:").trim()) == null) {
                     return "No custom agent '${spec.role.removePrefix("custom:")}' in " +
                         "${AgentFileStore.SANDBOX_DIR}. Call list_agents to see what exists."
                 }
-            } else if (runCatching { AgentRole.valueOf(spec.role) }.isFailure) {
+            } else if (resolveRole(spec.role) == null) {
                 return "Unknown role '${spec.role}'. Valid: ${SubagentRoles.SPAWNABLE.joinToString()} " +
                     "or custom:<name> (see list_agents)"
             }
@@ -517,7 +524,17 @@ object SubagentExecutor {
         val boardPath = writeBoardFile(batchId, board.toString(), spawnerSessionId, context)
         if (boardPath != null) sb.appendLine("Board artifact: $boardPath")
         sb.appendLine("spawn_many finished.")
-        return sb.toString()
+        // [event-matrix M2] The assembled result rides into ONE tool result —
+        // uncapped, a 20-agent batch could assemble 100K+ chars (~25K
+        // tokens) and blow the orchestrator's next-turn context. The FULL
+        // text always lives in two durable places (BOARD.md artifact +
+        // task_board tool); the returned text is a bounded view of it.
+        val assembled = sb.toString()
+        return if (assembled.length > RESULT_CAP_CHARS) {
+            assembled.take(RESULT_CAP_CHARS) +
+                "\n… (result truncated at $RESULT_CAP_CHARS chars — full per-agent results: " +
+                "task_board tool${if (boardPath != null) " or $boardPath" else ""})"
+        } else assembled
     }
 
     /** [T-task-board] One builtin ephemeral agent over a ready-made task. */
@@ -603,8 +620,8 @@ object SubagentExecutor {
                 spawnerSessionId, depsJson(dependsOn),
             )
         }
-        val agentRole = runCatching { AgentRole.valueOf(role) }
-            .getOrElse {
+        val agentRole = resolveRole(role)
+            ?: run {
                 return "Unknown role '$role'. Valid: ${SubagentRoles.SPAWNABLE.joinToString()} " +
                     "or custom:<name> (call list_agents to see user-defined agents)"
             }
@@ -703,7 +720,17 @@ object SubagentExecutor {
      */
     private fun formatResult(role: String, result: GraphRunResult): String {
         val handoff = result.finalHandoff?.trim().orEmpty()
-        if (handoff.isNotEmpty()) return handoff
+        // [event-matrix M2] Handoff cap: a handoff is a STRUCTURED REPORT,
+        // not the deliverable — one longer than 6K chars means the worker
+        // pasted its artifact into the handoff against the format contract.
+        // Without the cap, a 20-agent spawn_many assembled 100K+ chars of
+        // handoffs into ONE tool result — a context blowout for the
+        // orchestrator's very next turn.
+        if (handoff.isNotEmpty()) {
+            return if (handoff.length > HANDOFF_CAP) {
+                handoff.take(HANDOFF_CAP) + "\n… (handoff truncated — full text on the board / BOARD.md)"
+            } else handoff
+        }
         val raw = result.lastExitResponse?.trim().orEmpty()
         if (raw.isNotEmpty()) {
             return "Subagent (${role.lowercase()}) status ${result.status} — no valid " +
@@ -924,8 +951,15 @@ object SubagentExecutor {
             listOf("shell_execute", "file_read", "browser_use")
     }
 
-    private fun resolveRole(role: String): AgentRole? =
-        runCatching { AgentRole.valueOf(role) }.getOrNull()
+    /** [event-matrix G12] Lenient role resolution: models frequently
+     * lowercase enum names ("senior_implementer"); valueOf() rejects them
+     * and the whole spawn fails on a casing typo. Normalize: uppercase +
+     * spaces/hyphens → underscores, before the strict lookup. */
+    private fun resolveRole(role: String): AgentRole? {
+        runCatching { AgentRole.valueOf(role) }.getOrNull()?.let { return it }
+        val normalized = role.trim().uppercase().replace(' ', '_').replace('-', '_')
+        return runCatching { AgentRole.valueOf(normalized) }.getOrNull()
+    }
 
     /**
      * [T-subagent-nesting] The delegation capability matrix — the structural
