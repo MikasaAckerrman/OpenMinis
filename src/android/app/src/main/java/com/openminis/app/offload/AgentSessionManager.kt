@@ -53,6 +53,10 @@ internal object AgentSessionManager {
         workspaceHostPath: String? = null,
         agentRunId: String? = null,
         agentRole: String? = null,
+        /** [T-worker-write-roots] Extra jail roots for this worker's node
+         *  (repo ownership for lone sequenced workers like the CI-fixer).
+         *  Merged ON TOP of the default jail — never narrower. */
+        writeRoots: List<String> = emptyList(),
     ): String = withContext(Dispatchers.IO) {
         val sessionId = HeadlessChatRunner.ensureSession(context, null)
         HeadlessChatRunner.applyModelOverride(context, sessionId, modelEntryId, null)
@@ -66,7 +70,12 @@ internal object AgentSessionManager {
             // write jail: per-session dirs + /tmp only, REFUSE on the global
             // surface (shared/memory/skills). The spawner integrates results
             // after the batch — see AgentWritePolicyStore for the contract.
-            com.openminis.app.tools.AgentWritePolicyStore.setJail(sessionId)
+            // [T-worker-write-roots] Node-declared roots (repo ownership)
+            // widen the jail; the roots-aware git gate honors them too.
+            com.openminis.app.tools.AgentWritePolicyStore.setJail(
+                sessionId,
+                com.openminis.app.tools.AgentWritePolicyStore.DEFAULT_JAIL_ROOTS + writeRoots,
+            )
         }
         sessionId
     }

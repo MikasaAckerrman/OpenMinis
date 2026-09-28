@@ -64,6 +64,23 @@ data class AgentNode(
     val mayDelegateTo: List<AgentRole> = emptyList(),
 
     /**
+     * [T-worker-write-roots] Extra write roots granted to this node's worker
+     * session ON TOP of the default jail (own dirs + /tmp). The motivating
+     * case is the CI-fixer: it must edit files and run mutating git inside
+     * the repo it owns — the blanket jailed-worker git ban and the
+     * file-tool jail would both refuse, correctly for parallel batches,
+     * wrongly for a lone sequenced worker that owns the repo.
+     *
+     * Deliberately per-node and explicit: a node that declares a repo root
+     * is a design statement that it runs alone with exclusive rights to it
+     * (the graph's own sequencing enforces the aloneness). Paths must be
+     * absolute and exist at run time — they are canonicalized and merged
+     * into the session's write jail, so file tools AND roots-aware git both
+     * honor them. Serialization: JSON blob, defaults on old rows.
+     */
+    val writeRoots: List<String> = emptyList(),
+
+    /**
      * [T-agent-graph-parallel] How many independent instances of this node to
      * run at once. >1 spawns `id#1`, `id#2`, … each with its OWN session, so
      * their contexts never mix. Combined with [shardHint] this is how two

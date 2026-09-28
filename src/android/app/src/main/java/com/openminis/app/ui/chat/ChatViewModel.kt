@@ -12969,8 +12969,14 @@ class ChatViewModel(
             // diagnostics never corrupt anything. The main chat is never
             // jailed and keeps full git access: the SPAWNER owns the
             // checkpoint commit after the batch (ce-work contract).
+            // [T-worker-write-roots] Refinement: a jailed session whose
+            // writeRoots include the repo MAY mutate THAT repo — a lone
+            // sequenced worker that owns it (the CI-fixer is the case).
+            // gitMutationAllowedFor extracts the explicit -C/--git-dir
+            // targets and checks them against the session's roots.
             if (com.openminis.app.tools.AgentWritePolicyStore.isJailed(sessionId) &&
-                com.openminis.app.tools.AgentWritePolicyStore.isGitMutation(command)
+                com.openminis.app.tools.AgentWritePolicyStore.isGitMutation(command) &&
+                !com.openminis.app.tools.AgentWritePolicyStore.gitMutationAllowedFor(sessionId, command)
             ) {
                 return ToolExecutionResult(
                     "Git operation refused (parallel-write contract): workers never mutate the git " +

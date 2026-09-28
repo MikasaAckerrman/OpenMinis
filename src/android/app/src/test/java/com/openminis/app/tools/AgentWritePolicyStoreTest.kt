@@ -177,4 +177,82 @@ class AgentWritePolicyStoreTest {
         )
         assertTrue(v.isEmpty())
     }
+
+    // ── [T-worker-write-roots] roots-aware git gate ─────────────────────
+
+    private val repoSession = "repo-owner-s1"
+    private val repoRoot = "/var/minis/shared/openminis-backup/canonical"
+
+    @Test
+    fun `git mutation allowed when -C target is within declared roots`() {
+        AgentWritePolicyStore.setJail(
+            repoSession,
+            AgentWritePolicyStore.DEFAULT_JAIL_ROOTS + listOf(repoRoot),
+        )
+        assertTrue(
+            AgentWritePolicyStore.gitMutationAllowedFor(
+                repoSession, "git -C $repoRoot add -A",
+            ),
+        )
+        assertTrue(
+            AgentWritePolicyStore.gitMutationAllowedFor(
+                repoSession, "git -C $repoRoot commit -m 'fix' && git -C $repoRoot push origin b",
+            ),
+        )
+        // File tools get the same widening: the repo path is writable.
+        assertTrue(AgentWritePolicyStore.mayWriteTo(repoSession, "$repoRoot/src/F.kt"))
+    }
+
+    @Test
+    fun `git mutation refused when target escapes the roots`() {
+        AgentWritePolicyStore.setJail(
+            repoSession,
+            AgentWritePolicyStore.DEFAULT_JAIL_ROOTS + listOf(repoRoot),
+        )
+        // A repo outside the declared roots.
+        assertFalse(
+            AgentWritePolicyStore.gitMutationAllowedFor(
+                repoSession, "git -C /var/minis/shared/other-repo push",
+            ),
+        )
+        // Any explicit target outside roots poisons the whole command.
+        assertFalse(
+            AgentWritePolicyStore.gitMutationAllowedFor(
+                repoSession,
+                "git -C $repoRoot --git-dir=/var/minis/shared/other/.git status",
+            ),
+        )
+    }
+
+    @Test
+    fun `jailed without declared roots keeps the blanket git ban`() {
+        AgentWritePolicyStore.setJail(session) // default roots only
+        // No explicit -C target: cwd is not evidence of ownership.
+        assertFalse(
+            AgentWritePolicyStore.gitMutationAllowedFor(session, "git add -A"),
+        )
+        // Explicit target, but not within the default roots.
+        assertFalse(
+            AgentWritePolicyStore.gitMutationAllowedFor(session, "git -C $repoRoot push"),
+        )
+    }
+
+    @Test
+    fun `unjailed sessions were never banned`() {
+        assertTrue(
+            AgentWritePolicyStore.gitMutationAllowedFor(
+                "main-chat", "git -C /anywhere/repo push",
+            ),
+        )
+    }
+
+    @Test
+    fun `gitMutationAllowedFor is orthogonal to read-only verbs`() {
+        AgentWritePolicyStore.setJail(session)
+        // Read-only git never hits the mutation gate; allow/deny here is
+        // about the mutation path only — this pins that a read command with
+        // no -C is not falsely treated as needing roots.
+        val reads = listOf("git status", "git -C $repoRoot log --oneline")
+        reads.forEach { assertFalse(AgentWritePolicyStore.isGitMutation(it)) }
+    }
 }

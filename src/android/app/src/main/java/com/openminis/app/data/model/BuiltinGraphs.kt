@@ -314,6 +314,13 @@ object BuiltinGraphs {
                 allowedTools = listOf("shell", "file_read", "file_edit", "file_write"),
                 ownedArtifact = "minimal verified fix pushed to the branch",
                 modelRole = "coder",
+                // [T-worker-write-roots] The fixer runs ALONE (the graph is
+                // sequential, maxParallelNodes=1) and owns this repo
+                // exclusively: file tools AND mutating git must both reach
+                // it. Without this root the write jail refuses file_edit on
+                // repo files and the git ban refuses the push — the pipeline
+                // would die at step 5 of the node's own contract.
+                writeRoots = listOf("/var/minis/shared/openminis-backup/canonical"),
                 systemPrompt = """
                     The handoff gives you ci-failure-log.txt (a CI error
                     excerpt), plus repo and branch.
@@ -331,10 +338,12 @@ object BuiltinGraphs {
                        sh /var/minis/shared/kotlincheck/kotlincheck.sh
                        must end CLEAN. If the check fails, your fix is wrong
                        or incomplete — iterate, do not push red.
-                    5. Commit and push:
+                    5. Commit and push (ALWAYS with the explicit -C form —
+                       the write gate reads the -C target; `cd repo && git`
+                       without -C is refused by design):
                        git -C /var/minis/shared/openminis-backup/canonical add -A
-                       git -C ... commit -m "fix(ci): <root cause> [test]"
-                       git -C ... push origin <branch>
+                       git -C /var/minis/shared/openminis-backup/canonical commit -m "fix(ci): <root cause> [test]"
+                       git -C /var/minis/shared/openminis-backup/canonical push origin <branch>
                        If the push is rejected (non-fast-forward), pull
                        --rebase ONCE and retry ONCE; a second rejection is
                        STATUS: BLOCKED "concurrent writer won".

@@ -120,4 +120,24 @@ class BuiltinGraphsPresetsTest {
             }
         }
     }
+
+    @Test
+    fun `ci fixer owns the repo via write roots, watcher stays jailed`() {
+        // [T-worker-write-roots] The fixer runs alone (sequential graph) and
+        // must reach the repo with BOTH file tools and mutating git: the
+        // node declares the root, the runner arms the widened jail, the
+        // roots-aware git gate honors it. Without the root the pipeline
+        // dies at the push step — the gate refuses the push AND the jail
+        // refuses file_edit on repo files.
+        val g = BuiltinGraphs.byId("builtin-ci-autofix")!!
+        val fixer = g.nodes.first { it.id == "ci-fixer" }
+        assertTrue(
+            fixer.writeRoots.contains("/var/minis/shared/openminis-backup/canonical"),
+        )
+        assertTrue(fixer.allowedTools.contains("file_edit"))
+        // The watcher stays jailed to defaults — it never touches the repo.
+        val watcher = g.nodes.first { it.id == "ci-watcher" }
+        assertTrue(watcher.writeRoots.isEmpty())
+        org.junit.Assert.assertFalse(watcher.allowedTools.contains("file_edit"))
+    }
 }

@@ -112,9 +112,7 @@ object AgentWritePolicyStore {
     )
 
     fun isGitMutation(command: String): Boolean {
-        val tokens = command.split(Regex("[\\s;|&()<>]+"))
-            .map { it.trim('\'', '"') }
-            .filter { it.isNotEmpty() }
+        val tokens = tokenize(command)
         var i = 0
         while (i < tokens.size) {
             if (tokens[i] == "git" || tokens[i].endsWith("/git")) {
@@ -132,6 +130,50 @@ object AgentWritePolicyStore {
         }
         return false
     }
+
+    /**
+     * [T-worker-write-roots] Roots-aware refinement of the jailed-worker git
+     * ban. The blanket ban exists because parallel workers contend on
+     * index.lock; a node that declares the repo in its writeRoots runs
+     * ALONE and owns that repo exclusively (the CI-fixer is the motivating
+     * case) — for it the ban is a false refusal that breaks the whole
+     * pipeline at the push step.
+     *
+     * Decision: a mutating git is allowed for a jailed session IFF every
+     * EXPLICIT path flag in the command (`-C <path>`, `--git-dir=<p>`,
+     * `--work-tree=<p>`) resolves within that session's write roots. No
+     * explicit target → still banned (cwd is not evidence of ownership);
+     * any target outside the roots → banned. Unjailed sessions were never
+     * banned. Read-only verbs never reach this check (they are not
+     * mutations).
+     */
+    fun gitMutationAllowedFor(sessionId: String, command: String): Boolean {
+        if (!isJailed(sessionId)) return true
+        val roots = jails[sessionId] ?: return true
+        val tokens = tokenize(command)
+        val targets = mutableListOf<String>()
+        var i = 0
+        while (i < tokens.size) {
+            val t = tokens[i]
+            when {
+                t == "-C" && i + 1 < tokens.size -> {
+                    targets += tokens[i + 1]
+                    i += 2
+                    continue
+                }
+                t.startsWith("--git-dir=") -> targets += t.removePrefix("--git-dir=")
+                t.startsWith("--work-tree=") -> targets += t.removePrefix("--work-tree=")
+            }
+            i++
+        }
+        if (targets.isEmpty()) return false
+        return targets.all { isWithinRoots(it, roots) }
+    }
+
+    private fun tokenize(command: String): List<String> = command
+        .split(Regex("[\\s;|&()<>]+"))
+        .map { it.trim('\'', '"') }
+        .filter { it.isNotEmpty() }
 
     /**
      * [T-parallel-write-contract] The shell write-target scanner — the

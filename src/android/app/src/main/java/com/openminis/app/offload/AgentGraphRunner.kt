@@ -684,6 +684,9 @@ internal object AgentGraphRunner {
             workspaceHostPath = state.artifactHostDir?.absolutePath,
             agentRunId = state.taskId,
             agentRole = node.role.name,
+            // [T-worker-write-roots] Node-declared repo ownership widens
+            // this worker's jail; empty for every node that didn't opt in.
+            writeRoots = node.writeRoots,
         ).also { sessionStore[sessionKey] = it }
         if (existingSession != null && node.sessionGroup.isNotBlank()) {
             addTrace(
