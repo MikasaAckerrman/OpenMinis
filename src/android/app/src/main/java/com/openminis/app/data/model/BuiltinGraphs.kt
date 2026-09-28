@@ -41,6 +41,8 @@ object BuiltinGraphs {
     private const val REVIEW_PERF = "review-performance"
     private const val GATE = "final-gate"
     private const val SYNTH = "synthesizer"
+    private const val CI_WATCH = "ci-watcher"
+    private const val CI_FIX = "ci-fixer"
 
     // ── RESEARCH: 2 parallel + 1 merge ─────────────────────────────────────
 
@@ -237,7 +239,128 @@ object BuiltinGraphs {
         config = GraphConfig(maxParallelNodes = 3),
     )
 
-    val ALL: List<AgentGraph> = listOf(RESEARCH, CODE_REVIEW, DEEP_DIVE)
+    // ── CI_AUTO_FIX: watch → conditional fix ───────────────────────────────
+    //
+    // [T-ci-autofix] Closes the manual CI-babysitting loop: after a push the
+    // orchestrating chat runs this graph with repo/sha/branch instead of
+    // polling Actions by hand. Borrowed concept from Agent Orchestrator's
+    // CI-feedback routing, reshaped for one phone: no daemon, no worktree —
+    // a two-node graph where the LOOP lives at the invoking agent's level
+    // (the runner structurally forbids node re-entry, and a fixer's push
+    // produces a NEW sha that only the invoker can re-watch; that cap is
+    // the depth-protection).
+    //
+    // exitNodeIds is deliberately EMPTY (run-to-exhaustion): with the fixer
+    // as a declared exit, a green CI would drain the queue with the exit
+    // unsettled and the runner would report a false DEADLOCK. Empty exits
+    // make both paths — green (watcher only) and red (watcher → fixer) —
+    // terminate exactly when the queue drains.
+    val CI_AUTO_FIX: AgentGraph = AgentGraph(
+        id = "builtin-ci-autofix",
+        name = "CI Auto-Fix (watch → fix)",
+        version = 1,
+        nodes = listOf(
+            AgentNode(
+                id = CI_WATCH,
+                role = AgentRole.CODEBASE_DISCOVERY,
+                // maxTurns doubles as the worker tool budget (AgentGraphRunner
+                // arms AgentToolBudgetStore with it): 22 ≈ 20 polls + the
+                // job-log fetch + slack. One poll per call; the 60s sleep runs
+                // inside the same shell command, not as a second call.
+                maxTurns = 22,
+                allowedTools = listOf("shell"),
+                ownedArtifact = "CI verdict + failure excerpt file",
+                modelRole = "analyst",
+                systemPrompt = """
+                    You are a CI watcher. The task text contains repo, sha and
+                    branch. If any of the three is missing, return STATUS:
+                    NEEDS_CLARIFICATION naming it — never guess a sha.
+
+                    Poll loop (one shell call per poll, sleep INSIDE the command):
+                      curl -s -H "Authorization: token ${'$'}GH_TOKEN" \
+                        "https://api.github.com/repos/<repo>/actions/runs?head_sha=<sha>"
+                    If status is queued/in_progress: sleep 60 inside the same
+                    command and poll again. Give up after ~20 polls (~20 min)
+                    with STATUS: BLOCKED and deliverables
+                    "CI_NOT_FINISHED sha=<sha> polls=<n>".
+
+                    When status is completed:
+                    - conclusion=success → STATUS: COMPLETE, deliverables
+                      "CI_GREEN sha=<sha>".
+                    - conclusion=failure → fetch the failing job's log:
+                        .../actions/runs/<runId>/jobs → the job with
+                      conclusion=failure has an id; then
+                        curl -sL .../actions/jobs/<jobId>/logs
+                      (follows the redirect; the body is a zip — pipe through
+                      `unzip -p` or save+unzip). Extract ONLY the error region:
+                      the ~80 lines around the first real error marker
+                      ("error:", "FAILED", "e: ") — not the whole log. Write
+                      that excerpt to the file `ci-failure-log.txt` in the
+                      current directory (the shared run workspace).
+                      STATUS: COMPLETE, deliverables
+                      "CI_FAILED sha=<sha> job=<job name> log=ci-failure-log.txt",
+                      nextAction: "TO ci-fixer: root-cause and fix
+                      ci-failure-log.txt, push to <branch> of <repo>."
+
+                    You never fix anything, never edit files (except the
+                    excerpt file), never push. Report what IS.
+                """.trimIndent(),
+            ),
+            AgentNode(
+                id = CI_FIX,
+                role = AgentRole.SENIOR_IMPLEMENTER,
+                mayDelegateTo = listOf(AgentRole.CODE_CORRECTNESS_REVIEWER),
+                maxTurns = 16,
+                allowedTools = listOf("shell", "file_read", "file_edit", "file_write"),
+                ownedArtifact = "minimal verified fix pushed to the branch",
+                modelRole = "coder",
+                systemPrompt = """
+                    The handoff gives you ci-failure-log.txt (a CI error
+                    excerpt), plus repo and branch.
+
+                    Order of operations, no skipping:
+                    1. Read the excerpt; find the failing file:line. Read the
+                       real file around it — never fix from the log alone.
+                    2. Name the single root cause in one sentence. If you
+                       cannot name it, you have not found it: STATUS: BLOCKED
+                       with what you checked. Never guess-push.
+                    3. Apply the MINIMAL fix. No drive-by refactors, no
+                       formatting churn — a CI-fix commit that touches
+                       unrelated lines is a review violation.
+                    4. Prove it locally BEFORE pushing:
+                       sh /var/minis/shared/kotlincheck/kotlincheck.sh
+                       must end CLEAN. If the check fails, your fix is wrong
+                       or incomplete — iterate, do not push red.
+                    5. Commit and push:
+                       git -C /var/minis/shared/openminis-backup/canonical add -A
+                       git -C ... commit -m "fix(ci): <root cause> [test]"
+                       git -C ... push origin <branch>
+                       If the push is rejected (non-fast-forward), pull
+                       --rebase ONCE and retry ONCE; a second rejection is
+                       STATUS: BLOCKED "concurrent writer won".
+                    6. Report STATUS: COMPLETE with deliverables
+                       "FIXED sha=<new sha> cause=<root cause> check=CLEAN".
+
+                    The push is the point of no return: everything before it
+                    is cheap, everything after it is someone else's build
+                    time. That asymmetry is why steps 1-4 exist.
+                """.trimIndent(),
+            ),
+        ),
+        edges = listOf(
+            AgentEdge(
+                from = CI_WATCH,
+                to = CI_FIX,
+                type = EdgeType.CONDITIONAL,
+                condition = "deliverables contains 'CI_FAILED'",
+            ),
+        ),
+        entryNodeId = CI_WATCH,
+        exitNodeIds = emptyList(),
+        config = GraphConfig(maxParallelNodes = 1),
+    )
+
+    val ALL: List<AgentGraph> = listOf(RESEARCH, CODE_REVIEW, DEEP_DIVE, CI_AUTO_FIX)
 
     fun byId(id: String): AgentGraph? = ALL.firstOrNull { it.id == id }
 
