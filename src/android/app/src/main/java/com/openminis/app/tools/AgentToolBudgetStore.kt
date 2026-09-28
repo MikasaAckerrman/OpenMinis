@@ -62,6 +62,26 @@ object AgentToolBudgetStore {
     fun recordCall(sessionId: String): Int =
         budgets[sessionId]?.used?.incrementAndGet() ?: 0
 
+    /**
+     * [T-budget-atomic-acquire] Atomically RESERVE one call slot, refusing
+     * when the ceiling is already reached. The executor's old shape —
+     * `check(used) → recordCall()` — was check-then-act: a parallel batch
+     * of N calls all read `used` before any recorded, so a budget of 5
+     * could admit 5+3 concurrent calls (writers parallelize on distinct
+     * paths, so this is not a read-only corner). CAS loop instead of a
+     * synchronized block: uncontended fast path stays lock-free.
+     *
+     * Returns true when unbounded (no entry) — same contract as check().
+     */
+    fun tryAcquire(sessionId: String): Boolean {
+        val b = budgets[sessionId] ?: return true
+        while (true) {
+            val cur = b.used.get()
+            if (cur >= b.limit) return false
+            if (b.used.compareAndSet(cur, cur + 1)) return true
+        }
+    }
+
     fun clear(sessionId: String) {
         budgets.remove(sessionId)
     }

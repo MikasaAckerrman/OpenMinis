@@ -46,6 +46,22 @@ object AgentToolBudget {
      * @param roleLabel human name used in the refusal ("Orchestrator").
      * @param artifact what this node owes, echoed so the refusal is actionable.
      */
+    /**
+     * Refusal text for a spent budget. Shared by [check] (pure, unit-tested)
+     * and the executor's atomic-acquire path — one source, no drift.
+     */
+    fun refusalMessage(
+        roleLabel: String,
+        used: Int,
+        budget: Int,
+        artifact: String,
+    ): String =
+        "Tool budget spent: $roleLabel used $used of $budget tool calls for " +
+            "this task. Stop gathering and deliver your artifact now — $artifact — " +
+            "using what you already read. If a genuine blocker means you cannot, hand " +
+            "off with STATUS: BLOCKED and name exactly what is missing. Do not call " +
+            "another tool."
+
     fun check(
         used: Int,
         budget: Int,
@@ -59,11 +75,7 @@ object AgentToolBudget {
         if (used < budget) return Verdict(allowed = true)
         return Verdict(
             allowed = false,
-            message = "Tool budget spent: $roleLabel used $used of $budget tool calls for " +
-                "this task. Stop gathering and deliver your artifact now — $artifact — " +
-                "using what you already read. If a genuine blocker means you cannot, hand " +
-                "off with STATUS: BLOCKED and name exactly what is missing. Do not call " +
-                "another tool.",
+            message = refusalMessage(roleLabel, used, budget, artifact),
         )
     }
 

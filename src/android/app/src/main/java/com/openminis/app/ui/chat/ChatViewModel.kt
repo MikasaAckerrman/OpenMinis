@@ -12113,7 +12113,33 @@ class ChatViewModel(
                 val results = kotlinx.coroutines.coroutineScope {
                     val deferred = toolCalls.map { (id, name, args) ->
                         async(Dispatchers.IO) {
-                            executeTool(name, args.toString(), id, allToolBlocks, assistantId, accumulatedText)
+                            // [T-preflight-parallel] SAME gate as the sequential
+                            // path below — the parallel batch previously called
+                            // executeTool() directly, so a multi-tool turn with
+                            // garbage args (empty {}, wrong JSON types, invalid
+                            // enum values) skipped preflight ENTIRELY and ran
+                            // with org.json-coerced defaults: exactly the
+                            // G13-class failure the preflight exists to convert
+                            // into a one-round self-correction. The blocked
+                            // shape mirrors the sequential path: a FAILED
+                            // tool_result carries the model-facing message;
+                            // the post-process loop (detector record + block
+                            // status) runs there for every batch entry alike.
+                            val preflightError = preflightValidateToolCall(name, args, agentTools)
+                            if (preflightError != null) {
+                                AppLogger.warning(
+                                    "ToolPreflight",
+                                    "BLOCKED(parallel) tool=$name id=$id reason=\"$preflightError\"",
+                                )
+                                ToolExecutionResult(
+                                    "Error: Tool call rejected before execution. $preflightError " +
+                                        "Re-issue the call with correct argument types and all required " +
+                                        "parameters. Do not retry with the same arguments.",
+                                    false,
+                                )
+                            } else {
+                                executeTool(name, args.toString(), id, allToolBlocks, assistantId, accumulatedText)
+                            }
                         }
                     }
                     deferred.awaitAll()
@@ -12713,18 +12739,18 @@ class ChatViewModel(
         // finish with what it read, which beats a cancelled run. Measured need —
         // run 9eb70345's planner made 14 calls and produced no plan.
         val budgetLimit = com.openminis.app.tools.AgentToolBudgetStore.limitFor(sessionId)
-        // [T-tool-budget-indicator] Set inside the budget block after
-        // recordCall; threaded to the success-path decorator chain below.
+        // [T-tool-budget-indicator] Set inside the budget block after the
+        // atomic acquire; threaded to the success-path decorator chain below.
         var budgetStatus: String? = null
         if (budgetLimit != null) {
-            val used = com.openminis.app.tools.AgentToolBudgetStore.usedBy(sessionId)
-            val verdict = com.openminis.app.offload.AgentToolBudget.check(
-                used = used,
-                budget = budgetLimit,
-                roleLabel = com.openminis.app.tools.AgentToolBudgetStore.roleLabelFor(sessionId),
-                artifact = com.openminis.app.tools.AgentToolBudgetStore.artifactFor(sessionId),
-            )
-            if (!verdict.allowed) {
+            // [T-budget-atomic-acquire] Reservation BEFORE execution, not
+            // check-then-record: a parallel batch reads `used` concurrently
+            // and the old shape let N calls through a budget with N-1 slots
+            // left. tryAcquire is atomic; on refusal the call consumed
+            // nothing and the verdict text still carries the model's
+            // remaining-work instruction.
+            if (!com.openminis.app.tools.AgentToolBudgetStore.tryAcquire(sessionId)) {
+                val used = com.openminis.app.tools.AgentToolBudgetStore.usedBy(sessionId)
                 AppLogger.warning(
                     "AgentRoute",
                     "tool budget spent sid=${sessionId.take(8)} tool=$name used=$used/$budgetLimit",
@@ -12734,12 +12760,19 @@ class ChatViewModel(
                         nodeBinding.taskId, nodeBinding.runtimeId, null,
                     )
                 }
-                return ToolExecutionResult(verdict.message, false)
+                return ToolExecutionResult(
+                    com.openminis.app.offload.AgentToolBudget.refusalMessage(
+                        roleLabel = com.openminis.app.tools.AgentToolBudgetStore.roleLabelFor(sessionId),
+                        used = used,
+                        budget = budgetLimit,
+                        artifact = com.openminis.app.tools.AgentToolBudgetStore.artifactFor(sessionId),
+                    ),
+                    false,
+                )
             }
-            com.openminis.app.tools.AgentToolBudgetStore.recordCall(sessionId)
-            // [T-tool-budget-indicator] Post-call remaining count for the
-            // success-path footer (budgetStatusLine): computed AFTER
-            // recordCall so the line reflects THIS call too. Null keeps
+            // [T-tool-budget-indicator] Post-acquire remaining count for the
+            // success-path footer (budgetStatusLine): the slot for THIS call
+            // is already reserved, so the line reflects it. Null keeps
             // unbudgeted sessions' results undecorated.
             budgetStatus = budgetStatusLine(
                 com.openminis.app.tools.AgentToolBudgetStore.usedBy(sessionId),
