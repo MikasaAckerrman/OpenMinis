@@ -429,6 +429,11 @@ interface ChatDao {
     @Query("UPDATE sessions SET auto_mode_enabled = :value, updated_at = :updatedAt WHERE id = :id")
     suspend fun updateAutoModeEnabled(id: String, value: Int?, updatedAt: Long = System.currentTimeMillis())
 
+    // [T-auto-mode-resume] Durable armed state + counters (wishlist №10):
+    // written at arm/disarm/turn boundaries; read at session open.
+    @Query("UPDATE sessions SET auto_mode_armed = :armed, auto_mode_state = :state, updated_at = :updatedAt WHERE id = :id")
+    suspend fun updateAutoModeRun(id: String, armed: Int, state: String?, updatedAt: Long = System.currentTimeMillis())
+
     @Query("UPDATE sessions SET subagents_enabled = :value, updated_at = :updatedAt WHERE id = :id")
     suspend fun updateSubagentsEnabled(id: String, value: Int?, updatedAt: Long = System.currentTimeMillis())
 

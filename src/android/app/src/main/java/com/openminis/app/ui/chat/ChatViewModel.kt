@@ -1745,6 +1745,26 @@ class ChatViewModel(
     private var autoModeCompactPending = false
 
     /**
+     * [T-auto-mode-resume] Counters snapshot of the armed run, persisted
+     * with the armed flag and refreshed at every turn boundary so a
+     * process death loses at most the in-flight turn's counters.
+     */
+    private fun autoModeRunStateJson(): String = org.json.JSONObject()
+        .put("turns", autoModeTurns)
+        .put("tokens", autoModeTokensUsed)
+        .put("failRetries", autoModeFailRetries)
+        .toString()
+
+    private fun restoreAutoModeRun(stateJson: String) {
+        runCatching {
+            val o = org.json.JSONObject(stateJson)
+            autoModeTurns = o.optInt("turns", 0)
+            autoModeTokensUsed = o.optLong("tokens", 0L)
+            autoModeFailRetries = o.optInt("failRetries", 0)
+        }
+    }
+
+    /**
      * Fires right after every successful turn (send path + drain loop).
      * Parks the next continuation — the queue pump drives the actual send.
      */
@@ -1753,6 +1773,15 @@ class ChatViewModel(
         // irrelevant now — reset the self-retry counter so the next outage
         // gets a fresh 3-attempt budget.
         autoModeFailRetries = 0
+        // [T-auto-mode-resume] Refresh the durable counters at the turn
+        // boundary — a process death mid-run loses at most the in-flight
+        // turn's counters, not the run's identity.
+        if (_autoModeArmed.value) {
+            val sid = activeSessionId.ifEmpty { sessionId }
+            runCatching {
+                chatRepository.dao.updateAutoModeRun(sid, 1, autoModeRunStateJson())
+            }
+        }
         if (!_autoModeArmed.value || autoModeParked) return
         val last = _messages.value.lastOrNull { it.role == "assistant" } ?: return
 
@@ -5698,6 +5727,29 @@ class ChatViewModel(
                 }
             }
         }
+        // [T-auto-mode-resume] Wishlist №10, persistence layer: EVERY armed
+        // transition lands in the sessions row. A StateFlow observer is the
+        // single chokepoint over every current and future arm/disarm site —
+        // no per-site surgery, no missed path. The write is one 1-row
+        // UPDATE on IO; flips are rare (arm once, disarm once per run).
+        viewModelScope.launch(Dispatchers.IO) {
+            // NOTE: no distinctUntilChanged — StateFlow is already
+            // distinct-by-construction (operator fusion; the deprecation
+            // warns that the operator is a no-op here).
+            _autoModeArmed.asStateFlow()
+                .collect { armed ->
+                    val sid = activeSessionId.ifEmpty { sessionId }
+                    runCatching {
+                        chatRepository.dao.updateAutoModeRun(
+                            sid,
+                            if (armed) 1 else 0,
+                            if (armed) autoModeRunStateJson() else null,
+                        )
+                    }.onFailure {
+                        AppLogger.warning(TAG, "[AutoMode] persist armed=$armed failed: ${it.message}")
+                    }
+                }
+        }
         // T-android-crash-safe-mode-v2: when the user dismisses the
         // safe-mode dialog, retry the restore that we skipped during
         // cold start. loadSession() is idempotent (re-checks isSafeMode
@@ -6199,6 +6251,45 @@ class ChatViewModel(
             _sessionAutoMode.value = session.autoModeEnabled?.let { it == 1 }
             _sessionSubagents.value = session.subagentsEnabled?.let { it == 1 }
             AppLogger.info(TAG, "[ScopedToggles] load sid=${session.id.take(8)} autoMode=${_sessionAutoMode.value ?: "global"} subagents=${_sessionSubagents.value ?: "global"}")
+
+            // [T-auto-mode-resume] Wishlist №10: restore a run that was
+            // armed when the process died. armed=1 at THIS point can ONLY
+            // mean a hard death — every user-facing stop (Stop button,
+            // non-⟳ message, completion sentinel, disarm paths) flips the
+            // flow first and the init observer persists it immediately.
+            // The auto-resume itself fires after the load settles, only
+            // when the tail confirms an interrupted loop (canResume) and
+            // the composer is empty (never stomp a half-typed message).
+            if (session.autoModeArmed == 1) {
+                session.autoModeState?.let { restoreAutoModeRun(it) }
+                _autoModeArmed.value = true
+                AppLogger.info(
+                    TAG,
+                    "[AutoMode] restored ARMED run after process death: " +
+                        "turns=${autoModeTurns} tokens=${autoModeTokensUsed}",
+                )
+                appendSystemInfo(
+                    text = "Авто-режим: прошлая сессия была прервана гибелью процесса — " +
+                        "продолжаю автономный прогон.",
+                    iconKind = "compact",
+                )
+                viewModelScope.launch {
+                    delay(4_000L)
+                    if (_autoModeArmed.value && !_isStreaming.value &&
+                        _canResume.value && _inputText.value.isEmpty()
+                    ) {
+                        AppLogger.info(TAG_STREAM, "[AutoMode] auto-resume firing retryLast")
+                        withContext(Dispatchers.Main) { retryLast() }
+                    } else {
+                        AppLogger.info(
+                            TAG_STREAM,
+                            "[AutoMode] auto-resume skipped (guards): armed=${_autoModeArmed.value} " +
+                                "streaming=${_isStreaming.value} canResume=${_canResume.value} " +
+                                "composer=${_inputText.value.isNotEmpty()}",
+                        )
+                    }
+                }
+            }
 
             // [T-session-digest] Snapshot the PLAN-STATE digest once at
             // session open: the head of the active plan file (what's done /

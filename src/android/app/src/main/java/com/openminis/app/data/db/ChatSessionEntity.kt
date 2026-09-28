@@ -36,6 +36,18 @@ data class ChatSessionEntity(
      * 0 = explicitly OFF — both distinct from unset and survive cold-start.
      */
     @ColumnInfo(name = "auto_mode_enabled") val autoModeEnabled: Int? = null,
+
+    /**
+     * [T-auto-mode-resume] Wishlist №10 — durable ARMED state. 1 = an
+     * autonomous run was armed when the process last wrote this row; the
+     * only path that leaves 1 behind at a session open is a process death
+     * (a user Stop disarms first). Restored on load; auto-resume fires
+     * only when the tail also looks interrupted.
+     */
+    @ColumnInfo(name = "auto_mode_armed") val autoModeArmed: Int = 0,
+
+    /** Counters snapshot JSON of the armed run: turns/tokens/failRetries. */
+    @ColumnInfo(name = "auto_mode_state") val autoModeState: String? = null,
     @ColumnInfo(name = "subagents_enabled") val subagentsEnabled: Int? = null,
 
     /**
