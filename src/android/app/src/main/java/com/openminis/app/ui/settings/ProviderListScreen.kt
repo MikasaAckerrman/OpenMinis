@@ -80,7 +80,9 @@ fun ProviderListScreen(
         ProviderListSections.build(instances, searchText)
     }
     val totalCount = instances.size
-    val shownCount = ProviderListSections.instanceCount(sections)
+    // [T-ui-fps] Night wave-1 F4: recompute per invalidation → remembered
+    // alongside the sections it derives from.
+    val shownCount = remember(sections) { ProviderListSections.instanceCount(sections) }
 
     // Collapsed by default and PERSISTED: the list is a hub the user leaves and
     // re-enters constantly (open folder → edit a key → back), and in-memory
@@ -247,10 +249,18 @@ fun ProviderListScreen(
         // ProviderInstancesView's Voice Services section). Rows are read-only
         // views onto the underlying instance — no stored entity.
         val shadows = remember(config) { providerRepository.shadowVoiceProviders() }
+        // [T-ui-fps] Night wave-1 F3: the duplicate-detection footer rescan
+        // ran un-memoized IN COMPOSITION — every invalidation of this scope
+        // (expand/collapse, menu, search typing) rescanned all instances on
+        // the main thread. It depends on the same config snapshot the
+        // shadows do, so it computes once per actual change.
+        val hasShadowDuplicates = remember(config) {
+            providerRepository.hasFoldedShadowDuplicates()
+        }
         if (shadows.isNotEmpty()) {
             SettingsSection(
                 header = stringResource(R.string.voice_services_section),
-                footer = if (providerRepository.hasFoldedShadowDuplicates()) {
+                footer = if (hasShadowDuplicates) {
                     stringResource(R.string.voice_services_duplicate_hint)
                 } else {
                     null
