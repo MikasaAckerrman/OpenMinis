@@ -65,6 +65,16 @@ interface AgentBoardDao {
     @Query("SELECT * FROM agent_tasks WHERE team_id = :teamId ORDER BY created_at DESC LIMIT :limit")
     suspend fun tasksForTeam(teamId: String, limit: Int = 50): List<AgentTaskEntity>
 
+    /**
+     * [T-task-board] Statuses of SPECIFIC task ids — the dependency gate's
+     * read. Deep-analysis fix: the gate previously read the newest-100 team
+     * window; a depends_on citing an OLDER completed task fell out of the
+     * window and was refused as 'unknown/pruned'. An id-targeted read has no
+     * window to fall out of.
+     */
+    @Query("SELECT * FROM agent_tasks WHERE id IN (:ids)")
+    suspend fun tasksByIds(ids: List<String>): List<AgentTaskEntity>
+
     @Query("SELECT * FROM task_status_history WHERE task_id = :taskId ORDER BY changed_at ASC")
     suspend fun historyForTask(taskId: String): List<TaskStatusHistoryEntity>
 

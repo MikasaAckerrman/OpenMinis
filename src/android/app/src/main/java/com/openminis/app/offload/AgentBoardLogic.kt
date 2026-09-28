@@ -27,6 +27,14 @@ object AgentBoardLogic {
     const val STATUS_BLOCKED = "BLOCKED"
 
     /**
+     * [T-task-board] A RUNNING row whose updatedAt is older than this is
+     * marked stale in summaries: in-memory progress dies with the process,
+     * the durable row does not — the marker turns an eternally-busy zombie
+     * into an actionable 'treat as failed' signal for the orchestrator.
+     */
+    const val STALE_AFTER_MS = 60L * 60 * 1000
+
+    /**
      * Ids of tasks whose dependencies are all COMPLETED. A task listing a
      * missing dep id is NOT ready (the dep may have been pruned — treat
      * pruned as unsatisfied, the honest reading, and say so in [unmetDeps]).
@@ -102,9 +110,16 @@ object AgentBoardLogic {
      *
      * Deep-analysis note: the id MUST be in each line — it is the handle
      * depends_on references; a board that shows tasks but not their ids
-     * makes the dependency feature unusable end-to-end.
+     * makes the dependency feature unusable end-to-end. RUNNING rows older
+     * than [STALE_AFTER_MS] get a staleness marker: the in-memory progress
+     * dies with the process, but the durable row lives on — without the
+     * marker a crashed run looks eternally busy and blocks its dependents.
      */
-    fun teamSummary(tasks: List<AgentTaskEntity>, tail: Int = 5): String {
+    fun teamSummary(
+        tasks: List<AgentTaskEntity>,
+        tail: Int = 5,
+        now: Long = System.currentTimeMillis(),
+    ): String {
         if (tasks.isEmpty()) return ""
         val completed = tasks.count { it.status == STATUS_COMPLETED }
         val failed = tasks.count { it.status == STATUS_FAILED }
@@ -116,8 +131,11 @@ object AgentBoardLogic {
         if (pending > 0) sb.append(", $pending pending")
         tasks.take(tail).forEach { t ->
             val depNote = if (t.dependsOnTaskIds != "[]") " deps:${t.dependsOnTaskIds}" else ""
+            val stale = if (t.status == STATUS_RUNNING && now - t.updatedAt > STALE_AFTER_MS) {
+                " ⚠ stale (started >1h ago — the run likely died with its process; treat as failed or re-spawn)"
+            } else ""
             sb.appendLine()
-                .append("  [${t.status}] ${t.id}: ${t.title.take(60)} (${t.roleRequired})$depNote")
+                .append("  [${t.status}] ${t.id}: ${t.title.take(60)} (${t.roleRequired})$depNote$stale")
         }
         return sb.toString()
     }

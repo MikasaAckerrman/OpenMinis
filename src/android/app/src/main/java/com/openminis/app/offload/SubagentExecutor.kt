@@ -220,6 +220,7 @@ object SubagentExecutor {
         spawnerSessionId: String?,
         dependsOn: List<String>,
     ): String? {
+        val now = System.currentTimeMillis()
         if (dependsOn.isEmpty()) return null
         if (spawnerSessionId.isNullOrBlank()) {
             return "depends_on refused: no team context (this spawn has no spawner session " +
@@ -227,16 +228,22 @@ object SubagentExecutor {
         }
         val teamTasks = com.openminis.app.data.db.ProviderDatabase
             .getInstance(context).agentBoardDao()
-            .tasksForTeam(spawnerSessionId, limit = 100)
-        val statusById = teamTasks.associate { it.id to it.status }
-        val unmet = dependsOn.filter { statusById[it] != AgentBoardLogic.STATUS_COMPLETED }
+            .tasksByIds(dependsOn)
+        val unmet = dependsOn.filter { dep ->
+            teamTasks.find { it.id == dep }?.let { it.status != AgentBoardLogic.STATUS_COMPLETED } ?: true
+        }
         if (unmet.isEmpty()) return null
         val detail = unmet.joinToString { dep ->
-            when (statusById[dep]) {
-                null -> "$dep (unknown/pruned)"
-                AgentBoardLogic.STATUS_RUNNING -> "$dep (still running)"
-                AgentBoardLogic.STATUS_FAILED -> "$dep (FAILED — re-delegate it or drop the dependency)"
-                else -> "$dep (${statusById[dep]})"
+            val row = teamTasks.find { it.id == dep }
+            val stale = row != null &&
+                row.status == AgentBoardLogic.STATUS_RUNNING &&
+                now - row.updatedAt > AgentBoardLogic.STALE_AFTER_MS
+            when {
+                row == null -> "$dep (unknown/pruned)"
+                stale -> "$dep (RUNNING >1h — the run likely died with its process; re-spawn it or drop the dependency)"
+                row.status == AgentBoardLogic.STATUS_RUNNING -> "$dep (still running)"
+                row.status == AgentBoardLogic.STATUS_FAILED -> "$dep (FAILED — re-delegate it or drop the dependency)"
+                else -> "$dep (${row.status})"
             }
         }
         return "spawn refused: dependencies not satisfied — $detail. " +
@@ -605,16 +612,52 @@ object SubagentExecutor {
 
     /**
      * Run a registered graph (builtin or custom) as a tool call.
+     *
+     * [T-task-board] Deep-analysis gap closed: run_graph runs were INVISIBLE
+     * on the team board (only spawn_* recorded) — the cross-turn history lied
+     * by omission about a third of the delegation surface. The run now lands
+     * on the board like any spawn: RUNNING row before, terminal transition +
+     * result after. teamId keeps the spawner's session (null = debug callers:
+     * no team, no row — same rule as spawns).
      */
-    suspend fun runGraph(context: Context, graphId: String, input: String): String {
+    suspend fun runGraph(
+        context: Context,
+        graphId: String,
+        input: String,
+        teamId: String? = null,
+    ): String {
+        val taskId = "graph-${UUID.randomUUID().toString().take(8)}"
+        if (teamId != null) {
+            AgentBoardRecorder.taskStarted(
+                context, taskId = taskId, teamId = teamId,
+                roleRequired = "graph:$graphId",
+                title = input.lineSequence().firstOrNull().orEmpty(),
+                description = input, workspaceDir = null,
+            )
+        }
         return try {
             // [T-spawn-subagent-ephemeral] A graph invoked as a TOOL narrates
             // through the tool result and the live progress card in the
             // originating chat; a showcase session would be an invisible,
             // undeletable row (see AgentGraphRunner.run).
-            val result = AgentGraphRunner.run(context, graphId, input, ephemeral = true)
+            val result = AgentGraphRunner.run(context, graphId, input, taskId = taskId, ephemeral = true)
+            if (teamId != null) {
+                AgentBoardRecorder.taskFinished(
+                    context, taskId = taskId, teamId = teamId,
+                    assignedAgentId = null,
+                    succeeded = result.status == RunStatus.SUCCESS,
+                    result = formatResult(graphId, result),
+                )
+            }
             formatResult(graphId, result)
         } catch (e: Exception) {
+            if (teamId != null) {
+                AgentBoardRecorder.taskFinished(
+                    context, taskId = taskId, teamId = teamId,
+                    assignedAgentId = null, succeeded = false,
+                    result = "graph run failed: ${e.message}",
+                )
+            }
             "Graph '$graphId' failed: ${e.message}"
         }
     }

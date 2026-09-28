@@ -13263,6 +13263,9 @@ class ChatViewModel(
         }
         val result = com.openminis.app.offload.SubagentExecutor.runGraph(
             context, graphId, input,
+            // [T-task-board] The run lands on THIS chat's team board — the
+            // cross-turn history covers the full delegation surface.
+            teamId = activeSessionId,
         )
         return ToolExecutionResult(result, true)
     }

@@ -2,6 +2,7 @@ package com.openminis.app.offload
 
 import com.openminis.app.data.db.AgentTaskEntity
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -137,6 +138,24 @@ class AgentBoardLogicTest {
         // The id is the handle depends_on references — it must be visible.
         assertTrue(summary.contains("[COMPLETED] a: map the codebase"))
         assertTrue(summary.contains("[FAILED] b: fix the parser"))
+    }
+
+    @Test
+    fun `running row older than an hour is marked stale`() {
+        val now = 10_000_000L
+        val fresh = listOf(
+            task("r1", AgentBoardLogic.STATUS_RUNNING, createdAt = now - 60_000, title = "fresh run"),
+        )
+        assertFalse(AgentBoardLogic.teamSummary(fresh, now = now).contains("stale"))
+        val stale = listOf(
+            task(
+                "r2", AgentBoardLogic.STATUS_RUNNING, createdAt = now - 7_200_000,
+                title = "zombie run",
+            ).copy(updatedAt = now - 7_200_000),
+        )
+        val text = AgentBoardLogic.teamSummary(stale, now = now)
+        assertTrue(text.contains("stale"))
+        assertTrue(text.contains("likely died"))
     }
 
     @Test
