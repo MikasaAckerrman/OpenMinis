@@ -12700,6 +12700,9 @@ class ChatViewModel(
                     nodeBinding.taskId, nodeBinding.runtimeId, null,
                 )
             }
+            // Note: the error path deliberately skips the memory-nudge and
+            // turn-timer decorations the success path applies — decorations
+            // on a failure are noise, not information.
             return ToolExecutionResult(
                 "Error: internal tool failure ($name: ${e.javaClass.simpleName}: ${e.message}). " +
                     "The command was not executed. You may retry once; if it repeats, " +
