@@ -15,7 +15,11 @@ import java.net.Socket
  * запускаться когда запускаю minis, а не когда я включаю телефон? Смысл его
  * включать при перезагрузке, если я использую его только в minis»).
  *
- * Boot: on MinisApp.onCreate, a background coroutine probes the local port
+ * Boot: on MinisApp.onCreate AND on every foreground return
+ * ([T-supermemory-fg-heal] — a backgrounded app whose server was killed
+ * by the LMK stays dead until the next full process start without it; the
+ * foreground call makes the heal as frequent as the user's returns). A
+ * background coroutine probes the local port
  * and, when dead, kicks `run.sh` through the persistent PRoot shell —
  * [ExecutionCoordinator] auto-boots the sandbox, injects the environment
  * (the API keys run.sh extracts) and mounts the shared dir the script
@@ -36,43 +40,64 @@ object SupermemoryAutostart {
         "nohup sh /var/minis/shared/supermemory/run.sh >/tmp/sm_autostart.log 2>&1 & echo boot_kick"
     private const val SYSTEM_SESSION = "system"
 
-    /** Call from MinisApp.onCreate. Non-blocking, at most one boot per process. */
+    /**
+     * [T-supermemory-fg-heal] At most one boot kick IN FLIGHT — the doc's
+     * old "at most one boot per process" claim had no guard at all, and the
+     * new foreground-heal call site makes concurrent kicks a real shape:
+     * two run.sh invocations would interleave their pkill/sleep/start
+     * sequences, the second one killing the first's freshly-started server
+     * (the stale-lock fix's live-pid branch does exactly that). CAS-guarded:
+     * a second caller while a kick is in flight (including the 30s probe
+     * loop) skips; after failure the flag resets, so each foreground return
+     * is a fresh retry opportunity.
+     */
+    private val bootKickInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** Call from MinisApp.onCreate AND on foreground returns. Non-blocking. */
     fun bootIfNeeded(scope: CoroutineScope = CoroutineScope(Dispatchers.IO)) {
         scope.launch {
             if (portOpen()) {
                 AppLogger.info(TAG, "server already up — no boot needed")
                 return@launch
             }
-            AppLogger.info(TAG, "port $PORT down — kicking run.sh via the persistent shell")
-            runCatching {
-                ExecutionCoordinator.execute(
-                    SYSTEM_SESSION,
-                    BOOT_CMD,
-                    timeout = 30_000L,
-                )
-            }.onSuccess { res ->
-                AppLogger.info(TAG, "boot kick exit=${res.exitCode} (detached; server boots ~9s)")
-            }.onFailure { e ->
-                AppLogger.warning(TAG, "boot kick failed: ${e.message}")
+            if (!bootKickInFlight.compareAndSet(false, true)) {
+                AppLogger.info(TAG, "boot kick already in flight — skipping")
                 return@launch
             }
-            // Wait for the server to accept connections (boot ~9s; pending
-            // drain may add a few more). Bounded — the circuit breaker
-            // covers any late start.
-            for (i in 1..15) {
-                delay(2_000)
-                if (portOpen()) {
-                    AppLogger.info(TAG, "server is UP after ${i * 2}s")
-                    // [T-supermemory-autostart] The boot window may have
-                    // already logged breaker failures (the user's first
-                    // message racing the boot) — reset it so the healthy
-                    // server is not fast-skipped for the breaker's full
-                    // 10-minute window.
-                    SupermemoryBridge.onServerUp()
+            try {
+                AppLogger.info(TAG, "port $PORT down — kicking run.sh via the persistent shell")
+                runCatching {
+                    ExecutionCoordinator.execute(
+                        SYSTEM_SESSION,
+                        BOOT_CMD,
+                        timeout = 30_000L,
+                    )
+                }.onSuccess { res ->
+                    AppLogger.info(TAG, "boot kick exit=${res.exitCode} (detached; server boots ~9s)")
+                }.onFailure { e ->
+                    AppLogger.warning(TAG, "boot kick failed: ${e.message}")
                     return@launch
                 }
+                // Wait for the server to accept connections (boot ~9s; pending
+                // drain may add a few more). Bounded — the circuit breaker
+                // covers any late start.
+                for (i in 1..15) {
+                    delay(2_000)
+                    if (portOpen()) {
+                        AppLogger.info(TAG, "server is UP after ${i * 2}s")
+                        // [T-supermemory-autostart] The boot window may have
+                        // already logged breaker failures (the user's first
+                        // message racing the boot) — reset it so the healthy
+                        // server is not fast-skipped for the breaker's full
+                        // 10-minute window.
+                        SupermemoryBridge.onServerUp()
+                        return@launch
+                    }
+                }
+                AppLogger.warning(TAG, "server not up after 30s — check /tmp/sm_autostart.log in the sandbox")
+            } finally {
+                bootKickInFlight.set(false)
             }
-            AppLogger.warning(TAG, "server not up after 30s — check /tmp/sm_autostart.log in the sandbox")
         }
     }
 

@@ -653,6 +653,20 @@ class MinisApp : Application(), ImageLoaderFactory {
                     runCatching {
                         com.openminis.app.network.NetworkMonitor.sharedLLMConnectionPool.evictAll()
                     }
+                    // [T-supermemory-fg-heal] The user's observation
+                    // (28.09): «когда телефон выключен, песочница не
+                    // работает». The sandbox self-heals per command (a dead
+                    // shell is recreated in getOrCreateShell), but the
+                    // DETACHED supermemory server had no foreground path:
+                    // the autostart runs only in onCreate, so a backgrounded
+                    // app whose server was killed (LMK reclaims cached
+                    // apps' children) stayed server-less until the next
+                    // full process start — while the bridge paid breaker
+                    // failures for it. bootIfNeeded is idempotent: port
+                    // open → no-op (one cheap TCP probe); port down → kick
+                    // run.sh → probe loop → onServerUp resets the breaker.
+                    // Same self-heal pattern the command path already has.
+                    com.openminis.app.memory.SupermemoryAutostart.bootIfNeeded()
                     com.openminis.app.logging.AppLogger.info(
                         "BgDiag",
                         "app -> FOREGROUND, active sessions=" +
