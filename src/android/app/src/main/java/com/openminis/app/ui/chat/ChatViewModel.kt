@@ -12700,7 +12700,7 @@ class ChatViewModel(
                     nodeBinding.taskId, nodeBinding.runtimeId, null,
                 )
             }
-            ToolExecutionResult(
+            return ToolExecutionResult(
                 "Error: internal tool failure ($name: ${e.javaClass.simpleName}: ${e.message}). " +
                     "The command was not executed. You may retry once; if it repeats, " +
                     "report the tool name and this message.",
