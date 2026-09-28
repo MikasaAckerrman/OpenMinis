@@ -13551,10 +13551,16 @@ class ChatViewModel(
             )
             val output = res.output.trim()
             // Root-unavailable signature: su fails with "su: not found" /
-            // permission denial / the KSU request denied by the manager.
+            // permission denial / the KSU request denied by the manager /
+            // the adb bridge itself is down (event analysis B6: a dead
+            // adb daemon previously surfaced as a generic failure WITHOUT
+            // the recovery hint — the model could not tell a broken bridge
+            // from a broken command).
             val rootDown = output.contains("su: not found") ||
                 output.contains("Permission denied") ||
                 output.contains("request denied") ||
+                output.contains("cannot connect") ||
+                output.contains("adb: error") ||
                 (res.exitCode != 0 && output.isBlank())
             val text = buildString {
                 append("exit=${res.exitCode}\n")
@@ -13563,8 +13569,9 @@ class ChatViewModel(
             if (rootDown) {
                 ToolExecutionResult(
                     "ROOT НЕДОСТУПЕН ($text)\n" +
-                        "KSU не запущен или отклонил запрос. Восстановление: " +
-                        "adb shell 'sh /data/local/tmp/root.sh' (см. память/ранбук), затем повтори.",
+                        "KSU не запущен / отклонил запрос, либо adb-мост (localhost:5555) не отвечает. " +
+                        "Восстановление: adb shell 'sh /data/local/tmp/root.sh' (см. память/ранбук), " +
+                        "затем повтори; если мост — проверь, что adbd слушает (root.sh поднимает его).",
                     false, toolTitle = toolTitle)
             } else {
                 ToolExecutionResult(text, res.exitCode == 0, toolTitle = toolTitle)
