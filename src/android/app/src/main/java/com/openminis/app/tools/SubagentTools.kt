@@ -175,12 +175,21 @@ object SubagentTools {
             "'builtin-deep-dive' (full pipeline: requirements → discovery → architecture → implement → 3 reviewers → gate).",
         parameters = mapOf(
             "tool_title" to AgentToolParam("string", "A concise 5-10 word summary (e.g. 'Run deep dive on codebase'). Use the user's language."),
-            "graph_id" to AgentToolParam("string", "The graph to run. Use a builtin preset id or a custom graph id.",
-                enumValues = listOf(
-                    "builtin-parallel-research",
-                    "builtin-implement-review",
-                    "builtin-deep-dive",
-                )),
+            // [T-enum-exhaustive-regression] graph_id has NO enumValues ON
+            // PURPOSE: the value space is OPEN (providerRepo.loadAgentGraph
+            // accepts any user-defined graph id). An illustrative enum here
+            // misled providers into closed-set behavior AND the preflight's
+            // enum enforcement (28.09) would then reject legitimate custom
+            // graph ids — a regression caught in review. Builtin ids stay in
+            // the description as discoverable examples; only CLOSED value
+            // spaces (browser actions, roles, modes, timer actions) carry
+            // enumValues.
+            "graph_id" to AgentToolParam(
+                "string",
+                "The graph to run. Built-in presets: builtin-parallel-research, " +
+                    "builtin-implement-review, builtin-deep-dive. Custom graph ids " +
+                    "from your agent configuration are equally valid.",
+            ),
             "input" to AgentToolParam("string", "The task description / research question to feed the graph's entry node."),
         ),
         required = listOf("tool_title", "graph_id", "input"),

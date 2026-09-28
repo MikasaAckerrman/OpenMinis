@@ -555,6 +555,22 @@ class MinisApp : Application(), ImageLoaderFactory {
         )
         SessionActivityTracker.setCompletionListener { sessionId, isError ->
             backgroundTaskNotifier.notifyTaskCompleted(sessionId, isError)
+            // [T-supermemory-bg-stop] Gap closed (event-matrix B1): a session
+            // that STARTED in foreground and kept running after the app
+            // backgrounded held the supermemory stack up FOREVER — the
+            // background-transition stop had been correctly skipped (active
+            // session needs the server for turn-end distillation), but
+            // nothing re-evaluated when that session finally finished. The
+            // completion hook is the deterministic funnel (all four
+            // stream-teardown paths run through it), so: turn done + app
+            // backgrounded + no remaining active sessions → release the
+            // ~245MB/4.5% CPU back to the user's game. The foreground
+            // return re-boots via the fg-heal in ~9s.
+            if (!isAppForeground() &&
+                SessionActivityTracker.activeSessions.value.isEmpty()
+            ) {
+                com.openminis.app.memory.SupermemoryAutostart.stopIfNeeded()
+            }
         }
 
         // [T-completion-haptics] Double-buzz when a turn ends. Wired to the
