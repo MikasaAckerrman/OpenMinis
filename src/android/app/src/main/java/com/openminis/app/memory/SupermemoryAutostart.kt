@@ -38,6 +38,8 @@ object SupermemoryAutostart {
     private const val PORT = 6767
     private const val BOOT_CMD =
         "nohup sh /var/minis/shared/supermemory/run.sh >/tmp/sm_autostart.log 2>&1 & echo boot_kick"
+    private const val STOP_CMD =
+        "sh /var/minis/shared/supermemory/run.sh stop >/tmp/sm_stop.log 2>&1; echo stop_kick"
     private const val SYSTEM_SESSION = "system"
 
     /**
@@ -54,8 +56,7 @@ object SupermemoryAutostart {
     private val bootKickInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /** Call from MinisApp.onCreate AND on foreground returns. Non-blocking. */
-    fun bootIfNeeded(scope: CoroutineScope = CoroutineScope(Dispatchers.IO)) {
-        scope.launch {
+    fun bootIfNeeded(scope: CoroutineScope = CoroutineScope(Dispatchers.IO)) {        scope.launch {
             if (portOpen()) {
                 AppLogger.info(TAG, "server already up — no boot needed")
                 return@launch
@@ -97,6 +98,40 @@ object SupermemoryAutostart {
                 AppLogger.warning(TAG, "server not up after 30s — check /tmp/sm_autostart.log in the sandbox")
             } finally {
                 bootKickInFlight.set(false)
+            }
+        }
+    }
+
+    /**
+     * [T-supermemory-bg-stop] FPS guard (user 28.09: «не сделает хуже фпс»):
+     * while the app sits backgrounded — the user gaming, typically — the
+     * detached stack still holds ~245MB RSS and a few % CPU of pure
+     * contention. The lifecycle is now SYMMETRIC: boot on every foreground
+     * return (the existing fg-heal above), STOP on the background
+     * transition when no agent session is running. The call site (MinisApp
+     * onActivityStopped, foregroundActivityCount==0) guards the
+     * active-session case — a backgrounded FGS turn still distills into
+     * the server at turn end. A down-server window is covered the same way
+     * it always was: the compact path enqueues to pending/ (drained on the
+     * next boot), distiller/recall fail fast through the bridge breaker.
+     * Scheduled background runs are the residual trade-off — their turn
+     * distillates miss the server until the user next foregrounds Minis.
+     * Non-blocking, idempotent (port down → no-op).
+     */
+    fun stopIfNeeded(scope: CoroutineScope = CoroutineScope(Dispatchers.IO)) {
+        scope.launch {
+            if (!portOpen()) return@launch
+            AppLogger.info(TAG, "app backgrounded — stopping the supermemory stack (FPS guard)")
+            runCatching {
+                ExecutionCoordinator.execute(
+                    SYSTEM_SESSION,
+                    STOP_CMD,
+                    timeout = 15_000L,
+                )
+            }.onSuccess { res ->
+                AppLogger.info(TAG, "stop exit=${res.exitCode}")
+            }.onFailure { e ->
+                AppLogger.warning(TAG, "stop failed: ${e.message}")
             }
         }
     }

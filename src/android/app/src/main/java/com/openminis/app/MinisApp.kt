@@ -736,6 +736,19 @@ class MinisApp : Application(), ImageLoaderFactory {
                             com.openminis.app.service.SessionActivityTracker
                                 .activeSessions.value.size,
                     )
+                    // [T-supermemory-bg-stop] FPS guard: with no agent
+                    // session running, the detached supermemory stack is
+                    // pure contention (~245MB RSS + %CPU) while the user is
+                    // in another app — typically a game. Tear it down; the
+                    // foreground return re-boots via the fg-heal above in
+                    // ~9s. An ACTIVE session keeps the server (its turn-end
+                    // distillation still needs it); pending/ covers the
+                    // compact path across the down window.
+                    if (com.openminis.app.service.SessionActivityTracker
+                            .activeSessions.value.isEmpty()
+                    ) {
+                        com.openminis.app.memory.SupermemoryAutostart.stopIfNeeded()
+                    }
                     // [T-android-config-confirm-timeout] The user switched away
                     // while a config-confirm dialog may still be showing — nudge
                     // them so they can come back before the 120s timeout.
