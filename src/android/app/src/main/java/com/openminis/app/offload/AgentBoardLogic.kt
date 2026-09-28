@@ -104,6 +104,60 @@ object AgentBoardLogic {
     }
 
     /**
+     * [T-needs-you-lane] Wishlist No.12, concept borrowed from Agent
+     * Orchestrator's Kanban: autonomy breaks exactly where agents stall,
+     * and a scan-first lane turns "what survived the night" into one look.
+     * Includes the intervention states ONLY — FAILED, BLOCKED and
+     * RUNNING-older-than-[STALE_AFTER_MS]; healthy work never appears.
+     *
+     * The task-board tool prints this ABOVE the summary (attention first,
+     * chronology second); the compact spawn-time [teamSummary] deliberately
+     * does NOT carry it — its tokens are paid on every spawn call.
+     *
+     * Every line carries the task id (the depends_on handle) and a
+     * one-line action: the lane exists to route decisions, not to re-tell
+     * the history. BLOCKED is included defensively even though the
+     * recorder currently only writes RUNNING→COMPLETED/FAILED — graph-node
+     * BLOCKED verdicts may surface as task rows later, and the lane should
+     * already know what to do with them.
+     */
+    fun needsYouSection(
+        tasks: List<AgentTaskEntity>,
+        maxLines: Int = 8,
+        now: Long = System.currentTimeMillis(),
+    ): String {
+        val severity = { t: AgentTaskEntity ->
+            when (t.status) {
+                STATUS_FAILED -> 0
+                STATUS_BLOCKED -> 1
+                else -> 2 // stale RUNNING
+            }
+        }
+        val items = tasks.filter { t ->
+            t.status == STATUS_FAILED ||
+                t.status == STATUS_BLOCKED ||
+                (t.status == STATUS_RUNNING && now - t.updatedAt > STALE_AFTER_MS)
+        }.sortedBy(severity)
+        if (items.isEmpty()) return ""
+        val overflow = items.size - maxLines
+        val sb = StringBuilder()
+        sb.append("⚠ Needs you (${items.size}):")
+        items.asSequence().take(maxLines).forEach { t ->
+            val hint = when (t.status) {
+                STATUS_FAILED -> "re-spawn or drop"
+                STATUS_BLOCKED -> "read the block reason, unblock"
+                else -> "stale >1h — likely died; re-spawn if still needed"
+            }
+            sb.appendLine()
+                .append("  [${t.status}] ${t.id}: ${t.title.take(60)} — $hint")
+        }
+        if (overflow > 0) {
+            sb.appendLine().append("  …and $overflow more (raise the task_board limit)")
+        }
+        return sb.toString()
+    }
+
+    /**
      * Cross-turn team header for the spawner: counts + the tail of recent
      * tasks with status. Compact by design — it rides along in a spawn
      * result, and every token there is paid on every subsequent call.

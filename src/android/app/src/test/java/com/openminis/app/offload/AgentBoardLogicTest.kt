@@ -171,4 +171,68 @@ class AgentBoardLogicTest {
         )
         assertEquals(listOf("x"), AgentBoardLogic.readyTaskIds(tasks))
     }
+
+    // ── [T-needs-you-lane] Wishlist No.12: scan-first intervention lane ──
+
+    @Test
+    fun `needs-you lane is empty when everything is healthy`() {
+        val now = 10_000_000L
+        val tasks = listOf(
+            task("a", AgentBoardLogic.STATUS_COMPLETED),
+            task("b", AgentBoardLogic.STATUS_PENDING),
+            task("c", AgentBoardLogic.STATUS_RUNNING, createdAt = now - 60_000),
+        )
+        assertEquals("", AgentBoardLogic.needsYouSection(tasks, now = now))
+    }
+
+    @Test
+    fun `needs-you lane groups failed, blocked and stale with action hints`() {
+        val now = 10_000_000L
+        val tasks = listOf(
+            task("ok", AgentBoardLogic.STATUS_COMPLETED),
+            task("f1", AgentBoardLogic.STATUS_FAILED, title = "fix the thing"),
+            task("stale1", AgentBoardLogic.STATUS_RUNNING, createdAt = now - 7_200_000)
+                .copy(updatedAt = now - 7_200_000, title = "zombie"),
+            task("b1", AgentBoardLogic.STATUS_BLOCKED, title = "needs a decision"),
+        )
+        val text = AgentBoardLogic.needsYouSection(tasks, now = now)
+        // Header counts all three, ignores the healthy one.
+        assertTrue(text.startsWith("⚠ Needs you (3):"))
+        // Severity order: FAILED before BLOCKED before stale RUNNING.
+        val iF = text.indexOf("[FAILED] f1")
+        val iB = text.indexOf("[BLOCKED] b1")
+        val iS = text.indexOf("stale1")
+        assertTrue(iF in 0 until iB)
+        assertTrue(iB in (iF + 1) until iS)
+        // Each line routes a decision, not history.
+        assertTrue(text.contains("re-spawn or drop"))
+        assertTrue(text.contains("read the block reason"))
+        assertTrue(text.contains("likely died; re-spawn"))
+    }
+
+    @Test
+    fun `needs-you lane caps lines and reports the overflow`() {
+        val now = 10_000_000L
+        val tasks = (1..10).map { i ->
+            task("f$i", AgentBoardLogic.STATUS_FAILED, title = "fail $i")
+        }
+        val text = AgentBoardLogic.needsYouSection(tasks, maxLines = 8, now = now)
+        assertTrue(text.startsWith("⚠ Needs you (10):"))
+        assertTrue(text.contains("…and 2 more"))
+        // The first 8 ids survive the cap — the lane stays actionable.
+        assertTrue(text.contains("f8"))
+        assertFalse(text.contains("f9"))
+    }
+
+    @Test
+    fun `stale boundary is strictly older than the threshold`() {
+        val now = 10_000_000L
+        val exactly = listOf(
+            task("edge", AgentBoardLogic.STATUS_RUNNING, createdAt = now - AgentBoardLogic.STALE_AFTER_MS)
+                .copy(updatedAt = now - AgentBoardLogic.STALE_AFTER_MS),
+        )
+        // Exactly one hour old is NOT stale (the marker is > STALE_AFTER_MS,
+        // consistent with teamSummary's own boundary).
+        assertEquals("", AgentBoardLogic.needsYouSection(exactly, now = now))
+    }
 }

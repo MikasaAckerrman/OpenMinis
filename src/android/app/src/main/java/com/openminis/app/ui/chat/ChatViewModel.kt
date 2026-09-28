@@ -13386,7 +13386,15 @@ class ChatViewModel(
                 val summary = com.openminis.app.offload.AgentBoardLogic.teamSummary(tasks, tail = limit)
                 val unmet = com.openminis.app.offload.AgentBoardLogic.unmetDeps(tasks)
                 val cycle = com.openminis.app.offload.AgentBoardLogic.findCycle(tasks)
-                val sb = StringBuilder(summary)
+                // [T-needs-you-lane] Attention first, chronology second: the
+                // intervention states lead the board so a morning scan reads
+                // one section. Healthy boards skip it entirely.
+                val needsYou = com.openminis.app.offload.AgentBoardLogic.needsYouSection(
+                    tasks, now = System.currentTimeMillis(),
+                )
+                val sb = StringBuilder()
+                if (needsYou.isNotEmpty()) sb.appendLine(needsYou)
+                sb.append(summary)
                 if (unmet.isNotEmpty()) {
                     sb.appendLine().appendLine("waiting (task -> unmet deps):")
                     unmet.entries.sortedBy { it.key }.forEach { (task, deps) ->
