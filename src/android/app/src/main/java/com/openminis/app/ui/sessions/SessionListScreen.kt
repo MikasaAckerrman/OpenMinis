@@ -304,10 +304,10 @@ fun SessionListScreen(
     val compressingIds by viewModel.compressingIds.collectAsState()
     val providerConfig by providerRepository.config.collectAsState()
     // [T-perf-row-global-collectors] Screen-level single subscriptions (were
-    // per-row collectAsState — every active-session/badge change recomposed
-    // every row of the list).
-    val activeSessionsState by SessionActivityTracker.activeSessions.collectAsState()
-    val badgeMapState by com.openminis.app.service.SessionBadgeStore.byId.collectAsState()
+    // [T-perf-row-global-collectors] MOVED per-row: activity/badge state is
+    // now collected INSIDE each item (see items()) — a status tick during
+    // background streaming recomposes exactly one row instead of this
+    // entire screen. No top-level subscription here anymore.
     val hasProviders = providerConfig.instances.isNotEmpty()
     val hasGroups = providerConfig.modelGroups.isNotEmpty()
     // [T-android-startup-config-stall] Provider config now loads off-thread, so
@@ -613,15 +613,27 @@ fun SessionListScreen(
                             }
                             items(periodSessions, key = { it.id }) { session ->
                                 val activeQuery = if (isSearchActive && searchQuery.isNotBlank()) searchQuery else ""
-                                // [T-perf-row-global-collectors] one collect per
-                                // screen (see top of SessionListScreen) instead
-                                // of per-row subscriptions.
+                                // [T-perf-row-global-collectors] Each row
+                                // subscribes to the activity/badge flows ITSELF:
+                                // a background-streaming session flips status on
+                                // every tool round (activeSessions ticks) — with
+                                // the old top-level collection that re-ran this
+                                // whole screen's scope and every visible row
+                                // (unstable viewmodel-capturing lambdas blocked
+                                // skipping). Now a tick invalidates only the
+                                // single row whose State actually changed.
+                                val activeNow by remember(session.id) {
+                                    SessionActivityTracker.activeSessions
+                                }.collectAsState()
+                                val badgeNow by remember(session.id) {
+                                    com.openminis.app.service.SessionBadgeStore.byId
+                                }.collectAsState()
                                 SessionItemContent(
                                     session = session,
                                     isSelecting = isSelecting,
                                     selectedIds = selectedIds,
-                                    isActive = session.id in activeSessionsState,
-                                    badgeHead = badgeMapState[session.id]?.firstOrNull(),
+                                    isActive = session.id in activeNow,
+                                    badgeHead = badgeNow[session.id]?.firstOrNull(),
                                     onSessionClick = onSessionClickGuarded,
                                     onToggleSelect = { viewModel.toggleSelect(it) },
                                     onEnterSelect = { viewModel.enterSelection(it) },

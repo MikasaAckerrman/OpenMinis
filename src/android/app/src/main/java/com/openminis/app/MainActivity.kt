@@ -133,6 +133,37 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // [T-hz-lock] THE single common smoothness mechanism. Measured on
+        // the user's vivo V2425A: the app window rendered at 60 Hz on a
+        // high-refresh panel while the jank monitor recorded ZERO dropped
+        // frames — every gesture (back-swipe transition, session-list
+        // scroll, pull-to-refresh, sheet animations) moved at a fraction of
+        // the panel's rate and read as "не супер плавно" with nothing wrong
+        // in frame telemetry. Request the highest-refresh display mode at
+        // the CURRENT resolution (no resolution change, seamless switch).
+        // The OEM governor still downshifts on battery saver/thermal, so
+        // this is a ceiling, not a lock.
+        runCatching {
+            val current = windowManager.defaultDisplay
+            val active = current.mode
+            val best = current.supportedModes
+                .filter {
+                    it.physicalWidth == active.physicalWidth &&
+                        it.physicalHeight == active.physicalHeight
+                }
+                .maxByOrNull { it.refreshRate }
+            if (best != null && best.refreshRate > active.refreshRate + 1f) {
+                window.attributes = window.attributes.apply {
+                    preferredDisplayModeId = best.modeId
+                }
+                com.openminis.app.logging.AppLogger.info(
+                    "DisplayMode",
+                    "window mode upgraded: ${active.refreshRate.toInt()}Hz -> " +
+                        "${best.refreshRate.toInt()}Hz (id=${best.modeId})",
+                )
+            }
+        }
+
         // Register the crash-share "Save to..." launcher BEFORE the
         // safe-mode early-return below — ActivityResultLauncher must be
         // registered before STARTED, and the safe-mode path needs it.
