@@ -2834,6 +2834,19 @@ fun ChatScreen(
                 // scope. The flatten still runs per token (cheap-ish; ran
                 // before too), but the rebuild stays off the main UI
                 // composable's invalidation list.
+                // [T-frozen-cache-survives-relaunch] The frozen cache lives in
+                // a remember(sessionId), NOT in effect locals: the effect is
+                // keyed on `messages`, so every canonical list change (each
+                // tool round's persist!) RESTARTS it — with locals that burned
+                // the whole frozen prefix and rebuilt every row of the session
+                // from scratch on each round (buildMs=64 on a 97-message
+                // session; hundreds of ms past 300 messages, × every tool
+                // round of every turn). The cache is validated by reference:
+                // the message just before the split must be the SAME instance
+                // frozen earlier — append paths reuse instances, rewrites and
+                // truncations fail the check and fall back to a full rebuild
+                // (exactly the previous relaunch behavior).
+                val frozenFlat = remember(sessionId) { FrozenFlatCache() }
                 LaunchedEffect(messages, sessionId) {
                     // [T-android-stream-pipeline-incremental] Frozen/live split.
                     //
@@ -2861,9 +2874,9 @@ fun ChatScreen(
                     //
                     // Throttle (unchanged): conflate() + sample(80) keeps UI
                     // publication at ~12fps regardless of token rate.
-                    var frozenRows: List<FlatChatItem> = emptyList()
-                    var frozenKeys: Set<String> = emptySet()
-                    var frozenSplitIdx = -1
+                    // [T-frozen-cache-survives-relaunch] frozen rows cache:
+                    // rows/keys/splitIdx/lastMsg survive effect relaunches;
+                    // streamWasActive stays local (StreamPerf turn ownership).
                     var streamWasActive = false
                     // [T-android-stream-pipeline-incremental] Flush the perf
                     // turn when this effect is CANCELLED mid-turn: the
@@ -2895,7 +2908,7 @@ fun ChatScreen(
                                 val i = msgs.indexOfFirst { stream.containsKey(it.id) }
                                 if (i < 0) msgs.size else i
                             }
-                            val frozenReused = splitIdx == frozenSplitIdx
+                            val frozenReused = splitIdx == frozenFlat.splitIdx
                             if (!frozenReused) {
                                 val tBuildStart = System.nanoTime()
                                 val wasEmptyPre = flatItems.isEmpty()
@@ -2910,6 +2923,19 @@ fun ChatScreen(
                                         "msgCount=${msgs.size}",
                                     )
                                 }
+                                // [T-frozen-prefix-reuse] On a canonical append
+                                // (tool-round persist, user send) the frozen
+                                // prefix instances are reused by the emission
+                                // path — validate by REFERENCE and build only
+                                // the delta span, exactly like the live suffix
+                                // below (fromIndex + seedKeys keep the output
+                                // row-for-row identical to a full build).
+                                // Rewrite/truncate paths fail the check and
+                                // take the full build (previous behavior).
+                                val prefixValid = frozenFlat.splitIdx > 0 &&
+                                    frozenFlat.splitIdx < splitIdx &&
+                                    msgs.size >= frozenFlat.splitIdx &&
+                                    msgs[frozenFlat.splitIdx - 1] === frozenFlat.lastMsg
                                 val rows = withContext(Dispatchers.Default) {
                                     // [T-android-flatitems-sublist-cme] Pass a
                                     // SNAPSHOT COPY, not msgs.subList(...). A
@@ -2922,12 +2948,22 @@ fun ChatScreen(
                                     // threw ConcurrentModificationException from
                                     // a later frame's SubList.equals. Copying
                                     // severs the view so it can't comodify.
-                                    buildFlatChatItems(msgs.take(splitIdx), sessionId)
+                                    if (prefixValid) {
+                                        buildFlatChatItems(
+                                            msgs.take(splitIdx),
+                                            sessionId,
+                                            fromIndex = frozenFlat.splitIdx,
+                                            seedKeys = frozenFlat.keys,
+                                        )
+                                    } else {
+                                        buildFlatChatItems(msgs.take(splitIdx), sessionId)
+                                    }
                                 }
                                 val buildMs = (System.nanoTime() - tBuildStart) / 1_000_000
-                                frozenRows = rows
-                                frozenKeys = rows.mapTo(HashSet()) { it.key }
-                                frozenSplitIdx = splitIdx
+                                frozenFlat.rows = if (prefixValid) frozenFlat.rows + rows else rows
+                                frozenFlat.keys = frozenFlat.rows.mapTo(HashSet()) { it.key }
+                                frozenFlat.splitIdx = splitIdx
+                                frozenFlat.lastMsg = if (splitIdx > 0) msgs[splitIdx - 1] else null
                                 // [T-android-coldload-offmain-parse] Parallel
                                 // viewport prewarm: block-parse + inline-warm
                                 // the newest (viewport-candidate) markdown
@@ -3011,16 +3047,16 @@ fun ChatScreen(
                                         merged,
                                         null,
                                         fromIndex = splitIdx,
-                                        seedKeys = frozenKeys,
+                                        seedKeys = frozenFlat.keys,
                                         activeAgentRunTaskId = activeAgentRunTaskId,
                                     )
                                 }
                             }
-                            flatItems = if (liveRows.isEmpty()) frozenRows else frozenRows + liveRows
+                            flatItems = if (liveRows.isEmpty()) frozenFlat.rows else frozenFlat.rows + liveRows
                             com.openminis.app.diagnostics.StreamPerfMonitor.tick(
                                 flattenNanos = System.nanoTime() - tickStartNs,
                                 frozenReused = frozenReused,
-                                frozenRows = frozenRows.size,
+                                frozenRows = frozenFlat.rows.size,
                                 liveRows = liveRows.size,
                             )
                             if (stream.isEmpty() && streamWasActive) {
@@ -6424,3 +6460,25 @@ private fun ThinkingLevelSheet(
 }
 
 
+
+/**
+ * [T-frozen-cache-survives-relaunch] Mutable flat-rows cache for the
+ * streaming pipeline. Lives in `remember(sessionId)` — OUTSIDE the
+ * `LaunchedEffect(messages, sessionId)` that consumes it — because that
+ * effect restarts on every canonical `messages` change (each tool
+ * round's persist), and effect-local state burned the whole frozen
+ * prefix on every restart: a full row rebuild per tool round (measured
+ * buildMs=64 on a 97-message session, hundreds of ms past 300).
+ *
+ * Reuse is validated by reference: [lastMsg] is the message instance at
+ * `splitIdx - 1` when the prefix was frozen. Append paths reuse message
+ * instances (immutable data emitted by list concatenation), so the check
+ * passes; rewrites and truncations replace instances and fail it,
+ * falling back to a full rebuild — the pre-cache behavior.
+ */
+private class FrozenFlatCache {
+    var rows: List<FlatChatItem> = emptyList()
+    var keys: Set<String> = emptySet()
+    var splitIdx: Int = -1
+    var lastMsg: ChatMessage? = null
+}
