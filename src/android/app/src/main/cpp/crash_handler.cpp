@@ -19,6 +19,16 @@
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <android/log.h>
+// [T-native-crash-backtrace] LLVM's unwinder — available at every API
+// level (unlike bionic execinfo backtrace(), which needs API 33 and we
+// target minSdk 26). Does not malloc; walks CFI/frame-pointer tables.
+#include <unwind.h>
+// [T-native-crash-backtrace] dladdr resolves each frame's module so the
+// report says "libproot/libc/libapp + offset" — module attribution alone
+// converts an anonymous SIGABRT into a named suspect. dladdr does no
+// malloc on bionic; if it faults on a corrupted heap, the reentrancy
+// guard above routes the second signal straight to SIG_DFL.
+#include <dlfcn.h>
 
 #define LOG_TAG "MinisCrashHandler"
 
@@ -41,6 +51,69 @@ static const char* signal_name(int sig) {
         case SIGSYS:  return "SIGSYS";
         case SIGTRAP: return "SIGTRAP";
         default:      return "UNKNOWN";
+    }
+}
+
+// [T-native-crash-backtrace] ---- stack capture ----
+// Context shared between the unwinder callback and the handler. The fd is
+// kept open across frames; each frame is formatted into a stack buffer
+// (no malloc) and written with a partial-write loop.
+#define MAX_UNWIND_FRAMES 32
+
+struct UnwindCtx {
+    int fd;
+    int count;
+    char buf[256];
+};
+
+static void write_all(int fd, const char* buf, int len) {
+    ssize_t written = 0;
+    while (written < len) {
+        ssize_t w = write(fd, buf + written, len - written);
+        if (w <= 0) break;
+        written += w;
+    }
+}
+
+static _Unwind_Reason_Code unwind_frame_cb(struct _Unwind_Context* uctx, void* data) {
+    UnwindCtx* out = static_cast<UnwindCtx*>(data);
+    if (out->count >= MAX_UNWIND_FRAMES) return _URC_END_OF_STACK;
+
+    uintptr_t pc = (uintptr_t)_Unwind_GetIP(uctx);
+    if (pc == 0) return _URC_CONTINUE_UNWIND;
+
+    // Module attribution: absolute pc → "<soname>+<offset from base>".
+    // Skips the anonymous-signal-crash problem: even without symbol
+    // names, the module says who aborted.
+    const char* module = "?";
+    uintptr_t base = 0;
+    Dl_info dli;
+    if (dladdr(reinterpret_cast<void*>(pc), &dli) != 0 && dli.dli_fname != nullptr) {
+        module = dli.dli_fname;
+        base = reinterpret_cast<uintptr_t>(dli.dli_fbase);
+    }
+
+    int n = snprintf(out->buf, sizeof(out->buf),
+        "  #%02d pc 0x%016lx  %s+0x%lx\n",
+        out->count, (unsigned long)pc, module,
+        (unsigned long)(pc >= base ? pc - base : 0));
+    if (n > 0) write_all(out->fd, out->buf, n);
+    out->count++;
+    return _URC_CONTINUE_UNWIND;
+}
+
+// Captures the current (faulting-thread) stack into fd. Runs inside the
+// signal handler: frame #0 is the handler itself, #1 the signal
+// trampoline, deeper frames are the interrupted aborter — on arm64
+// frame-pointer chains cross the signal frame in libc/NDK code.
+static void write_backtrace(int fd) {
+    static const char hdr[] = "\nBacktrace (arm64 unwind, module+off):\n";
+    write_all(fd, hdr, (int)sizeof(hdr) - 1);
+    UnwindCtx ctx{fd, 0, {0}};
+    _Unwind_Backtrace(unwind_frame_cb, &ctx);
+    if (ctx.count == 0) {
+        static const char none[] = "  <unavailable: unwinder returned 0 frames>\n";
+        write_all(fd, none, (int)sizeof(none) - 1);
     }
 }
 
@@ -106,6 +179,12 @@ static void crash_signal_handler(int sig, siginfo_t* info, void* ctx) {
             written += w;
         }
     }
+    // [T-native-crash-backtrace] In-process frames of the aborting thread
+    // — for OUR handler-caught signals the system tombstone often never
+    // exists (the re-raise races debuggerd), so this is the only frame
+    // attribution we get. Module+offset names the suspect even without
+    // symbol tables.
+    write_backtrace(fd);
     close(fd);
 
     // Re-raise with default handler so Android still produces a tombstone
