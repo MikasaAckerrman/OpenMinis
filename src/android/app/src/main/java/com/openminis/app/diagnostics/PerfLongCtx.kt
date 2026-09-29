@@ -168,5 +168,23 @@ object PerfLongCtx {
             "[Perf][LongCtx] step=$name session=$sessionId elapsedMs=$elapsedMs " +
                 "sinceClickMs=$sinceClickMs javaHeapMB=$javaHeapMB nativeHeapMB=$nativeHeapMB$extraPart",
         )
+        // [T-oom-pressure-warn] The 22:51 OOM death spiral (javaHeap 463 of
+        // 512 MB during a heavy multi-session turn, an 8.8s single-row
+        // compose that was pure GC storm, process death 30s later) was only
+        // visible in hindsight by reading every step line. Make the 80%
+        // crossing SCREAM once per process: a single loud line at the moment
+        // memory pressure starts stealing frames, not an autopsy.
+        if (javaHeapMB * 10 >= rt.maxMemory() * 8L && !oomWarned) {
+            oomWarned = true
+            AppLogger.warning(
+                CATEGORY,
+                "[Perf][OOM-RISK] javaHeap=${javaHeapMB}MB of max=${rt.maxMemory() / (1024L * 1024L)}MB " +
+                    "(${javaHeapMB * 100 / (rt.maxMemory() / (1024L * 1024L))}%) — GC pauses are now frame-stealers; " +
+                    "expect slow composes until pressure drops (concurrent session turns + tool output buffers).",
+            )
+        }
     }
+
+    @Volatile
+    private var oomWarned = false
 }
