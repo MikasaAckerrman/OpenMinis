@@ -8066,7 +8066,7 @@ class ChatViewModel(
             }
         }
 
-        val baseSystemPrompt = buildSystemPrompt()
+        val baseSystemPrompt = withContext(Dispatchers.IO) { buildSystemPrompt() }
         val systemPrompt = if ((provider as? com.openminis.app.provider.anthropic.AnthropicProvider)?.isOAuth == true) {
             val prefix = com.openminis.app.auth.ClaudeOAuthManager.ANTHROPIC_OAUTH_IDENTIFIER_PROMPT
             if (baseSystemPrompt?.startsWith(prefix) == true) baseSystemPrompt
@@ -9104,7 +9104,7 @@ class ChatViewModel(
 
             // Build system prompt
             // Anthropic OAuth requires the Claude Code prefix in the system prompt
-            val baseSystemPrompt = buildSystemPrompt()
+            val baseSystemPrompt = withContext(Dispatchers.IO) { buildSystemPrompt() }
             val systemPrompt = if ((provider as? com.openminis.app.provider.anthropic.AnthropicProvider)?.isOAuth == true) {
                 val prefix = com.openminis.app.auth.ClaudeOAuthManager.ANTHROPIC_OAUTH_IDENTIFIER_PROMPT
                 if (baseSystemPrompt?.startsWith(prefix) == true) baseSystemPrompt
@@ -10001,7 +10001,7 @@ class ChatViewModel(
                 }
             }
 
-            val baseSystemPrompt = buildSystemPrompt()
+            val baseSystemPrompt = withContext(Dispatchers.IO) { buildSystemPrompt() }
             val systemPrompt = if ((provider as? com.openminis.app.provider.anthropic.AnthropicProvider)?.isOAuth == true) {
                 val prefix = com.openminis.app.auth.ClaudeOAuthManager.ANTHROPIC_OAUTH_IDENTIFIER_PROMPT
                 if (baseSystemPrompt?.startsWith(prefix) == true) baseSystemPrompt
@@ -14725,6 +14725,25 @@ class ChatViewModel(
     }
 
     private fun buildSystemPrompt(): String? {
+        // [T-standalone-first] A graph worker's prompt REPLACES everything
+        // below — but the fragment builds it skips (memory keyword search =
+        // disk, supermemory = a LOCAL HTTP ROUND-TRIP, daily log read, skills
+        // scan) sat BEFORE this check, so every worker turn paid them anyway.
+        // Jank episode 00:05:30 / 00:07:43: 440-467ms of main-thread silence
+        // between AgentRoute and streamJob ENTER — exactly these builds.
+        val workerSessionIdEarly = realSessionId.ifEmpty { sessionId }
+        val rolePromptEarly = com.openminis.app.tools.AgentSystemPromptStore
+            .promptFor(workerSessionIdEarly)
+        if (rolePromptEarly != null && com.openminis.app.tools.AgentSystemPromptStore
+                .isStandalone(workerSessionIdEarly)
+        ) {
+            com.openminis.app.logging.AppLogger.info(
+                "AgentPrompt",
+                "[AgentPrompt] standalone session=${workerSessionIdEarly.take(8)} " +
+                    "len=${rolePromptEarly.length} (general prompt skipped entirely — no fragment builds)",
+            )
+            return rolePromptEarly
+        }
         // Cache-friendly layout: keep `base` byte-stable by stripping out anything
         // that varies per request, then append a "Runtime context" suffix at the
         // very end with all the dynamic bits (date, timezone, locale, configured
@@ -16015,7 +16034,7 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                 }
             }
 
-            val baseSystemPrompt = buildSystemPrompt()
+            val baseSystemPrompt = withContext(Dispatchers.IO) { buildSystemPrompt() }
             val systemPrompt = if ((provider as? com.openminis.app.provider.anthropic.AnthropicProvider)?.isOAuth == true) {
                 val prefix = com.openminis.app.auth.ClaudeOAuthManager.ANTHROPIC_OAUTH_IDENTIFIER_PROMPT
                 if (baseSystemPrompt?.startsWith(prefix) == true) baseSystemPrompt
@@ -16349,7 +16368,7 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         }
 
         viewModelScope.launch {
-            val baseSystemPrompt = buildSystemPrompt()
+            val baseSystemPrompt = withContext(Dispatchers.IO) { buildSystemPrompt() }
             val systemPrompt =
                 if ((provider as? com.openminis.app.provider.anthropic.AnthropicProvider)?.isOAuth == true) {
                     val prefix = com.openminis.app.auth.ClaudeOAuthManager.ANTHROPIC_OAUTH_IDENTIFIER_PROMPT
