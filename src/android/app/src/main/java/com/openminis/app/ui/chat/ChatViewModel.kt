@@ -9550,7 +9550,11 @@ class ChatViewModel(
         body: String,
     ) {
         val parts = listOf<AgentContentPart>(AgentContentPart.Text(body))
-        val partsJson = buildAssistantPartsJson(parts)
+        // [T-persist-off-main] graph-worker commit: same main-thread freeze
+        // class as persistAssistantTurn (large answer bodies).
+        val partsJson = withContext(Dispatchers.Default) {
+            buildAssistantPartsJson(parts)
+        }
         val persisted = chatRepository.appendMessage(activeSessionId, "assistant", partsJson)
 
         agentHistory.add(
@@ -12400,9 +12404,16 @@ class ChatViewModel(
                 val livePreviewParts = buildTurnParts(allToolBlocks, turnStartBlockIndex, toolInputMap)
                 val liveMeta = allToolBlocks.filter { it.kind == "tool_use" }.associateBy { it.id }
                 if (livePreviewParts.isNotEmpty()) {
+                    // [T-persist-off-main] This preview build fires before
+                    // EVERY tool round and serializes the whole partial turn
+                    // — for a long answer that's a recurring main-thread
+                    // burst. Pure build → off Main.
+                    val previewJson = withContext(Dispatchers.Default) {
+                        buildAssistantPartsJson(livePreviewParts, liveMeta)
+                    }
                     chatRepository.updateSessionPreview(
                         realSessionId.ifEmpty { sessionId },
-                        buildAssistantPartsJson(livePreviewParts, liveMeta),
+                        previewJson,
                     )
                 }
             }
@@ -14559,7 +14570,15 @@ class ChatViewModel(
         toolBlockMeta: Map<String, AssistantBlock> = emptyMap(),
     ): String? {
         if (parts.isEmpty()) return null
-        val partsJson = buildAssistantPartsJson(parts, toolBlockMeta)
+        // [T-persist-off-main] A heavy turn's partsJson (full answer text +
+        // tool calls, JSON-escaped) reaches megabytes; building it inline
+        // froze the main thread for 300-500ms exactly when the user's next
+        // action needed it (jank episode 00:07:43: frame 433ms attributed to
+        // persistAssistantTurn of a parallel session's turn end). The build
+        // is pure — move it off Main.
+        val partsJson = withContext(Dispatchers.Default) {
+            buildAssistantPartsJson(parts, toolBlockMeta)
+        }
         val tokenJson = usage?.let {
             """{"inputTokens":${it.inputTokens},"outputTokens":${it.outputTokens},"cacheCreationTokens":${it.cacheCreationInputTokens ?: 0},"cacheReadTokens":${it.cacheReadInputTokens ?: 0},"latestContextTokens":${it.latestContextTokens}}"""
         }
@@ -14686,14 +14705,20 @@ class ChatViewModel(
     private suspend fun persistToolResultMessage(parts: List<AgentContentPart>): String? {
         val results = parts.filterIsInstance<AgentContentPart.ToolResult>()
         if (results.isEmpty()) return null
-        val partsJson = buildString {
-            append("[")
-            results.forEachIndexed { index, result ->
-                if (index > 0) append(",")
-                val snapshotText = escapeJson(result.content.lines().takeLast(30).joinToString("\n"))
-                append("""{"type":"toolResult","value":{"toolUseId":${escapeJson(result.id)},"name":${escapeJson(result.name)},"output":${escapeJson(result.content)},"success":${!result.isError},"snapshot":{"type":"text","text":$snapshotText}}}""")
+        // [T-persist-off-main] tool_result payloads are the largest parts in
+        // the system (whole tool outputs, double-escaped: once for `output`,
+        // once for the snapshot) — same main-thread freeze class as
+        // persistAssistantTurn. Pure build → off Main.
+        val partsJson = withContext(Dispatchers.Default) {
+            buildString {
+                append("[")
+                results.forEachIndexed { index, result ->
+                    if (index > 0) append(",")
+                    val snapshotText = escapeJson(result.content.lines().takeLast(30).joinToString("\n"))
+                    append("""{"type":"toolResult","value":{"toolUseId":${escapeJson(result.id)},"name":${escapeJson(result.name)},"output":${escapeJson(result.content)},"success":${!result.isError},"snapshot":{"type":"text","text":$snapshotText}}}""")
+                }
+                append("]")
             }
-            append("]")
         }
         val entity = chatRepository.appendMessage(realSessionId.ifEmpty { sessionId }, "user", partsJson)
         return entity.id
