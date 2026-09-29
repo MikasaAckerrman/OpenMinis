@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -69,6 +71,13 @@ fun ProviderListScreen(
     val config by providerRepository.config.collectAsState()
     val instances = config.instances
     val context = LocalContext.current
+    // [T-provider-list-fps] Off-main cached row summaries (masked key +
+    // modelCount + isConfigured) — the rows read PURE values from this map
+    // instead of calling loadApiKey/visibleEntries during composition (the
+    // 172-decrypt-per-keystroke jank the user reported). Empty for one
+    // composition frame while the first IO pass runs — rows then show the
+    // neutral "…" placeholder rather than blocking.
+    val summaries by providerRepository.displaySummaries.collectAsState()
 
     // [T-provider-ux] Search + section layout live in ProviderListSections
     // (pure, unit-tested): folders first, then ungrouped instances by provider
@@ -131,9 +140,16 @@ fun ProviderListScreen(
         }
     }
 
+    // [T-provider-list-fps] scrollable=false + LazyColumn: the scaffold's
+    // default verticalScroll Column composed EVERY row eagerly — with
+    // force-open-on-search a keystroke recomposed all 172 rows. Lazy item
+    // per SECTION: off-viewport sections (their whole card) never compose,
+    // which bounds both initial open and every search invalidation to the
+    // visible window.
     SettingsScaffold(
         title = stringResource(R.string.provider_list_providers),
         onBack = onBack,
+        scrollable = false,
         actions = {
             IconButton(onClick = { showMenu = true }) {
                 Icon(Icons.Default.Add, contentDescription = stringResource(R.string.provider_list_add_provider))
@@ -170,46 +186,58 @@ fun ProviderListScreen(
                 )
             }
         } else {
-            // [T-provider-ux] One search field, then one render path for both
-            // section kinds. Sections are collapsed by default (persisted) and
-            // force-open while searching, so a result can never hide inside a
-            // closed folder.
-            SettingsSection {
-                SectionTextField(
-                    value = searchText,
-                    onValueChange = { searchText = it },
-                    placeholder = stringResource(R.string.provider_list_search_placeholder),
-                    singleLine = true,
-                    trailingIcon = if (searchText.isEmpty()) null else {
-                        {
-                            IconButton(onClick = { searchText = "" }) {
-                                Icon(
-                                    Icons.Default.Close,
-                                    contentDescription = stringResource(R.string.provider_list_search_clear),
-                                    modifier = Modifier.size(18.dp),
-                                )
-                            }
-                        }
-                    },
-                )
+            // [T-provider-list-fps] Hoisted BEFORE the LazyColumn: remember
+            // calls stay in the composable's stable scope, not per-item.
+            val shadows = remember(config) { providerRepository.shadowVoiceProviders() }
+            val hasShadowDuplicates = remember(config) {
+                providerRepository.hasFoldedShadowDuplicates()
             }
+            LazyColumn(modifier = Modifier.fillMaxSize()) {
+                // [T-provider-ux] One search field, then one render path for both
+                // section kinds. Sections are collapsed by default (persisted) and
+                // force-open while searching, so a result can never hide inside a
+                // closed folder.
+                item(key = "search") {
+                    SettingsSection {
+                        SectionTextField(
+                            value = searchText,
+                            onValueChange = { searchText = it },
+                            placeholder = stringResource(R.string.provider_list_search_placeholder),
+                            singleLine = true,
+                            trailingIcon = if (searchText.isEmpty()) null else {
+                                {
+                                    IconButton(onClick = { searchText = "" }) {
+                                        Icon(
+                                            Icons.Default.Close,
+                                            contentDescription = stringResource(R.string.provider_list_search_clear),
+                                            modifier = Modifier.size(18.dp),
+                                        )
+                                    }
+                                }
+                            },
+                        )
+                    }
+                }
 
-            if (searchText.isNotEmpty()) {
-                Text(
-                    text = if (sections.isEmpty()) {
-                        stringResource(R.string.provider_list_search_no_results, searchText)
-                    } else {
-                        stringResource(R.string.provider_list_search_summary, shownCount, totalCount)
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 30.dp, vertical = 6.dp),
-                )
-            }
+                if (searchText.isNotEmpty()) {
+                    item(key = "search-summary") {
+                        Text(
+                            text = if (sections.isEmpty()) {
+                                stringResource(R.string.provider_list_search_no_results, searchText)
+                            } else {
+                                stringResource(R.string.provider_list_search_summary, shownCount, totalCount)
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 30.dp, vertical = 6.dp),
+                        )
+                    }
+                }
 
-            sections.forEach { section ->
-                val expanded = ProviderListSections.isExpanded(section, searchText, expandedKeys)
-                ProviderSectionCard(
+                sections.forEach { section ->
+                    item(key = "sec-${section.key}") {
+                        val expanded = ProviderListSections.isExpanded(section, searchText, expandedKeys)
+                        ProviderSectionCard(
                     section = section,
                     expanded = expanded,
                     // Searching force-opens sections, so the chevron would be a
@@ -224,10 +252,15 @@ fun ProviderListScreen(
                 ) {
                     val divider = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
                     section.instances.forEachIndexed { index, instance ->
-                        ProviderInstanceRowResolved(
+                        // [T-provider-list-fps] PURE row: everything the row
+                        // renders comes from the cached summary map — zero
+                        // repository/keystore calls during composition.
+                        val s = summaries[instance.id]
+                        ProviderInstanceRow(
                             instance = instance,
-                            providerRepository = providerRepository,
-                            context = context,
+                            modelCount = s?.modelCount ?: 0,
+                            apiKey = s?.maskedKey,
+                            isConfigured = s?.isConfigured ?: false,
                             onClick = { onProviderClick(instance.id) },
                         )
                         if (index < section.instances.size - 1) {
@@ -241,50 +274,41 @@ fun ProviderListScreen(
                         }
                     }
                 }
-            }
-        }
+                } // section item
+            } // sections.forEach
 
-        // [T-android-provider-voice] Voice Services: runtime shadow mirror of
-        // every enabled instance that owns audio-modality models (mirrors iOS
-        // ProviderInstancesView's Voice Services section). Rows are read-only
-        // views onto the underlying instance — no stored entity.
-        val shadows = remember(config) { providerRepository.shadowVoiceProviders() }
-        // [T-ui-fps] Night wave-1 F3: the duplicate-detection footer rescan
-        // ran un-memoized IN COMPOSITION — every invalidation of this scope
-        // (expand/collapse, menu, search typing) rescanned all instances on
-        // the main thread. It depends on the same config snapshot the
-        // shadows do, so it computes once per actual change.
-        val hasShadowDuplicates = remember(config) {
-            providerRepository.hasFoldedShadowDuplicates()
-        }
-        if (shadows.isNotEmpty()) {
-            SettingsSection(
-                header = stringResource(R.string.voice_services_section),
-                footer = if (hasShadowDuplicates) {
-                    stringResource(R.string.voice_services_duplicate_hint)
-                } else {
-                    null
-                },
-            ) {
-                shadows.forEachIndexed { index, shadow ->
-                    ShadowVoiceRow(
-                        shadow = shadow,
-                        onClick = { onVoiceServiceClick(shadow.instanceId) },
-                    )
-                    if (index < shadows.size - 1) {
-                        val divider = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(start = 38.dp, end = 14.dp)
-                                .height(0.5.dp)
-                                .background(divider),
-                        )
+                if (shadows.isNotEmpty()) {
+                    item(key = "voice-shadows") {
+                        SettingsSection(
+                            header = stringResource(R.string.voice_services_section),
+                            footer = if (hasShadowDuplicates) {
+                                stringResource(R.string.voice_services_duplicate_hint)
+                            } else {
+                                null
+                            },
+                        ) {
+                            shadows.forEachIndexed { index, shadow ->
+                                ShadowVoiceRow(
+                                    shadow = shadow,
+                                    onClick = { onVoiceServiceClick(shadow.instanceId) },
+                                )
+                                if (index < shadows.size - 1) {
+                                    val divider = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(start = 38.dp, end = 14.dp)
+                                            .height(0.5.dp)
+                                            .background(divider),
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
-            }
+                item(key = "tail-spacer") { Spacer(Modifier.height(80.dp)) }
+            } // LazyColumn
         }
-        Spacer(Modifier.height(80.dp))
     }
 
     if (showMenu) {
@@ -418,45 +442,6 @@ private fun ProviderSectionCard(
         }
     }
 }
-
-/**
- * [T-provider-folders] Resolves the per-instance display state (model count,
- * stored key, configured dot) and renders a [ProviderInstanceRow]. Extracted so
- * the folder sections and the providerType sections share one code path — the
- * resolution logic (notably the OAuth `isConfigured` rule) was previously
- * inlined in the single render loop and would have had to be duplicated.
- */
-@Composable
-private fun ProviderInstanceRowResolved(
-    instance: ProviderInstance,
-    providerRepository: ProviderRepository,
-    context: android.content.Context,
-    onClick: () -> Unit,
-) {
-    val modelCount = providerRepository.visibleEntries(instance.id).size
-    val apiKey = providerRepository.loadApiKey(instance.id)
-    // Mirrors iOS `isConfigured` on ProviderInstancesView: for OAuth providers,
-    // having a manual bearer token OR a stored OAuth credential counts as
-    // "configured" — not just the presence of an API key. Without this, OAuth
-    // instances always show the gray dot even after a successful sign-in or
-    // manual token paste.
-    val isConfigured = if (instance.credentialType ==
-        com.openminis.app.data.model.ProviderCredential.oauth
-    ) {
-        val mgr = com.openminis.app.auth.OAuthManager.forInstance(context, instance)
-        mgr?.isAuthenticated() == true
-    } else {
-        !apiKey.isNullOrBlank()
-    }
-    ProviderInstanceRow(
-        instance = instance,
-        modelCount = modelCount,
-        apiKey = apiKey,
-        isConfigured = isConfigured,
-        onClick = onClick,
-    )
-}
-
 @Composable
 private fun ProviderInstanceRow(
     instance: ProviderInstance,
@@ -510,7 +495,10 @@ private fun ProviderInstanceRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
                 )
                 Text(
-                    text = if (!apiKey.isNullOrBlank()) maskKey(apiKey) else "No API key",
+                    // [T-provider-list-fps] apiKey arrives PRE-MASKED from
+                    // the repository summary (first 4 + … + last 4) — masking
+                    // here again would double the ellipsis.
+                    text = if (!apiKey.isNullOrBlank()) apiKey else "No API key",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -548,12 +536,6 @@ private fun ProviderInstanceRow(
         )
     }
 }
-
-private fun maskKey(key: String): String {
-    if (key.length <= 8) return "****"
-    return key.take(6) + "..." + key.takeLast(4)
-}
-
 /** One shadow Voice Service row: name + ASR/TTS model counts. */
 @Composable
 private fun ShadowVoiceRow(

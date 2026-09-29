@@ -38,8 +38,17 @@ import org.json.JSONObject
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.mapLatest
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 
 // Modality bit layout — must match src/ios/Providers/LLMTypes.swift
@@ -1811,6 +1820,66 @@ class ProviderRepository(private val context: Context) {
      */
     private val _credentialGeneration = MutableStateFlow(0)
     val credentialGeneration: StateFlow<Int> = _credentialGeneration.asStateFlow()
+
+    // [T-provider-list-fps] Display summary for ONE provider row, computed
+    // OFF-MAIN and cached by (config.revision, credentialGeneration):
+    // modelCount, the MASKED key (only its shape reaches the UI — the raw
+    // key never enters a flow) and isConfigured (OAuth-aware). The provider
+    // list previously called loadApiKey + visibleEntries PER ROW DURING
+    // COMPOSITION — 172 EncryptedSharedPreferences decrypts + full
+    // modelEntries scans on every recomposition (every search keystroke
+    // force-opens all sections) = seconds of main-thread jank the user
+    // reported as "вкладка провайдеров лагает".
+    data class InstanceDisplaySummary(
+        val modelCount: Int,
+        val maskedKey: String?,
+        val isConfigured: Boolean,
+    )
+
+    private val summaryScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    private var summariesStamp = Pair<Long, Int>(-1L, -1)
+    private val _displaySummaries = MutableStateFlow<Map<String, InstanceDisplaySummary>>(emptyMap())
+
+    /** Maps instanceId → row summary. Empty while the first off-main pass runs. */
+    val displaySummaries: StateFlow<Map<String, InstanceDisplaySummary>> =
+        combine(config, credentialGeneration) { c, gen -> Pair(c.revision, gen) }
+            .distinctUntilChanged()
+            .mapLatest { stamp -> computeDisplaySummaries(stamp) }
+            .stateIn(summaryScope, SharingStarted.WhileSubscribed(5000), emptyMap())
+
+    private suspend fun computeDisplaySummaries(
+        stamp: Pair<Long, Int>,
+    ): Map<String, InstanceDisplaySummary> {
+        val cfg = config.value
+        return withContext(Dispatchers.IO) {
+            cfg.instances.associate { inst ->
+                val key = runCatching { loadApiKey(inst.id) }.getOrNull()
+                val configured = if (inst.credentialType ==
+                    com.openminis.app.data.model.ProviderCredential.oauth
+                ) {
+                    com.openminis.app.auth.OAuthManager.forInstance(context, inst)
+                        ?.isAuthenticated() == true
+                } else {
+                    !key.isNullOrBlank()
+                }
+                val count = cfg.modelEntries.count {
+                    it.providerInstanceId == inst.id && !it.isHidden
+                }
+                inst.id to InstanceDisplaySummary(
+                    modelCount = count,
+                    maskedKey = key?.let { maskKeyForDisplay(it) },
+                    isConfigured = configured,
+                )
+            }
+        }.also {
+            summariesStamp = stamp
+            _displaySummaries.value = it
+        }
+    }
+
+    /** Same shape as the UI's maskKey (first 4 + … + last 4) — shared so the summary and the detail screen agree. */
+    private fun maskKeyForDisplay(key: String): String =
+        if (key.length <= 8) "••••" else key.take(4) + "…" + key.takeLast(4)
 
     fun saveApiKey(instanceId: String, key: String) {
         val previous = encryptedPrefs.getString("apikey_$instanceId", null)

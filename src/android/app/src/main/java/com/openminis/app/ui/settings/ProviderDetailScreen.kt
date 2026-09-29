@@ -6,9 +6,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -62,6 +65,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.res.stringResource
+import com.openminis.app.data.model.ModelEntry
 import com.openminis.app.data.model.ProviderType
 import com.openminis.app.data.repository.ProviderRepository
 import com.openminis.app.logging.AppLogger
@@ -145,9 +149,16 @@ fun ProviderDetailScreen(
 
     val exportContext = androidx.compose.ui.platform.LocalContext.current
 
+    // [T-provider-detail-fps] scrollable=false + LazyColumn: the models
+    // section previously composed EVERY entry eagerly inside the scaffold's
+    // verticalScroll Column — 615 rows × 72dp (airforce-class providers) =
+    // a multi-second main-thread burst on open and full relayout on scroll.
+    // Now: light head/tail sections as single items, models as lazy items
+    // keyed by entry.id (reuse + stable scroll). All row visuals unchanged.
     SettingsScaffold(
         title = instance.label,
         onBack = onBack,
+        scrollable = false,
         actions = {
             IconButton(onClick = {
                 AppLogger.info(TAG, "Export instance ${instance.id} (${instance.label})")
@@ -157,6 +168,9 @@ fun ProviderDetailScreen(
             }
         },
     ) {
+        LazyColumn(modifier = Modifier.fillMaxSize()) {
+            item(key = "head") {
+                Column {
         // ─── Label ──────────────────────────────────────────────────
         SettingsSection(header = stringResource(R.string.provider_detail_label)) {
             SettingsCardBlock {
@@ -582,107 +596,60 @@ fun ProviderDetailScreen(
         }
 
         // ─── Models ─────────────────────────────────────────────────
-        SettingsSection(
-            header = stringResource(R.string.provider_detail_models_count_header, entries.size),
-        ) {
-            // Refresh action sits as the first row, mirroring the iOS
-            // tap-to-refresh affordance in the section header area.
-            SettingsRow(
-                title = if (isRefreshing) "Refreshing…" else "Refresh model list",
-                onClick = if (isRefreshing) {
-                    null
-                } else {
-                    {
-                        isRefreshing = true
-                        scope.launch {
-                            try {
-                                providerRepository.refreshModels(instance)
-                                AppLogger.info(TAG, "Refreshed models for ${instance.id}")
-                            } finally {
-                                isRefreshing = false
-                            }
-                        }
-                    }
-                },
-                showChevron = false,
-                trailing = {
-                    Icon(
-                        Icons.Default.Refresh,
-                        contentDescription = stringResource(R.string.provider_detail_refresh_models),
-                        tint = MaterialTheme.colorScheme.primary,
-                    )
-                },
-                showDivider = entries.isNotEmpty() || true,
-            )
+                } // head Column
+            } // head item
 
-            entries.forEachIndexed { idx, entry ->
-                // Drive both tap and long-press from a Box wrapper so we
-                // don't have to expand SettingsRow's signature. Long-press
-                // is a no-op for built-in entries (they reappear on the next
-                // model refresh anyway).
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        // [T-android-hidden-model-visual-state] Dim hidden
-                        // entries so the list visually distinguishes them from
-                        // active models — the " • Hidden" subtitle suffix alone
-                        // wasn't enough for users to tell them apart. alpha is
-                        // visual-only, so the row stays tappable to re-show the
-                        // model from its detail screen.
-                        .then(if (entry.isHidden) Modifier.alpha(0.45f) else Modifier)
-                        .combinedClickable(
-                            onClick = { onModelEntryClick(entry.id) },
-                            onLongClick = if (entry.isCustom) {
-                                { entryToDelete = entry }
-                            } else null,
-                        ),
+            // Models header + refresh — light, stays one item.
+            item(key = "models-header") {
+                SettingsSection(
+                    header = stringResource(R.string.provider_detail_models_count_header, entries.size),
                 ) {
-                    // [T-android-model-capability-output-tags] (XIN msg 38847)
-                    // The list previously read INPUT modalities only, so a
-                    // generator like gpt-image-2 (image_output) or an
-                    // audio_output model showed no capability badge at all.
-                    // Surface both directions — input badges are muted, output
-                    // badges use a tinted "generate"-style glyph so they read
-                    // distinctly. Mirrors iOS #669.
-                    val inputModalities = entry.model.inputModalities.orEmpty()
-                    val outputModalities = entry.model.outputModalities.orEmpty()
-                    val hasBadge = inputModalities.any { it in modalityIconKeys } ||
-                        outputModalities.any { it in modalityOutputIconKeys }
+                    // Refresh action sits as the first row, mirroring the iOS
+                    // tap-to-refresh affordance in the section header area.
                     SettingsRow(
-                        title = entry.model.displayName,
-                        subtitle = buildString {
-                            append(entry.model.id)
-                            if (entry.isHidden) append(" • Hidden")
-                        },
-                        // onClick = null so SettingsRow doesn't add a second
-                        // clickable that would swallow the long-press. The
-                        // wrapping Box owns both gestures.
-                        onClick = null,
-                        showChevron = true,
-                        showDivider = idx != entries.lastIndex,
-                        // [T-android-settings-ui-md3] #8 two-line row (name + id)
-                        // uses the MD3 double-line height (72dp).
-                        minHeight = 72.dp,
-                        // #9 The capability-icon area has a FIXED width so the
-                        // trailing chevron lands at the same x on every row,
-                        // regardless of how many badges (0–4) a model has —
-                        // previously the chevron slid left/right per row and the
-                        // column looked ragged. Icons right-align within the slot.
-                        trailing = {
-                            Box(
-                                modifier = Modifier.width(72.dp),
-                                contentAlignment = Alignment.CenterEnd,
-                            ) {
-                                if (hasBadge) {
-                                    ModalityIconsRow(inputModalities, outputModalities)
+                        title = if (isRefreshing) "Refreshing…" else "Refresh model list",
+                        onClick = if (isRefreshing) {
+                            null
+                        } else {
+                            {
+                                isRefreshing = true
+                                scope.launch {
+                                    try {
+                                        providerRepository.refreshModels(instance)
+                                        AppLogger.info(TAG, "Refreshed models for ${instance.id}")
+                                    } finally {
+                                        isRefreshing = false
+                                    }
                                 }
                             }
                         },
+                        showChevron = false,
+                        trailing = {
+                            Icon(
+                                Icons.Default.Refresh,
+                                contentDescription = stringResource(R.string.provider_detail_refresh_models),
+                                tint = MaterialTheme.colorScheme.primary,
+                            )
+                        },
+                        showDivider = entries.isNotEmpty() || true,
                     )
                 }
             }
-        }
 
+            // [T-provider-detail-fps] THE fix: model rows are lazy items
+            // keyed by entry.id — 615-entry providers compose only the
+            // viewport window (+lookahead), not the whole list.
+            items(entries, key = { "model-" + it.id }) { entry ->
+                ModelEntryRow(
+                    entry = entry,
+                    isLast = entry.id == entries.last().id,
+                    onModelEntryClick = onModelEntryClick,
+                    onDeleteRequest = { e -> entryToDelete = e },
+                )
+            }
+
+            item(key = "tail") {
+                Column {
         // Pure-action rows render as standalone buttons — no Section/Card wrap.
         // Match iOS visual: button sits on the page background with horizontal
         // gutter padding only. The 20dp top padding mirrors SettingsSection's
@@ -740,7 +707,10 @@ fun ProviderDetailScreen(
             Text(stringResource(R.string.provider_detail_delete_provider))
         }
 
-        Spacer(modifier = Modifier.height(32.dp))
+                    Spacer(modifier = Modifier.height(32.dp))
+                } // tail Column
+            } // tail item
+        } // LazyColumn
     }
 
     if (showDuplicateDialog) {
@@ -1211,5 +1181,82 @@ private fun ModalityIconsRow(
         if ("image" in outputModalities) Icon(Icons.Default.AddPhotoAlternate, contentDescription = stringResource(R.string.modeldetail_image_output), tint = outputTint, modifier = size)
         if ("audio" in outputModalities) Icon(Icons.Default.VolumeUp, contentDescription = stringResource(R.string.modeldetail_audio_output), tint = outputTint, modifier = size)
         if ("video" in outputModalities) Icon(Icons.Default.MovieCreation, contentDescription = stringResource(R.string.modeldetail_video_output), tint = outputTint, modifier = size)
+    }
+}
+
+// [T-provider-detail-fps] Extracted verbatim from the old eager
+// forEachIndexed — the row's visuals are UNCHANGED; the extraction exists
+// so LazyColumn items() can compose it per VISIBLE row (key = entry.id)
+// instead of composing all 615 rows of an airforce-class provider on open.
+@Composable
+private fun ModelEntryRow(
+    entry: ModelEntry,
+    isLast: Boolean,
+    onModelEntryClick: (String) -> Unit,
+    onDeleteRequest: (ModelEntry) -> Unit,
+) {
+    // Drive both tap and long-press from a Box wrapper so we
+    // don't have to expand SettingsRow's signature. Long-press
+    // is a no-op for built-in entries (they reappear on the next
+    // model refresh anyway).
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            // [T-android-hidden-model-visual-state] Dim hidden
+            // entries so the list visually distinguishes them from
+            // active models — the " • Hidden" subtitle suffix alone
+            // wasn't enough for users to tell them apart. alpha is
+            // visual-only, so the row stays tappable to re-show the
+            // model from its detail screen.
+            .then(if (entry.isHidden) Modifier.alpha(0.45f) else Modifier)
+            .combinedClickable(
+                onClick = { onModelEntryClick(entry.id) },
+                onLongClick = if (entry.isCustom) {
+                    { onDeleteRequest(entry) }
+                } else null,
+            ),
+    ) {
+        // [T-android-model-capability-output-tags] (XIN msg 38847)
+        // The list previously read INPUT modalities only, so a
+        // generator like gpt-image-2 (image_output) or an
+        // audio_output model showed no capability badge at all.
+        // Surface both directions — input badges are muted, output
+        // badges use a tinted "generate"-style glyph so they read
+        // distinctly. Mirrors iOS #669.
+        val inputModalities = entry.model.inputModalities.orEmpty()
+        val outputModalities = entry.model.outputModalities.orEmpty()
+        val hasBadge = inputModalities.any { it in modalityIconKeys } ||
+            outputModalities.any { it in modalityOutputIconKeys }
+        SettingsRow(
+            title = entry.model.displayName,
+            subtitle = buildString {
+                append(entry.model.id)
+                if (entry.isHidden) append(" • Hidden")
+            },
+            // onClick = null so SettingsRow doesn't add a second
+            // clickable that would swallow the long-press. The
+            // wrapping Box owns both gestures.
+            onClick = null,
+            showChevron = true,
+            showDivider = !isLast,
+            // [T-android-settings-ui-md3] #8 two-line row (name + id)
+            // uses the MD3 double-line height (72dp).
+            minHeight = 72.dp,
+            // #9 The capability-icon area has a FIXED width so the
+            // trailing chevron lands at the same x on every row,
+            // regardless of how many badges (0–4) a model has —
+            // previously the chevron slid left/right per row and the
+            // column looked ragged. Icons right-align within the slot.
+            trailing = {
+                Box(
+                    modifier = Modifier.width(72.dp),
+                    contentAlignment = Alignment.CenterEnd,
+                ) {
+                    if (hasBadge) {
+                        ModalityIconsRow(inputModalities, outputModalities)
+                    }
+                }
+            },
+        )
     }
 }
