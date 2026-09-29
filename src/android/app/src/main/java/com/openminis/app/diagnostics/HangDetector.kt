@@ -198,6 +198,18 @@ object HangDetector {
         }, HEARTBEAT_INTERVAL_MS)
     }
 
+    /**
+     * [T-hangdetector-idle-filter] True while any activity of this process is
+     * started (the Application object's activity-lifecycle counter). When the
+     * check itself is unavailable we assume foreground — never suppress a
+     * real hang because the probe failed.
+     */
+    private fun appInForeground(): Boolean = try {
+        (appContext as? com.openminis.app.MinisApp)?.isAppForeground() ?: true
+    } catch (t: Throwable) {
+        true
+    }
+
     private fun watchLoop() {
         // [T-HANG-DIAG] one-line confirmation that the watchdog thread itself
         // actually entered its loop — distinct from start() which only proves
@@ -212,6 +224,13 @@ object HangDetector {
         var lastSampleAt = 0L
         var escalation = 0
         var episodePeakSinceMs = 0L
+        // [T-hangdetector-idle-filter] vivo/Android-15 cached-app freezing
+        // suspends ALL process threads at once — the heartbeat gap that
+        // follows is an OS freeze, not a main-thread hang. Measured: an
+        // 87s "HANG" whose stack was nativePollOnce (looper idle, waiting
+        // for messages) while the app sat backgrounded. Idle freezes must
+        // not count toward the render-breaker / redirect-on-hang policy.
+        var idleFreezeEpisode = false
         while (true) {
             try {
                 Thread.sleep(500)
@@ -234,9 +253,9 @@ object HangDetector {
                     // expectedly idle; it documents WHEN the thread came
                     // back and the episode's peak gap).
                     hangActive = false
-                    writeStallSample("post-recovery", episodePeakSinceMs, escalation)
+                    if (!idleFreezeEpisode) writeStallSample("post-recovery", episodePeakSinceMs, escalation)
                     println(
-                        "[T-HANG-DIAG] hang episode ENDED peak=${episodePeakSinceMs}ms midHangSamples=${escalation + 1}",
+                        "[T-HANG-DIAG] hang episode ENDED peak=${episodePeakSinceMs}ms midHangSamples=${escalation + 1} idleFreeze=${idleFreezeEpisode}",
                     )
                 }
                 continue
@@ -247,10 +266,18 @@ object HangDetector {
                 episodePeakSinceMs = since
                 lastSampleAt = now
                 lastLogAt.set(now)
+                idleFreezeEpisode = !appInForeground()
+                if (idleFreezeEpisode) {
+                    // [T-hangdetector-idle-filter] OS freeze of a background
+                    // process: sample once for the record, do NOT count.
+                    writeStallSample("idle-freeze", since, 0)
+                    continue
+                }
                 // Counts once per episode + writes the first mid-hang sample.
                 recordHang(durationMs = since)
                 continue
             }
+            if (idleFreezeEpisode) continue
             episodePeakSinceMs = maxOf(episodePeakSinceMs, since)
             if (now - lastSampleAt >= MID_HANG_RESAMPLE_MS) {
                 lastSampleAt = now

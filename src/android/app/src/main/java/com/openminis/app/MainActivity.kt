@@ -403,6 +403,11 @@ class MainActivity : ComponentActivity() {
                 ?: DeepLinkAction.Unknown
         }
 
+        // [T-cold-start-trace] Stamp #3 — activity + content are set; the
+        // Choreographer callback in awaitFirstFrame() lands on the FIRST
+        // drawn frame, closing the cold-start record.
+        com.openminis.app.diagnostics.ColdStartTrace.activityCreated()
+        com.openminis.app.diagnostics.ColdStartTrace.awaitFirstFrame()
         setContent {
             val prefs = remember { getAppearancePrefs(this) }
             var themeMode by remember { mutableIntStateOf(prefs.getInt(KEY_THEME_MODE, 0)) }

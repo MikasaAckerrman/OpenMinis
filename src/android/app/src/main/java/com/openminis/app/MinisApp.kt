@@ -182,6 +182,9 @@ class MinisApp : Application(), ImageLoaderFactory {
 
     override fun onCreate() {
         super.onCreate()
+        // [T-cold-start-trace] Stamp #1 — everything above this line is
+        // ART/classload we cannot influence.
+        com.openminis.app.diagnostics.ColdStartTrace.appCreateStart()
 
         // T287-followup: ACRA spawns a separate reporter process named
         // "<package>:acra" (declared by the library's manifest) to send
@@ -848,6 +851,10 @@ class MinisApp : Application(), ImageLoaderFactory {
         // unexpected prefs shape never blocks app launch.
         runCatching { migrateGhostAlarms() }
             .onFailure { Log.w("MinisApp", "ghost alarm migration failed: ${it.message}") }
+
+        // [T-cold-start-trace] Stamp #2 — all subsystems (DB, repositories,
+        // offload server, bind mounts, receivers, debug RPC) are up.
+        com.openminis.app.diagnostics.ColdStartTrace.appCreateDone()
     }
 
     /**
