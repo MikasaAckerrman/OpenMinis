@@ -2976,6 +2976,15 @@ fun ChatScreen(
                                         else "buildFlatChatItems.slow",
                                         "msgCount=${msgs.size} rowCount=${rows.size} buildMs=$buildMs",
                                     )
+                                    // [T-jank-stats-rpc] A slow flatten is a
+                                    // likely frame-drop source: attribute it
+                                    // in the jank ring, not just PerfLongCtx
+                                    // (which needs logcat to read).
+                                    if (buildMs >= 50) {
+                                        com.openminis.app.diagnostics.JankMonitor.mark(
+                                            "flatItems rebuild rows=${rows.size} ms=$buildMs",
+                                        )
+                                    }
                                     // [T-android-perf-logging] Low-memory risk
                                     // flag: a very high row count is the single
                                     // biggest contributor to cold-open GC

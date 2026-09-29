@@ -66,6 +66,8 @@ object JankMonitor {
     private var framesInWindow = 0L
     private var worstFrameMs = 0L
     private var started = false
+    /** [T-jank-stats-rpc] Baseline for the uptimeMs field in statsJson(). */
+    private val firstStartMs = SystemClock.elapsedRealtime()
 
     /** True while the frame loop is posted. Toggled from activity lifecycle. */
     private var active = false
@@ -181,5 +183,49 @@ object JankMonitor {
             markers.addLast(Marker(SystemClock.elapsedRealtime(), label))
             while (markers.size > MARKER_CAPACITY) markers.removeFirst()
         }
+    }
+
+    /**
+     * [T-jank-stats-rpc] Snapshot for the debug RPC ("debug.jankStats") —
+     * the half that turns this monitor into a REMOTE instrument: the user's
+     * device answers with the frames it actually dropped, so a lag report
+     * becomes numbers instead of adjectives. Caller: DebugRPCHandler; safe
+     * from any thread.
+     */
+    fun statsJson(): org.json.JSONObject {
+        val now = SystemClock.elapsedRealtime()
+        val recent = synchronized(markers) {
+            val tail = ArrayList<Marker>(MARKERS_IN_REPORT)
+            val it = markers.descendingIterator()
+            while (it.hasNext() && tail.size < MARKERS_IN_REPORT) tail.add(it.next())
+            tail
+        }
+        val json = org.json.JSONObject()
+        json.put("started", started)
+        json.put("active", active)
+        json.put(
+            "refreshHz",
+            "%.1f".format(1_000_000_000.0 / framePeriodNanos.coerceAtLeast(1)),
+        )
+        json.put("jankCountWindow", jankCount)
+        json.put("worstFrameMsWindow", worstFrameMs)
+        json.put("framesInWindow", framesInWindow)
+        json.put("uptimeMs", now - firstStartMs)
+        json.put(
+            "recentMarkers",
+            org.json.JSONArray().apply {
+                recent.forEach { m ->
+                    put(org.json.JSONObject().put("label", m.label).put("ageMs", now - m.atMs))
+                }
+            },
+        )
+        return json
+    }
+
+    /** [T-jank-stats-rpc] Clear the window counters (markers kept). */
+    fun resetWindow() {
+        jankCount = 0
+        worstFrameMs = 0L
+        framesInWindow = 0L
     }
 }

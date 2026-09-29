@@ -6578,6 +6578,14 @@ class ChatViewModel(
             // history and marker row are available.
             loadedHistoryFromIndex = loaded.uiFromIndex
             _hasUnloadedOlderMessages.value = loaded.uiFromIndex > 0
+            // [T-jank-stats-rpc] Frame attribution anchor: session opens are
+            // one of the user's three lag complaints. If a frame drops
+            // during the open burst, the jank report now shows this marker
+            // (+Nms) with the row/window sizes — answer "which open, how
+            // big" without logcat.
+            com.openminis.app.diagnostics.JankMonitor.mark(
+                "session.open rows=${loaded.messages.size} ui=${ordered.size}",
+            )
             _messages.value = if (marker == null) {
                 ordered
             } else {

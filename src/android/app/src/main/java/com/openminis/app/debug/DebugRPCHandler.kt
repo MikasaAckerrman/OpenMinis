@@ -10,6 +10,7 @@ import android.os.SystemClock
 import android.view.InputDevice
 import android.view.MotionEvent
 import com.openminis.app.BuildConfig
+import com.openminis.app.diagnostics.JankMonitor
 import com.openminis.app.logging.AppLogger
 import com.openminis.app.sandbox.ExecutionCoordinator
 import com.openminis.app.sandbox.PRootKernel
@@ -84,6 +85,12 @@ class DebugRPCHandler(private val context: Context) {
             "debug.inputText" -> handleInputText(params)
             "debug.llmRequests" -> handleLLMRequests(params)
             "debug.llmRequests.clear" -> { LLMRequestLog.clear(); JSONObject().put("cleared", true) }
+            // [T-jank-stats-rpc] Remote lag instrument: the user's device
+            // reports the frames it ACTUALLY dropped (count, worst, recent
+            // UI-operation markers with ages) — a lag complaint becomes
+            // measurable evidence instead of an adjective.
+            "debug.jankStats" -> JankMonitor.statsJson()
+            "debug.jankReset" -> { JankMonitor.resetWindow(); JSONObject().put("reset", true) }
             "debug.agentTrace" -> handleAgentTrace(params)
             "debug.fetch" -> handleFetch(params)
             "debug.shellExecute" -> handleShellExecute(params)
