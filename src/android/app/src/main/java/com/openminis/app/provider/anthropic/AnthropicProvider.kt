@@ -253,6 +253,28 @@ class AnthropicProvider(
                 }
                 val eventType = event.safeOptString("type", "")
 
+                // [T-anthropic-instream-error] Anthropic's SSE can carry an
+                // error EVENT mid-generation (`event: error` + a
+                // {"type":"error","error":{...}} payload — overloaded_error
+                // is the common one). The when() below had no "error" branch:
+                // the payload parsed, matched nothing and was silently
+                // dropped, so the stream just ended with no stop_reason and
+                // the user saw "empty response" instead of the real cause.
+                // Map to a TransientError (retryable) — the send path's
+                // fallback/retry ladder owns the decision.
+                if (eventType == "error") {
+                    val err = event.optJSONObject("error")
+                    val type = err?.safeOptString("type", "") ?: "error"
+                    val msg = (err?.safeOptString("message", "") ?: "").ifEmpty { "in-stream error" }
+                    cancel(
+                        "Anthropic stream error [$type]",
+                        com.openminis.app.data.model.LLMError.TransientError(
+                            "Provider stream error ($type): $msg"
+                        ),
+                    )
+                    break
+                }
+
                 when (eventType) {
                     "message_start" -> {
                         send(LLMStreamChunk.Started)
