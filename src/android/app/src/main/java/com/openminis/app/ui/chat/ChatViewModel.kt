@@ -16,6 +16,7 @@ import com.openminis.app.agent.ToolLoopDetector
 import com.openminis.app.browser.BrowserActionInput
 import com.openminis.app.browser.BrowserTabPool
 import com.openminis.app.data.db.MessageEntity
+import com.openminis.app.data.SessionHistoryCache
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Compress
 import androidx.compose.material.icons.filled.Tune
@@ -6407,14 +6408,37 @@ class ChatViewModel(
                     "toChatMessages.end",
                     "count=${chatUi.size}",
                 )
-                val rows = chatRepository.loadMessages(sessionId)
-                val llm = ArrayList<LLMMessage>(rows.size)
+                // [T-session-history-cache] Cross-open reuse of the parsed
+                // LLM history: a hop back into a heavy session skips the
+                // full row load + per-row JSON parse entirely (fingerprint
+                // = row count + MAX(created_at), both cheap aggregates).
+                // All message writes flow through ChatRepository hooks, so
+                // a hit is provably identical data.
+                val historyFingerprint = runCatching {
+                    chatRepository.dao.maxCreatedAt(sessionId)
+                }.getOrDefault(-1L)
+                val cached = SessionHistoryCache.get(
+                    sessionId, totalRows, historyFingerprint,
+                )
+                val rows: List<com.openminis.app.data.db.MessageEntity>
+                val llm: ArrayList<LLMMessage>
+                if (cached != null) {
+                    rows = cached.rows
+                    llm = ArrayList(cached.llmHistory)
+                    com.openminis.app.diagnostics.PerfLongCtx.step(
+                        sessionId,
+                        "history.cache.hit",
+                        "rows=${rows.size}",
+                    )
+                } else {
+                val rowsFresh = chatRepository.loadMessages(sessionId)
+                llm = ArrayList(rowsFresh.size)
                 var totalPartsChars = 0L
-                for (start in rows.indices step 200) {
-                    val end = (start + 200).coerceAtMost(rows.size)
+                for (start in rowsFresh.indices step 200) {
+                    val end = (start + 200).coerceAtMost(rowsFresh.size)
                     val pageCache = PartsJsonCache(end - start)
                     for (index in start until end) {
-                        val entity = rows[index]
+                        val entity = rowsFresh[index]
                         totalPartsChars += entity.partsJson.length
                         llm.add(entity.toLLMMessage(pageCache))
                     }
@@ -6425,6 +6449,11 @@ class ChatViewModel(
                     "toLLMMessage.end",
                     "count=${llm.size} totalPartsChars=$totalPartsChars",
                 )
+                rows = rowsFresh
+                SessionHistoryCache.put(
+                    sessionId, rows, llm, totalRows, historyFingerprint,
+                )
+                }
                 LoadedSessionData(
                     messages = rows,
                     ordered = chatUi,

@@ -1,6 +1,7 @@
 package com.openminis.app.data.repository
 
 import android.database.sqlite.SQLiteBlobTooBigException
+import com.openminis.app.data.SessionHistoryCache
 import com.openminis.app.data.db.ChatDao
 import com.openminis.app.data.db.ChatSessionEntity
 import com.openminis.app.data.db.MessageEntity
@@ -318,6 +319,8 @@ class ChatRepository(internal val dao: ChatDao) {
             totalRows = totalRows,
             removed = doomed,
         )
+        // [T-session-history-cache] Rows removed → parsed history stale.
+        SessionHistoryCache.invalidate(sessionId)
         return doomed
     }
 
@@ -372,12 +375,21 @@ class ChatRepository(internal val dao: ChatDao) {
      * boundary cut to trim the kept assistant row to the parts before the
      * target tool_use. Mirrors iOS ChatStore.updateMessageParts.
      */
-    suspend fun updateMessageParts(id: String, partsJson: String) =
+    suspend fun updateMessageParts(id: String, partsJson: String) {
         dao.updateMessageParts(id, partsJson)
+        // [T-session-history-cache] Rewrite path: the cached parsed history
+        // for the owning session is now stale (same row, same count, same
+        // maxCreatedAt — the fingerprint alone would NOT catch it).
+        SessionHistoryCache.invalidateMessage(id)
+    }
 
     /** [T-error-persist-android] Set/clear the error sticker on a row by id. */
-    suspend fun updateMessageErrorInfo(messageId: String, errorInfo: String?) =
+    suspend fun updateMessageErrorInfo(messageId: String, errorInfo: String?) {
         dao.updateMessageErrorInfo(messageId, errorInfo)
+        // [T-session-history-cache] The sticker is part of the parsed block
+        // state — keep the cache honest.
+        SessionHistoryCache.invalidateMessage(messageId)
+    }
 
     /**
      * [T-error-persist-android] Set/clear the error sticker on a session's last
@@ -474,6 +486,11 @@ class ChatRepository(internal val dao: ChatDao) {
         dao.insertMessage(message)
         val preview = extractTextPreview(capped)
         dao.updateLastMessage(sessionId, preview, now)
+        // [T-session-history-cache] New row → count AND maxCreatedAt move;
+        // the fingerprint check alone would catch this, but the hook keeps
+        // the invalidation deterministic instead of relying on the load-time
+        // query having run first.
+        SessionHistoryCache.invalidate(sessionId)
         return message
     }
 

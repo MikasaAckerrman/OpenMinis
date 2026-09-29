@@ -215,6 +215,14 @@ interface ChatDao {
     @Query("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM messages WHERE session_id = :sessionId")
     suspend fun nextSortOrder(sessionId: String): Int
 
+    /**
+     * [T-session-history-cache] Structural fingerprint half for the
+     * parsed-history cache: monotonic append detector. Cheap indexed
+     * aggregate — never loads a row body.
+     */
+    @Query("SELECT COALESCE(MAX(created_at), -1) FROM messages WHERE session_id = :sessionId")
+    suspend fun maxCreatedAt(sessionId: String): Long
+
     @Query("DELETE FROM messages WHERE session_id = :sessionId")
     suspend fun deleteMessages(sessionId: String)
 
