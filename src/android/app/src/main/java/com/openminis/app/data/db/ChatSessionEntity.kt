@@ -43,8 +43,14 @@ data class ChatSessionEntity(
      * only path that leaves 1 behind at a session open is a process death
      * (a user Stop disarms first). Restored on load; auto-resume fires
      * only when the tail also looks interrupted.
+     *
+     * [T-migration-13-14-schema] defaultValue="0" is REQUIRED: the column
+     * is added by ALTER TABLE ... NOT NULL DEFAULT 0 on live databases
+     * (SQLite mandates a default for NOT NULL adds), and Room validates
+     * the DB-side default against this annotation — missing it was the
+     * "Migration didn't properly handle" crash of the first vc70 build.
      */
-    @ColumnInfo(name = "auto_mode_armed") val autoModeArmed: Int = 0,
+    @ColumnInfo(name = "auto_mode_armed", defaultValue = "0") val autoModeArmed: Int = 0,
 
     /** Counters snapshot JSON of the armed run: turns/tokens/failRetries. */
     @ColumnInfo(name = "auto_mode_state") val autoModeState: String? = null,

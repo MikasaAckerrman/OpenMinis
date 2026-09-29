@@ -15,7 +15,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         WebAppShortcutEntity::class,
         DeletedMessageEntity::class,
     ],
-    version = 14,
+    version = 15,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -213,8 +213,65 @@ abstract class AppDatabase : RoomDatabase() {
                 // out from under the user — exactly the case that deserves
                 // an automatic resume. Non-armed (interactive) sessions keep
                 // the manual Resume banner; autonomy is opt-in.
-                db.execSQL("ALTER TABLE sessions ADD COLUMN auto_mode_armed INTEGER DEFAULT 0")
+                // [T-migration-13-14-schema] CORRECTED after the vc70 crash
+                // (logs 2026-09-29_13-20-43): the original SQL dropped
+                // NOT NULL, and the entity lacked defaultValue="0" — Room's
+                // post-migration validation found auto_mode_armed nullable
+                // with a default the entity never declared and crashed the
+                // very first open. Fresh 13→14 paths now produce exactly
+                // what the entity expects: NOT NULL + DEFAULT 0.
+                db.execSQL("ALTER TABLE sessions ADD COLUMN auto_mode_armed INTEGER NOT NULL DEFAULT 0")
                 db.execSQL("ALTER TABLE sessions ADD COLUMN auto_mode_state TEXT")
+            }
+        }
+
+        /**
+         * [T-migration-14-15-repair] Repair pass for databases that ran the
+         * BROKEN 13→14 (vc70 first build): SQLite added auto_mode_armed as
+         * NULLABLE-with-default, which Room's schema validation rejects —
+         * every open crashed (logs 2026-09-29_13-20-43). Nullability cannot
+         * be ALTERed in place, so the sessions table is recreated with the
+         * entity-exact schema and copied column-for-column. All rows are
+         * preserved; auto_mode_armed coerces NULL→0 (it is volatile state
+         * — losing it only means no auto-resume, never data loss).
+         */
+        private val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS sessions_repair (" +
+                        "id TEXT NOT NULL PRIMARY KEY, " +
+                        "title TEXT, " +
+                        "model_id TEXT NOT NULL, " +
+                        "created_at INTEGER NOT NULL, " +
+                        "updated_at INTEGER NOT NULL, " +
+                        "category TEXT, " +
+                        "last_message TEXT, " +
+                        "model_binding TEXT, " +
+                        "source TEXT, " +
+                        "memory_enabled INTEGER NOT NULL, " +
+                        "pinned_at INTEGER, " +
+                        "edit_count INTEGER NOT NULL, " +
+                        "thinking_override TEXT, " +
+                        "agent_run_id TEXT, " +
+                        "agent_role TEXT, " +
+                        "is_agent_showcase INTEGER NOT NULL, " +
+                        "auto_mode_enabled INTEGER, " +
+                        "subagents_enabled INTEGER, " +
+                        "auto_mode_armed INTEGER NOT NULL DEFAULT 0, " +
+                        "auto_mode_state TEXT)",
+                )
+                db.execSQL(
+                    "INSERT INTO sessions_repair (id, title, model_id, created_at, updated_at, category, " +
+                        "last_message, model_binding, source, memory_enabled, pinned_at, edit_count, " +
+                        "thinking_override, agent_run_id, agent_role, is_agent_showcase, auto_mode_enabled, " +
+                        "subagents_enabled, auto_mode_armed, auto_mode_state) " +
+                        "SELECT id, title, model_id, created_at, updated_at, category, last_message, " +
+                        "model_binding, source, memory_enabled, pinned_at, edit_count, thinking_override, " +
+                        "agent_run_id, agent_role, is_agent_showcase, auto_mode_enabled, subagents_enabled, " +
+                        "COALESCE(auto_mode_armed, 0), auto_mode_state FROM sessions",
+                )
+                db.execSQL("DROP TABLE sessions")
+                db.execSQL("ALTER TABLE sessions_repair RENAME TO sessions")
             }
         }
 
@@ -282,7 +339,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "minis.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15)
                     .build()
                     .also { INSTANCE = it }
             }
