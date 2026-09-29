@@ -24,8 +24,8 @@ object TurnTimerTool {
             "tool_title" to AgentToolParam("string", "A concise 5-10 word summary. Use the user's language."),
             "action" to AgentToolParam("string", "set | status | clear", enumValues = listOf("set", "status", "clear")),
             "minutes" to AgentToolParam(
-                "string",
-                "For action=set: the budget in minutes, 1..1440 (e.g. \"60\" for one hour).",
+                "integer",
+                "For action=set: the budget in minutes, 1..1440 (e.g. 60 for one hour).",
             ),
         ),
         required = listOf("tool_title", "action"),

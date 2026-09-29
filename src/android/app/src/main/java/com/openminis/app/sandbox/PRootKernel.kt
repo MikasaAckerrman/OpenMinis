@@ -686,7 +686,27 @@ object PRootKernel {
         if (subdir !in perSessionSubdirs) return resolveHostPath(linuxPath)
         val sessionBase = File(context.filesDir, "minis-sessions/$sessionId/$subdir")
         val tail = if (slash < 0) "" else rest.substring(slash + 1)
-        return if (tail.isEmpty()) sessionBase else File(sessionBase, tail)
+        val target = if (tail.isEmpty()) sessionBase else File(sessionBase, tail)
+        // [T-sandbox-path-traversal] Night wave-3 security finding: the tail
+        // is model-controlled and reaches File() verbatim —
+        // "/var/minis/workspace/../../minis-sessions/<other>/workspace/x"
+        // walked straight out of THIS session's base on the HOST side (the
+        // write jail canonicalizes on its own, but the file-READ path had no
+        // guard at all: cross-session reads from jailed workers). Canonicalize
+        // (missing tails resolve through the deepest existing parent on
+        // Linux) and require the result to stay inside the session base;
+        // anything else is unresolvable, and the caller reports exactly
+        // that. Symlinks planted inside the workspace that point out are
+        // followed and rejected the same way.
+        val canonicalBase = sessionBase.canonicalFile
+        val canonicalTarget = target.canonicalFile
+        val inside = canonicalTarget == canonicalBase ||
+            canonicalTarget.absolutePath.startsWith(canonicalBase.absolutePath + File.separator)
+        if (!inside) {
+            Log.w(TAG, "resolveSessionHostPath refused traversal: $linuxPath -> ${canonicalTarget.absolutePath}")
+            return null
+        }
+        return canonicalTarget
     }
 
     /**
