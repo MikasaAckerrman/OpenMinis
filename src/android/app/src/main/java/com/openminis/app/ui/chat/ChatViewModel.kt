@@ -10843,10 +10843,21 @@ class ChatViewModel(
             // turn is the iOS fcc22b66 item-3 bug.
             effectiveContextWindowTokens()?.takeIf { it > 0 }?.let { window ->
                 runCatching {
-                    offloadContextIfNeeded(
-                        contextWindow = window,
-                        lastContextTokens = _lastTurnContextTokens.value,
-                    )
+                    // [T-offload-off-main] The pass writes one file per
+                    // offloaded part (a first-crossing burst in a heavy
+                    // session measured ~1800 files + the full-history token
+                    // scan) and used to run on the MAIN dispatcher at turn
+                    // start — the 999ms worst frame in jankStats and the
+                    // heavy-session send lag. agentHistory access is safe:
+                    // the streaming gate serializes turn start (no
+                    // concurrent writers), and this coroutine suspends here
+                    // until the block completes.
+                    withContext(Dispatchers.IO) {
+                        offloadContextIfNeeded(
+                            contextWindow = window,
+                            lastContextTokens = _lastTurnContextTokens.value,
+                        )
+                    }
                 }.onFailure {
                     AppLogger.warning(TAG, "[Offload] per-turn pass failed: ${it.message}")
                 }

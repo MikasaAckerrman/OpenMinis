@@ -25,6 +25,9 @@ object SessionActivityTracker {
 
     private const val TAG = "SessionTracker"
 
+    /** [T-fgs-post-throttle] Coalescing window for FGS re-posts (tool ticks). */
+    private const val SERVICE_POST_INTERVAL_MS = 750L
+
     // All active/present mutations and the corresponding FGS decision run
     // under this object's monitor (@Synchronized methods below). Stream jobs
     // finish on different IO threads; a plain StateFlow read-modify-write can
@@ -615,12 +618,44 @@ object SessionActivityTracker {
 
     private fun updateService() {
         val context = appContext ?: return
-        AgentForegroundService.startService(
-            context,
-            sessionCountForNotification(),
-            statusForNotification(),
-        )
+        // [T-fgs-post-throttle] Every tool transition used to fire a full
+        // startForegroundService round-trip + notification rebuild — a
+        // 50-tool agent turn meant ~100 binder crossings into system_server
+        // (start + notify each), system load that compounded with UI work
+        // while the user scrolled. Coalesce to one post per 750ms with a
+        // trailing post carrying the FRESH status; session-start (the 5s
+        // startForeground deadline) and the stop path stay immediate.
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lastServicePostMs >= SERVICE_POST_INTERVAL_MS) {
+            lastServicePostMs = now
+            pendingServicePost = false
+            AgentForegroundService.startService(
+                context,
+                sessionCountForNotification(),
+                statusForNotification(),
+            )
+        } else if (!pendingServicePost) {
+            pendingServicePost = true
+            val delay = SERVICE_POST_INTERVAL_MS - (now - lastServicePostMs)
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
+                {
+                    pendingServicePost = false
+                    lastServicePostMs = android.os.SystemClock.elapsedRealtime()
+                    appContext?.let { ctx ->
+                        AgentForegroundService.startService(
+                            ctx,
+                            sessionCountForNotification(),
+                            statusForNotification(),
+                        )
+                    }
+                },
+                delay,
+            )
+        }
     }
+
+    private var lastServicePostMs = 0L
+    private var pendingServicePost = false
 
     /**
      * Notification session count = streaming sessions if any, otherwise
