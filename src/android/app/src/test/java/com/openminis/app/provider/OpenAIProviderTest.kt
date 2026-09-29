@@ -79,7 +79,12 @@ class OpenAIProviderTest {
         )
         val response = provider.sendMessage(listOf(LLMMessage(LLMMessage.Role.USER, "Hi")), null, 1024)
 
-        assertEquals(100, response.usage?.inputTokens)
+        // [T-usage-fresh-input] inputTokens is FRESH-only by convention
+        // (prompt_tokens minus the cached portion — Anthropic alignment,
+        // see parseChatCompletionsUsage): 100 total − 50 cached = 50
+        // fresh. latestContextTokens carries the FULL prompt.
+        assertEquals(50, response.usage?.inputTokens)
+        assertEquals(100, response.usage?.latestContextTokens)
         assertEquals(10, response.usage?.outputTokens)
         assertEquals(50, response.usage?.cacheReadInputTokens)
         assertNull(response.usage?.cacheCreationInputTokens)

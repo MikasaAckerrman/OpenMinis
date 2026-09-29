@@ -40,8 +40,13 @@ object TerminalSanitizer {
             .joinToString("\n")
             .replace(Regex("(?:null){2,}"), "") // Remove runs of 2+ consecutive "null"
 
-        // Pass 5: Collapse excessive blank lines (3+ consecutive → 2)
-        return noNullLines.replace(Regex("\n{3,}"), "\n\n").trim()
+        // Pass 5: Collapse excessive blank lines (3+ consecutive → 2).
+        // [T-sanitize-space-truth] Trim NEWLINES only, not spaces: the
+        // whole-output trim() ate meaningful whitespace — progress bars
+        // pad with spaces by design ("  100%[====>]", "complete   ") and
+        // the full-suite gate pinned that terminal truth. Leading/trailing
+        // blank lines are still display noise worth removing.
+        return noNullLines.replace(Regex("\n{3,}"), "\n\n").trim('\n', '\r')
     }
 
     /**
