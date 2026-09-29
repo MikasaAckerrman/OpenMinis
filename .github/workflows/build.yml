@@ -20,8 +20,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     
-    # Only run if commit message contains [quick] or manual dispatch
-    if: contains(github.event.head_commit.message, '[quick]') || github.event_name == 'workflow_dispatch'
+    # Only run if commit message contains [quick] (smoke gate + build) or
+    # [full] (COMPLETE unit-test suite + build — no --tests filter) or
+    # manual dispatch (dispatch = [quick] semantics).
+    if: contains(github.event.head_commit.message, '[quick]') || contains(github.event.head_commit.message, '[full]') || github.event_name == 'workflow_dispatch'
     
     steps:
       - name: Checkout repository
@@ -86,9 +88,18 @@ jobs:
       # `config.*` for the same reason: the rest of that package is not covered
       # yet, and a wildcard would drag in whatever lands there next.
       - name: Run unit tests
+        env:
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
         run: |
           cd src/android
-          ./gradlew :app:testCloneUnitTest --no-daemon -Dorg.gradle.jvmargs="-Xmx4g" \
+          # [T-ci-full-mode] A commit carrying the [full] marker runs the
+          # COMPLETE testCloneUnitTest suite (no --tests filter) before the
+          # build — the release-grade gate. [quick] keeps the smoke list.
+          if echo "$COMMIT_MSG" | grep -q '\[full\]'; then
+            echo "FULL mode: running the entire unit-test suite"
+            ./gradlew :app:testCloneUnitTest --no-daemon -Dorg.gradle.jvmargs="-Xmx4g"
+          else
+            ./gradlew :app:testCloneUnitTest --no-daemon -Dorg.gradle.jvmargs="-Xmx4g" \
             --tests 'com.openminis.app.offload.*' \
             --tests 'com.openminis.app.config.ConfigPathResolverTest' \
             --tests 'com.openminis.app.data.model.ProviderFoldersTest' \
@@ -158,6 +169,7 @@ jobs:
             --tests 'com.openminis.app.ui.chat.UiCopyDiffVerdictTest' \
             --tests 'com.openminis.app.ui.chat.MinisTextKitSelectionOrderTest' \
             --tests 'com.openminis.app.ui.chat.ShardOrderTest'
+          fi
         # `offload.*` already covers AgentArtifactStoreTest — the artifact store
         # lives in that package on purpose, next to the runner that uses it.
 
