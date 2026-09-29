@@ -100,6 +100,31 @@ object DisplayBitmapLimits {
             .precision(Precision.INEXACT)
 
     /**
+     * [T-inline-image-decode-tier] Inline chat images used the FULL viewer
+     * ceiling (4096 = 64MB ARGB worst case each). Measured: a 26-message
+     * session with ~20 pasted screenshots drove the native heap from 44MB to
+     * 1.2GB on open — the process died 30s later in the GC storm
+     * (PerfLongCtx 22:51 episode). The chat column is ~1148px wide; 2048
+     * preserves 2× zoom-quality headroom while capping a decode at 16MB.
+     */
+    const val MAX_INLINE_EDGE_PX = 2048
+
+    fun ImageRequest.Builder.limitInlineSize(): ImageRequest.Builder =
+        size(MAX_INLINE_EDGE_PX, MAX_INLINE_EDGE_PX)
+            .precision(Precision.INEXACT)
+
+    /**
+     * [T-inline-image-decode-tier] Thumbnail tiles (64dp attachment strips,
+     * composer previews): 512px is ~3× the on-screen density of a 64dp tile —
+     * decoding these at the 4096 viewer ceiling was a 60× waste per bitmap.
+     */
+    const val MAX_THUMB_EDGE_PX = 512
+
+    fun ImageRequest.Builder.limitThumbSize(): ImageRequest.Builder =
+        size(MAX_THUMB_EDGE_PX, MAX_THUMB_EDGE_PX)
+            .precision(Precision.INEXACT)
+
+    /**
      * [T-runtime-bitmap-canvas-crash] Cap an ALREADY-decoded bitmap to
      * [maxEdge] before it is handed to Compose/Canvas for display.
      *

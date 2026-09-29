@@ -253,6 +253,7 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.openminis.app.ui.DisplayBitmapLimits.limitDisplaySize
+import com.openminis.app.ui.DisplayBitmapLimits.limitThumbSize
 import com.openminis.app.offload.OffloadPermissionManager
 import com.mikepenz.markdown.compose.components.markdownComponents
 import com.mikepenz.markdown.m3.Markdown
@@ -605,7 +606,7 @@ internal fun UserAttachmentList(
         imageUris.forEachIndexed { idx, uri ->
             val context = LocalContext.current
             val request = remember(uri) {
-                ImageRequest.Builder(context).data(uri).limitDisplaySize().build()
+                ImageRequest.Builder(context).data(uri).limitThumbSize().build()
             }
             // [T-attachment-numbering] Badge is drawn in a Box on top of the
             // thumbnail rather than beside it: the FlowRow is right-aligned and

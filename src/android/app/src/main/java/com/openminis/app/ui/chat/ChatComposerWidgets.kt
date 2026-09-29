@@ -255,7 +255,7 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.openminis.app.ui.DisplayBitmapLimits.decodeFileForDisplay
-import com.openminis.app.ui.DisplayBitmapLimits.limitDisplaySize
+import com.openminis.app.ui.DisplayBitmapLimits.limitThumbSize
 import com.openminis.app.offload.OffloadPermissionManager
 import com.mikepenz.markdown.compose.components.markdownComponents
 import com.mikepenz.markdown.m3.Markdown
@@ -323,7 +323,7 @@ internal fun AttachmentChip(
                 val request = remember(attachment.uri) {
                     ImageRequest.Builder(context)
                         .data(attachment.uri)
-                        .limitDisplaySize()
+                        .limitThumbSize()
                         .build()
                 }
                 AsyncImage(
