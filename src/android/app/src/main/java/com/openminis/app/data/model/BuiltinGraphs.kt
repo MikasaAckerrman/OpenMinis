@@ -309,7 +309,11 @@ object BuiltinGraphs {
             AgentNode(
                 id = CI_FIX,
                 role = AgentRole.SENIOR_IMPLEMENTER,
-                mayDelegateTo = listOf(AgentRole.CODE_CORRECTNESS_REVIEWER),
+                // NOTE: no mayDelegateTo — validate() requires every
+                // delegation target role to exist as a NODE in the same
+                // graph, and this two-node graph has no reviewer node.
+                // The fixer works solo; a review pass, if ever wanted,
+                // becomes a third node.
                 maxTurns = 16,
                 allowedTools = listOf("shell", "file_read", "file_edit", "file_write"),
                 ownedArtifact = "minimal verified fix pushed to the branch",

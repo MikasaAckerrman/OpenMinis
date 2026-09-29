@@ -204,10 +204,17 @@ object SupermemoryBridge {
      * worth injecting (no hits → no noise in context).
      */
     fun buildInjection(hits: List<Hit>): String? {
-        val picked = hits.take(MAX_INJECTED)
+        // [T-bridge-blank-hits] Blank-only hits must inject NOTHING: the
+        // old code checked picked.isEmpty() BEFORE trimming, so a single
+        // whitespace-content hit produced a header with an empty "• "
+        // bullet instead of null (full-suite gate catch).
+        val picked = hits
+            .map { h -> h.copy(content = h.content.trim()) }
+            .filter { it.content.isNotEmpty() }
+            .take(MAX_INJECTED)
         if (picked.isEmpty()) return null
         val lines = picked.joinToString("\n") { h ->
-            val one = h.content.replace('\n', ' ').trim()
+            val one = h.content.replace('\n', ' ')
             "• ${if (one.length > MAX_SNIPPET_CHARS) one.take(MAX_SNIPPET_CHARS) + "…" else one}"
         }
         return "Релевантные долгосрочные воспоминания (supermemory):\n$lines"

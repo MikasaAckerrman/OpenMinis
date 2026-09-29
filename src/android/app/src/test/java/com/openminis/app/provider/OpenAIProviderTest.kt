@@ -37,21 +37,26 @@ class OpenAIProviderTest {
         server.shutdown()
     }
 
+    // [T-sendmessage-sse-mocks] sendMessageClamped is STREAMING-INTERNAL
+    // by design (some providers reject stream=false with 400) — the old
+    // plain-JSON mocks predate that redesign, produced zero stream chunks
+    // and tripped failOnSilentEmptyCompletion on every sendMessage test
+    // (11 red in the first full-suite run). All sendMessage fixtures are
+    // SSE now; streamMessage fixtures were already SSE.
+    private fun sse(vararg events: String): MockResponse = MockResponse()
+        .setBody(events.joinToString("\n\n", postfix = "\n\n") { "data: $it" } + "data: [DONE]\n\n")
+        .setHeader("Content-Type", "text/event-stream")
+
     // -- sendMessage response parsing --
 
     @Test
     fun `sendMessage parses ChatCompletions response`() = runBlocking {
-        val responseBody = """
-        {
-            "choices": [{
-                "message": {"role": "assistant", "content": "Hello from GPT!"},
-                "finish_reason": "stop"
-            }],
-            "usage": {"prompt_tokens": 10, "completion_tokens": 5}
-        }
-        """.trimIndent()
-
-        server.enqueue(MockResponse().setBody(responseBody))
+        server.enqueue(
+            sse(
+                """{"choices":[{"delta":{"content":"Hello from GPT!"}}]}""",
+                """{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5}}""",
+            ),
+        )
 
         val response = provider.sendMessage(
             listOf(LLMMessage(LLMMessage.Role.USER, "Hi")),
@@ -66,18 +71,12 @@ class OpenAIProviderTest {
 
     @Test
     fun `sendMessage parses cached tokens from prompt_tokens_details`() = runBlocking {
-        val responseBody = """
-        {
-            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
-            "usage": {
-                "prompt_tokens": 100,
-                "completion_tokens": 10,
-                "prompt_tokens_details": {"cached_tokens": 50}
-            }
-        }
-        """.trimIndent()
-
-        server.enqueue(MockResponse().setBody(responseBody))
+        server.enqueue(
+            sse(
+                """{"choices":[{"delta":{"content":"ok"}}]}""",
+                """{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":10,"prompt_tokens_details":{"cached_tokens":50}}}""",
+            ),
+        )
         val response = provider.sendMessage(listOf(LLMMessage(LLMMessage.Role.USER, "Hi")), null, 1024)
 
         assertEquals(100, response.usage?.inputTokens)
@@ -88,36 +87,43 @@ class OpenAIProviderTest {
 
     @Test
     fun `sendMessage returns null cacheReadInputTokens when zero`() = runBlocking {
-        val responseBody = """
-        {
-            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
-            "usage": {
-                "prompt_tokens": 10,
-                "completion_tokens": 5,
-                "prompt_tokens_details": {"cached_tokens": 0}
-            }
-        }
-        """.trimIndent()
-
-        server.enqueue(MockResponse().setBody(responseBody))
+        server.enqueue(
+            sse(
+                """{"choices":[{"delta":{"content":"ok"}}]}""",
+                """{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":0}}}""",
+            ),
+        )
         val response = provider.sendMessage(listOf(LLMMessage(LLMMessage.Role.USER, "Hi")), null, 1024)
         assertNull(response.usage?.cacheReadInputTokens)
     }
 
     @Test
     fun `sendMessage handles empty choices`() = runBlocking {
-        server.enqueue(MockResponse().setBody("""{"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":0}}"""))
+        // An SSE stream that never yields content, tool call or finish is
+        // the empty-stream contract: TransientError so the retry ladder
+        // owns it (the old "return an empty LLMResponse" behavior predates
+        // the policy and would have masked dead providers as successes).
+        server.enqueue(sse("""{"choices":[]}"""))
 
-        val response = provider.sendMessage(listOf(LLMMessage(LLMMessage.Role.USER, "Hi")), null, 1024)
-        assertEquals("", response.text)
-        assertNull(response.stopReason)
+        val ex = runCatching {
+            provider.sendMessage(listOf(LLMMessage(LLMMessage.Role.USER, "Hi")), null, 1024)
+        }.exceptionOrNull()
+        assertTrue(
+            "expected TransientError, got $ex",
+            ex is com.openminis.app.data.model.LLMError.TransientError,
+        )
     }
 
     // -- Request construction --
 
+    private fun sseOk(): MockResponse = sse(
+        """{"choices":[{"delta":{"content":"ok"}}]}""",
+        """{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}""",
+    )
+
     @Test
     fun `sendMessage includes Bearer auth header`() = runBlocking {
-        server.enqueue(MockResponse().setBody("""{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":0,"completion_tokens":0}}"""))
+        server.enqueue(sseOk())
 
         provider.sendMessage(listOf(LLMMessage(LLMMessage.Role.USER, "test")), null, 100)
 
@@ -128,7 +134,7 @@ class OpenAIProviderTest {
 
     @Test
     fun `sendMessage includes system prompt as system message`() = runBlocking {
-        server.enqueue(MockResponse().setBody("""{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":0,"completion_tokens":0}}"""))
+        server.enqueue(sseOk())
 
         provider.sendMessage(
             listOf(LLMMessage(LLMMessage.Role.USER, "test")),
@@ -147,7 +153,7 @@ class OpenAIProviderTest {
 
     @Test
     fun `sendMessage omits system message when null`() = runBlocking {
-        server.enqueue(MockResponse().setBody("""{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":0,"completion_tokens":0}}"""))
+        server.enqueue(sseOk())
 
         provider.sendMessage(listOf(LLMMessage(LLMMessage.Role.USER, "test")), null, 100)
 
@@ -160,7 +166,7 @@ class OpenAIProviderTest {
 
     @Test
     fun `sendMessage includes temperature when set`() = runBlocking {
-        server.enqueue(MockResponse().setBody("""{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":0,"completion_tokens":0}}"""))
+        server.enqueue(sseOk())
 
         provider.sendMessage(listOf(LLMMessage(LLMMessage.Role.USER, "test")), null, 100, temperature = 0.8)
 
@@ -171,7 +177,7 @@ class OpenAIProviderTest {
 
     @Test
     fun `sendMessage omits temperature when null`() = runBlocking {
-        server.enqueue(MockResponse().setBody("""{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":0,"completion_tokens":0}}"""))
+        server.enqueue(sseOk())
 
         provider.sendMessage(listOf(LLMMessage(LLMMessage.Role.USER, "test")), null, 100, temperature = null)
 
@@ -182,7 +188,7 @@ class OpenAIProviderTest {
 
     @Test
     fun `sendMessage uses max_completion_tokens for OpenAI`() = runBlocking {
-        server.enqueue(MockResponse().setBody("""{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":0,"completion_tokens":0}}"""))
+        server.enqueue(sseOk())
 
         provider.sendMessage(listOf(LLMMessage(LLMMessage.Role.USER, "test")), null, 2048)
 
@@ -193,15 +199,18 @@ class OpenAIProviderTest {
     }
 
     @Test
-    fun `sendMessage sets stream false for non-streaming`() = runBlocking {
-        server.enqueue(MockResponse().setBody("""{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":0,"completion_tokens":0}}"""))
+    fun `sendMessage always requests streaming internally`() = runBlocking {
+        // [T-sendmessage-sse-mocks] The non-streaming entry point is
+        // streaming-internal BY DESIGN (providers that reject
+        // stream=false) — the old "stream: false" contract predates that
+        // and its mock tripped the empty-completion gate in the full run.
+        server.enqueue(sseOk())
 
         provider.sendMessage(listOf(LLMMessage(LLMMessage.Role.USER, "test")), null, 100)
 
         val request = server.takeRequest()
         val body = JSONObject(request.body.readUtf8())
-        assertEquals(false, body.getBoolean("stream"))
-        assertTrue(!body.has("stream_options"))
+        assertEquals(true, body.getBoolean("stream"))
     }
 
     // -- Streaming --

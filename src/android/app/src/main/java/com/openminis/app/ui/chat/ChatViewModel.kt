@@ -232,9 +232,16 @@ class ChatViewModel(
                     // 900.0 is a whole number some providers emit for
                     // integer fields — semantically correct, accept it.
                     // 12.5 is genuinely not an integer and is refused.
+                    // BigDecimal: the JVM-side org.json (unit tests, CI)
+                    // returns decimal literals as BigDecimal while
+                    // Android's build yields Double — accept whole values
+                    // on BOTH shapes so the gate is shape-identical.
                     "integer" -> raw is Int || raw is Long ||
-                        (raw is Double && raw.isFinite() && raw == Math.floor(raw))
-                    "number" -> raw is Int || raw is Long || raw is Double || raw is Float
+                        (raw is Double && raw.isFinite() && raw == Math.floor(raw)) ||
+                        (raw is java.math.BigDecimal &&
+                            raw.stripTrailingZeros().scale() <= 0)
+                    "number" -> raw is Int || raw is Long || raw is Double ||
+                        raw is Float || raw is java.math.BigDecimal
                     "boolean" -> raw is Boolean
                     "array" -> raw is org.json.JSONArray
                     "object" -> raw is org.json.JSONObject

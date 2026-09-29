@@ -54,16 +54,40 @@ object SessionGC {
 
     /**
      * Index of the last row that MAY be rewritten; everything after is the
-     * protected tail. NOTE: ProtectedTail counts USER turns as boundaries —
-     * tool-result rows are role "user" too (persistToolResultMessage), so
-     * they count as part of a user turn's span, which is exactly the
-     * compactor's view of the tail. -1 = protect everything.
+     * protected tail. -1 = protect everything.
+     *
+     * [T-sessiongc-user-turn-shape] Full-gate finding: tool-result rows are
+     * persisted as role "user" (persistToolResultMessage), and counting them
+     * as user TURNS shrank the protected tail one row per tool call — with
+     * interleaved rows the "last 6 user turns" ended up protecting ~3 real
+     * turns (the first full-suite run caught it as 5 candidates instead of
+     * ≤2). A real user turn = a user row that is NOT a bare tool-result
+     * delivery; that is the boundary the model experiences, and it is what
+     * GC must never touch.
      */
     fun gcBoundary(rows: List<Row>): Int {
         val entries = rows.map { r ->
-            ProtectedTail.Entry(isUser = r.role == "user", hasDbId = true, tokens = (r.partsJson?.length ?: 0) / 4)
+            ProtectedTail.Entry(
+                isUser = r.role == "user" && !isToolResultOnly(r.partsJson),
+                hasDbId = true,
+                tokens = (r.partsJson?.length ?: 0) / 4,
+            )
         }
         return ProtectedTail.anchorIndex(entries, protectedUserTurns = PROTECTED_USER_TURNS)
+    }
+
+    /** True when the row's parts are all toolResult blocks (a tool-result
+     *  delivery, not a human turn). Unparsable = false (fail-safe: counted
+     *  as a turn, i.e. MORE protection, never less). */
+    private fun isToolResultOnly(partsJson: String?): Boolean {
+        if (partsJson.isNullOrBlank()) return false
+        return runCatching {
+            val parts = org.json.JSONArray(partsJson)
+            parts.length() > 0 &&
+                (0 until parts.length()).all { i ->
+                    parts.optJSONObject(i)?.optString("type") == "toolResult"
+                }
+        }.getOrDefault(false)
     }
 
     /**

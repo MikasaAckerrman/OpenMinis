@@ -42,22 +42,40 @@ fun findSafeSplitPoints(messages: List<LLMMessage>): List<Int> {
  * N-way split at safe user-turn boundaries. If [n] exceeds the safe-points
  * budget, n is reduced. Never returns a 1-chunk fallback on a multi-message
  * input unless every message is in the middle of a tool sequence.
+ *
+ * [T-safesplit-so] The full-suite gate caught a StackOverflowError here:
+ * both adjustment guards could recurse FOREVER on degenerate inputs —
+ * e.g. safePoints.size==1 (every message mid-tool-sequence) produced
+ * adjustedN = (1-1).coerceAtLeast(2) = 2, and n=2 hit the same guard
+ * again; messages.size==2 looped the sibling guard the same way. Now an
+ * iterative loop with a progress check: when reducing n cannot make
+ * progress, the whole input returns as ONE chunk (the documented
+ * degenerate case), never as a stack overflow.
  */
 fun splitAtSafeUserTurns(
     messages: List<LLMMessage>,
     n: Int,
 ): List<List<LLMMessage>> {
-    if (n <= 1) return listOf(messages)
-    if (messages.size < n * 2) {
-        val adjustedN = (messages.size / 2).coerceAtLeast(2)
-        return splitAtSafeUserTurns(messages, adjustedN)
+    var target = n.coerceAtLeast(1)
+    var safePoints: List<Int> = emptyList()
+    while (target > 1) {
+        if (messages.size < target * 2) {
+            val adjusted = (messages.size / 2).coerceAtLeast(1)
+            if (adjusted >= target) return listOf(messages) // no progress → one chunk
+            target = adjusted
+            continue
+        }
+        safePoints = findSafeSplitPoints(messages)
+        if (safePoints.size < target + 1) {
+            val adjusted = (safePoints.size - 1).coerceAtLeast(1)
+            if (adjusted >= target) return listOf(messages) // no progress → one chunk
+            target = adjusted
+            continue
+        }
+        break
     }
-    val safePoints = findSafeSplitPoints(messages)
-    if (safePoints.size < n + 1) {
-        val adjustedN = (safePoints.size - 1).coerceAtLeast(2)
-        return splitAtSafeUserTurns(messages, adjustedN)
-    }
-    val boundaryCount = n - 1
+    if (target <= 1) return listOf(messages)
+    val boundaryCount = target - 1
     val splits = mutableListOf<Int>()
     for (i in 1..boundaryCount) {
         val safeIdx = ((i.toDouble() / (boundaryCount + 1)) * (safePoints.size - 1)).toInt() + 1

@@ -42,7 +42,11 @@ class CoreMemoryStoreTest {
         assertEquals(2, blocks.size)
         assertEquals("b1", blocks[0].id)
         assertEquals("prefers Kotlin, hates boilerplate", blocks[0].value)
-        assertEquals("b2", blocks[1].label)
+        // [T-corememory-field-assert] The upsert above labels b2 "Project";
+        // asserting label=="b2" confused the id field with the label field
+        // — full-suite gate caught the typo the smoke list never ran.
+        assertEquals("b2", blocks[1].id)
+        assertEquals("Project", blocks[1].label)
     }
 
     @Test

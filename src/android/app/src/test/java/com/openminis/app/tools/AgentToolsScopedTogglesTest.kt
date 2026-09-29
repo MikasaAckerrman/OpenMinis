@@ -53,9 +53,23 @@ class AgentToolsScopedTogglesTest {
         // The gate must remove ONLY the subagent pair: everything else —
         // shell, file tools, browser, memory — is identical in both sets.
         val diff = off.union(on).subtract(off.intersect(on))
+        // [T-scoped-toggle-family] The gate strips the WHOLE delegation
+        // family, not just the original pair: spawn_many, list_agents and
+        // task_board ride with the spawn tools (deliberate — see the
+        // [T-task-board] note in AgentTools: delegation without sight of
+        // the team's history breeds duplicate spawns). The full-suite
+        // gate caught this contract going stale while it sat outside the
+        // smoke list.
+        val expected = setOf(
+            SubagentTools.SPAWN_TOOL_NAME,
+            SubagentTools.SPAWN_MANY_TOOL_NAME,
+            SubagentTools.LIST_AGENTS_TOOL_NAME,
+            SubagentTools.RUN_GRAPH_TOOL_NAME,
+            SubagentTools.TASK_BOARD_TOOL_NAME,
+        )
         assertTrue(
-            "gate must strip exactly the subagent tools, got diff=$diff",
-            diff == setOf(SubagentTools.SPAWN_TOOL_NAME, SubagentTools.RUN_GRAPH_TOOL_NAME),
+            "gate must strip exactly the delegation family, got diff=$diff",
+            diff == expected,
         )
     }
 }

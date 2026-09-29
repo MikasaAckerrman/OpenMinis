@@ -57,9 +57,16 @@ class AutoMistakeLogTest {
         assertTrue(text.contains("shell_execute"))
         assertTrue(text.contains("compilation failed"))
         assertTrue(text.contains("sid=sess-123"))
-        // The mistake entry is ONE content line.
-        val entryBlock = text.substring(0, noteIdx)
-        assertEquals(1, entryBlock.trim().lines().size)
+        // The mistake entry is ONE content line. [T-mistakelog-line-count]
+        // The old slice (substring up to the note) also swallowed the
+        // NEXT entry's framing header — 4 lines where the contract is
+        // about 1 CONTENT line. The line that holds the marker must hold
+        // the whole entry, terminator included.
+        val mistakeLine = text.lineSequence().first { it.contains("MISTAKE") }
+        assertTrue(
+            "mistake entry must be a single line (marker + sid on it)",
+            mistakeLine.contains("sid=sess-123"),
+        )
     }
 
     @Test
@@ -77,8 +84,12 @@ class AutoMistakeLogTest {
         val repo = freshRepo()
         AutoMistakeLog.capture(repo, "shell_execute", "t", "line1\nline2\nline3", "s")
         val text = todayFile().readText()
-        assertEquals("one content line per entry", 1, text.trim().lines().size)
-        assertTrue(text.contains("line1 line2"))
+        // [T-mistakelog-line-count] Same contract fix: the entry's content
+        // line must not split — the file's framing header is a separate
+        // infrastructure line by design.
+        val contentLine = text.lineSequence().first { it.contains("MISTAKE") }
+        assertTrue("newlines flattened", contentLine.contains("line1 line2"))
+        assertFalse("no continuation lines from the error", contentLine.contains("line3\n"))
     }
 
     @Test

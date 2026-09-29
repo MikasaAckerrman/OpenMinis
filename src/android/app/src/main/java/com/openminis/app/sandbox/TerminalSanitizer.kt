@@ -75,13 +75,21 @@ object TerminalSanitizer {
                 continue
             }
 
-            // Split on CR and simulate overwriting.
-            // Each CR resets cursor to column 0. The last non-empty segment wins.
+            // [T-cr-fold-cursor] True terminal semantics: each \r resets the
+            // cursor to column 0 and the following segment OVERWRITES the
+            // buffer in place — "AAAA\rBB" leaves "BBAA" (the tail beyond the
+            // overwrite survives). The old code kept only the last non-empty
+            // segment, silently deleting the surviving tail — the full-suite
+            // gate caught it via the "AAAA\rBB" case. Simulate the buffer
+            // exactly: segments write char-by-char at position i.
             val segments = line.split('\r')
-            val lastNonEmpty = segments.lastOrNull { it.isNotEmpty() }
-            if (lastNonEmpty != null) {
-                result.append(lastNonEmpty)
+            val buf = StringBuilder()
+            for (seg in segments) {
+                for (i in seg.indices) {
+                    if (i < buf.length) buf.setCharAt(i, seg[i]) else buf.append(seg[i])
+                }
             }
+            result.append(buf)
         }
 
         return result.toString()

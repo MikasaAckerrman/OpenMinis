@@ -53,17 +53,16 @@ class PromptCacheStabilityTest {
         server.shutdown()
     }
 
-    private fun okResponse(): MockResponse = MockResponse().setBody(
-        """
-        {
-            "choices": [{
-                "message": {"role": "assistant", "content": "ok"},
-                "finish_reason": "stop"
-            }],
-            "usage": {"prompt_tokens": 10, "completion_tokens": 5}
-        }
-        """.trimIndent(),
-    )
+    // [T-sendmessage-sse-mocks] Same as OpenAIProviderTest: the
+    // non-streaming entry point is streaming-internal now — the fixture
+    // must be SSE or the empty-completion gate fails the call.
+    private fun okResponse(): MockResponse = MockResponse()
+        .setBody(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n" +
+                "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5}}\n\n" +
+                "data: [DONE]\n\n",
+        )
+        .setHeader("Content-Type", "text/event-stream")
 
     private fun baseHistory(): List<LLMMessage> = listOf(
         LLMMessage(

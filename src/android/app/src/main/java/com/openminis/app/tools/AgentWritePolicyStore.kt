@@ -116,9 +116,25 @@ object AgentWritePolicyStore {
         var i = 0
         while (i < tokens.size) {
             if (tokens[i] == "git" || tokens[i].endsWith("/git")) {
-                // Skip git's own flags (-C path, --git-dir=..., --no-pager...)
+                // Skip git's own flags (-C path, --git-dir=..., --no-pager...).
+                // [T-git-flag-value-skip] Value-taking flags (-C <path>,
+                // --git-dir <path>, --work-tree <path>) must skip their
+                // VALUE too — "git -C /repo commit --amend" used to stop at
+                // "/repo", treat the path as the subcommand and let the
+                // mutation sail through (full-suite gate).
                 var j = i + 1
-                while (j < tokens.size && (tokens[j].startsWith("-"))) j++
+                while (j < tokens.size) {
+                    val t = tokens[j]
+                    if (t == "-C" || t == "--git-dir" || t == "--work-tree" || t == "--namespace") {
+                        j += 2 // the flag and its value
+                        continue
+                    }
+                    if (t.startsWith("-")) {
+                        j++
+                        continue
+                    }
+                    break
+                }
                 if (j < tokens.size) {
                     val sub = tokens[j].removeSuffix("!")
                     if (sub in GIT_MUTATIONS) return true

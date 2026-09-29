@@ -33,7 +33,10 @@ class SupermemoryBridgeTest {
         val text = SupermemoryBridge.buildInjection(listOf(hit(long)))!!
         val line = text.lines().last()
         assertTrue(line.endsWith("…"))
-        assertTrue(line.length <= 222)
+        // [T-bridge-snippet-bound] bullet(2) + MAX_SNIPPET_CHARS(220) +
+        // ellipsis(1) = 223 — the old 222 was off by one and failed the
+        // very constant it was written against (full-suite gate).
+        assertTrue(line.length <= 223)
     }
 
     @Test

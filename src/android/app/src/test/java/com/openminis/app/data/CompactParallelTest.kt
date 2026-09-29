@@ -106,7 +106,13 @@ class CompactParallelTest {
         val cap = CompactChunking.perCallInputCapChars(128_000)
         assertEquals(96_000, cap)
         val windows = CompactChunking.packWindows("x".repeat(578_000), cap)
-        assertEquals("578k / 96k should produce 6-7 windows", 6, windows.size.coerceIn(6, 7))
+        // [T-compact-window-assert] assertEquals(6, size.coerceIn(6,7)) clamped
+        // the actual into the range BEFORE comparing — 7 became 7, then
+        // failed against 6. The intent ("6-7 windows") is a range check.
+        assertTrue(
+            "578k / 96k should produce 6-7 windows, got ${windows.size}",
+            windows.size in 6..7,
+        )
     }
 
     @Test

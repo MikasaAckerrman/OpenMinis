@@ -92,7 +92,24 @@ object GatewayDowntimeDetection {
         return DOWNTIME_MARKERS.any { body.contains(it, ignoreCase = true) }
     }
 
-    /** Human-readable one-liner: truncated body (relay message extraction
-     *  not available in this line — kept simple). */
-    fun describe(body: String, limit: Int = 500): String = body.take(limit)
+    /** Human-readable one-liner. [T-downtime-describe] JSON error bodies
+     *  ({"error":{"message":...}} and the flat {"message":...} shape) are
+     *  unwrapped so the user sees the provider's actual message, not the
+     *  transport wrapper — the full-suite gate caught the contract sitting
+     *  unimplemented while the test lived outside the smoke list. Anything
+     *  unparsable keeps the legacy truncated-raw behavior. */
+    fun describe(body: String, limit: Int = 500): String {
+        val trimmed = body.trim()
+        if (trimmed.startsWith("{")) {
+            runCatching {
+                val obj = org.json.JSONObject(trimmed)
+                val err = obj.optJSONObject("error")
+                val msg = err?.optString("message")?.takeIf { it.isNotBlank() }
+                    ?: obj.optString("message").takeIf { it.isNotBlank() }
+                    ?: err?.optString("type")?.takeIf { it.isNotBlank() }
+                if (msg != null) return msg.take(limit)
+            }
+        }
+        return trimmed.take(limit)
+    }
 }
