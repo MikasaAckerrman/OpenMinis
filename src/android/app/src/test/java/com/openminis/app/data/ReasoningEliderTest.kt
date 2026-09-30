@@ -70,9 +70,24 @@ class ReasoningEliderTest {
 
     @Test
     fun `all protected - nothing elided`() {
-        val msgs = listOf(assistant(big()), user())
+        // [user, asst, user, asst] with protect=2: walking back from the
+        // end, the 2nd protected user turn is the FIRST element →
+        // protectedFromIdx=0 → the whole list is the protected tail.
+        val msgs = listOf(user(), assistant(big()), user(), assistant(big()))
         val r = ReasoningElider.elide(msgs, protectRecentUserTextTurns = 2)
         assertEquals(0, r.elidedCount)
         assertSame(msgs, r.messages)
+    }
+
+    @Test
+    fun `assistant before the only protected user turn IS elided`() {
+        // [asst, user]: the single user turn is protected, but the older
+        // assistant head is prunable — same walk semantics as
+        // PostAnchorPrune ("everything before the first of the last N
+        // user-text turns").
+        val msgs = listOf(assistant(big()), user())
+        val r = ReasoningElider.elide(msgs, protectRecentUserTextTurns = 2)
+        assertEquals(1, r.elidedCount)
+        assertEquals("[reasoning elided]", r.messages[0].reasoningContent)
     }
 }

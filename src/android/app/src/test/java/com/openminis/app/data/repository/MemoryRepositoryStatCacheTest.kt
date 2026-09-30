@@ -48,7 +48,7 @@ class MemoryRepositoryStatCacheTest {
         f.writeText(far)
         val r = repo().getMemory("gamma delta", scope = "all")
         // Windows never contain both words → no match.
-        assertTrue(r.isBlank() || r.startsWith("No memory"))
+        assertTrue(r.isBlank() || r.startsWith("No matches found"))
     }
 
     @Test
