@@ -1155,8 +1155,36 @@ class SkillRepository(private val context: Context) {
      * path), not overwriting any preserved DB toggle.
      */
     fun reloadFromDisk() {
+        // [T-prompt-cache] Called on EVERY prompt build (buildSystemPrompt's
+        // T-skillscan) — a full DB walk + SKILL.md read per skill per send.
+        // Stat-gate: the skills dir listing (names + mtimes + sizes)
+        // unchanged since the last load → skip. A mid-session install
+        // changes the dir → full reload, preserving the T-skillscan
+        // contract ("a skill installed mid-session shows up next prompt").
+        val stamp = dirStamp()
+        if (stamp == lastDirStamp) {
+            return
+        }
+        lastDirStamp = stamp
         loadAll()
     }
+
+    /** Cheap stat signature of the skills tree root: dir mtime + per-skill dirs. */
+    private fun dirStamp(): String {
+        val sb = StringBuilder()
+        runCatching {
+            sb.append(skillsDir.lastModified()).append('/')
+            val children = skillsDir.listFiles()?.sortedBy { it.name } ?: return sb.toString()
+            for (child in children) {
+                sb.append(child.name).append(':')
+                    .append(child.lastModified()).append(':')
+                    .append(child.length()).append(';')
+            }
+        }
+        return sb.toString()
+    }
+
+    private var lastDirStamp: String? = null
 
     // -- Internal --
 

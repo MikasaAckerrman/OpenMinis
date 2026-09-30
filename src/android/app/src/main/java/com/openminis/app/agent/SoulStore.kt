@@ -322,13 +322,29 @@ lang: "auto"
     fun load(context: Context): SoulFile? {
         val file = fileLocation(context)
         if (!file.exists()) return null
+        // [T-prompt-cache] SOUL.md rarely changes but load() runs on EVERY
+        // prompt build (identitySection) — a full disk read + markdown
+        // parse per send. Stat-gate: (mtime, length) unchanged → reuse the
+        // last parsed file. External edits move the mtime → re-parse; the
+        // app's own save() bumps it too.
+        val stamp = file.lastModified() to file.length()
+        if (stamp == cachedStamp) return cachedSoul
         return try {
-            SoulMDParser.parse(file.readText())
+            val parsed = SoulMDParser.parse(file.readText())
+            cachedSoul = parsed
+            cachedStamp = stamp
+            parsed
         } catch (t: Throwable) {
             AppLogger.warning(TAG, "SOUL.md load failed: ${t.message}")
+            cachedSoul = null
+            cachedStamp = stamp
             null
         }
     }
+
+    /** [T-prompt-cache] Stat stamp + last parse for load(). */
+    private var cachedStamp: Pair<Long, Long>? = null
+    private var cachedSoul: SoulFile? = null
 
     /** Atomic write through a `.tmp` sibling, then rename. */
     fun save(context: Context, file: SoulFile) {
@@ -345,6 +361,13 @@ lang: "auto"
             tmp.delete()
         }
         _cachedMetadata.value = file.metadata
+        // [T-prompt-cache] The rename/copy rewrites the file (new mtime)
+        // so the next load() stat-gate naturally re-parses; update the
+        // caches eagerly anyway so an immediate load() after save() gets
+        // the exact object without a disk round-trip.
+        val target = fileLocation(context)
+        cachedSoul = file
+        cachedStamp = target.lastModified() to target.length()
     }
 
     /**
