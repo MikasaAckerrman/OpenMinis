@@ -14,8 +14,8 @@ import java.io.File
  * 2026-09-30 (zones at 86C while a second session streamed).
  *
  * Sources, all world-readable or framework APIs:
- *  - /sys/class/thermal/thermal_zone*/temp (milli-degrees; cpu-* zones
- *    reflect the SoC, not the battery sensor the thermal-watch script uses)
+ *  - /sys/class/thermal (thermal_zoneNN/temp files, milli-degrees; cpu-*
+ *    zones reflect the SoC, not the battery sensor the thermal-watch script uses)
  *  - BatteryManager capacity + charging state
  *  - SessionActivityTracker.activeSessions
  *
