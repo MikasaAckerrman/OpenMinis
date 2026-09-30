@@ -55,6 +55,20 @@ class MemoryRepository(private val memoryDir: File) {
     }
 
     /**
+     * [T-memory-stat-cache-invalid] Deterministic invalidation on OUR OWN
+     * writes: a rewrite with the SAME length inside the same mtime tick
+     * passes the (len, mtime) stat check and serves stale text — proven
+     * by MemoryRepositoryStatCacheTest on CI's filesystem (1s mtime
+     * granularity). The repository is the only in-process writer, so every
+     * write path goes through here and drops its own cache entry; the stat
+     * check remains the second layer for external writers.
+     */
+    private fun writeFileInvalidating(file: File, text: String) {
+        file.writeText(text)
+        fileCache.remove(file.absolutePath)
+    }
+
+    /**
      * [T-parallel-write-contract] The daily log's writers are now MANY:
      * parallel subagent workers, the auto-mistake capture, the main chat —
      * all funneling into one read-modify-write per file. Unserialized, two
@@ -134,7 +148,7 @@ class MemoryRepository(private val memoryDir: File) {
             // see dailyWriteLock's doc for who races here.
             synchronized(dailyWriteLock) {
                 val current = if (file.exists()) file.readText() else ""
-                file.writeText(entry + current)
+                writeFileInvalidating(file, entry + current)
             }
             Log.i(TAG, "Memory written to $fileName (${content.length} chars)")
             "Memory saved to $fileName (${content.length} chars)"
@@ -376,7 +390,7 @@ class MemoryRepository(private val memoryDir: File) {
         )
         val (newText, _) = com.openminis.app.data.MemoryCanon.append(existing, entry)
         return try {
-            file.writeText(newText)
+            writeFileInvalidating(file, newText)
             Log.i(TAG, "Canon entry $id pinned (${text.length} chars)")
             "Canon pinned to $CANON_FILE (id $id) — will be injected as a standing instruction on every turn."
         } catch (e: Exception) {
@@ -556,7 +570,7 @@ class MemoryRepository(private val memoryDir: File) {
     }
 
     fun saveGlobalMd(content: String) {
-        File(memoryDir, GLOBAL_FILE).writeText(content)
+        writeFileInvalidating(File(memoryDir, GLOBAL_FILE), content)
     }
 
     fun readFile(name: String): String {
@@ -565,7 +579,7 @@ class MemoryRepository(private val memoryDir: File) {
     }
 
     fun saveFile(name: String, content: String) {
-        File(memoryDir, name).writeText(content)
+        writeFileInvalidating(File(memoryDir, name), content)
     }
 
     fun deleteFile(name: String): Boolean {
@@ -626,7 +640,7 @@ class MemoryRepository(private val memoryDir: File) {
 
                 val newContent = content.removeRange(match.range.first, entryEnd)
                 return try {
-                    file.writeText(newContent)
+                    writeFileInvalidating(file, newContent)
                     Log.i(TAG, "Revoked memory entry from $dateStr.md")
                     EntryMutationResult.Success(dateStr)
                 } catch (e: Exception) {
@@ -668,7 +682,7 @@ class MemoryRepository(private val memoryDir: File) {
                 val replacement = "$trimmedNew\n\n"
                 val newFileContent = content.replaceRange(bodyStart, entryEnd, replacement)
                 return try {
-                    file.writeText(newFileContent)
+                    writeFileInvalidating(file, newFileContent)
                     Log.i(TAG, "Replaced memory entry body in $dateStr.md")
                     EntryMutationResult.Success(dateStr)
                 } catch (e: Exception) {
