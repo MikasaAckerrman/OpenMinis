@@ -58,13 +58,12 @@ import com.openminis.app.data.model.ProviderListSections
 import com.openminis.app.data.model.SectionAccent
 import com.openminis.app.data.repository.ProviderRepository
 import com.openminis.app.ui.components.SectionTextField
+import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.debounce
-import kotlinx.coroutines.flow.snapshotFlow
 import com.openminis.app.R
 
-@OptIn(ExperimentalMaterial3Api::class)
-@OptIn(FlowPreview::class)
+@OptIn(ExperimentalMaterial3Api::class, FlowPreview::class)
 @Composable
 fun ProviderListScreen(
     providerRepository: ProviderRepository,
