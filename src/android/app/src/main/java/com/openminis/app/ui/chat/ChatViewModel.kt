@@ -7878,6 +7878,38 @@ class ChatViewModel(
         // so it stays continuable.
         if (message.role == "user" && message.content.isBlank()) return false
 
+        // [T-queued-retry-loss] PROVEN USER BUG (2026-09-30, session
+        // 4ef5a778, log 12:54:22): a queued prompt bubble — never persisted,
+        // id "queued_msg_<pid>", sourceDbIds=0 — retried after a
+        // "connection closed" hit the DB-cutoff refusal below. The refusal's
+        // reloadSessionFromDb() wiped the optimistic bubble, and the T189
+        // branch upstream had already deleted its queue entry: the prompt
+        // then existed NOWHERE (not in the DB, not in the queue, not in
+        // memory) — the user's message was gone forever. Retry on a queued
+        // bubble means "SEND IT", not "cut history around it": route it
+        // through the normal send path with the queue entry's own payload.
+        if (message.role == "user" && message.isQueued) {
+            val pid = message.queuedPromptId ?: message.id.removePrefix("queued_msg_")
+            val entry = _promptQueue.value.firstOrNull { it.id == pid }
+            val text = entry?.text ?: message.content
+            if (text.isNotBlank()) {
+                _promptQueue.value = _promptQueue.value.filterNot { it.id == pid }
+                _messages.value = _messages.value.filterNot { it.id == message.id }
+                // Attachments ride the composer state into sendMessage —
+                // restore them so an image-queued prompt resends whole.
+                if (!entry?.attachments.isNullOrEmpty()) {
+                    _attachments.value = entry.attachments
+                }
+                AppLogger.info(
+                    TAG,
+                    "[Retry] queued-пузырь pid=${pid.take(10)} → прямой resend " +
+                        "(queue-entry удалён, пузырь снят, текст=${text.length} симв.)",
+                )
+                sendMessage(text)
+                return true
+            }
+        }
+
         val initialProvider = currentProvider
         if (initialProvider == null) {
             _error.value = "No provider configured"
