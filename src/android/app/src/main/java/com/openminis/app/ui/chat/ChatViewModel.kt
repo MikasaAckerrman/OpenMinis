@@ -4216,9 +4216,28 @@ class ChatViewModel(
      */
     private fun effectiveAgentHistory(verbose: Boolean): List<LLMMessage> {
         val base = effectiveAgentHistoryBase(verbose)
-        if (!com.openminis.app.data.CoreMemoryPrefs.isEnabled()) return base
-        val header = com.openminis.app.data.CoreMemoryStore.injectHeaderText() ?: return base
-        return com.openminis.app.data.CoreMemoryInjector.inject(base, header)
+        val withCoreMemory = if (!com.openminis.app.data.CoreMemoryPrefs.isEnabled()) base
+        else com.openminis.app.data.CoreMemoryStore.injectHeaderText()?.let { header ->
+            com.openminis.app.data.CoreMemoryInjector.inject(base, header)
+        } ?: base
+        // [T-reasoning-elision] Old assistant reasoning is a transient
+        // scratchpad, not conversation state — yet it was echoed back on
+        // every request (measured: a 182K-token prompt dominated by ~100
+        // old 2-5KB reasoning blocks; 4.5s upload + 5.3s server ingest per
+        // turn). Elide everything older than the protected tail to a short
+        // stub (NEVER null — DeepSeek V4 requires the field present with
+        // thinking enabled). The protected tail keeps the live context and
+        // the immediately preceding scratchpad verbatim.
+        val elided = com.openminis.app.data.ReasoningElider.elide(withCoreMemory)
+        if (elided.elidedCount > 0) {
+            AppLogger.info(
+                TAG,
+                "[ReasoningElide] stubbed ${elided.elidedCount} old reasoning blocks, " +
+                    "${elided.charsSaved} chars kept off the wire (protected tail: last " +
+                    "${com.openminis.app.data.ReasoningElider.DEFAULT_PROTECT_RECENT_USER_TEXT_TURNS} user-text turns)",
+            )
+        }
+        return elided.messages
     }
 
     private fun effectiveAgentHistoryBase(verbose: Boolean): List<LLMMessage> {
