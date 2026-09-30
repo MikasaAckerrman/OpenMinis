@@ -31,8 +31,25 @@ import com.openminis.app.data.model.LLMMessage
  */
 object ReasoningElider {
 
-    /** Default protected tail — matches the compact path's keepN. */
-    const val DEFAULT_PROTECT_RECENT_USER_TEXT_TURNS = 6
+    /**
+     * Default protected tail — the FRESH tier: reasoning kept VERBATIM.
+     * Three turns of the model's own working memory is the continuity the
+     * tool-loop actually reads; older scratchpads are replayed-continuity
+     * at best. (Was 6 — the flat full protection; telemetry showed the
+     * body still carried hundreds of KB of dead scratchpad.)
+     */
+    const val DEFAULT_PROTECT_RECENT_USER_TEXT_TURNS = 3
+
+    /**
+     * The WARM tier: user-text turns between the fresh tail and
+     * [DEFAULT_PROTECT_RECENT_USER_TEXT_TURNS] + this many get their
+     * reasoning HEAD-TRIMMED to [WARM_HEAD_CHARS] instead of stubbed —
+     * the model keeps its earlier plan statement, loses the dead middle.
+     */
+    const val DEFAULT_WARM_TAIL_USER_TEXT_TURNS = 3
+
+    /** Head budget for warm-tier reasoning. */
+    const val WARM_HEAD_CHARS = 400
 
     /**
      * Reasoning shorter than this is left alone — the win is in the
@@ -41,6 +58,7 @@ object ReasoningElider {
     const val DEFAULT_MIN_CHARS_TO_ELIDE = 600
 
     private const val STUB = "[reasoning elided]"
+    private const val ELLIPSIS = "…[elided]"
 
     data class Result(
         val messages: List<LLMMessage>,
@@ -52,6 +70,8 @@ object ReasoningElider {
         messages: List<LLMMessage>,
         protectRecentUserTextTurns: Int = DEFAULT_PROTECT_RECENT_USER_TEXT_TURNS,
         minCharsToElide: Int = DEFAULT_MIN_CHARS_TO_ELIDE,
+        warmTailUserTextTurns: Int = DEFAULT_WARM_TAIL_USER_TEXT_TURNS,
+        warmHeadChars: Int = WARM_HEAD_CHARS,
     ): Result {
         if (messages.isEmpty()) return Result(messages, 0, 0)
 
@@ -75,6 +95,26 @@ object ReasoningElider {
                 i -= 1
             }
         }
+        // Warm boundary: the same walk continued over the next
+        // `warmTailUserTextTurns` user turns — turns in
+        // [warmFromIdx, protectedFromIdx) get head-trimmed, not stubbed.
+        var warmFromIdx = protectedFromIdx
+        if (warmTailUserTextTurns > 0) {
+            var seen = 0
+            var i = protectedFromIdx - 1
+            while (i >= 0) {
+                val m = messages[i]
+                if (m.role == LLMMessage.Role.USER &&
+                    (m.content.isNotBlank() ||
+                        m.contentParts.any { it is com.openminis.app.data.model.AgentContentPart.Text && it.text.isNotBlank() })
+                ) {
+                    seen += 1
+                    warmFromIdx = i
+                    if (seen >= warmTailUserTextTurns) break
+                }
+                i -= 1
+            }
+        }
 
         var elided = 0
         var saved = 0
@@ -82,15 +122,25 @@ object ReasoningElider {
         val out = ArrayList<LLMMessage>(messages.size)
         for ((idx, m) in messages.withIndex()) {
             val rc = m.reasoningContent
-            if (idx < protectedFromIdx &&
-                m.role == LLMMessage.Role.ASSISTANT &&
-                rc != null &&
-                rc.length > minCharsToElide
-            ) {
-                out.add(m.copy(reasoningContent = STUB))
-                elided += 1
-                saved += rc.length - STUB.length
-                changed = true
+            if (m.role == LLMMessage.Role.ASSISTANT && rc != null && rc.length > minCharsToElide) {
+                when {
+                    idx >= protectedFromIdx -> out.add(m)
+                    idx >= warmFromIdx -> {
+                        // Warm tier: keep the head (the plan statement),
+                        // drop the dead middle.
+                        val head = rc.take(warmHeadChars)
+                        out.add(m.copy(reasoningContent = head + ELLIPSIS))
+                        elided += 1
+                        saved += rc.length - head.length - ELLIPSIS.length
+                        changed = true
+                    }
+                    else -> {
+                        out.add(m.copy(reasoningContent = STUB))
+                        elided += 1
+                        saved += rc.length - STUB.length
+                        changed = true
+                    }
+                }
             } else {
                 out.add(m)
             }

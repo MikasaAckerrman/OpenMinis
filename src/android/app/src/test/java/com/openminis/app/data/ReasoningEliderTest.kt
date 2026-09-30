@@ -23,6 +23,37 @@ class ReasoningEliderTest {
     private fun big() = "R".repeat(2000)
 
     @Test
+    fun `warm tier keeps the head, cold tier stubs`() {
+        // [T-aggressive-elision] Three-tier elision: fresh (3 user turns)
+        // verbatim; warm (next 3 user turns) head-trimmed to 400 chars;
+        // everything older stubbed. The old flat 6-turn protection carried
+        // hundreds of KB of dead scratchpad (telemetry: 182K-token bodies).
+        val msgs = listOf(
+            assistant(big()), user(),            // idx 0,1   — cold
+            assistant(big()), user(),            // idx 2,3   — cold
+            assistant(big()), user(),            // idx 4,5   — warm
+            assistant(big()), user(),            // idx 6,7   — warm
+            assistant(big()), user(),            // idx 8,9   — warm
+            assistant(big()), user(),            // idx 10,11 — fresh
+            assistant(big()), user(),            // idx 12,13 — fresh
+            assistant(big()), user(),            // idx 14,15 — fresh
+        )
+        val r = ReasoningElider.elide(msgs) // defaults: 3 fresh + 3 warm
+        // Cold: stub.
+        assertTrue(r.messages[0].reasoningContent == "[reasoning elided]")
+        assertTrue(r.messages[2].reasoningContent == "[reasoning elided]")
+        // Warm: head + ellipsis marker, still present (DeepSeek contract),
+        // and materially shorter than the 2000-char original.
+        val warm = r.messages[6].reasoningContent!!
+        assertTrue(warm.length == ReasoningElider.WARM_HEAD_CHARS + "…[elided]".length)
+        assertTrue(warm.startsWith("R".repeat(10)))
+        // Fresh: verbatim.
+        assertTrue(r.messages[12].reasoningContent == big())
+        assertEquals(msgs.size, r.messages.size)
+        assertTrue(r.charsSaved > 0)
+    }
+
+    @Test
     fun `old long reasoning is stubbed, recent stays verbatim`() {
         val msgs = listOf(
             assistant(big()), user(), assistant(big()), user(),
