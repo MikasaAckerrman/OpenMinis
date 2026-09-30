@@ -365,7 +365,6 @@ lang: "auto"
         // so the next load() stat-gate naturally re-parses; update the
         // caches eagerly anyway so an immediate load() after save() gets
         // the exact object without a disk round-trip.
-        val target = fileLocation(context)
         cachedSoul = file
         cachedStamp = target.lastModified() to target.length()
     }
