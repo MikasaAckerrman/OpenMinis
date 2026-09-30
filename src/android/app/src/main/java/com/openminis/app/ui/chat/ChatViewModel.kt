@@ -12653,13 +12653,21 @@ class ChatViewModel(
                     errorMessage = errMsgForDetector,
                     toolCallId = id,
                 )
-                val outputForLLM = if (postRecord.level == Level.WARNING && postRecord.message != null) {
-                    AppLogger.debug("ChatViewModel",
-                        "appending loop-warning to tool result name=$name key=${postRecord.warningKey}")
-                    "${result.output}\n\n${postRecord.message}"
-                } else {
-                    result.output
-                }
+                val thermalNote =
+                    com.openminis.app.diagnostics.DeviceLoadMonitor.thermalToolNote(context)
+                val outputForLLM = buildString {
+                    append(result.output)
+                    if (postRecord.level == Level.WARNING && postRecord.message != null) {
+                        AppLogger.debug("ChatViewModel",
+                            "appending loop-warning to tool result name=$name key=${postRecord.warningKey}")
+                        append("\n\n").append(postRecord.message)
+                    }
+                    if (thermalNote != null) {
+                        AppLogger.info("ChatViewModel",
+                            "appending thermal note to tool result name=$name note=${thermalNote.take(80)}")
+                        append("\n\n").append(thermalNote)
+                    }
+                }.toString()
 
                 val blockIdx = allToolBlocks.indexOfFirst { it.id == id }
                 if (blockIdx >= 0) {

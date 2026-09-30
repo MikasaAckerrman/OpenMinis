@@ -84,6 +84,40 @@ object DeviceLoadMonitor {
         }
     }
 
+    /**
+     * [T-device-load-awareness] Mid-turn thermal warning appended to tool
+     * results. The Runtime-context line is read once at turn START — the
+     * phone can climb from 60C to 86C over a 50-tool-call agent loop and
+     * the agent would never notice. This note reaches the model exactly at
+     * the point where it chooses the next command.
+     *
+     * Rate-limited to one note per [NOTE_INTERVAL_MS]: a hot turn with
+     * dozens of tool calls must not burn tokens repeating the warning.
+     */
+    private const val NOTE_INTERVAL_MS = 300_000L
+    private var lastNoteAt = 0L
+
+    fun thermalToolNote(context: Context): String? {
+        val s = snapshot(context)
+        val now = android.os.SystemClock.elapsedRealtime()
+        val zone = when {
+            s.hot -> "HOT"
+            s.warm -> "WARM"
+            else -> return null
+        }
+        if (now - lastNoteAt < NOTE_INTERVAL_MS) return null
+        lastNoteAt = now
+        val others = (s.activeSessions - 1).coerceAtLeast(0)
+        return when (zone) {
+            "HOT" -> "[DEVICE THERMAL: ${"%.1f".format(s.topZoneC)}C — HOT. " +
+                "Stop heavy local work NOW (no local kotlinc, no full-tree scans). " +
+                "This phone is shared with $others other agent session(s); " +
+                "prefer remote CI verification and finish the turn soon.]"
+            else -> "[DEVICE THERMAL: ${"%.1f".format(s.topZoneC)}C — warm; " +
+                "keep commands light and avoid parallel heavy work.]"
+        }
+    }
+
     private fun readTopZoneC(): Double {
         var top = 0.0
         val dir = File("/sys/class/thermal")
