@@ -1,6 +1,8 @@
 package com.openminis.app.diagnostics
 
 import android.content.Context
+import android.hardware.display.DisplayManager
+import android.view.WindowManager
 import android.os.SystemClock
 import android.util.Log
 import android.view.Choreographer
@@ -58,6 +60,33 @@ object JankMonitor {
     private val markers = ArrayDeque<Marker>()
 
     private var framePeriodNanos = 1_000_000_000L / 60L
+
+    private var appContext: Context? = null
+
+    /** [T-hz-lock] Event-driven refresh-rate tracking for accurate jank scaling. */
+    private fun registerRateListener() {
+        val ctx = appContext ?: return
+        val dm = ctx.getSystemService(DisplayManager::class.java) ?: return
+        dm.registerDisplayListener(object : DisplayManager.DisplayListener {
+            override fun onDisplayChanged(displayId: Int) {
+                runCatching {
+                    val wm = ctx.getSystemService(WindowManager::class.java) ?: return
+                    val hz = wm.defaultDisplay.refreshRate
+                    if (hz > 1f && (1_000_000_000.0 / hz).toLong() != framePeriodNanos) {
+                        framePeriodNanos = (1_000_000_000.0 / hz).toLong()
+                        Log.i(
+                            TAG,
+                            "refresh rate now ${"%.1f".format(1_000_000_000.0 / framePeriodNanos)}Hz " +
+                                "(threshold=${MIN_SKIPPED_FRAMES * framePeriodNanos / 1_000_000}ms)",
+                        )
+                    }
+                }
+            }
+
+            override fun onDisplayAdded(displayId: Int) {}
+            override fun onDisplayRemoved(displayId: Int) {}
+        }, null)
+    }
     private var lastFrameNanos = 0L
     private var lastReportMs = 0L
     private var lastSummaryMs = 0L
@@ -75,6 +104,7 @@ object JankMonitor {
     fun start(context: Context) {
         if (started) return
         started = true
+        appContext = context.applicationContext
         try {
             val display = if (android.os.Build.VERSION.SDK_INT >= 30) {
                 context.display
@@ -84,6 +114,12 @@ object JankMonitor {
             }
             val hz = display?.refreshRate ?: 60f
             if (hz > 1f) framePeriodNanos = (1_000_000_000.0 / hz).toLong()
+        // [T-hz-lock] The window's display mode can CHANGE after start (the
+        // Hz lock in MainActivity upgrades 90→144 at onCreate; the OEM
+        // governor may also downshift later). A period sampled once at start
+        // reported a stale 60Hz while the panel actually ran 144 — jank
+        // accounting and the stats readout both mis-scaled. Track changes.
+        runCatching { registerRateListener() }
         } catch (_: Exception) {
             // stay at 60Hz assumption
         }
