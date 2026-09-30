@@ -8958,6 +8958,7 @@ class ChatViewModel(
         // Editing an existing message truncates the tail first, so we skip the
         // optimistic bubble in that path to avoid it landing above a truncation.
         val pendingUserId = if (editingId == null) PendingUserMessage.newId() else null
+        var preAssistantId: String? = null
         if (pendingUserId != null) {
             val optimisticAttachments = currentAttachments
             _messages.value = _messages.value + ChatMessage(
@@ -8967,6 +8968,27 @@ class ChatViewModel(
                 imageUris = optimisticAttachments.filter { it.isImage }.map { it.uri },
                 attachmentNames = optimisticAttachments.map { it.fileName },
                 attachmentUris = optimisticAttachments.filterNot { it.isImage }.map { it.uri },
+            )
+            // [T-instant-thinking-indicator] User report: "minis начинает
+            // думать только через пару секунд — это на стороне кода".
+            // Confirmed by the send timeline: the "thinking" row was created
+            // deep inside runAgentLoop — AFTER ensureSession + attachment
+            // prep + the Room write + OAuth refresh + the full system-prompt
+            // build (1.6-4.4s measured on vc74/vc75) and only then the
+            // network wait. ChatGPT-perceived feedback: the indicator must
+            // exist on the SAME frame as the user's bubble. Pre-create the
+            // assistant placeholder here, on Main, synchronously; its id is
+            // handed to runAgentLoop so the first streaming write targets
+            // THIS row — no twin row, no ghost (the finally-block below
+            // sweeps it if the send aborts before the stream launches).
+            preAssistantId = "assistant_pre_${System.currentTimeMillis()}"
+            _messages.value = _messages.value + ChatMessage(
+                id = preAssistantId,
+                role = "assistant",
+                content = "",
+                isStreaming = true,
+                isAwaitingModelResponse = true,
+                thinkingLevel = _thinkingLevel.value,
             )
         }
 
@@ -9225,6 +9247,7 @@ class ChatViewModel(
                             systemPrompt = systemPrompt,
                             fallbackProviders = fallbackProviders,
                             fallbackStrategy = activeFallbackStrategy,
+                            placeholderAssistantId = preAssistantId,
                         )
                         AppLogger.info(TAG_STREAM, "send runAgentLoop RETURN normal")
                         // [crash-safe-draft] Turn completed — drop the send
@@ -9366,6 +9389,13 @@ class ChatViewModel(
                 if (!streamLaunched) {
                     AppLogger.info(TAG_STREAM, "send _isStreaming=false (setup aborted)")
                     _isStreaming.value = false
+                    // [T-instant-thinking-indicator] The pre-created "thinking"
+                    // row dies with the aborted send — no ghost indicator.
+                    preAssistantId?.let { pid ->
+                        if (_messages.value.any { it.id == pid }) {
+                            _messages.value = _messages.value.filterNot { it.id == pid }
+                        }
+                    }
                     // [T-optimistic-user-bubble] Setup aborted before the user
                     // row persisted (ensureSession / attachment prep threw, or
                     // the coroutine was cancelled). Drop the placeholder so the
@@ -10769,6 +10799,11 @@ class ChatViewModel(
     }
 
     private suspend fun runAgentLoop(
+        // [T-instant-thinking-indicator] When the send path pre-created an
+        // assistant placeholder for zero-latency "thinking" feedback, its id
+        // comes in here so the first streaming write targets THAT row
+        // instead of appending a second one. Null = legacy behavior.
+        placeholderAssistantId: String? = null,
         provider: LLMProvider,
         systemPrompt: String?,
         fallbackProviders: List<FallbackCandidate> = emptyList(),
@@ -10785,7 +10820,7 @@ class ChatViewModel(
         // starts empty and `buildTurnParts(allToolBlocks, turnStartBlockIndex,
         // toolInputMap)` continues to slice only the current turn's blocks
         // (turnStartBlockIndex is captured at iteration start to 0 after reset).
-        var assistantId = "assistant_${System.currentTimeMillis()}"
+        var assistantId = placeholderAssistantId ?: "assistant_${System.currentTimeMillis()}"
         val allToolBlocks = mutableListOf<AssistantBlock>()
         // Per-tool ring of the most recent `accumulated` JSON snapshots emitted
         // by `LLMStreamChunk.ToolInputDelta`. Capped at TOOL_INPUT_CHUNK_RING_MAX
@@ -10870,11 +10905,16 @@ class ChatViewModel(
         liveStreamId = assistantId
         val turnThinkingLevel = _thinkingLevel.value
         withContext(Dispatchers.Main) {
-            _messages.value = _messages.value + ChatMessage(
-                id = assistantId, role = "assistant", content = "", isStreaming = true,
-                isAwaitingModelResponse = true,
-                thinkingLevel = turnThinkingLevel,
-            )
+            // [T-instant-thinking-indicator] The send path may have
+            // pre-created this row the instant the user tapped send (see
+            // sendMessage) — reuse it instead of appending a twin.
+            if (_messages.value.none { m -> m.id == assistantId }) {
+                _messages.value = _messages.value + ChatMessage(
+                    id = assistantId, role = "assistant", content = "", isStreaming = true,
+                    isAwaitingModelResponse = true,
+                    thinkingLevel = turnThinkingLevel,
+                )
+            }
         }
 
         // Tracks whether the loop was exited via a `break` (any reason — no
