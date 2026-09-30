@@ -15162,6 +15162,19 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
             append("\n\nRuntime context:\n")
             append("- Current date: ").append(dateStr).append(" (").append(tzId).append(")\n")
             append("- Device language: ").append(lang).append("\n")
+            // [T-device-load-awareness] Thermal + battery + concurrent-session
+            // visibility so the agent adapts its own behaviour (no kotlinc /
+            // heavy scans while the SoC is hot — proven necessary with
+            // parallel agent sessions on one phone, 2026-09-30). TTL-cached
+            // 30s; the zone scan never touches the LLM history.
+            runCatching {
+                val snap = com.openminis.app.diagnostics.DeviceLoadMonitor.snapshot(context)
+                append("\n").append(com.openminis.app.diagnostics.DeviceLoadMonitor.describe(snap))
+                if (snap.hot) {
+                    append("\n- System note: device is HOT — prefer remote CI verification, " +
+                        "short commands, and avoid parallel heavy work this turn.")
+                }
+            }
             append("- minis-model-use models available: ").append(modelUseCount)
             // [T-agent-graph-role-prompt] A multi-agent graph node's role
             // contract, when this session is a graph worker. Absent for every

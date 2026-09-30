@@ -90,6 +90,25 @@ class DebugRPCHandler(private val context: Context) {
             // UI-operation markers with ages) — a lag complaint becomes
             // measurable evidence instead of an adjective.
             "debug.jankStats" -> JankMonitor.statsJson()
+            // [T-device-load-awareness] force-refresh: an RPC caller wants
+            // the CURRENT zones, not the 30s TTL cache.
+            "debug.deviceState" -> {
+                val snap = com.openminis.app.diagnostics.DeviceLoadMonitor.snapshot(context, force = true)
+                buildString {
+                    append("{\"topZoneC\":").append(snap.topZoneC)
+                    append(",\"hot\":").append(snap.hot)
+                    append(",\"warm\":").append(snap.warm)
+                    snap.batteryPct?.let { append(",\"batteryPct\":").append(it) }
+                    snap.charging?.let { append(",\"charging\":").append(it) }
+                    append(",\"activeSessions\":").append(snap.activeSessions)
+                    append(",\"promptLine\":\"")
+                    append(
+                        com.openminis.app.diagnostics.DeviceLoadMonitor.describe(snap)
+                            .replace("\"", "'").replace("\n", " "),
+                    )
+                    append("\"}")
+                }
+            }
             "debug.jankReset" -> { JankMonitor.resetWindow(); JSONObject().put("reset", true) }
             "debug.agentTrace" -> handleAgentTrace(params)
             "debug.fetch" -> handleFetch(params)
