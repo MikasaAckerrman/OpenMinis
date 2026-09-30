@@ -7834,6 +7834,28 @@ class ChatViewModel(
         // the item vanishes ("гасится"). Say WHY out loud instead: a
         // system info bubble the user can read, plus a log line.
         if (_isStreaming.value) {
+            // [T-retry-takeover] A streaming flag with a LIVE countdown means
+            // the old turn died on transport and auto-resume is WAITING
+            // (15/45/120s backoff). The user's tap says "continue NOW" —
+            // honour it: cancel the sleeping job (its finally-tail checks
+            // streamJob identity, so it cannot clobber this retry's flag),
+            // reset the auto-resume counter (this retry replaces the auto
+            // path), and fall through to a real retry. Previously the tap
+            // hit the loud-reject below = a dead-feeling button ("зависает
+            // когда нажимаю повторить" — user report).
+            if (_autoResumeCountdown.value > 0 && streamJob != null) {
+                AppLogger.info(
+                    TAG_STREAM,
+                    "[Retry] takeover: auto-resume countdown=${_autoResumeCountdown.value}s → retry NOW (msg=${messageId.take(8)})",
+                )
+                _autoResumeCountdown.value = 0
+                _autoResumeAttempt.value = 0
+                runCatching {
+                    streamJob?.cancel(CancellationException("user retry takeover"))
+                }
+                streamJob = null
+                _isStreaming.value = false
+            } else {
             AppLogger.info(
                 TAG,
                 "[Retry] отказ: стрим активен — тихий return false делал кнопку " +
@@ -7844,6 +7866,7 @@ class ChatViewModel(
                 iconKind = "info",
             )
             return false
+            }
         }
         _canResume.value = false
         val messages = _messages.value
@@ -8195,7 +8218,22 @@ class ChatViewModel(
                     // Only transport faults may be resumed, and only when the user
                     // has not moved on. The policy is pure: it decides, the VM
                     // executes (timer + resume call).
-                    val isTransient = e is com.openminis.app.data.model.LLMError.TransientError
+                    // [T-auto-resume-connection-closed] The SSE reader lets a
+                    // mid-stream socket death ("Connection closed") escape as a
+                    // RAW java.io.IOException — not LLMError.NetworkError, not
+                    // TransientError. The old check classified those as OTHER →
+                    // Stop → the user had to tap Retry manually on every
+                    // connection blip. A raw IOException reaching THIS catch is
+                    // a transport fault by definition (the provider layer's own
+                    // mapError maps IOException → NetworkError; the SSE path
+                    // just bypasses it). Treat it as transient so the policy
+                    // classifies "connection closed" → CONNECTION → auto-resume
+                    // fires and the turn continues itself (user: «должен
+                    // механически сам продолжать»). Budget (3 attempts) still
+                    // caps runaway loops.
+                    val isTransient = e is com.openminis.app.data.model.LLMError.TransientError ||
+                        e is com.openminis.app.data.model.LLMError.NetworkError ||
+                        e is java.io.IOException
                     val cause = com.openminis.app.data.AutoResumePolicy.classify(e.message, isTransient)
                     val lastAssistantMsg = _messages.value.lastOrNull { it.role == "assistant" }
                     val hasPartialAnswer = lastAssistantMsg?.let {

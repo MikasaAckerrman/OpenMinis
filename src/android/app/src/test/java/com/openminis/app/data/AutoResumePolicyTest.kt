@@ -200,4 +200,31 @@ class AutoResumePolicyTest {
         assertFalse(AutoResumePolicy.awaitsConnectivity(AutoResumePolicy.Cause.BAD_GATEWAY))
         assertFalse(AutoResumePolicy.awaitsConnectivity(AutoResumePolicy.Cause.CONNECTION))
     }
+
+    // ── raw-IOException classification (the SSE escape hatch) ──────────────
+
+    @Test
+    fun `raw IOException message with transient flag classifies as CONNECTION`() {
+        // [T-auto-resume-connection-closed] The SSE reader lets "Connection
+        // closed" escape as a raw java.io.IOException (not LLMError). The
+        // VM catch now passes isTransient=true for raw IOExceptions; the
+        // policy must classify the message → CONNECTION so auto-resume
+        // fires and the turn continues itself.
+        val cause = AutoResumePolicy.classify(
+            "Network error: Connection closed",
+            isTransient = true,
+        )
+        assertEquals(AutoResumePolicy.Cause.CONNECTION, cause)
+    }
+
+    @Test
+    fun `non-transient message still never resumes`() {
+        // The type gate stays the authority: a provider 4xx that happens to
+        // mention "connection" in its text must not auto-resume.
+        val cause = AutoResumePolicy.classify(
+            "Connection closed by policy: content filter",
+            isTransient = false,
+        )
+        assertEquals(AutoResumePolicy.Cause.OTHER, cause)
+    }
 }
