@@ -39,6 +39,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -57,10 +58,13 @@ import com.openminis.app.data.model.ProviderListSections
 import com.openminis.app.data.model.SectionAccent
 import com.openminis.app.data.repository.ProviderRepository
 import com.openminis.app.ui.components.SectionTextField
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.snapshotFlow
 import com.openminis.app.R
 
 @OptIn(ExperimentalMaterial3Api::class)
+@OptIn(FlowPreview::class)
 @Composable
 fun ProviderListScreen(
     providerRepository: ProviderRepository,
@@ -92,10 +96,9 @@ fun ProviderListScreen(
     // feels instant.
     var debouncedQuery by remember { mutableStateOf("") }
     LaunchedEffect(instances) {
-        @kotlinx.coroutines.FlowPreview
-        val debouncedFlow = kotlinx.coroutines.flow.snapshotFlow { searchText }
+        snapshotFlow { searchText }
             .debounce { q -> if (q.isEmpty()) 0L else 150L }
-        debouncedFlow.collect { debouncedQuery = it }
+            .collect { debouncedQuery = it }
     }
     val sections = remember(config, debouncedQuery) {
         ProviderListSections.build(instances, debouncedQuery)
