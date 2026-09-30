@@ -1002,7 +1002,11 @@ fun ChatScreen(
             "instantSnap src=$source idx=$idx firstIdx=${listState.firstVisibleItemIndex} inProgress=${listState.isScrollInProgress}",
         )
         runCatching { listState.requestScrollToItem(idx, off) }
-        kotlinx.coroutines.withFrameNanos { }
+        // Compose frame gate: waits for the next frame's measure+layout so
+        // the request (a pre-measure position) has been applied; the
+        // follow-up below is then usually a no-op unless late measurement
+        // shifted the anchor.
+        androidx.compose.runtime.withFrameNanos { }
         runCatching { listState.scrollToItem(idx, off) }
         Unit
     }
