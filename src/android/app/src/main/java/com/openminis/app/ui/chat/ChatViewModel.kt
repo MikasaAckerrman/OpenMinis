@@ -6400,6 +6400,17 @@ class ChatViewModel(
                 }
             }
 
+            // [T-provider-prefetch] Warm the active provider's pooled
+            // TLS+h2 connection NOW (session open, this block is IO): the
+            // user's first send then skips the ~2.3s handshake measured on
+            // the dashscope timeline. Fire-and-forget — the warmup request
+            // itself never blocks the session open.
+            runCatching {
+                currentProvider?.let { prov ->
+                    launch { prov.warmConnection() }
+                }
+            }
+
             // [T-HANG-DIAG] measure DB load + transform separately so a long
             // load on one stage is obvious in the trace.
             //

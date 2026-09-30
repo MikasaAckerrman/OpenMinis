@@ -469,6 +469,38 @@ class OpenAIProvider private constructor(
      * concatenate the deltas back into a single [LLMResponse]. Callers that
      * actually want incremental delivery should use [streamMessage] instead.
      */
+    /**
+     * [T-provider-prefetch] One cheap authenticated GET into the SAME
+     * OkHttpClient the streams use — lands a live TLS+h2 connection in
+     * the provider's own pool. Called on session open (IO); the 15s h2
+     * PING keeps it warm until the user's first send, which then skips
+     * the ~2.3s handshake. Never throws; any response code counts (the
+     * goal is the connection, not the payload).
+     */
+    override suspend fun warmConnection() {
+        runCatching {
+            val req = Request.Builder()
+                .url(endpointURL("/models"))
+                .get()
+                .applyKeyAuth(getToken())
+                .header("Content-Type", "application/json")
+                .build()
+            withContext(Dispatchers.IO) {
+                client.newCall(req).execute().use { resp ->
+                    com.openminis.app.logging.AppLogger.info(
+                        "OpenAIProvider",
+                        "[T-provider-prefetch] warm GET /models → ${resp.code}",
+                    )
+                }
+            }
+        }.onFailure {
+            com.openminis.app.logging.AppLogger.warning(
+                "OpenAIProvider",
+                "[T-provider-prefetch] warmup failed (ignored): ${it.message}",
+            )
+        }
+    }
+
     override suspend fun sendMessageClamped(
         messages: List<LLMMessage>,
         systemPrompt: String?,

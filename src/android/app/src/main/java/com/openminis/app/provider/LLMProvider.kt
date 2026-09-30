@@ -74,6 +74,17 @@ interface LLMProvider {
     // (Anthropic, Gemini) gate inside their own sendMessageClamped, which is
     // the actual network call for them. See gatedByDispatch + LlmDispatchGate.
 
+    /**
+     * [T-provider-prefetch] Open (or reuse) a pooled TLS+h2 connection to
+     * the endpoint with a cheap request so the FIRST real send of a
+     * session skips the handshake (~2.3s TLS on a measured dashscope
+     * timeline). Called on session open, on Dispatchers.IO, fire-and-
+     * forget; the h2 PING (15s) keeps the pooled connection warm until
+     * the user's first send. Default: no-op (providers without a cheap
+     * authenticated GET simply don't warm).
+     */
+    suspend fun warmConnection() {}
+
     /** See [sendMessage] — the clamped, provider-implemented counterpart. */
     fun streamMessage(
         messages: List<LLMMessage>,
