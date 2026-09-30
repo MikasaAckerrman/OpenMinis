@@ -986,6 +986,26 @@ fun ChatScreen(
         runCatching { listState.scrollBy(delta) }
         Unit
     }
+    // [T-instant-snap-big-text] Atomic instant jump for send/FAB snaps.
+    // scrollToItem alone lands SHORT on big content: it applies after the
+    // current measure, and newly inserted / late-measuring giant rows shift
+    // the true bottom a frame later — the user sees a partial jump, then a
+    // second correction 100ms later ("прыжок не всегда мгновенный если
+    // текст большой"). requestScrollToItem (Foundation 1.7+) positions the
+    // viewport BEFORE the next remeasure — the same measure that inserts
+    // the new rows places the viewport at the target, one atomic visual
+    // change. The frame-aligned follow-up settles any late measurement
+    // shift WITHOUT the arbitrary 100ms delay (still <2 frames total).
+    val tracedInstantSnap: suspend (source: String, idx: Int, off: Int) -> Unit = { source, idx, off ->
+        AppLogger.debug(
+            "ScrollSrc",
+            "instantSnap src=$source idx=$idx firstIdx=${listState.firstVisibleItemIndex} inProgress=${listState.isScrollInProgress}",
+        )
+        runCatching { listState.requestScrollToItem(idx, off) }
+        kotlinx.coroutines.withFrameNanos { }
+        runCatching { listState.scrollToItem(idx, off) }
+        Unit
+    }
     // T-android-jank-profile: gate verbose scroll telemetry behind a constant
     // so every snapshotFlow / derivedStateOf body in this file can cheaply
     // skip the AppLogger.debug call (which builds a long format string and
@@ -1253,6 +1273,17 @@ fun ChatScreen(
     // `userScrolledAway` which only toggles on real user drags.
     var userScrolledAway by remember { mutableStateOf(false) }
 
+    // [T-return-to-reading-position] The send-snap is unconditional: a user
+    // reading FAR UP gets yanked to the bottom the moment they send, and
+    // previously had NO affordance to go back (up-FAB is hidden near the
+    // bottom, down-FAB resets on the snap). Capture the reading position
+    // BEFORE the snap: the message id at the viewport top (index-stable
+    // across later inserts; the row count shifts by 1-2 with every send)
+    // plus the pixel offset. Restored by the up-FAB while fresh.
+    var returnToId by remember { mutableStateOf<String?>(null) }
+    var returnToOffset by remember { mutableStateOf(0) }
+    var returnToTs by remember { mutableStateOf(0L) }
+
     // [T-android-scroll-fab-reversed] TEMP diagnostic — capture BOTH FABs'
     // gates so we can verify the matrix (bottom=none, middle=both, top=down
     // only) and why the down-FAB is missing at the top. Remove after fix.
@@ -1280,6 +1311,26 @@ fun ChatScreen(
             return@handler
         }
         lastSendTimeMs = System.currentTimeMillis()
+        // [T-return-to-reading-position] Capture WHERE the user was reading
+        // BEFORE the unconditional send-snap yanks them to the bottom.
+        // The message id at the natural-order top of the viewport is
+        // index-stable across the inserts this send adds (row count shifts;
+        // ids don't). Only worth capturing when actually far from the
+        // bottom — at the bottom the snap costs nothing.
+        if (isFarFromBottom.value && messages.isNotEmpty()) {
+            val firstIdx = listState.firstVisibleItemIndex
+            val naturalIdx = (listState.layoutInfo.totalItemsCount - 1 - firstIdx)
+                .coerceIn(0, messages.size - 1)
+            messages.getOrNull(naturalIdx)?.let { topMsg ->
+                returnToId = topMsg.id
+                returnToOffset = listState.firstVisibleItemScrollOffset
+                returnToTs = System.currentTimeMillis()
+                AppLogger.debug(
+                    "ScrollSrc",
+                    "send captured reading pos id=${topMsg.id} naturalIdx=$naturalIdx reversedFirst=$firstIdx",
+                )
+            }
+        }
         viewModel.setInputText("")
         keyboardController?.hide()
         focusManager.clearFocus()
@@ -1287,9 +1338,7 @@ fun ChatScreen(
         noteSendForInputModePref()
         userScrolledAway = false
         coroutineScope.launch {
-            tracedScrollToItem("SEND-PATH/initial", 0, 0)
-            kotlinx.coroutines.delay(100)
-            tracedScrollToItem("SEND-PATH/settle", 0, 0)
+            tracedInstantSnap("SEND-PATH/initial", 0, 0)
         }
     }
     // T196: timestamp of the last drag-stop. The streaming auto-follow LE
@@ -1389,7 +1438,7 @@ fun ChatScreen(
             // Match the user-send path: clear any prior "scrolled away" flag
             // so the streaming auto-follow stays active for the new turn.
             userScrolledAway = false
-            tracedScrollToItem("FORCE-SCROLL-TO-BOTTOM(resume/retry/rerun)", 0, 0)
+            tracedInstantSnap("FORCE-SCROLL-TO-BOTTOM(resume/retry/rerun)", 0, 0)
         }
     }
     // Auto-scroll on user-send: explicit "show me the next response"
@@ -1403,7 +1452,7 @@ fun ChatScreen(
         // was missed.
         lastUserAppendMs = System.currentTimeMillis()
         userScrolledAway = false
-        tracedScrollToItem("LE(messages.size)USER-SEND-SNAP", 0, 0)
+        tracedInstantSnap("LE(messages.size)USER-SEND-SNAP", 0, 0)
     }
     // T128: streaming auto-follow when the user is at the bottom.
     //
@@ -4114,10 +4163,41 @@ fun ChatScreen(
                 // anchor, extra bottom padding = down-button height 36dp + 10dp
                 // spacing). Scrolls to the OLDEST message (highest index under
                 // reverseLayout).
-                if (messages.isNotEmpty() && isFarFromTop.value && isFarFromBottom.value) {
+                // [T-return-to-reading-position] `returnActive`: a captured
+                // position from THIS session's send is still fresh (<90s) —
+                // the up-FAB shows even at the bottom right after a send-
+                // snap (that's exactly when the user needs the way back)
+                // and its tap returns to the reading position.
+                val returnActive = returnToId != null &&
+                    System.currentTimeMillis() - returnToTs < 90_000L
+                if (messages.isNotEmpty() && (isFarFromTop.value && isFarFromBottom.value || returnActive)) {
                     val upBaseBottom = if (lastToolBlocks.isNotEmpty()) 80.dp else 8.dp
                     androidx.compose.material3.FilledIconButton(
                         onClick = {
+                            // [T-return-to-reading-position] With a fresh
+                            // captured position this becomes "return to
+                            // where I was reading" — the exact message id
+                            // resolves to its CURRENT index (row count
+                            // changed since the capture; ids didn't), the
+                            // saved pixel offset rides along. Consumed once;
+                            // then the default "jump to oldest" behavior.
+                            val rid = returnToId
+                            val rts = returnToTs
+                            if (rid != null && rid != "-" && System.currentTimeMillis() - rts < 90_000L) {
+                                val naturalIdx = messages.indexOfFirst { it.id == rid }
+                                if (naturalIdx >= 0) {
+                                    val reversedIdx = (messages.size - 1 - naturalIdx)
+                                        .coerceIn(0, messages.size - 1)
+                                    returnToId = null
+                                    returnToTs = 0L
+                                    coroutineScope.launch {
+                                        tracedInstantSnap("FAB-UP/RETURN", reversedIdx, returnToOffset)
+                                    }
+                                    return@FilledIconButton
+                                }
+                                returnToId = null
+                                returnToTs = 0L
+                            }
                             coroutineScope.launch {
                                 val lastIndex = (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)
                                 tracedScrollToItem("FAB-UP", lastIndex, 0)
@@ -4135,7 +4215,7 @@ fun ChatScreen(
                     ) {
                         Icon(
                             imageVector = Icons.Default.KeyboardArrowUp,
-                            contentDescription = "Scroll to first message",
+                            contentDescription = if (returnActive) "Return to reading position" else "Scroll to first message",
                             modifier = Modifier.size(20.dp),
                         )
                     }
@@ -4159,12 +4239,7 @@ fun ChatScreen(
                             // intent is unambiguous, so reset directly.
                             userScrolledAway = false
                             coroutineScope.launch {
-                                tracedScrollToItem("FAB-DOWN", 0, 0)
-                                // Second pin after a frame: the first scroll may
-                                // land short while late-measuring items shift the
-                                // true bottom; re-issue once layout settles.
-                                kotlinx.coroutines.delay(100)
-                                tracedScrollToItem("FAB-DOWN/settle", 0, 0)
+                                tracedInstantSnap("FAB-DOWN", 0, 0)
                             }
                         },
                         modifier = Modifier
