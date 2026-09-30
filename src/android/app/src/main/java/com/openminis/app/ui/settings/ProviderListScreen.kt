@@ -57,6 +57,7 @@ import com.openminis.app.data.model.ProviderListSections
 import com.openminis.app.data.model.SectionAccent
 import com.openminis.app.data.repository.ProviderRepository
 import com.openminis.app.ui.components.SectionTextField
+import kotlinx.coroutines.flow.debounce
 import com.openminis.app.R
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -85,8 +86,19 @@ fun ProviderListScreen(
     // — previously folders and type groups were two near-identical blocks and
     // only folders could collapse.
     var searchText by remember { mutableStateOf("") }
-    val sections = remember(config, searchText) {
-        ProviderListSections.build(instances, searchText)
+    // [T-search-debounce] The field updates instantly; the section TREE
+    // (grouping + filtering all provider instances) rebuilds only after
+    // the typist pauses. Empty input applies with zero delay so clearing
+    // feels instant.
+    var debouncedQuery by remember { mutableStateOf("") }
+    LaunchedEffect(instances) {
+        @kotlinx.coroutines.FlowPreview
+        val debouncedFlow = kotlinx.coroutines.flow.snapshotFlow { searchText }
+            .debounce { q -> if (q.isEmpty()) 0L else 150L }
+        debouncedFlow.collect { debouncedQuery = it }
+    }
+    val sections = remember(config, debouncedQuery) {
+        ProviderListSections.build(instances, debouncedQuery)
     }
     val totalCount = instances.size
     // [T-ui-fps] Night wave-1 F4: recompute per invalidation → remembered

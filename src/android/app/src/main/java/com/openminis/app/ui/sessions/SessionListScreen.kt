@@ -630,6 +630,7 @@ fun SessionListScreen(
                                 }.collectAsState()
                                 SessionItemContent(
                                     session = session,
+                                    modifier = Modifier.animateItem(),
                                     isSelecting = isSelecting,
                                     selectedIds = selectedIds,
                                     isActive = session.id in activeNow,
@@ -1132,11 +1133,17 @@ private fun SessionItemContent(
     // level; rows take plain values and Compose skips unchanged ones.
     isActive: Boolean = false,
     badgeHead: com.openminis.app.service.SessionBadgeStore.SessionBadgeState? = null,
+    // [T-list-item-animation] Lazy-item placement animation: a pin, a
+    // timestamp bump (Today/ Yesterday regrouping) or an archive moves a
+    // keyed row — animateItem slides it instead of teleporting ("резкие"
+    // list jumps). Compose 1.7 API, keyed items only (we key by id).
+    modifier: Modifier = Modifier,
 ) {
     if (isSelecting) {
         val isSelected = session.id in selectedIds
         SessionRow(
             session = session,
+            modifier = modifier,
             onClick = { onToggleSelect(session.id) },
             onLongClick = null,
             searchQuery = searchQuery,
@@ -1162,6 +1169,7 @@ private fun SessionItemContent(
         Box(modifier = Modifier.fillMaxWidth()) {
             SessionRow(
                 session = session,
+                modifier = modifier,
                 onClick = { onSessionClick(session.id) },
                 searchQuery = searchQuery,
                 searchSnippet = searchSnippet,
@@ -1375,13 +1383,14 @@ private fun SessionRow(
     // [T-perf-row-global-collectors] hoisted — see SessionItemContent.
     isActive: Boolean = false,
     badgeHead: com.openminis.app.service.SessionBadgeStore.SessionBadgeState? = null,
+    modifier: Modifier = Modifier,
 ) {
     val style = remember(session.category) { categoryStyle(session.category) }
     val ctx = androidx.compose.ui.platform.LocalContext.current
     val timeText = remember(session.updatedAt, ctx) { relativeDate(ctx, session.updatedAt) }
 
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .background(MaterialTheme.colorScheme.surface)
             .then(
