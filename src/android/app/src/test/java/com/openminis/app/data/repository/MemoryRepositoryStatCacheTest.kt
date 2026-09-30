@@ -71,7 +71,7 @@ class MemoryRepositoryStatCacheTest {
         val second = repo.getMemory("keyword-two", scope = "all")
         assertTrue(second.isNotBlank() && !second.startsWith("No memory"))
         val gone = repo.getMemory("keyword-one", scope = "all")
-        assertTrue(gone.isBlank() || gone.startsWith("No memory"))
+        assertTrue(gone.isBlank() || gone.startsWith("No matches found"))
     }
 
     @Test
