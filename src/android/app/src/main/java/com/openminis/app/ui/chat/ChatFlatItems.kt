@@ -537,6 +537,157 @@ internal fun mergeStreamingOverlay(
     }
 }
 
+/**
+ * [T-live-tail-incremental] Reuse engine for the per-tick streaming
+ * rebuild: a live message's content grows by APPEND only (SSE deltas), so
+ * every completed markdown fragment of that message is byte-stable across
+ * ticks — yet the flat-item builder re-split the WHOLE body and re-joined
+ * the markdown on every 80ms tick (measured: 175-185 rows, 90-190MB of GC
+ * churn per turn).
+ *
+ * Two caches, both validated by a prefix check (regionMatches — no
+ * allocation) and both correct-by-construction: any non-append change
+ * fails the check and falls back to the full rebuild, which is exactly
+ * the pre-cache behavior.
+ *
+ * - [fragments]: for the message's LAST text block, reuse all fragments
+ *   except the tail; re-split only `content.substring(lastFragStart)`.
+ *   A fresh split starting at a fragment boundary sees the same
+ *   fence/paragraph state the original scan had there — fragments are
+ *   self-contained units by construction.
+ * - [joinedMarkdown]: the "\n\n" join of the message's text blocks ends
+ *   with the (growing) last block, so an append to that block is an
+ *   append to the join: `cached + appended` instead of a full join.
+ */
+internal object StreamingBuildCache {
+
+    private class FragEntry(
+        val messageId: String,
+        val blockId: String,
+        val content: String,
+        val fragments: List<String>,
+        val starts: IntArray,
+    )
+
+    private class JoinEntry(
+        val messageId: String,
+        val blockCount: Int,
+        val prefixLens: IntArray,
+        val lastBlock: String,
+        val lastLen: Int,
+        val joined: String,
+    )
+
+    private const val MAX_MESSAGES = 4
+    private val fragOrder = ArrayDeque<String>()
+    private val fragEntries = HashMap<String, FragEntry>()
+    private val joinOrder = ArrayDeque<String>()
+    private val joinEntries = HashMap<String, JoinEntry>()
+
+    private fun evict(order: ArrayDeque<String>, map: HashMap<String, *>, key: String) {
+        order.remove(key)
+        order.addLast(key)
+        while (order.size > MAX_MESSAGES) {
+            val old = order.removeFirst()
+            map.remove(old)
+        }
+    }
+
+    /**
+     * Fragment split for a text block of the message identified by
+     * [messageId]. Stable-prefix reuse when the content grew by append.
+     */
+    fun fragments(messageId: String, blockId: String, content: String): List<String> {
+        val cacheKey = "$messageId:$blockId"
+        val e = fragEntries[cacheKey]
+        if (e != null && content.length >= e.content.length &&
+            content.regionMatches(0, e.content, 0, e.content.length)
+        ) {
+            val stableCount = e.fragments.size - 1
+            val tailStart = if (e.starts.isNotEmpty()) e.starts[e.starts.size - 1] else 0
+            // Re-split ONLY the appended region starting at the last
+            // fragment's start: a fresh scan at a fragment boundary sees the
+            // same fence/paragraph state the original full scan had there.
+            val tailFrags = if (tailStart < content.length) {
+                splitMarkdownIntoBlockFragments(content.substring(tailStart))
+            } else {
+                emptyList()
+            }
+            val result: List<String>
+            val starts: IntArray
+            if (stableCount >= 0) {
+                val stable = e.fragments.subList(0, stableCount)
+                if (tailFrags.isEmpty()) {
+                    // No new boundary crossed: the cached tail fragment is
+                    // still the live one, just longer. Re-derive it from the
+                    // grown content (one substring — the whole point).
+                    val grown = if (tailStart < content.length) content.substring(tailStart) else ""
+                    result = if (grown.isNotEmpty()) stable + listOf(grown) else stable.toList()
+                } else {
+                    result = stable + tailFrags.map { it.text }
+                }
+                starts = IntArray(result.size)
+                for (i in 0 until minOf(stableCount, result.size)) starts[i] = e.starts[i]
+                tailFrags.forEachIndexed { ti, tf ->
+                    val ri = stableCount + ti
+                    if (ri < starts.size) starts[ri] = tailStart + tf.start
+                }
+            } else {
+                // Cached split had no fragments (content was empty before).
+                result = tailFrags.map { it.text }
+                starts = IntArray(result.size) { i -> tailStart + tailFrags[i].start }
+            }
+            fragEntries[cacheKey] = FragEntry(messageId, blockId, content, result, starts)
+            evict(fragOrder, fragEntries, cacheKey)
+            return result
+        }
+        val frags = splitMarkdownIntoBlockFragments(content)
+        val fresh = frags.map { it.text }
+        val starts = IntArray(frags.size) { i -> frags[i].start }
+        fragEntries[cacheKey] = FragEntry(messageId, blockId, content, fresh, starts)
+        evict(fragOrder, fragEntries, cacheKey)
+        return fresh
+    }
+
+    /**
+     * Joined markdown of the message's text blocks. Incremental append
+     * when only the last block grew (the streaming case).
+     */
+    fun joinedMarkdown(messageId: String, textBlocks: List<String>, fallback: () -> String): String {
+        val e = joinEntries[messageId]
+        if (e != null && textBlocks.size == e.blockCount) {
+            var prefixOk = true
+            for (i in 0 until textBlocks.size - 1) {
+                if (textBlocks[i].length != e.prefixLens[i]) { prefixOk = false; break }
+            }
+            val last = textBlocks.last()
+            if (prefixOk &&
+                last.length >= e.lastLen &&
+                last.regionMatches(0, e.lastBlock, 0, e.lastLen)
+            ) {
+                val joined = if (last.length == e.lastLen) {
+                    e.joined
+                } else {
+                    e.joined + last.substring(e.lastLen)
+                }
+                joinEntries[messageId] = JoinEntry(
+                    messageId, e.blockCount, e.prefixLens, last, last.length, joined,
+                )
+                evict(joinOrder, joinEntries, messageId)
+                return joined
+            }
+        }
+        val fresh = fallback()
+        val prefixLens = IntArray(textBlocks.size - 1) { i -> textBlocks[i].length }
+        val lastBlock = textBlocks.lastOrNull() ?: ""
+        joinEntries[messageId] = JoinEntry(
+            messageId, textBlocks.size, prefixLens, lastBlock, lastBlock.length, fresh,
+        )
+        evict(joinOrder, joinEntries, messageId)
+        return fresh
+    }
+}
+
 internal fun buildFlatChatItems(
     messages: List<ChatMessage>,
     // [T-android-perf-logging] Optional — when supplied, emit a progress
@@ -629,10 +780,18 @@ internal fun buildFlatChatItems(
         // iOS systemDividerRow / compactDividerRow.
         val isSystem = message.role == "system"
         val joinedMarkdown = run {
-            val parts = message.toolBlocks
+            // [T-live-tail-incremental] Incremental join: during streaming the
+            // last text block grows by append, so the join grows by the same
+            // append — cached + appended instead of a full joinToString.
+            val textParts = message.toolBlocks
                 .filter { it.kind == "text" && it.content.isNotEmpty() }
-                .joinToString("\n\n") { it.content }
-            if (parts.isNotEmpty()) parts else message.content
+            if (textParts.isNotEmpty()) {
+                StreamingBuildCache.joinedMarkdown(message.id, textParts.map { it.content }) {
+                    textParts.joinToString("\n\n") { it.content }
+                }
+            } else {
+                message.content
+            }
         }
         // T83: when Resume creates a fresh assistant bubble after the user
         // stopped a streaming turn, the previous (cancelled) assistant
@@ -685,7 +844,16 @@ internal fun buildFlatChatItems(
                         // paragraph re-parses per token (Pattern A jank
                         // optimization preserved). Code fences stay standalone
                         // either way.
-                        val rawFragments = splitMarkdownIntoBlockTexts(block.content)
+                        val rawFragments = if (block.content.isNotEmpty()) {
+                            // [T-live-tail-incremental] Append-validated
+                            // fragment reuse: completed fragments of a
+                            // streaming message are byte-stable across
+                            // ticks; only the trailing fragment is re-split
+                            // from its start offset.
+                            StreamingBuildCache.fragments(message.id, block.id, block.content)
+                        } else {
+                            emptyList()
+                        }
                         // [T-android-stream-end-reflow-flicker-v18] Preserve
                         // per-fragment FlatChatItem keys across the
                         // streaming→idle boundary. Previously the trailing

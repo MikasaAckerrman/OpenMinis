@@ -703,21 +703,39 @@ fun MarkdownDocument(
  * standalone [MarkdownBlock] composable. Concatenating the returned list
  * with "\n" reconstructs the input exactly.
  */
-fun splitMarkdownIntoBlockTexts(content: String): List<String> {
+fun splitMarkdownIntoBlockTexts(content: String): List<String> =
+    splitMarkdownIntoBlockFragments(content).map { it.text }
+
+/**
+ * [T-live-tail-incremental] Offset-tracking twin of
+ * [splitMarkdownIntoBlockTexts]: same fragments, plus each fragment's start
+ * offset in the source. The offsets let [StreamingBuildCache] re-split only
+ * the APPENDED tail of a growing streaming message instead of the whole
+ * body — the per-token tick used to re-allocate every fragment string of a
+ * 50KB answer (measured: 175-185 live rows rebuilt, 90-190MB GC churn per
+ * turn). Single source of truth: the plain variant delegates here.
+ */
+fun splitMarkdownIntoBlockFragments(content: String): List<MdFragment> {
     if (content.isEmpty()) return emptyList()
-    val out = mutableListOf<String>()
+    val out = mutableListOf<MdFragment>()
     val cur = StringBuilder()
+    var fragStart = -1
     var inFence = false
-    val lines = content.lines()
+    var pos = 0
+    val n = content.length
     fun flush() {
         if (cur.isNotEmpty()) {
             // Trim trailing empty line we used as boundary, but keep
             // intentional internal newlines.
-            out.add(cur.toString().trimEnd('\n'))
+            out.add(MdFragment(fragStart, cur.toString().trimEnd('\n')))
             cur.clear()
+            fragStart = -1
         }
     }
-    for (line in lines) {
+    while (pos <= n) {
+        val nl = content.indexOf('\n', pos)
+        val lineEnd = if (nl < 0) n else nl
+        val line = content.substring(pos, lineEnd)
         val trimmed = line.trimStart()
         val isFence = trimmed.startsWith("```")
         if (isFence) {
@@ -725,30 +743,35 @@ fun splitMarkdownIntoBlockTexts(content: String): List<String> {
             // not inside a fence) and opens/closes the fence fragment.
             if (!inFence) {
                 flush()
+                fragStart = pos
                 cur.append(line).append('\n')
                 inFence = true
             } else {
+                if (fragStart < 0) fragStart = pos
                 cur.append(line).append('\n')
                 inFence = false
                 flush()
             }
-            continue
-        }
-        if (inFence) {
+        } else if (inFence) {
+            if (fragStart < 0) fragStart = pos
             cur.append(line).append('\n')
-            continue
-        }
-        if (line.isBlank()) {
+        } else if (line.isBlank()) {
             // Boundary: paragraph end. Drop the blank line itself; it
             // signals the split.
             flush()
-            continue
+        } else {
+            if (fragStart < 0) fragStart = pos
+            cur.append(line).append('\n')
         }
-        cur.append(line).append('\n')
+        if (nl < 0) break
+        pos = nl + 1
     }
     flush()
     return out
 }
+
+/** [T-live-tail-incremental] One markdown fragment + its start offset. */
+data class MdFragment(val start: Int, val text: String)
 
 /**
  * [T-android-defensive-fragment-merge] A fenced code block fragment is one
