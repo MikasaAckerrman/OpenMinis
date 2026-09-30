@@ -7986,10 +7986,11 @@ class ChatViewModel(
             // it. That is how session 2c7ae861 lost 11 days of history to one
             // tap, leaving 66 compact markers anchored at rows that no longer
             // existed. See com.openminis.app.data.MessageCutoff.
-            val dbMessages = chatRepository.loadMessages(sid)
-            val cutoffRows = dbMessages.map {
-                com.openminis.app.data.MessageCutoff.Row(it.id, it.sortOrder)
-            }
+            //
+            // [T-retry-instant] The rows come from the id+sortOrder projection:
+            // full-row loading pulled MEGABYTES of partsJson for a heavy session
+            // on every retry tap — the multi-second "повторить с задержкой".
+            val cutoffRows = chatRepository.cutoffRowsForSession(sid)
             val anchorIds = com.openminis.app.data.MessageCutoff.candidateIds(
                 sourceDbIds = message.sourceDbIds,
                 bubbleId = message.id,

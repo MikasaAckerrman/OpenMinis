@@ -68,6 +68,41 @@ object SessionHistoryCache {
         store[sessionId] = Entry(rows, llmHistory, rowCount, maxCreatedAt)
     }
 
+    /**
+     * [T-retry-instant] Tail-trim: a truncation that removed rows AFTER
+     * keepCount leaves the prefix identical — keep it, drop the tail.
+     * Returns true when a matching entry existed (trim applied, or the cut
+     * was longer than the cache = the surviving prefix is unchanged);
+     * false = caller falls back to invalidate(). Correctness: the next
+     * open's fingerprint revalidation (count + MAX(created_at) read live
+     * from the DB) still arbitrates — a wrong trim can never serve stale
+     * rows.
+     */
+    @Synchronized
+    fun trimTail(sessionId: String, keepCount: Int): Boolean {
+        val entry = store[sessionId] ?: return false
+        if (keepCount <= 0) {
+            store.remove(sessionId)
+            return true
+        }
+        if (keepCount >= entry.rows.size) {
+            // The cut removed rows the cache never held; the surviving
+            // prefix is unchanged — plain hit semantics.
+            return true
+        }
+        val trimmedRows = ArrayList<MessageEntity>(keepCount)
+        for (i in 0 until keepCount) trimmedRows.add(entry.rows[i])
+        var max = -1L
+        for (r in trimmedRows) if (r.createdAt > max) max = r.createdAt
+        store[sessionId] = Entry(
+            trimmedRows,
+            ArrayList(entry.llmHistory.subList(0, keepCount)),
+            keepCount,
+            max,
+        )
+        return true
+    }
+
     @Synchronized
     fun invalidate(sessionId: String) {
         store.remove(sessionId)

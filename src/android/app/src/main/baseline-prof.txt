@@ -1,0 +1,87 @@
+# [T-post-update-jank] Baseline Profile — kills the interpret-only window
+# after an app update. Without it, Android runs the freshly-replaced dex
+# interpreted (5-20x slower) until background dexopt finishes minutes
+# later: the user reported "после обновления захожу — пролагивает жутко".
+# profileinstaller installs this profile on first boot so ART AOT-compiles
+# these classes immediately. Every class below is verified to exist in the
+# tree (FileKt = top-level functions of that file; classes as declared).
+
+# Startup path.
+Lcom/openminis/app/MinisApp;
+Lcom/openminis/app/MainActivityKt;
+Lcom/openminis/app/MainActivity;
+Lcom/openminis/app/diagnostics/JankMonitor;
+Lcom/openminis/app/diagnostics/ColdStartTrace;
+Lcom/openminis/app/diagnostics/DeviceLoadMonitor;
+Lcom/openminis/app/diagnostics/StreamPerfMonitor;
+Lcom/openminis/app/diagnostics/PerfLongCtx;
+Lcom/openminis/app/diagnostics/HangDetector;
+Lcom/openminis/app/diagnostics/BgDiag;
+Lcom/openminis/app/crash/NativeCrashHandler;
+Lcom/openminis/app/crash/NativeCrashHandlerKt;
+# Chat UI — the heaviest interactive surface.
+Lcom/openminis/app/ui/chat/ChatScreenKt;
+Lcom/openminis/app/ui/chat/ChatScreenHelpersKt;
+Lcom/openminis/app/ui/chat/ChatViewModel;
+Lcom/openminis/app/ui/chat/ChatViewModelStoreKt;
+Lcom/openminis/app/ui/chat/ChatViewModelUiStateExtKt;
+Lcom/openminis/app/ui/chat/ChatViewModelSlashExtKt;
+Lcom/openminis/app/ui/chat/ChatViewModelMentionExtKt;
+Lcom/openminis/app/ui/chat/ChatFlatItemsKt;
+Lcom/openminis/app/ui/chat/StreamingBuildCache;
+Lcom/openminis/app/ui/chat/ChatModelsKt;
+Lcom/openminis/app/ui/chat/ChatMessage;
+Lcom/openminis/app/ui/chat/ChatAssistantMessageUIKt;
+Lcom/openminis/app/ui/chat/ChatUserMessageUIKt;
+Lcom/openminis/app/ui/chat/ChatComposerWidgetsKt;
+Lcom/openminis/app/ui/chat/ComposerInputModePrefsKt;
+Lcom/openminis/app/ui/chat/InputAttachmentKt;
+Lcom/openminis/app/ui/chat/StreamingMarkdownTextKt;
+Lcom/openminis/app/ui/chat/MarkdownClipboardKt;
+Lcom/openminis/app/ui/chat/MinisMarkdownTextToolbarKt;
+Lcom/openminis/app/ui/markdown/MarkdownParserKt;
+Lcom/openminis/app/ui/markdown/MarkdownTextKt;
+Lcom/openminis/app/ui/markdown/SyntaxHighlighterKt;
+Lcom/openminis/app/ui/markdown/KaTeXViewKt;
+Lcom/openminis/app/ui/DisplayBitmapLimits;
+# Session list — first screen after open.
+Lcom/openminis/app/ui/sessions/SessionListScreenKt;
+Lcom/openminis/app/ui/sessions/SessionListViewModel;
+Lcom/openminis/app/ui/sessions/SearchHighlight;
+# Settings / providers / models.
+Lcom/openminis/app/ui/settings/ProviderListScreenKt;
+Lcom/openminis/app/ui/settings/ProviderDetailScreenKt;
+Lcom/openminis/app/ui/settings/AddProviderScreenKt;
+# Data layer: DB, repositories, caches, prompts.
+Lcom/openminis/app/data/repository/ChatRepository;
+Lcom/openminis/app/data/repository/MemoryRepository;
+Lcom/openminis/app/data/repository/SkillRepository;
+Lcom/openminis/app/data/repository/ProviderRepository;
+Lcom/openminis/app/data/SessionHistoryCache;
+Lcom/openminis/app/data/SessionHistoryCacheKt;
+Lcom/openminis/app/data/ReasoningEliderKt;
+Lcom/openminis/app/data/PostAnchorPruneKt;
+Lcom/openminis/app/data/MessageCutoffKt;
+Lcom/openminis/app/data/CoreMemoryStore;
+Lcom/openminis/app/data/CoreMemoryPrefs;
+Lcom/openminis/app/data/db/AppDatabase;
+Lcom/openminis/app/data/db/ChatDao;
+Lcom/openminis/app/data/db/ChatDao_Impl;
+Lcom/openminis/app/data/db/MessageEntity;
+Lcom/openminis/app/data/db/ChatSessionEntity;
+Lcom/openminis/app/data/model/LLMMessage;
+Lcom/openminis/app/data/model/ProviderConfig;
+# Provider/LLM layer.
+Lcom/openminis/app/provider/LLMProvider;
+Lcom/openminis/app/provider/ProviderFactory;
+Lcom/openminis/app/provider/LlmDispatchGate;
+Lcom/openminis/app/provider/ProviderModelsCache;
+Lcom/openminis/app/provider/ModelsDevApi;
+Lcom/openminis/app/provider/TokenBucket;
+Lcom/openminis/app/provider/ToolJsonRepair;
+Lcom/openminis/app/provider/openai/OpenAIProvider;
+Lcom/openminis/app/provider/openai/OpenAIModelsApiKt;
+Lcom/openminis/app/provider/anthropic/AnthropicProvider;
+Lcom/openminis/app/provider/gemini/GeminiProvider;
+# Skills + supermemory.
+Lcom/openminis/app/data/repository/SkillRepository;

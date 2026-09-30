@@ -253,6 +253,10 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
+    // [T-post-update-jank] Baseline-profile installer: compiles the
+    // baseline-prof.txt classes AOT on first boot after an update instead
+    // of leaving the whole app in the interpret-only window.
+    implementation("androidx.profileinstaller:profileinstaller:1.4.1")
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     // Core

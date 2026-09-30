@@ -223,6 +223,16 @@ interface ChatDao {
     @Query("SELECT COALESCE(MAX(created_at), -1) FROM messages WHERE session_id = :sessionId")
     suspend fun maxCreatedAt(sessionId: String): Long
 
+    /**
+     * [T-retry-instant] Id+sortOrder projection WITHOUT the partsJson body.
+     * The retry path needs exactly these two columns to resolve its cutoff;
+     * loading full rows meant pulling MEGABYTES of JSON for a heavy session
+     * on every retry tap (measured: multi-second delay before the stream
+     * started — user report "повторить с задержкой").
+     */
+    @Query("SELECT id, sort_order FROM messages WHERE session_id = :sessionId")
+    suspend fun rowIdsAndSortOrders(sessionId: String): List<com.openminis.app.data.db.MessageIdSort>
+
     @Query("DELETE FROM messages WHERE session_id = :sessionId")
     suspend fun deleteMessages(sessionId: String)
 

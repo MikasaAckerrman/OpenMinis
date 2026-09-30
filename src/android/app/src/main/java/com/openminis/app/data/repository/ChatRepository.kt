@@ -150,6 +150,17 @@ class ChatRepository(internal val dao: ChatDao) {
      * Existing oversized rows are not migrated; new oversized inserts
      * are prevented by the cap in [appendMessage].
      */
+    /**
+     * [T-retry-instant] Cutoff rows WITHOUT partsJson bodies — the retry
+     * path's anchor resolution. Full-row loading made every retry on a
+     * heavy session pay a multi-second JSON pull for two columns
+     * (user report: "повторить — с задержкой до старта работы").
+     */
+    suspend fun cutoffRowsForSession(sessionId: String): List<com.openminis.app.data.MessageCutoff.Row> =
+        dao.rowIdsAndSortOrders(sessionId).map {
+            com.openminis.app.data.MessageCutoff.Row(it.id, it.sortOrder)
+        }
+
     suspend fun loadMessages(sessionId: String): List<MessageEntity> {
         // T-android-crash-safe-mode-v2: defensive guard. ChatViewModel.loadSession
         // is already gated upstream, but loadMessages has other call sites
@@ -319,8 +330,17 @@ class ChatRepository(internal val dao: ChatDao) {
             totalRows = totalRows,
             removed = doomed,
         )
-        // [T-session-history-cache] Rows removed → parsed history stale.
-        SessionHistoryCache.invalidate(sessionId)
+        // [T-session-history-cache] Tail-trim instead of full invalidation:
+        // the cut removes rows AFTER keepCount — the prefix [0, keepCount)
+        // is byte-identical to what the cache holds. Trimming keeps the
+        // prefix (fingerprints: count drops, maxCreatedAt of the prefix
+        // stays the prefix's own max — revalidation on the next open
+        // confirms). Retry on a heavy session no longer re-parses the whole
+        // history: the re-send resolves against the surviving prefix
+        // instantly. Falls back to a full invalidate if no entry exists.
+        if (!SessionHistoryCache.trimTail(sessionId, keepCount)) {
+            SessionHistoryCache.invalidate(sessionId)
+        }
         return doomed
     }
 
