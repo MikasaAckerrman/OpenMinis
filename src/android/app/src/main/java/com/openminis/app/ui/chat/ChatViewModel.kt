@@ -2059,8 +2059,11 @@ class ChatViewModel(
 
     /** Same pressure computation as checkContextBeforeSend, boolean form. */
     private fun autoModePressureNeedsCompact(): Boolean {
-        val tokens = com.openminis.app.data.ContextPressure.resolve(
-            usageTokens = _lastTurnContextTokens.value,
+        // [T-estimate-lazy] see checkContextBeforeSend — estimate only when
+        // the usage block is actually missing.
+        val usage = _lastTurnContextTokens.value
+        val tokens = if (usage > 0) usage else com.openminis.app.data.ContextPressure.resolve(
+            usageTokens = usage,
             estimatedTokens = estimateContextTokens(),
         )
         if (tokens <= 0) return false
@@ -5630,10 +5633,21 @@ class ChatViewModel(
      */
     private fun checkContextBeforeSend(): Boolean {
         val reportedTokens = _lastTurnContextTokens.value
-        val tokens = com.openminis.app.data.ContextPressure.resolve(
-            usageTokens = reportedTokens,
-            estimatedTokens = estimateContextTokens(),
-        )
+        // [T-estimate-lazy] estimateContextTokens() walks the FULL
+        // effectiveAgentHistory assembly (compact slicing + prune + char
+        // counting over every part) — measured seconds on a 6000-row
+        // session — and it was evaluated EAGERLY as an argument even when
+        // resolve() throws the value away because the provider reported a
+        // fresh usage block (glm/minimax report usage every turn). Compute
+        // it only when the usage is actually missing.
+        val tokens = if (reportedTokens > 0) {
+            reportedTokens
+        } else {
+            com.openminis.app.data.ContextPressure.resolve(
+                usageTokens = reportedTokens,
+                estimatedTokens = estimateContextTokens(),
+            )
+        }
         val window = effectiveContextWindowTokens() ?: return true
         val policy = ContextPolicy.forContextWindow(window)
         if (com.openminis.app.data.ContextPressure.isEstimated(reportedTokens, tokens)) {
@@ -9623,8 +9637,10 @@ class ChatViewModel(
         // [T-context-pressure-blind] A failing session never reports usage, so
         // the reported counter is 0; fall back to an estimate so the hint is
         // not suppressed on exactly the errors it exists to explain.
-        val tokens = com.openminis.app.data.ContextPressure.resolve(
-            usageTokens = _lastTurnContextTokens.value,
+        // [T-estimate-lazy] estimate only when usage is missing.
+        val usageNow = _lastTurnContextTokens.value
+        val tokens = if (usageNow > 0) usageNow else com.openminis.app.data.ContextPressure.resolve(
+            usageTokens = usageNow,
             estimatedTokens = estimateContextTokens(),
         )
         val sizeRelated = com.openminis.app.data.TransportErrorClassifier.isExplicitSizeError(errorText) ||
@@ -10259,7 +10275,11 @@ class ChatViewModel(
         // already-huge history is itself a reason to get "quota exceeded" —
         // the request never even ran. Fall back to the local estimate: it is
         // crude, but asking for a sane output size beats asking for the ceiling.
-        val inputTokens = com.openminis.app.data.ContextPressure.resolve(
+        // [T-estimate-lazy] estimate only when the usage block is missing —
+        // this runs on EVERY request build; the eager form paid the full
+        // eAH assembly walk per round for a value that usage usually
+        // overrides anyway.
+        val inputTokens = if (lastContextTokens > 0) lastContextTokens else com.openminis.app.data.ContextPressure.resolve(
             usageTokens = lastContextTokens,
             estimatedTokens = estimateContextTokens(),
         )
