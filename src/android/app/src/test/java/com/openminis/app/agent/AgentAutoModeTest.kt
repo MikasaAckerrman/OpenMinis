@@ -138,6 +138,20 @@ class AgentAutoModeTest {
     }
 
     @Test
+    fun `contract carries plan-grounding and mini-agent rules`() {
+        // [T-auto-mode-agents] The user's standing ask: when auto mode is
+        // armed the agent works to completion WITH the plan and the user's
+        // goal in view — and knows when mini-agents are the right tool.
+        val full = AgentAutoMode.continuationPrompt(1).lowercase()
+        assertTrue(full.contains("план из памяти"))
+        assertTrue(full.contains("цель юзера"))
+        assertTrue(full.contains("мини-агенты"))
+        val short = AgentAutoMode.continuationPrompt(2).lowercase()
+        assertTrue(short.contains("план"))
+        assertTrue(short.contains("мини-агенты"))
+    }
+
+    @Test
     fun `replan prompt demands root cause and a different strategy`() {
         val p = AgentAutoMode.replanPrompt(1, listOf("файл не существует: /a.kt"))
         assertTrue(p.contains("REPLAN #1"))
