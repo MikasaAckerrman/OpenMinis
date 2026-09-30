@@ -4240,7 +4240,22 @@ class ChatViewModel(
                     "${com.openminis.app.data.ReasoningElider.DEFAULT_PROTECT_RECENT_USER_TEXT_TURNS} user-text turns)",
             )
         }
-        return elided.messages
+        // [T-tool-history-compression] Old tool results keep re-uploading in
+        // full between compactions (PostAnchorPrune is an EMERGENCY valve —
+        // it only fires past the byte threshold, and then DROPS pairs).
+        // Trim the OLD bodies to a head budget: the paired tool_use (what
+        // ran) is untouched, the model keeps the first lines of the output
+        // (where the signal lives). Protected tail = the elider's fresh tier.
+        val compressed = com.openminis.app.data.ToolResultCompressor.compress(elided.messages)
+        if (compressed.compressedCount > 0) {
+            AppLogger.info(
+                TAG,
+                "[ToolCompress] head-trimmed ${compressed.compressedCount} old tool results, " +
+                    "${compressed.charsSaved} chars kept off the wire (head=" +
+                    "${com.openminis.app.data.ToolResultCompressor.DEFAULT_HEAD_CHARS})",
+            )
+        }
+        return compressed.messages
     }
 
     private fun effectiveAgentHistoryBase(verbose: Boolean): List<LLMMessage> {
