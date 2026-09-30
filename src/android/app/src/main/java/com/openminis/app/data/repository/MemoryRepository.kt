@@ -18,6 +18,43 @@ import java.util.Locale
 class MemoryRepository(private val memoryDir: File) {
 
     /**
+     * [T-memory-stat-cache] readText()+lines() per call — getMemory and
+     * loadRecentDailyMemoryFragment ran on EVERY system-prompt build (per
+     * send/retry/rerun), re-reading and re-splitting all memory files.
+     * Files change only via memory writes; stat (length+mtime) detects
+     * that in two syscalls, so the cached text/lines/lowercased lines are
+     * correct-by-construction: any change misses and re-reads.
+     */
+    private class FileText(
+        val len: Long,
+        val mtime: Long,
+        val text: String,
+        val lines: List<String>,
+        val lowerLines: List<String>,
+    )
+
+    private val fileCache = HashMap<String, FileText>()
+
+    private fun cachedFile(file: File): FileText? {
+        val len = file.length()
+        if (len <= 0L) return null
+        val mtime = file.lastModified()
+        val key = file.absolutePath
+        val hit = fileCache[key]
+        if (hit != null && hit.len == len && hit.mtime == mtime) return hit
+        val text = try { file.readText() } catch (_: Exception) { return null }
+        if (text.isEmpty()) return null
+        val entry = FileText(
+            len, mtime, text, text.lines(),
+            // lowercasing never creates/removes newlines, so the line
+            // indices stay aligned with [lines].
+            text.lowercase().lines(),
+        )
+        fileCache[key] = entry
+        return entry
+    }
+
+    /**
      * [T-parallel-write-contract] The daily log's writers are now MANY:
      * parallel subagent workers, the auto-mistake capture, the main chat —
      * all funneling into one read-modify-write per file. Unserialized, two
@@ -164,13 +201,14 @@ class MemoryRepository(private val memoryDir: File) {
 
         for ((label, file) in filesToSearch) {
             if (totalLines >= lineCap || byteCapHit) break
-            val content = try { file.readText() } catch (_: Exception) { continue }
+            val cached = cachedFile(file) ?: continue
+            val content = cached.text
             if (content.isEmpty()) continue
             val budget = lineCap - totalLines
 
             val entry: String? = if (keywordList.isEmpty()) {
                 // Return file preview
-                val lines = content.lines()
+                val lines = cached.lines
                 val take = minOf(lines.size, budget)
                 val preview = lines.take(take).joinToString("\n")
                 val truncated = if (lines.size > take) " (showing first $take of ${lines.size} lines)" else ""
@@ -179,16 +217,25 @@ class MemoryRepository(private val memoryDir: File) {
                 "[$label$truncated]\n$preview"
             } else {
                 // Keyword search with ±2 context window
-                val lines = content.lines()
+                val lines = cached.lines
                 val matchedRanges = mutableListOf<IntRange>()
 
                 for (i in lines.indices) {
                     val windowStart = maxOf(0, i - 2)
                     val windowEnd = minOf(lines.size - 1, i + 2)
-                    val windowText = lines.subList(windowStart, windowEnd + 1)
-                        .joinToString(" ").lowercase()
-
-                    if (keywordList.all { windowText.contains(it) }) {
+                    // [T-memory-zero-alloc-window] The old scan built a
+                    // joined+lowercased 5-line window STRING per line —
+                    // thousands of throwaway allocations over the full
+                    // memory corpus on every system-prompt build.
+                    // Keywords are whitespace-split (single words, never
+                    // contain a space), so a keyword cannot straddle a
+                    // line boundary of the joined text — per-line
+                    // contains() over pre-lowercased lines is semantically
+                    // identical with zero allocation.
+                    if (keywordList.all { kw ->
+                            (windowStart..windowEnd).any { li -> cached.lowerLines[li].contains(kw) }
+                        }
+                    ) {
                         matchedRanges.add(windowStart..windowEnd)
                     }
                 }
@@ -391,7 +438,7 @@ class MemoryRepository(private val memoryDir: File) {
             val file = File(memoryDir, "$dateStr.md")
 
             if (file.exists()) {
-                val content = try { file.readText() } catch (_: Exception) { "" }
+                val content = cachedFile(file)?.text ?: ""
                 if (content.isNotEmpty()) {
                     val perFileCap = minOf(MAX_INJECT_CHARS_PER_FILE, remaining)
                     if (perFileCap < MIN_USEFUL_FILE_CHARS) {
@@ -401,7 +448,8 @@ class MemoryRepository(private val memoryDir: File) {
                         dayOffset++
                         continue
                     }
-                    val lines = content.lines()
+                    // [T-memory-stat-cache] route through the stat cache too.
+                    val lines = cachedFile(file)?.lines ?: emptyList()
                     // Line cap first, then char cap at a line boundary.
                     val sb = StringBuilder()
                     var usedLines = 0
