@@ -36,14 +36,29 @@ import java.net.Socket
 object SupermemoryAutostart {
     private const val TAG = "Minis.SupermemoryAuto"
     private const val PORT = 6767
+    // [T-fg-boot-niced] The server boot is 10-26s of CPU. Un-niced, it
+    // competes with the UI threads exactly when the user returns to the
+    // app (the measured "выхожу в фон и захожу — очень сильно пролагивает").
+    // nice -n 10: the Node process still boots, but the UI/renderer cores
+    // always win scheduling — the boot may stretch slightly, the frames
+    // never pay for it.
     private const val BOOT_CMD =
-        "nohup sh /var/minis/shared/supermemory/run.sh >/tmp/sm_autostart.log 2>&1 & echo boot_kick"
+        "nohup nice -n 10 sh /var/minis/shared/supermemory/run.sh >/tmp/sm_autostart.log 2>&1 & echo boot_kick"
     private const val STOP_CMD =
         "sh /var/minis/shared/supermemory/run.sh stop >/tmp/sm_stop.log 2>&1; echo stop_kick"
     private const val SYSTEM_SESSION = "system"
 
     /** [T-supermemory-stop-grace] See stopIfNeeded. */
     private const val STOP_GRACE_MS = 30_000L
+
+    /**
+     * [T-fg-boot-lag] Delay before a FOREGROUND-triggered boot check.
+     * The resume window (activity relayout, chat recomposition, stream
+     * reconnection) owns the first ~4s of CPU; the server is not needed
+     * until the user actually SENDS (the bridge fails fast via the
+     * breaker + 600ms budget when the server is down). 0 for onCreate.
+     */
+    private const val FG_BOOT_DELAY_MS = 4_000L
 
     /**
      * [T-supermemory-fg-heal] At most one boot kick IN FLIGHT — the doc's
@@ -58,8 +73,15 @@ object SupermemoryAutostart {
      */
     private val bootKickInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
 
-    /** Call from MinisApp.onCreate AND on foreground returns. Non-blocking. */
-    fun bootIfNeeded(scope: CoroutineScope = CoroutineScope(Dispatchers.IO)) {        scope.launch {
+    /** Call from MinisApp.onCreate AND on foreground returns. Non-blocking.
+     *  [T-fg-boot-lag] delayMs: pass FG_BOOT_DELAY_MS from the foreground
+     *  call site so the boot work starts after the resume window settles;
+     *  0 (default) for onCreate. */
+    fun bootIfNeeded(
+        scope: CoroutineScope = CoroutineScope(Dispatchers.IO),
+        delayMs: Long = 0L,
+    ) {        scope.launch {
+            if (delayMs > 0) delay(delayMs)
             if (portOpen()) {
                 AppLogger.info(TAG, "server already up — no boot needed")
                 return@launch

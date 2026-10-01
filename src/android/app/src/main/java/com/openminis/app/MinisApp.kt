@@ -687,7 +687,16 @@ class MinisApp : Application(), ImageLoaderFactory {
                     // open → no-op (one cheap TCP probe); port down → kick
                     // run.sh → probe loop → onServerUp resets the breaker.
                     // Same self-heal pattern the command path already has.
-                    com.openminis.app.memory.SupermemoryAutostart.bootIfNeeded()
+                    // [T-fg-boot-lag] The heal stays, but DELAYED: the
+                    // resume window (relayout + recomposition + stream
+                    // reconnect) owns the first seconds of CPU; the server
+                    // only matters when the user sends (fast-fail bridge
+                    // until then). Measured: un-delayed kicks booted at
+                    // the exact return moment, 10-26s of CPU jank.
+                    com.openminis.app.memory.SupermemoryAutostart.bootIfNeeded(
+                        delayMs =
+                            com.openminis.app.memory.SupermemoryAutostart.FG_BOOT_DELAY_MS,
+                    )
                     com.openminis.app.logging.AppLogger.info(
                         "BgDiag",
                         "app -> FOREGROUND, active sessions=" +
