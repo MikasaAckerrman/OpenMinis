@@ -14920,6 +14920,9 @@ class ChatViewModel(
     }
 
     private fun buildSystemPrompt(): String? {
+        val tPromptNs = System.nanoTime()
+        var tRoleMs = 0L; var tRelevantMs = 0L; var tSmMs = 0L; var tDailyMs = 0L
+        fun ms(since: Long) = (System.nanoTime() - since) / 1_000_000
         // [T-standalone-first] A graph worker's prompt REPLACES everything
         // below — but the fragment builds it skips (memory keyword search =
         // disk, supermemory = a LOCAL HTTP ROUND-TRIP, daily log read, skills
@@ -14927,8 +14930,10 @@ class ChatViewModel(
         // Jank episode 00:05:30 / 00:07:43: 440-467ms of main-thread silence
         // between AgentRoute and streamJob ENTER — exactly these builds.
         val workerSessionIdEarly = realSessionId.ifEmpty { sessionId }
+        val tRoleNs = System.nanoTime()
         val rolePromptEarly = com.openminis.app.tools.AgentSystemPromptStore
             .promptFor(workerSessionIdEarly)
+        tRoleMs = ms(tRoleNs)
         if (rolePromptEarly != null && com.openminis.app.tools.AgentSystemPromptStore
                 .isStandalone(workerSessionIdEarly)
         ) {
@@ -15151,6 +15156,7 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         // Uses the last user message from agentHistory (already in memory,
         // no DB read) — for every send/retry/rerun path the turn's user
         // message is present there by the time the prompt is built.
+        val tRelevantNs = System.nanoTime()
         val relevantMemoryFragment = if (memoryOn) runCatching {
             val lastUserText = agentHistory.lastOrNull {
                 it.role == LLMMessage.Role.USER && it.content.isNotBlank()
@@ -15160,12 +15166,14 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                 ?.takeIf { it.isNotBlank() && !it.startsWith("No memory") }
                 ?.let { "Relevant memories (keyword-matched to this message):\n$it" }
         }.getOrNull() else null
+        tRelevantMs = ms(tRelevantNs)
         // [T-supermemory] Associative tier ABOVE keyword matching: the local
         // supermemory server (semantic search over everything the distiller
         // pushed). Degrades to null silently — server down / empty / slow
         // means this tier simply contributes nothing; the keyword tier and
         // daily logs above already cover the essentials. 3.5s bound keeps a
         // dead server from stalling every turn start.
+        val tSmNs = System.nanoTime()
         val supermemoryFragment = if (memoryOn) runCatching {
             val lastUserText = agentHistory.lastOrNull {
                 it.role == LLMMessage.Role.USER && it.content.isNotBlank()
@@ -15174,7 +15182,14 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
             else com.openminis.app.memory.SupermemoryBridge.search(lastUserText)
                 .let { com.openminis.app.memory.SupermemoryBridge.buildInjection(it) }
         }.getOrNull() else null
+        tSmMs = ms(tSmNs)
+        val tDailyNs = System.nanoTime()
         val dailyMemoryFragment = if (memoryOn) memoryRepository?.loadRecentDailyMemoryFragment(memoryInjectBudget) else null
+        tDailyMs = ms(tDailyNs)
+        com.openminis.app.logging.AppLogger.info(
+            "PromptBuild",
+            "[PromptBuild] totalMs=${ms(tPromptNs)} roleMs=$tRoleMs relevantMs=$tRelevantMs smMs=$tSmMs dailyMs=$tDailyMs",
+        )
 
         // [T-env-names-injection] Inject the NAMES (never the values) of the
         // env vars the user has configured, so the agent stops asking the user
