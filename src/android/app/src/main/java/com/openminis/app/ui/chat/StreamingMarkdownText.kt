@@ -1098,14 +1098,6 @@ private const val COLD_PARSE_PREVIEW_CHARS = 4_000
  * viewport rows first compose.
  */
 @Composable
-/**
- * [T-android-scrollprewarm] Cache-hit probe for the scroll-ahead prewarmer
- * in ChatScreen: true when the block parse for [raw] is already warm (hit
- * path stays synchronous; only misses are worth prewarming).
- */
-internal fun markdownBlocksWarm(raw: String): Boolean =
-    MarkdownParseCaches.cachedBlocks(raw) != null
-
 internal fun rememberMarkdownPrewarmer(): (List<String>) -> Unit {
     val mdColors = currentMdColors()
     return remember(mdColors) {
@@ -1116,6 +1108,14 @@ internal fun rememberMarkdownPrewarmer(): (List<String>) -> Unit {
         }
     }
 }
+
+/**
+ * [T-android-scrollprewarm] Cache-hit probe for the scroll-ahead prewarmer
+ * in ChatScreen: true when the block parse for [raw] is already warm (hit
+ * path stays synchronous; only misses are worth prewarming).
+ */
+internal fun markdownBlocksWarm(raw: String): Boolean =
+    MarkdownParseCaches.cachedBlocks(raw) != null
 
 /**
  * Synchronous variant of [parseMarkdownBlocks] used for frozen blocks
