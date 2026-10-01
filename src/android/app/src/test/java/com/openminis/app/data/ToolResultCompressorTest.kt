@@ -21,6 +21,22 @@ class ToolResultCompressorTest {
         contentParts = parts.toList(),
     )
 
+    /**
+     * A REAL tool round: tool_result part + the text part the runtime
+     * attaches (system reminders etc). Only rounds carrying text count
+     * as "user-text turns" in the shared protected-tail walk (same
+     * convention as PostAnchorPrune / ReasoningElider) — bare tool-only
+     * rounds are compressible history. The tests encode THAT contract.
+     */
+    private fun realRound(id: String, content: String) = LLMMessage(
+        role = LLMMessage.Role.USER,
+        content = "",
+        contentParts = listOf(
+            AgentContentPart.Text(text = "[round $id]"),
+            toolResult(id, content),
+        ),
+    )
+
     private fun assistant(text: String = "ok") = LLMMessage(
         role = LLMMessage.Role.ASSISTANT,
         content = text,
@@ -30,13 +46,17 @@ class ToolResultCompressorTest {
 
     @Test
     fun `old tool result is head-trimmed, protected tail verbatim`() {
-        // 4 user turns with tool results; default protect = 3 → the first
-        // turn's result is old (compressed), the last 3 stay verbatim.
+        // A bare tool-only round (no text part — e.g. a legacy sync) counts
+        // as OLD history; the following real rounds (text + tool_result)
+        // are the protected 3-turn tail.
         val msgs = listOf(
-            userTurn(toolResult("t1", big())),
-            assistant(), userTurn(toolResult("t2", big())),
-            assistant(), userTurn(toolResult("t3", big())),
-            assistant(), userTurn(toolResult("t4", big())),
+            userTurn(toolResult("t0", big())),      // old: no text part
+            assistant(),
+            realRound("t1", big()),
+            assistant(),
+            realRound("t2", big()),
+            assistant(),
+            realRound("t3", big()),
         )
         val r = ToolResultCompressor.compress(msgs)
         assertEquals(1, r.compressedCount)
@@ -45,9 +65,10 @@ class ToolResultCompressorTest {
         // Head + explicit "+N chars compressed" marker.
         assertTrue(oldPart.content.startsWith("O".repeat(ToolResultCompressor.DEFAULT_HEAD_CHARS)))
         assertTrue(oldPart.content.contains("+${big().length - ToolResultCompressor.DEFAULT_HEAD_CHARS} chars compressed"))
-        // Protected: byte-identical objects (no copy).
-        assertSame(msgs[1], r.messages[1])
-        val kept = r.messages[5].contentParts[0] as AgentContentPart.ToolResult
+        // Protected: the tool_result inside a REAL round stays verbatim.
+        val kept = r.messages[6].contentParts
+            .filterIsInstance<AgentContentPart.ToolResult>()
+            .first()
         assertEquals(big(), kept.content)
         assertEquals(msgs.size, r.messages.size)
     }
@@ -66,7 +87,10 @@ class ToolResultCompressorTest {
 
     @Test
     fun `all protected - identity result`() {
-        val msgs = listOf(assistant(), userTurn(toolResult("t1", big())))
+        // A single REAL round (text + tool result) = the last user-text
+        // turn → everything after it is protected; the assistant head has
+        // no parts → nothing to compress, identity result.
+        val msgs = listOf(assistant(), realRound("t1", big()))
         val r = ToolResultCompressor.compress(msgs)
         assertEquals(0, r.compressedCount)
         assertSame(msgs, r.messages)
