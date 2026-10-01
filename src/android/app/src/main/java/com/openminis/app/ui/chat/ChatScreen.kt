@@ -3569,6 +3569,7 @@ fun ChatScreen(
                                                     }
                                                 }
                                             }
+                                        }
                                     } else {
                                         Modifier
                                     },
