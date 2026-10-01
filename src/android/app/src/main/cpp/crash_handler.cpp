@@ -179,6 +179,34 @@ static void crash_signal_handler(int sig, siginfo_t* info, void* ctx) {
             written += w;
         }
     }
+    // [T-native-crash-thread] The crashing THREAD's name — the single
+    // best discriminator of the subsystem (OkHttp worker / pty bridge /
+    // proot / coroutine dispatcher / unnamed pthread). All three SIGABRTs
+    // of 01.10 died in worker threads we could not name.
+    {
+        char comm_path[80];
+        snprintf(comm_path, sizeof(comm_path), "/proc/self/task/%d/comm",
+                 (int)syscall(SYS_gettid));
+        int cfd = open(comm_path, O_RDONLY);
+        if (cfd >= 0) {
+            char comm[40] = {0};
+            ssize_t r = read(cfd, comm, sizeof(comm) - 1);
+            close(cfd);
+            if (r > 0) {
+                if (comm[r - 1] == '\n') comm[r - 1] = 0;
+                char tb[80];
+                int tn = snprintf(tb, sizeof(tb), "Thread: %s\n", comm);
+                if (tn > 0) {
+                    ssize_t w2 = 0;
+                    while (w2 < tn) {
+                        ssize_t w = write(fd, tb + w2, tn - w2);
+                        if (w <= 0) break;
+                        w2 += w;
+                    }
+                }
+            }
+        }
+    }
     // [T-native-crash-backtrace] In-process frames of the aborting thread
     // — for OUR handler-caught signals the system tombstone often never
     // exists (the re-raise races debuggerd), so this is the only frame
