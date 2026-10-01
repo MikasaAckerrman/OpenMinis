@@ -2882,29 +2882,62 @@ fun ChatScreen(
                 LaunchedEffect(listState, prewarmMarkdown) {
                     snapshotFlow {
                         val info = listState.layoutInfo
-                        val first = info.visibleItemsInfo.firstOrNull()?.index ?: -1
-                        val last = info.visibleItemsInfo.lastOrNull()?.index ?: -1
-                        val canFwd = listState.canScrollForward
-                        val canBwd = listState.canScrollBackward
-                        Triple(first, last, (canFwd xor canBwd))
-                    }.distinctUntilChanged().collect { (first, last, _) ->
+                        // [T-android-scrollprewarm-index-map] Flat rows are
+                        // identified by KEY, not by LazyColumn index: the
+                        // column also composes structural items
+                        // (__auto_resume_banner__ / __resume_banner__ /
+                        // __turn_timer_strip__ before the rows,
+                        // __load_older_messages__ after) — conditionally.
+                        // Their count shifts with turn state, so any fixed
+                        // index arithmetic would prewarm the WRONG rows.
+                        // Emitting the first/last visible flat-row KEYS also
+                        // makes the collect side race-free: the keys are
+                        // resolved against the CURRENT flatItems, not
+                        // against a stale layout snapshot.
+                        val firstFlat = info.visibleItemsInfo
+                            .firstOrNull { !it.key.toString().startsWith("__") }
+                        val lastFlat = info.visibleItemsInfo
+                            .lastOrNull { !it.key.toString().startsWith("__") }
+                        if (firstFlat == null || lastFlat == null) {
+                            null to null
+                        } else {
+                            firstFlat.key.toString() to lastFlat.key.toString()
+                        }
+                    }.distinctUntilChanged().collect { (firstKey, lastKey) ->
+                        if (firstKey == null || lastKey == null) return@collect
+                        val reversed = flatItems.asReversed()
+                        if (reversed.isEmpty()) return@collect
+                        // Key → position: the visible item's key is the SAME
+                        // string instance the flat item holds, so the
+                        // equality short-circuits on references; one O(n)
+                        // scan per window change only (not per frame).
+                        val first = reversed.indexOfFirst { it.key == firstKey }
+                        val last = reversed.indexOfFirst { it.key == lastKey }
                         if (first < 0 || last < 0) return@collect
                         // Window ahead: 8 rows / 56K chars in BOTH scroll
                         // directions (a fling direction is not always known
                         // at emission time; both directions are cheap).
-                        val lo = (first - 8).coerceAtLeast(0)
-                        val hi = (last + 8).coerceAtMost((listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
-                        if (lo > hi) return@collect
-                        val reversed = flatItems.asReversed()
                         val raws = mutableListOf<String>()
                         var charSum = 0
-                        for (idx in lo..hi) {
-                            if (charSum >= 56_000) break
-                            val raw = (reversed.getOrNull(idx) as? FlatChatItem.AssistantMarkdownBlock)?.rawText ?: continue
-                            if (!com.openminis.app.ui.chat.markdownBlocksWarm(raw)) {
+                        var idx = first
+                        while (idx <= last + 8 && idx < reversed.size && charSum < 56_000) {
+                            val raw = (reversed[idx] as? FlatChatItem.AssistantMarkdownBlock)?.rawText
+                            if (raw != null && !com.openminis.app.ui.chat.markdownBlocksWarm(raw)) {
                                 raws.add(raw)
                                 charSum += raw.length
                             }
+                            idx++
+                        }
+                        var backIdx = first - 1
+                        var backRows = 0
+                        while (backIdx >= 0 && backRows < 8 && charSum < 56_000) {
+                            val raw = (reversed[backIdx] as? FlatChatItem.AssistantMarkdownBlock)?.rawText
+                            if (raw != null && !com.openminis.app.ui.chat.markdownBlocksWarm(raw)) {
+                                raws.add(raw)
+                                charSum += raw.length
+                            }
+                            backIdx--
+                            backRows++
                         }
                         if (raws.isNotEmpty()) {
                             scrollPrewarmScope.launch { prewarmMarkdown(raws) }
