@@ -58,7 +58,7 @@ object SupermemoryAutostart {
      * until the user actually SENDS (the bridge fails fast via the
      * breaker + 600ms budget when the server is down). 0 for onCreate.
      */
-    private const val FG_BOOT_DELAY_MS = 4_000L
+    internal const val FG_BOOT_DELAY_MS = 4_000L
 
     /**
      * [T-supermemory-fg-heal] At most one boot kick IN FLIGHT — the doc's
