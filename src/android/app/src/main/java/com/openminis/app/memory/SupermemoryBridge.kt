@@ -144,7 +144,11 @@ object SupermemoryBridge {
     }
 
     /** Associative search; empty list on any failure (server down etc). */
-    fun search(query: String, port: Int = DEFAULT_PORT): List<Hit> {
+    fun search(
+        query: String,
+        port: Int = DEFAULT_PORT,
+        timeoutMs: Int = TIMEOUT_MS,
+    ): List<Hit> {
         if (query.isBlank()) return emptyList()
         val now = System.currentTimeMillis()
         // Fast path: cached answer for the same query within TTL.
@@ -159,13 +163,12 @@ object SupermemoryBridge {
             // live): {"results":[{"documentId","score","title","chunks":
             // [{"content","score","isRelevant","position"}]}],"timing","total"}
             // — chunks are NESTED inside each result, one chunk per hit.
-            val conn = (URL("http://127.0.0.1:$port/v3/search").openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                connectTimeout = TIMEOUT_MS
-                readTimeout = TIMEOUT_MS
-                doOutput = true
-                setRequestProperty("Content-Type", "application/json")
-            }
+            val conn = URL("http://127.0.0.1:$port/v3/search").openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.connectTimeout = timeoutMs
+            conn.readTimeout = timeoutMs
+            conn.doOutput = true
+            conn.setRequestProperty("Content-Type", "application/json")
             conn.outputStream.use {
                 it.write(JSONObject().put("q", query.take(400)).toString().toByteArray())
             }

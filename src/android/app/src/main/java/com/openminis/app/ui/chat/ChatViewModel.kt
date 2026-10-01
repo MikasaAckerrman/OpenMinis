@@ -15179,10 +15179,17 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                 it.role == LLMMessage.Role.USER && it.content.isNotBlank()
             }?.content
             if (lastUserText.isNullOrBlank()) null
-            else kotlinx.coroutines.withTimeoutOrNull(600L) {
-                com.openminis.app.memory.SupermemoryBridge.search(lastUserText)
-                    .let { com.openminis.app.memory.SupermemoryBridge.buildInjection(it) }
-            }
+            else com.openminis.app.memory.SupermemoryBridge.search(
+                lastUserText, timeoutMs = 600,
+            ).let { com.openminis.app.memory.SupermemoryBridge.buildInjection(it) }
+                // [T-prompt-latency] Budget the supermemory tier. Measured
+                // (01.10, on-device chronometer): smMs=2761 of totalMs=2864
+                // — the tap→work lag IS this search when the local server
+                // is slow (thermally throttled CPU). 600ms HTTP budget: a
+                // fast server answers well within it (no change), a slow
+                // one times out → runCatching → null fragment for THIS
+                // send — the prompt still carries keyword-memory + daily
+                // (both single-digit ms); the next send retries.
                 // [T-prompt-latency] Budget the supermemory tier. Measured
                 // (01.10, on-device chronometer): smMs=2761 of totalMs=2864
                 // — the tap→work lag IS this search when the local server
