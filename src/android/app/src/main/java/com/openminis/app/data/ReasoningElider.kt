@@ -60,6 +60,20 @@ object ReasoningElider {
     private const val STUB = "[reasoning elided]"
     private const val ELLIPSIS = "…[elided]"
 
+    /**
+     * [T-elider-memo] Per-message memo: within a turn the elider runs on
+     * EVERY request build (measured 01.10: three `ReasoningElide` logs per
+     * single retry — ~350ms × 3 on a 7470-row session, re-stubbing the
+     * SAME 275 blocks / 650KB each time), and between tool rounds the
+     * history prefix instances survive verbatim. The transform is pure
+     * (message + tier → message), so the transformed instances are
+     * memoized by identity. Weak keys: entries die with the history
+     * itself. Synchronized map — the elider runs on IO dispatchers.
+     */
+    private class TierMemo(var stub: LLMMessage? = null, var warm: LLMMessage? = null)
+    private val memo: MutableMap<LLMMessage, TierMemo> =
+        java.util.Collections.synchronizedMap(java.util.WeakHashMap<LLMMessage, TierMemo>())
+
     data class Result(
         val messages: List<LLMMessage>,
         val elidedCount: Int,
@@ -127,15 +141,23 @@ object ReasoningElider {
                     idx >= protectedFromIdx -> out.add(m)
                     idx >= warmFromIdx -> {
                         // Warm tier: keep the head (the plan statement),
-                        // drop the dead middle.
-                        val head = rc.take(warmHeadChars)
-                        out.add(m.copy(reasoningContent = head + ELLIPSIS))
+                        // drop the dead middle. Memoized per identity+tier.
+                        val rc2 = rc
+                        val entry = memo.getOrPut(m) { TierMemo() }
+                        val transformed = entry.warm ?: m.copy(
+                            reasoningContent = rc2.take(warmHeadChars) + ELLIPSIS
+                        ).also { entry.warm = it }
+                        out.add(transformed)
                         elided += 1
-                        saved += rc.length - head.length - ELLIPSIS.length
+                        saved += rc2.length - warmHeadChars - ELLIPSIS.length
                         changed = true
                     }
                     else -> {
-                        out.add(m.copy(reasoningContent = STUB))
+                        val entry = memo.getOrPut(m) { TierMemo() }
+                        val transformed = entry.stub ?: m.copy(
+                            reasoningContent = STUB
+                        ).also { entry.stub = it }
+                        out.add(transformed)
                         elided += 1
                         saved += rc.length - STUB.length
                         changed = true

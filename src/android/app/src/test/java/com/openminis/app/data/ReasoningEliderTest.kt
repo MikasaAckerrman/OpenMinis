@@ -100,6 +100,31 @@ class ReasoningEliderTest {
     }
 
     @Test
+    fun `memo - same instances elided twice, transformed result is reused`() {
+        // [T-elider-memo] The elider runs per request build on the SAME
+        // history instances (3x per retry measured on device). The second
+        // pass must return the memoized transformed instances (identity,
+        // not equality) and report the same counters.
+        val msgs = listOf(
+            user(), assistant(big()),
+            user(), assistant(big()),
+            user(), assistant(big()),
+            user(), assistant(big()),
+        )
+        val r1 = ReasoningElider.elide(msgs, protectRecentUserTextTurns = 2)
+        val r2 = ReasoningElider.elide(msgs, protectRecentUserTextTurns = 2)
+        assertEquals(r1.elidedCount, r2.elidedCount)
+        assertEquals(r1.charsSaved, r2.charsSaved)
+        assertEquals(r1.messages, r2.messages)
+        // Identity: the stubbed/warm instances are the SAME objects.
+        for (i in msgs.indices) {
+            if (r1.messages[i] !== msgs[i]) {
+                assertSame(r1.messages[i], r2.messages[i])
+            }
+        }
+    }
+
+    @Test
     fun `all protected - nothing elided`() {
         // [user, asst, user, asst] with protect=2: walking back from the
         // end, the 2nd protected user turn is the FIRST element →
