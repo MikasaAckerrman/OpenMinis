@@ -1288,17 +1288,6 @@ fun ChatScreen(
     var returnToOffset by remember { mutableStateOf(0) }
     var returnToTs by remember { mutableStateOf(0L) }
 
-    // [T-android-scroll-fab-reversed] TEMP diagnostic — capture BOTH FABs'
-    // gates so we can verify the matrix (bottom=none, middle=both, top=down
-    // only) and why the down-FAB is missing at the top. Remove after fix.
-    LaunchedEffect(listState) {
-        snapshotFlow {
-            val up = isFarFromTop.value && isFarFromBottom.value && messages.isNotEmpty()
-            val down = userScrolledAway && contentOverflows.value && messages.isNotEmpty()
-            "FABs up=$up down=$down | farTop=${isFarFromTop.value} farBottom=${isFarFromBottom.value} scrolledAway=$userScrolledAway overflow=${contentOverflows.value} canFwd=${listState.canScrollForward} canBwd=${listState.canScrollBackward}"
-        }.collect { AppLogger.debug("ScrollFAB2", it) }
-    }
-
     // T-drag-send-queue: shared send-or-enqueue handler used by BOTH the
     // send-button tap and the swipe-up-to-send drag. Routes through
     // `viewModel.sendMessage(...)` which internally dispatches to
@@ -3533,16 +3522,28 @@ fun ChatScreen(
                                 .then(
                                     if (isNewestItem) {
                                         Modifier.onPlaced {
-                                            com.openminis.app.diagnostics.PerfLongCtx.step(
-                                                sessionId,
-                                                "lazyColumn.firstItem.placed",
-                                                "size=${it.size.width}x${it.size.height}",
-                                            )
-                                            // [T-android-jank-diag-logging]
-                                            // One quotable line per session
-                                            // open, after the first frame's
-                                            // newest row has laid out.
+                                            // [T-android-jank-diag-logging] This
+                                            // onPlaced re-fires on EVERY relayout
+                                            // of the newest row — every stream
+                                            // tick, every scroll — and each
+                                            // PerfLongCtx.step pays Date + two
+                                            // SimpleDateFormat passes + logcat +
+                                            // the tailer + a file write. Measured
+                                            // in the wild: 30 lines / 268ms of
+                                            // scroll (01.10, vc78). The marker's
+                                            // purpose is the COLD-OPEN first
+                                            // layout only → fire it until the
+                                            // summary lands, then go silent.
                                             if (!coldOpenSummaryEmitted) {
+                                                com.openminis.app.diagnostics.PerfLongCtx.step(
+                                                    sessionId,
+                                                    "lazyColumn.firstItem.placed",
+                                                    "size=${it.size.width}x${it.size.height}",
+                                                )
+                                                // [T-android-jank-diag-logging]
+                                                // One quotable line per session
+                                                // open, after the first frame's
+                                                // newest row has laid out.
                                                 coldOpenSummaryEmitted = true
                                                 val totalChars = messages.sumOf { m -> m.content.length }
                                                 val maxChars = messages.maxOfOrNull { m -> m.content.length } ?: 0
@@ -3568,7 +3569,6 @@ fun ChatScreen(
                                                     }
                                                 }
                                             }
-                                        }
                                     } else {
                                         Modifier
                                     },
