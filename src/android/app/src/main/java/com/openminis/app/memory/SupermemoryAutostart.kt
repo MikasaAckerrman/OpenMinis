@@ -76,12 +76,20 @@ object SupermemoryAutostart {
     /** Call from MinisApp.onCreate AND on foreground returns. Non-blocking.
      *  [T-fg-boot-lag] delayMs: pass FG_BOOT_DELAY_MS from the foreground
      *  call site so the boot work starts after the resume window settles;
-     *  0 (default) for onCreate. */
+     *  0 (default) for onCreate.
+     *  [T-fg-boot-lag] onlyIf: re-checked AFTER the delay — a user who
+     *  backgrounded again during the wait must not pay a 10s background
+     *  boot the app then has to stop at the next grace expiry. */
     fun bootIfNeeded(
         scope: CoroutineScope = CoroutineScope(Dispatchers.IO),
         delayMs: Long = 0L,
+        onlyIf: () -> Boolean = { true },
     ) {        scope.launch {
             if (delayMs > 0) delay(delayMs)
+            if (!onlyIf()) {
+                AppLogger.info(TAG, "app backgrounded during boot delay — skipping kick")
+                return@launch
+            }
             if (portOpen()) {
                 AppLogger.info(TAG, "server already up — no boot needed")
                 return@launch

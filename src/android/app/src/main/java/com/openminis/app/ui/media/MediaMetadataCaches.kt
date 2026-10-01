@@ -20,7 +20,13 @@ object MediaMetadataCaches {
     private val durationCache: MutableMap<String, Long> =
         java.util.Collections.synchronizedMap(HashMap<String, Long>())
 
-    /** Duration in ms; 0 when unreadable. Negative results are cached too. */
+    /**
+     * Duration in ms; 0 when unreadable. ONLY successful reads are
+     * cached — a failed probe (file still being written during a
+     * stream, transient IO) must retry on the next composition:
+     * caching the failure would pin the tile at 0:00 forever, even
+     * after the file completes.
+     */
     suspend fun durationMs(file: File): Long = withContext(Dispatchers.IO) {
         val key = file.absolutePath
         durationCache[key]?.let { return@withContext it }
@@ -36,7 +42,7 @@ object MediaMetadataCaches {
         } catch (_: Throwable) {
             0L
         }
-        durationCache[key] = d
+        if (d > 0L) durationCache[key] = d
         d
     }
 }

@@ -696,6 +696,7 @@ class MinisApp : Application(), ImageLoaderFactory {
                     com.openminis.app.memory.SupermemoryAutostart.bootIfNeeded(
                         delayMs =
                             com.openminis.app.memory.SupermemoryAutostart.FG_BOOT_DELAY_MS,
+                        onlyIf = { isAppForeground() },
                     )
                     com.openminis.app.logging.AppLogger.info(
                         "BgDiag",
