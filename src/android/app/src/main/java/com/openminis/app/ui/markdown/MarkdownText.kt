@@ -858,19 +858,37 @@ private fun MinisAudioBlock(block: MarkdownParser.Block.Audio) {
     val file = remember(block.url) { resolveMediaFile(block.url) }
     val filename = remember(block.url) { filenameFromUrl(block.url) }
 
-    // Dedicated MediaPlayer per card. Released on DisposableEffect dispose.
-    val player = remember(file?.absolutePath) {
-        if (file == null) null else try {
-            MediaPlayer().apply { setDataSource(file.absolutePath); prepare() }
-        } catch (_: Throwable) { null }
+    // Dedicated MediaPlayer per card — created LAZILY on first play tap
+    // ([T-media-lazy-player]; see MediaMetadataCaches for the forensic
+    // rationale). Duration via the off-main cached Retriever probe.
+    var durationMs by remember(file?.absolutePath) { mutableStateOf(0L) }
+    var player by remember(file?.absolutePath) { mutableStateOf<MediaPlayer?>(null) }
+    LaunchedEffect(file) {
+        val f = file ?: return@LaunchedEffect
+        durationMs = com.openminis.app.ui.media.MediaMetadataCaches.durationMs(f)
     }
-    DisposableEffect(player) {
-        onDispose { try { player?.release() } catch (_: Throwable) {} }
+    DisposableEffect(file?.absolutePath) {
+        onDispose {
+            try { player?.release() } catch (_: Throwable) {}
+            player = null
+        }
     }
-
     var isPlaying by remember { mutableStateOf(false) }
     var positionMs by remember { mutableStateOf(0) }
-    val durationMs = player?.duration ?: 0
+    fun ensurePlayer(): MediaPlayer? {
+        player?.let { return it }
+        val f = file ?: return null
+        val p = try {
+            MediaPlayer().apply { setDataSource(f.absolutePath); prepare() }
+        } catch (_: Throwable) { null } ?: return null
+        p.setOnCompletionListener {
+            isPlaying = false
+            positionMs = 0
+            try { p.seekTo(0) } catch (_: Throwable) {}
+        }
+        player = p
+        return p
+    }
 
     // Poll position while playing to drive the progress bar.
     LaunchedEffect(isPlaying) {
@@ -879,15 +897,6 @@ private fun MinisAudioBlock(block: MarkdownParser.Block.Audio) {
             if (!player.isPlaying) { isPlaying = false; break }
             delay(200)
         }
-    }
-    DisposableEffect(player) {
-        val listener = MediaPlayer.OnCompletionListener {
-            isPlaying = false
-            positionMs = 0
-            try { player?.seekTo(0) } catch (_: Throwable) {}
-        }
-        player?.setOnCompletionListener(listener)
-        onDispose { try { player?.setOnCompletionListener(null) } catch (_: Throwable) {} }
     }
 
     val tint = MaterialTheme.colorScheme.primary
@@ -904,11 +913,16 @@ private fun MinisAudioBlock(block: MarkdownParser.Block.Audio) {
             .background(cardBg)
             .border(0.5.dp, borderColor, RoundedCornerShape(10.dp))
             .clickable(enabled = file != null) {
-                if (player == null) {
+                // [T-media-lazy-player] first tap constructs and starts;
+                // failure falls back to the external open.
+                val p = ensurePlayer()
+                if (p == null) {
                     file?.let { openMediaExternally(context, it, "audio/*") }
+                } else if (isPlaying) {
+                    try { p.pause() } catch (_: Throwable) {}
+                    isPlaying = false
                 } else {
-                    if (isPlaying) { try { player.pause() } catch (_: Throwable) {} ; isPlaying = false }
-                    else { try { player.start(); isPlaying = true } catch (_: Throwable) {} }
+                    try { p.start(); isPlaying = true } catch (_: Throwable) {}
                 }
             }
             .padding(horizontal = 10.dp, vertical = 10.dp),

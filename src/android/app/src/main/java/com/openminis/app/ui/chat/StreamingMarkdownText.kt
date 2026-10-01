@@ -2383,35 +2383,53 @@ private fun RenderMdAudio(block: MdBlock.Audio) {
     val file = remember(block.url, sessionId) { resolveMdMediaFile(context, block.url, sessionId) }
     val filename = remember(block.url) { filenameFromMdUrl(block.url) }
 
-    val player = remember(file?.absolutePath) {
-        if (file == null) null else try {
-            MediaPlayer().apply { setDataSource(file.absolutePath); prepare() }
-        } catch (t: Throwable) {
-            android.util.Log.w("MdStream", "audio prepare failed: ${t.message}")
-            null
-        }
+    // [T-media-lazy-player] NEVER construct a MediaPlayer during tile
+    // composition. The old pattern (MediaPlayer + prepare() in remember)
+    // spun the full native codec pipeline per tile entering the viewport —
+    // scrolling a media-heavy session created codec threads and native
+    // buffers at ~11/s (device forensics 01.10: TIDs 9908/10514 within
+    // 15 min → thread-stack mmap exhaustion → "mmap failed: Out of
+    // memory" → SIGABRT — the frequent crashes). Duration now comes from
+    // a light Retriever probe (off-main, cached per path — a file's
+    // duration never changes); the PLAYER is created only when the user
+    // actually taps play.
+    var durationMs by remember(file?.absolutePath) { mutableStateOf(0L) }
+    var player by remember(file?.absolutePath) { mutableStateOf<MediaPlayer?>(null) }
+    LaunchedEffect(file) {
+        val f = file ?: return@LaunchedEffect
+        durationMs = com.openminis.app.ui.media.MediaMetadataCaches.durationMs(f)
     }
-    DisposableEffect(player) {
-        onDispose { try { player?.release() } catch (_: Throwable) {} }
+    DisposableEffect(file?.absolutePath) {
+        onDispose {
+            try { player?.release() } catch (_: Throwable) {}
+            player = null
+        }
     }
     var isPlaying by remember { mutableStateOf(false) }
     var positionMs by remember { mutableStateOf(0) }
-    val durationMs = player?.duration ?: 0
-
+    fun ensurePlayer(): MediaPlayer? {
+        player?.let { return it }
+        val f = file ?: return null
+        val p = try {
+            MediaPlayer().apply { setDataSource(f.absolutePath); prepare() }
+        } catch (t: Throwable) {
+            android.util.Log.w("MdStream", "audio prepare failed: ${t.message}")
+            null
+        } ?: return null
+        p.setOnCompletionListener {
+            isPlaying = false
+            positionMs = 0
+            try { p.seekTo(0) } catch (_: Throwable) {}
+        }
+        player = p
+        return p
+    }
     LaunchedEffect(isPlaying) {
         while (isPlaying && player != null) {
             positionMs = try { player.currentPosition } catch (_: Throwable) { 0 }
             if (!player.isPlaying) { isPlaying = false; break }
             delay(200)
         }
-    }
-    DisposableEffect(player) {
-        player?.setOnCompletionListener {
-            isPlaying = false
-            positionMs = 0
-            try { player.seekTo(0) } catch (_: Throwable) {}
-        }
-        onDispose { try { player?.setOnCompletionListener(null) } catch (_: Throwable) {} }
     }
 
     val tint = colors.link
@@ -2423,11 +2441,17 @@ private fun RenderMdAudio(block: MdBlock.Audio) {
             .background(colors.inlineCodeBg)
             .border(0.5.dp, colors.tableBorder, RoundedCornerShape(10.dp))
             .clickable(enabled = file != null) {
-                if (player == null) {
+                // [T-media-lazy-player] first tap CONSTRUCTS the player
+                // (and starts); construction failure falls back to the
+                // external open — identical to the old null-player path.
+                val p = ensurePlayer()
+                if (p == null) {
                     file?.let { openMdMediaExternally(context, it, "audio/*") }
+                } else if (isPlaying) {
+                    try { p.pause() } catch (_: Throwable) {}
+                    isPlaying = false
                 } else {
-                    if (isPlaying) { try { player.pause() } catch (_: Throwable) {} ; isPlaying = false }
-                    else { try { player.start(); isPlaying = true } catch (_: Throwable) {} }
+                    try { p.start(); isPlaying = true } catch (_: Throwable) {}
                 }
             }
             .padding(horizontal = 10.dp, vertical = 10.dp),
