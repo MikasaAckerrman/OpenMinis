@@ -269,8 +269,14 @@ object HangDetector {
                 idleFreezeEpisode = !appInForeground()
                 if (idleFreezeEpisode) {
                     // [T-hangdetector-idle-filter] OS freeze of a background
-                    // process: sample once for the record, do NOT count.
-                    writeStallSample("idle-freeze", since, 0)
+                    // process: park, not a hang. The parked thread's stack is
+                    // ALWAYS the same 6 frames (nativePollOnce → Looper) —
+                    // writing 25 of them per episode was pure noise (~100
+                    // entries/day, 50-90KB, burying real hangs in the stall
+                    // log). One compact line keeps the forensic value (when
+                    // the app was frozen, for how long — explains slow
+                    // "resume after background") at ~15x less bytes.
+                    writeStallIdleLine(since)
                     continue
                 }
                 // Counts once per episode + writes the first mid-hang sample.
@@ -284,6 +290,25 @@ object HangDetector {
                 escalation++
                 writeStallSample("mid-hang", since, escalation)
             }
+        }
+    }
+
+    /**
+     * [T-hangdetector-idle-line] Compact record for an OS background-freeze
+     * episode: one line, no stack (the parked stack is always identical).
+     */
+    private fun writeStallIdleLine(durationMs: Long) {
+        val ctx = appContext ?: return
+        val ts = TIMESTAMP_FORMAT.format(Date())
+        val date = DATE_FORMAT.format(Date())
+        try {
+            val dir = File(ctx.filesDir, STALL_LOG_DIR).also { it.mkdirs() }
+            val file = File(dir, "$STALL_LOG_PREFIX$date.log")
+            FileWriter(file, /* append = */ true).use {
+                it.write("IDLE-FREEZE @ $ts (duration ~${durationMs}ms) — background park, not a hang\n")
+            }
+        } catch (t: Throwable) {
+            // Diagnostics must never take the app down.
         }
     }
 
