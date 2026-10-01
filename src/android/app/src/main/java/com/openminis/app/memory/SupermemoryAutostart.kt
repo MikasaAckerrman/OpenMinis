@@ -121,7 +121,12 @@ object SupermemoryAutostart {
      * distillates miss the server until the user next foregrounds Minis.
      * Non-blocking, idempotent (port down → no-op).
      */
-    fun stopIfNeeded(scope: CoroutineScope = CoroutineScope(Dispatchers.IO)) {
+    fun stopIfNeeded(
+        /** [T-supermemory-stop-grace] Live foreground probe — passed as a
+         *  lambda because the state lives on the MinisApp instance. */
+        isForeground: () -> Boolean,
+        scope: CoroutineScope = CoroutineScope(Dispatchers.IO),
+    ) {
         scope.launch {
             // [T-supermemory-stop-grace] A 30s grace before the stop: rapid
             // app switching (messenger <-> Minis, 1-5s hops) used to pay a
@@ -132,7 +137,7 @@ object SupermemoryAutostart {
             // is still stopped — 30s later; the FPS guard's goal is long
             // background sessions, not sub-minute switches.
             delay(STOP_GRACE_MS)
-            if (com.openminis.app.MinisApp.isAppForeground()) {
+            if (isForeground()) {
                 AppLogger.info(TAG, "still foreground after grace — skip stop (rapid switch)")
                 return@launch
             }

@@ -572,7 +572,9 @@ class MinisApp : Application(), ImageLoaderFactory {
             if (!isAppForeground() &&
                 SessionActivityTracker.activeSessions.value.isEmpty()
             ) {
-                com.openminis.app.memory.SupermemoryAutostart.stopIfNeeded()
+                com.openminis.app.memory.SupermemoryAutostart.stopIfNeeded(
+                    isForeground = { isAppForeground() },
+                )
             }
         }
 
@@ -766,7 +768,9 @@ class MinisApp : Application(), ImageLoaderFactory {
                     if (com.openminis.app.service.SessionActivityTracker
                             .activeSessions.value.isEmpty()
                     ) {
-                        com.openminis.app.memory.SupermemoryAutostart.stopIfNeeded()
+                        com.openminis.app.memory.SupermemoryAutostart.stopIfNeeded(
+                    isForeground = { isAppForeground() },
+                )
                     }
                     // [T-android-config-confirm-timeout] The user switched away
                     // while a config-confirm dialog may still be showing — nudge
