@@ -44,6 +44,8 @@ import androidx.compose.material.icons.filled.VideoFile
 import androidx.compose.material.icons.automirrored.filled.Article
 import androidx.compose.material.icons.automirrored.filled.CallSplit
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -2861,6 +2863,54 @@ fun ChatScreen(
                 // flatten effect below to warm the parse caches for the
                 // viewport-candidate fragments off-main.
                 val prewarmMarkdown = rememberMarkdownPrewarmer()
+                // [T-android-scrollprewarm] History scroll-in prewarm. The
+                // cold-open prewarm below warms only the bottom 16 rows;
+                // every OLD row scrolling into view was a cache MISS →
+                // placeholder → off-main parse → swap (double composition +
+                // flicker per row during a fling = the felt "не супер
+                // плавно" scrolling history). This watcher reads the
+                // viewport window (derived snapshot — recomputes only when
+                // the visible range changes), looks AHEAD in the scroll
+                // direction (both ways: up into history, down to newest),
+                // and prewarms the next rows' markdown off-main BEFORE
+                // they compose. Only misses are warmed (cachedBlocks null
+                // check) — re-entry costs one list scan, no parse work.
+                val scrollPrewarmScope = remember(sessionId) { CoroutineScope(Dispatchers.Default) }
+                DisposableEffect(sessionId) {
+                    onDispose { scrollPrewarmScope.cancel() }
+                }
+                LaunchedEffect(listState, prewarmMarkdown) {
+                    snapshotFlow {
+                        val info = listState.layoutInfo
+                        val first = info.visibleItemsInfo.firstOrNull()?.index ?: -1
+                        val last = info.visibleItemsInfo.lastOrNull()?.index ?: -1
+                        val canFwd = listState.canScrollForward
+                        val canBwd = listState.canScrollBackward
+                        Triple(first, last, (canFwd xor canBwd))
+                    }.distinctUntilChanged().collect { (first, last, _) ->
+                        if (first < 0 || last < 0) return@collect
+                        // Window ahead: 8 rows / 56K chars in BOTH scroll
+                        // directions (a fling direction is not always known
+                        // at emission time; both directions are cheap).
+                        val lo = (first - 8).coerceAtLeast(0)
+                        val hi = (last + 8).coerceAtMost((listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
+                        if (lo > hi) return@collect
+                        val reversed = flatItems.asReversed()
+                        val raws = mutableListOf<String>()
+                        var charSum = 0
+                        for (idx in lo..hi) {
+                            if (charSum >= 56_000) break
+                            val raw = (reversed.getOrNull(idx) as? FlatChatItem.AssistantMarkdownBlock)?.rawText ?: continue
+                            if (!com.openminis.app.ui.chat.markdownBlocksWarm(raw)) {
+                                raws.add(raw)
+                                charSum += raw.length
+                            }
+                        }
+                        if (raws.isNotEmpty()) {
+                            scrollPrewarmScope.launch { prewarmMarkdown(raws) }
+                        }
+                    }
+                }
                 // [T-android-jank-diag-logging] Cold-open one-line summary
                 // state: emitted ONCE per session open at the first
                 // firstItem.placed; prewarmMs is filled by the parallel
