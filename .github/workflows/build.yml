@@ -158,6 +158,11 @@ jobs:
             --tests 'com.openminis.app.data.ProviderFallbackIdentityTest' \
             --tests 'com.openminis.app.data.HistorySizeGateTest' \
             --tests 'com.openminis.app.data.AutoResumePolicyTest' \
+            --tests 'com.openminis.app.data.ReasoningEliderTest' \
+            --tests 'com.openminis.app.data.ToolResultCompressorTest' \
+            --tests 'com.openminis.app.data.ToolResultMicrocompactTest' \
+            --tests 'com.openminis.app.data.SessionHistoryCacheTest' \
+            --tests 'com.openminis.app.agent.AgentAutoModeTest' \
             --tests 'com.openminis.app.data.AssistantTurnCopyTest' \
             --tests 'com.openminis.app.data.model.AttachmentIndexTest' \
             --tests 'com.openminis.app.data.ResumeVisibilityPolicyTest' \

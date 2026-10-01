@@ -342,9 +342,14 @@ lang: "auto"
         }
     }
 
-    /** [T-prompt-cache] Stat stamp + last parse for load(). */
-    private var cachedStamp: Pair<Long, Long>? = null
-    private var cachedSoul: SoulFile? = null
+    /** [T-prompt-cache] Stat stamp + last parse for load(). Volatile: load()
+     *  runs on Dispatchers.IO (prompt builds) while save() may run on
+     *  another thread — without the barrier a reader could see a torn
+     *  stamp/pair state. The stamp guard itself keeps the OUTCOME correct
+     *  even under a stale view (worst case = one redundant re-parse);
+     *  @Volatile makes the intermediate states clean too. */
+    @Volatile private var cachedStamp: Pair<Long, Long>? = null
+    @Volatile private var cachedSoul: SoulFile? = null
 
     /** Atomic write through a `.tmp` sibling, then rename. */
     fun save(context: Context, file: SoulFile) {
