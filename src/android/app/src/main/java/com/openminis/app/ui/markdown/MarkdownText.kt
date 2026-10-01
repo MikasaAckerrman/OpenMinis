@@ -892,9 +892,10 @@ private fun MinisAudioBlock(block: MarkdownParser.Block.Audio) {
 
     // Poll position while playing to drive the progress bar.
     LaunchedEffect(isPlaying) {
-        while (isPlaying && player != null) {
-            positionMs = try { player.currentPosition } catch (_: Throwable) { 0 }
-            if (!player.isPlaying) { isPlaying = false; break }
+        while (isPlaying) {
+            val p = player ?: break
+            positionMs = try { p.currentPosition } catch (_: Throwable) { 0 }
+            if (!p.isPlaying) { isPlaying = false; break }
             delay(200)
         }
     }
@@ -958,7 +959,7 @@ private fun MinisAudioBlock(block: MarkdownParser.Block.Audio) {
             )
             if (durationMs > 0) {
                 Text(
-                    text = "${formatMs(positionMs)} / ${formatMs(durationMs)}",
+                    text = "${formatMs(positionMs)} / ${formatMs(durationMs.toInt())}",
                     style = MaterialTheme.typography.labelSmall,
                     color = subtle,
                     modifier = Modifier.padding(top = 2.dp),

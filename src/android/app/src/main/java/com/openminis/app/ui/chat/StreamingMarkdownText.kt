@@ -2425,9 +2425,10 @@ private fun RenderMdAudio(block: MdBlock.Audio) {
         return p
     }
     LaunchedEffect(isPlaying) {
-        while (isPlaying && player != null) {
-            positionMs = try { player.currentPosition } catch (_: Throwable) { 0 }
-            if (!player.isPlaying) { isPlaying = false; break }
+        while (isPlaying) {
+            val p = player ?: break
+            positionMs = try { p.currentPosition } catch (_: Throwable) { 0 }
+            if (!p.isPlaying) { isPlaying = false; break }
             delay(200)
         }
     }
@@ -2486,7 +2487,7 @@ private fun RenderMdAudio(block: MdBlock.Audio) {
             )
             if (durationMs > 0) {
                 MdText(
-                    text = AnnotatedString("${formatMdMediaMs(positionMs)} / ${formatMdMediaMs(durationMs)}"),
+                    text = AnnotatedString("${formatMdMediaMs(positionMs)} / ${formatMdMediaMs(durationMs.toInt())}"),
                     fontSize = 11.sp,
                     color = colors.blockquote,
                 )
