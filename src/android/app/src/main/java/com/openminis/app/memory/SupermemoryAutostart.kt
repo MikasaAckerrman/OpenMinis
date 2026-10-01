@@ -42,6 +42,9 @@ object SupermemoryAutostart {
         "sh /var/minis/shared/supermemory/run.sh stop >/tmp/sm_stop.log 2>&1; echo stop_kick"
     private const val SYSTEM_SESSION = "system"
 
+    /** [T-supermemory-stop-grace] See stopIfNeeded. */
+    private const val STOP_GRACE_MS = 30_000L
+
     /**
      * [T-supermemory-fg-heal] At most one boot kick IN FLIGHT — the doc's
      * old "at most one boot per process" claim had no guard at all, and the
@@ -120,6 +123,29 @@ object SupermemoryAutostart {
      */
     fun stopIfNeeded(scope: CoroutineScope = CoroutineScope(Dispatchers.IO)) {
         scope.launch {
+            // [T-supermemory-stop-grace] A 30s grace before the stop: rapid
+            // app switching (messenger <-> Minis, 1-5s hops) used to pay a
+            // full server boot (~10s CPU, ~245MB RSS re-fault) on EVERY
+            // return, because the stop is immediate and the fg-heal boots
+            // unconditionally. Measured on device (01.10, 07:17: bg → stop
+            // 0.1s → fg → boot 10s). A real background (gaming, phone idle)
+            // is still stopped — 30s later; the FPS guard's goal is long
+            // background sessions, not sub-minute switches.
+            delay(STOP_GRACE_MS)
+            if (com.openminis.app.MinisApp.isAppForeground()) {
+                AppLogger.info(TAG, "still foreground after grace — skip stop (rapid switch)")
+                return@launch
+            }
+            // [T-supermemory-stop-grace] A session may have STARTED during
+            // the grace (backgrounded FGS turn) — it needs the server for
+            // turn-end distillation. The call-site guard saw an empty
+            // tracker 30s ago; re-check now.
+            if (com.openminis.app.service.SessionActivityTracker
+                    .activeSessions.value.isNotEmpty()
+            ) {
+                AppLogger.info(TAG, "active session appeared during grace — skip stop")
+                return@launch
+            }
             if (!portOpen()) return@launch
             AppLogger.info(TAG, "app backgrounded — stopping the supermemory stack (FPS guard)")
             runCatching {
