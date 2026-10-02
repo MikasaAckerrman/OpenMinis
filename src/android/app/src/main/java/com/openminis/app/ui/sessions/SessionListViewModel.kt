@@ -177,7 +177,18 @@ class SessionListViewModel(
                 started.await()
                 runCatching { unsub() }
             }
-            chatRepository.observeSessions().collect {
+            // [T-sessions-emission-storm] Room re-emits the FULL session
+            // list on every sessions-table write — and every assistant
+            // persist round during streaming calls updateLastMessage.
+            // A backgrounded turn fired 50+ full 6.6K-row emissions per
+            // minute into grouping/sorting while the user scrolls the
+            // list. debounce(150) collapses bursts; distinctUntilChanged
+            // drops no-op re-reads. The 150ms leading delay is invisible
+            // under the ~750ms cold-start window.
+            chatRepository.observeSessions()
+                .distinctUntilChanged()
+                .debounce(150)
+                .collect {
                 _allSessions.value = it
                 if (!_isInitialLoadComplete.value) _isInitialLoadComplete.value = true
                 detectNewTopSession(it)
