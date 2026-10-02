@@ -8349,6 +8349,54 @@ class ChatViewModel(
                         is com.openminis.app.data.AutoResumePolicy.Decision.Stop -> {
                             AppLogger.info(TAG_STREAM, "$label auto-resume STOP: ${decision.reason}")
                             _autoResumeAttempt.value = 0
+                            // [T-fallback-engagement] The fallback pipeline was
+                            // fully built (buildFallbackProviders → ordered,
+                            // enabled-only, credential-checked candidates →
+                            // passed into runAgentLoop) but NEVER consumed:
+                            // an InvalidApiKey/QuotaExceeded/ProviderError
+                            // dead-ended the turn with an error sticker — the
+                            // user then retried into the SAME dead provider,
+                            // paying DNS+TLS (~3s, measured 02.10 09:00:01:
+                            // 821ms DNS + 2.1s TLS to a 401 instance) on every
+                            // tap. Engage now: bind the session to the next
+                            // candidate (mirrors resolveProviderFromGroup's
+                            // side effects + persists the binding) and re-run
+                            // the turn through the same stream-tail machinery.
+                            // Bounded: the re-run rebuilds its fallback list
+                            // against the NEW current — a 401 chain walks the
+                            // group one candidate per turn and stops honestly
+                            // when exhausted. Only the CURRENT job may engage
+                            // (stale-job guard): an orphaned catch must not
+                            // hijack a newer turn. Transient errors keep the
+                            // auto-resume path above (same provider, backoff).
+                            val llmErr = e as? com.openminis.app.data.model.LLMError
+                            val next = if (llmErr?.isFallbackable == true) {
+                                fallbackProviders.firstOrNull()
+                            } else null
+                            if (next != null && streamJob === coroutineContext[Job]) {
+                                AppLogger.info(
+                                    TAG_STREAM,
+                                    "🔧FALLBACK $label: ${llmErr.fallbackReason} → entry=${next.entryId.take(8)} model=${next.provider.model.id} — re-running turn",
+                                )
+                                activateModel(next.provider.model, next.entryId, "group fallback")
+                                _modelName.value = next.provider.model.displayName
+                                currentProvider = next.provider
+                                _selectedGroupId.value?.let { gid ->
+                                    persistBinding(
+                                        """{"type":"group","groupId":"$gid","lastEntryId":"${next.entryId}"}""",
+                                    )
+                                }
+                                com.openminis.app.diagnostics.PerfLongCtx.step(
+                                    activeSessionId,
+                                    "fallback.engaged",
+                                    "${llmErr.fallbackReason} → ${next.provider.model.id}",
+                                )
+                                // _isStreaming is still true here (the finally
+                                // below runs AFTER this branch), and the
+                                // stale-job tail guard skips the reset because
+                                // the nested launch reassigns streamJob first.
+                                runRerunStreamTail(next.provider, label = "fallback")
+                            }
                         }
                     }
                     
