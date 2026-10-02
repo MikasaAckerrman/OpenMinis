@@ -15,6 +15,17 @@ import java.nio.charset.StandardCharsets
  */
 object ShellExecutor {
 
+    /**
+     * [T-stop-button-freeze] Shared single-thread kill executor (same
+     * discipline as PersistentShell): process reaping is blocking and
+     * must never run on the main thread.
+     */
+    private val killExecutor =
+        java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+            Thread(r, "shellexec-kill").apply { isDaemon = true }
+        }
+
+
     private const val TAG = "ShellExecutor"
     private const val DEFAULT_TIMEOUT_MS = 600_000L // 10 minutes
 
@@ -149,9 +160,13 @@ object ShellExecutor {
      */
     fun destroyCurrent() {
         currentProcess?.let { process ->
-            Log.i(TAG, "Destroying current process")
-            process.destroyForcibly()
             currentProcess = null
+            Log.i(TAG, "Destroying current process (async kill)")
+            // [T-stop-button-freeze] process reaping is blocking; the
+            // STOP button path must not pay for it on the main thread.
+            killExecutor.execute {
+                try { process.destroyForcibly() } catch (_: Throwable) {}
+            }
         }
     }
 }

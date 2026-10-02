@@ -34,6 +34,17 @@ class PersistentShell(
         private const val TAG = "PersistentShell"
         private const val STDERR_HEAD_LINES = 25
         private const val STDERR_TAIL_LINES = 15
+
+        /**
+         * [T-stop-button-freeze] Single-thread kill executor: pty pipe
+         * drains and process reaping are slow and blocking — they must
+         * never run on the main thread (STOP button). Serial execution
+         * keeps concurrent stops (cancel + timeout recheck) ordered.
+         */
+        private val killExecutor =
+            java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+                Thread(r, "shell-kill").apply { isDaemon = true }
+            }
     }
 
     @Volatile
@@ -543,16 +554,28 @@ class PersistentShell(
 
     /**
      * Stop the persistent shell.
+     *
+     * [T-stop-button-freeze] The blocking halves of a kill —
+     * BufferedWriter.close() (drains the pty pipe; measured 3.4s
+     * main-thread freeze when the user taps STOP mid-answer) and
+     * Process.destroyForcibly() — run on a background kill-executor.
+     * References are nulled on the CALLER thread first: any racing
+     * writer sees the dead shell and skips; the kill itself can not
+     * freeze the UI regardless of pipe state. The completion callback
+     * stays on the caller thread (same ordering as before).
      */
     fun stop() {
-        try { stdinWriter?.close() } catch (_: Exception) {}
+        val writer = stdinWriter
+        val proc = process
         stdinWriter = null
-        process?.destroyForcibly()
         process = null
-        pendingCallback?.let {
-            it.onComplete?.invoke(it.output.toString(), -1)
-        }
+        val cb = pendingCallback
         pendingCallback = null
-        Log.i(TAG, "Persistent shell stopped")
+        killExecutor.execute {
+            try { writer?.close() } catch (_: Exception) {}
+            proc?.destroyForcibly()
+            Log.i(TAG, "Persistent shell stopped (async kill)")
+        }
+        cb?.let { it.onComplete?.invoke(it.output.toString(), -1) }
     }
 }
