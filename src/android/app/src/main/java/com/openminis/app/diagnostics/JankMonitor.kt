@@ -180,7 +180,17 @@ object JankMonitor {
         val recent = synchronized(markers) {
             val tail = ArrayList<Marker>(MARKERS_IN_REPORT)
             val it = markers.descendingIterator()
-            while (it.hasNext() && tail.size < MARKERS_IN_REPORT) tail.add(it.next())
+            // [T-attribution-ttl] Markers older than the frame window are
+            // noise, not causes: a 50s-old "shell cmd" line (02.10 08:59)
+            // misattributes a 1016ms frame to work that finished long ago.
+            // Keep markers within 8s — anything older cannot have caused
+            // this frame. Empty tail falls to the honest "suspect GC /
+            // binder / native" branch instead of a wrong label.
+            while (it.hasNext() && tail.size < MARKERS_IN_REPORT) {
+                val m = it.next()
+                if (now - m.atMs > 8_000L) break
+                tail.add(m)
+            }
             tail
         }
         val attributed = if (recent.isEmpty()) {

@@ -46,7 +46,17 @@ object HangDetector {
     private const val HEARTBEAT_INTERVAL_MS = 1_000L
 
     /** A hang fires once the main thread has missed a heartbeat for this long. */
-    private const val HANG_THRESHOLD_MS = 3_000L
+    /**
+     * [T-hang-sensitivity] 800ms: the frame monitor logs 700-1000ms
+     * spikes (e.g. a 1016ms frame on 02.10 08:59) but the stack-capturing
+     * detector at 3s never sees them — the evidence evaporates. 800ms
+     * catches every real UI stall with a full main-thread stack while
+     * staying above normal frame-pacing noise. The escalation ladder
+     * (3 ticks -> breaker) is tick-count based, not time based — the
+     * lower threshold only means we LEARN sooner, the breaker logic is
+     * unchanged.
+     */
+    private const val HANG_THRESHOLD_MS = 800L
 
     /**
      * [T-android-hangdetector-midhang-sample] While a hang episode is still
