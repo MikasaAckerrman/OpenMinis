@@ -382,6 +382,11 @@ class OpenAIProvider private constructor(
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(600, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
+        // [T-dns-pin] Mobile CGNAT resolvers are slow and lossy for the
+        // API hosts we talk to (measured: dashscope 34/48 lookups >300ms,
+        // outliers 3.7s-53s). Pin successful resolutions for 5 minutes so
+        // every pooled-connection rebuild doesn't re-pay the lookup.
+        .dns(com.openminis.app.network.CachedDns)
         // [T-stale-conn-ping] Proactive dead-socket detection. Foreground
         // eviction (MinisApp) + network-transition eviction (NetworkMonitor)
         // only cover lifecycle/connectivity CHANGES; they miss the common case
