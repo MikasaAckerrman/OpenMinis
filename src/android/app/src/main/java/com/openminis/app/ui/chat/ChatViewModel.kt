@@ -8373,7 +8373,7 @@ class ChatViewModel(
                             val next = if (llmErr?.isFallbackable == true) {
                                 fallbackProviders.firstOrNull()
                             } else null
-                            if (next != null && streamJob === coroutineContext[Job]) {
+                            if (llmErr != null && next != null && streamJob === coroutineContext[Job]) {
                                 AppLogger.info(
                                     TAG_STREAM,
                                     "🔧FALLBACK $label: ${llmErr.fallbackReason} → entry=${next.entryId.take(8)} model=${next.provider.model.id} — re-running turn",
