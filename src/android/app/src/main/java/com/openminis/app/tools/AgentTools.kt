@@ -177,6 +177,13 @@ object AgentTools {
             // read-only by default (dry-run report) and its write mode is
             // lossless-by-construction (offload + stub, never a delete).
             if (permitted("session_gc")) add(sessionGcDefinition())
+            // [T-bg-tasks] Background process tools — start/inspect/kill
+            // long-running commands. Ungated like session_gc: the executor
+            // reuses the shell policy gates (jail write-contract +
+            // destructive screening) before launching anything.
+            for (def in com.openminis.app.tools.BgTaskTools.definitions()) {
+                if (permitted(def.name)) add(def)
+            }
             // [T-letta-core-memory] Letta-style core blocks: the gate is
             // app-level (CoreMemoryPrefs, Memory management settings row),
             // independent of the daily-log memory gate above — a user can

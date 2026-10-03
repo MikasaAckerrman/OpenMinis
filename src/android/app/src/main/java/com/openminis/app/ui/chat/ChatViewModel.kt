@@ -13262,6 +13262,10 @@ class ChatViewModel(
             com.openminis.app.tools.SubagentTools.RUN_GRAPH_TOOL_NAME -> executeRunGraph(argsJson)
             com.openminis.app.tools.SubagentTools.TASK_BOARD_TOOL_NAME -> executeTaskBoard(argsJson)
             "session_gc" -> executeSessionGc(argsJson)
+            com.openminis.app.tools.BgTaskTools.BG_RUN_NAME -> executeBgRun(argsJson, toolTitle)
+            com.openminis.app.tools.BgTaskTools.BG_CHECK_NAME -> executeBgCheck(argsJson)
+            com.openminis.app.tools.BgTaskTools.BG_LIST_NAME -> executeBgList()
+            com.openminis.app.tools.BgTaskTools.BG_KILL_NAME -> executeBgKill(argsJson)
             "memory_write" -> executeMemoryWriteTool(argsJson)
             "memory_get" -> executeMemoryGetTool(argsJson)
             "supermemory_search" -> executeSupermemorySearchTool(argsJson)
@@ -13873,6 +13877,118 @@ class ChatViewModel(
      * Mutations run through MutationJournal + dao.updateMessageParts —
      * the established rewrite path (reasoning capping uses it).
      */
+    // [T-bg-tasks] Background process tools — see BgTaskTools for the
+    // registry architecture. The executor reuses the SHELL policy gates
+    // (jailed write-contract + destructive screening): a background task
+    // is exactly as privileged as a foreground shell call, minus the
+    // interactive approval dialog (CONFIRM-class destructives are refused
+    // — the user cannot be asked for a task that already left the room).
+    private fun executeBgRun(argsJson: String, toolTitle: String): ToolExecutionResult {
+        val parsed = com.openminis.app.tools.BgTaskTools.parseRunArgs(argsJson)
+            ?: return ToolExecutionResult("Error: 'command' is required", false, toolTitle = toolTitle)
+        val (command, timeoutSec, label) = parsed
+
+        // Same jail contract as shell_execute (13410): workers never mutate
+        // git / global surfaces even in the background.
+        if (com.openminis.app.tools.AgentWritePolicyStore.isJailed(activeSessionId)) {
+            if (com.openminis.app.tools.AgentWritePolicyStore.isGitMutation(command) &&
+                !com.openminis.app.tools.AgentWritePolicyStore.gitMutationAllowedFor(activeSessionId, command)
+            ) {
+                return ToolExecutionResult(
+                    "Git operation refused (parallel-write contract): background or not, " +
+                        "workers never mutate the git index. Read-only git is fine.",
+                    false, toolTitle = toolTitle)
+            }
+            val violations = com.openminis.app.tools.AgentWritePolicyStore
+                .violatingWriteTargets(command, activeSessionId)
+            if (violations.isNotEmpty()) {
+                return ToolExecutionResult(
+                    "Write refused (parallel-write contract): the background command writes " +
+                        "to the shared global surface — ${violations.joinToString()}. Workers " +
+                        "write only /var/minis/workspace or /tmp.",
+                    false, toolTitle = toolTitle)
+            }
+        }
+        // Destructive screening: only REFUSE/CONFIRM classes matter here —
+        // there is no user in the room to approve a CONFIRM, so both refuse.
+        val verdict = DestructiveCommandPolicy.classify(command)
+        if (verdict.verdict != DestructiveCommandPolicy.Verdict.ALLOW) {
+            return ToolExecutionResult(
+                "Refused: ${verdict.reason}\n" +
+                    "Background destructive commands are never run — they need an " +
+                    "interactive confirmation. If it is truly needed, show the user the " +
+                    "exact command and run it via shell_execute.",
+                false, toolTitle = toolTitle)
+        }
+
+        val dispatchSessionId = activeSessionId
+        val task = com.openminis.app.tools.BgTaskTools.launchDetached(
+            sessionId = dispatchSessionId,
+            command = command,
+            label = label,
+            timeoutSec = timeoutSec,
+        ) { appendLine ->
+            val result = ExecutionCoordinator.execute(
+                sessionId = dispatchSessionId,
+                command = command,
+                timeout = timeoutSec * 1000L,
+                lineCallback = appendLine,
+            )
+            Pair(result.exitCode, result.output)
+        }
+        return ToolExecutionResult(
+            "background task started: task_id=${task.id}\n" +
+                "state=RUNNING timeout=${timeoutSec}s log=${task.logFile.path}\n" +
+                "check with bg_check (task_id=${task.id}) — or file_read the log path.",
+            true, toolTitle = toolTitle)
+    }
+
+    private fun executeBgCheck(argsJson: String): ToolExecutionResult {
+        val parsed = com.openminis.app.tools.BgTaskTools.parseCheckArgs(argsJson)
+            ?: return ToolExecutionResult("Error: 'task_id' is required", false)
+        val (taskId, lines) = parsed
+        val (task, header, tail) = com.openminis.app.tools.BgTaskTools.check(taskId, lines)
+        val body = buildString {
+            append(header)
+            if (task != null) append("\nlog=${task.logFile.path}")
+            if (tail.isNotBlank()) {
+                append("\n--- tail ($lines lines) ---\n")
+                append(tail)
+            } else {
+                append("\n(no output yet)")
+            }
+        }
+        return ToolExecutionResult(body, true)
+    }
+
+    private fun executeBgList(): ToolExecutionResult {
+        val all = com.openminis.app.tools.BgTaskTools.all()
+        if (all.isEmpty()) {
+            return ToolExecutionResult("no background tasks (this app process)", true)
+        }
+        val now = System.currentTimeMillis()
+        val body = all.joinToString("\n") { t ->
+            val runSec = (now - t.startedAtMs) / 1000
+            "id=${t.id} state=${t.state} exit=${t.exitCode ?: "—"} run=${runSec}s cmd=${t.command.take(80)}"
+        }
+        return ToolExecutionResult("$body\nlog dir: /var/minis/workspace/.bg/", true)
+    }
+
+    private fun executeBgKill(argsJson: String): ToolExecutionResult {
+        val taskId = runCatching { JSONObject(argsJson).optString("task_id", "").trim() }
+            .getOrDefault("")
+        if (taskId.isEmpty()) {
+            return ToolExecutionResult("Error: 'task_id' is required", false)
+        }
+        val ok = com.openminis.app.tools.BgTaskTools.kill(taskId)
+        return if (ok) {
+            ToolExecutionResult(
+                "kill requested for $taskId (async — state=KILLED; check with bg_check)", true)
+        } else {
+            ToolExecutionResult("unknown task_id: $taskId (see bg_list)", false)
+        }
+    }
+
     private suspend fun executeSessionGc(argsJson: String): ToolExecutionResult {
         val toolTitle = runCatching {
             JSONObject(argsJson).optString("tool_title", "session_gc")
