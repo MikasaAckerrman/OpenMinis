@@ -128,6 +128,10 @@ object AgentTools {
                 add(ReadImageTool.definition())
             }
             if (permitted("browser_use")) add(browserUseDefinition())
+            // [T-web-search] First-class web search (Tavily): one call,
+            // clean results — the model no longer pays a browser session
+            // for plain facts. Ungated like session_gc: read-only.
+            if (permitted(WebSearchTool.NAME)) add(WebSearchTool.definition())
             // [T-spawn-subagent] Claude Code + OpenAI Agents SDK pattern:
             // the LLM can delegate subtasks to specialist agents at runtime.
             // [T-subagent-gate] User decision 23.09.2026: subagents are
