@@ -132,6 +132,12 @@ object AgentTools {
             // clean results — the model no longer pays a browser session
             // for plain facts. Ungated like session_gc: read-only.
             if (permitted(WebSearchTool.NAME)) add(WebSearchTool.definition())
+            // [T-ask-user] Structured mid-task questions — the mobile
+            // differentiator: one-tap options instead of free-text
+            // round-trips. Always available: it only ever waits for the
+            // user, and an agent with no user present simply gets SKIPPED
+            // back and continues with its best judgment.
+            if (permitted(AskUserTool.NAME)) add(AskUserTool.definition())
             // [T-spawn-subagent] Claude Code + OpenAI Agents SDK pattern:
             // the LLM can delegate subtasks to specialist agents at runtime.
             // [T-subagent-gate] User decision 23.09.2026: subagents are

@@ -13268,6 +13268,8 @@ class ChatViewModel(
             com.openminis.app.tools.BgTaskTools.BG_KILL_NAME -> executeBgKill(argsJson)
             com.openminis.app.tools.WebSearchTool.NAME ->
                 com.openminis.app.tools.WebSearchTool.execute(argsJson, context)
+            com.openminis.app.tools.AskUserTool.NAME ->
+                com.openminis.app.tools.AskUserTool.execute(argsJson, activeSessionId)
             "memory_write" -> executeMemoryWriteTool(argsJson)
             "memory_get" -> executeMemoryGetTool(argsJson)
             "supermemory_search" -> executeSupermemorySearchTool(argsJson)
