@@ -138,6 +138,11 @@ object AgentTools {
             // user, and an agent with no user present simply gets SKIPPED
             // back and continues with its best judgment.
             if (permitted(AskUserTool.NAME)) add(AskUserTool.definition())
+            // [T-todo] Session checklist — rails for long work, live
+            // progress for the user, re-readable by continuations.
+            for (def in com.openminis.app.tools.TodoTool.definitions()) {
+                if (permitted(def.name)) add(def)
+            }
             // [T-spawn-subagent] Claude Code + OpenAI Agents SDK pattern:
             // the LLM can delegate subtasks to specialist agents at runtime.
             // [T-subagent-gate] User decision 23.09.2026: subagents are

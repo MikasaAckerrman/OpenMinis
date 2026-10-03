@@ -13270,6 +13270,10 @@ class ChatViewModel(
                 com.openminis.app.tools.WebSearchTool.execute(argsJson, context)
             com.openminis.app.tools.AskUserTool.NAME ->
                 com.openminis.app.tools.AskUserTool.execute(argsJson, activeSessionId)
+            com.openminis.app.tools.TodoTool.WRITE_NAME ->
+                com.openminis.app.tools.TodoTool.write(argsJson, activeSessionId)
+            com.openminis.app.tools.TodoTool.READ_NAME ->
+                com.openminis.app.tools.TodoTool.read(activeSessionId)
             "memory_write" -> executeMemoryWriteTool(argsJson)
             "memory_get" -> executeMemoryGetTool(argsJson)
             "supermemory_search" -> executeSupermemorySearchTool(argsJson)
