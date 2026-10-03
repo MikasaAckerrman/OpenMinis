@@ -13223,6 +13223,17 @@ class ChatViewModel(
                 budgetLimit,
             )
         }
+        // [T-tool-hooks] PreToolUse user policy: /var/minis/.config/hooks.json
+        // may block or annotate this call before anything executes.
+        // Fail-open (a broken ruleset never breaks the loop); zero cost
+        // when no ruleset exists (one stat per 5s max).
+        val hookVerdict = com.openminis.app.tools.ToolHooks.evaluate(name, argsJson)
+        if (hookVerdict?.blocked == true) {
+            return ToolExecutionResult(
+                "Blocked by user hook: ${hookVerdict.warning ?: "no reason given"}\n" +
+                    "(ruleset: /var/minis/.config/hooks.json — the user configured this refusal)",
+                false, toolTitle = friendlyToolTitle(name))
+        }
         try {
             val toolResult = when (name) {
             FileReadTool.NAME -> {
@@ -13308,7 +13319,15 @@ class ChatViewModel(
             // [T-tool-budget-indicator] the budget footer rides the same
             // decorator chain (nudge → budget → turn-timer); the error path
             // below keeps its deliberate no-decoration discipline.
-            return applyTurnTimer(maybeAppendBudgetLine(maybeAppendMemoryNudge(toolResult), budgetStatus))
+            // [T-tool-hooks] warn-action wrap: the call ran (that is the
+            // point of "warn"), but the user's annotation rides first so
+            // the model cannot miss it.
+            val finalResult = if (hookVerdict?.warning != null) {
+                toolResult.copy(output = "[user hook] ${hookVerdict.warning}\n${toolResult.output}")
+            } else {
+                toolResult
+            }
+            return applyTurnTimer(maybeAppendBudgetLine(maybeAppendMemoryNudge(finalResult), budgetStatus))
         } catch (e: kotlinx.coroutines.CancellationException) {
             // Never swallow cancellation — it is cooperative shutdown, not
             // a tool failure.
