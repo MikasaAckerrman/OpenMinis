@@ -107,7 +107,7 @@ object TodoTool {
                 val trimmed = raw.trim()
                 if (trimmed.isEmpty()) return null
                 if (trimmed.startsWith("[")) {
-                    runCatching { parseItems(JSONArray(trimmed)) }?.let { return it }
+                    runCatching { parseItems(JSONArray(trimmed)) }.getOrNull()?.let { return it }
                 }
                 val parts = trimmed.split('\n', ';').map { it.trim() }.filter { it.isNotEmpty() }
                 return parts.ifEmpty { null }?.map { TodoItem(it, "pending") }

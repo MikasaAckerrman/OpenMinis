@@ -106,7 +106,7 @@ object AskUserTool {
                 if (trimmed.isEmpty()) return null
                 // JSON array embedded in a string?
                 if (trimmed.startsWith("[")) {
-                    runCatching { parseOptions(JSONArray(trimmed)) }?.let { return it }
+                    runCatching { parseOptions(JSONArray(trimmed)) }.getOrNull()?.let { return it }
                 }
                 val parts = trimmed.split(';', '|', '\n')
                     .map { it.trim() }
