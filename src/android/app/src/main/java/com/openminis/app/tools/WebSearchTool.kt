@@ -163,6 +163,6 @@ object WebSearchTool {
             i++
         }
         if (sb.isEmpty()) return "no results for the query"
-        return if (sb.length > MAX_OUTPUT_CHARS) sb.take(MAX_OUTPUT_CHARS) + "\n…(truncated)" else sb.toString().trim()
+        return if (sb.length > MAX_OUTPUT_CHARS) sb.toString().take(MAX_OUTPUT_CHARS) + "\n…(truncated)" else sb.toString().trim()
     }
 }
