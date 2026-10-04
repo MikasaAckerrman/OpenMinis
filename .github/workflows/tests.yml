@@ -84,6 +84,7 @@ jobs:
             --tests 'com.openminis.app.tools.ToolSurfaceAdapterTest' \
             --tests 'com.openminis.app.engine.ToolBatchPlannerTest' \
             --tests 'com.openminis.app.engine.ToolPreflightEngineTest' \
+            --tests 'com.openminis.app.engine.EngineAgentLoopTest' \
             --tests 'com.openminis.app.config.ConfigPathResolverTest' \
             --tests 'com.openminis.app.data.model.ProviderFoldersTest' \
             --tests 'com.openminis.app.data.model.EndpointHistoryTest' \
