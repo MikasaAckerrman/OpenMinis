@@ -68,4 +68,44 @@ class ReadOnlyShellPolicyTest {
         assertTrue(policy.isMutatingCommand("sh script.sh"))
         assertTrue(policy.isMutatingCommand(""))
     }
+    // [T-read-only-shell-hardening] regression: the six execution/write
+    // escape hatches found in the deep review — each of these classified
+    // READ-ONLY before the hardening and would have executed.
+    @Test
+    fun `find exec escapes are refused`() {
+        assertTrue(policy.isMutatingCommand("find /tmp -exec rm {} \\;"))
+        assertTrue(policy.isMutatingCommand("find / -execdir sh \\;"))
+        assertTrue(policy.isMutatingCommand("find /var -delete"))
+        assertTrue(policy.isMutatingCommand("find / -ok rm {} \\;"))
+        // plain find stays read-only
+        assertFalse(policy.isMutatingCommand("find /var/minis -name '*.kt'"))
+    }
+
+    @Test
+    fun `env with a command argument is refused`() {
+        assertTrue(policy.isMutatingCommand("env rm -rf /"))
+        assertTrue(policy.isMutatingCommand("FOO=1 env python evil.py"))
+        // env printing or pure assignment stays read-only
+        assertFalse(policy.isMutatingCommand("env"))
+        assertFalse(policy.isMutatingCommand("env LC_ALL=C"))
+        assertFalse(policy.isMutatingCommand("env | grep PATH"))
+    }
+
+    @Test
+    fun `awk system and pagers are refused`() {
+        assertTrue(policy.isMutatingCommand("awk 'BEGIN{system(\"touch x\")}'"))
+        assertTrue(policy.isMutatingCommand("man -P sh printf"))
+        assertTrue(policy.isMutatingCommand("less --log-file=x notes.txt"))
+    }
+
+    @Test
+    fun `sort -o date -s hostname set are refused`() {
+        assertTrue(policy.isMutatingCommand("sort -o out.txt in.txt"))
+        assertTrue(policy.isMutatingCommand("date -s 2030-01-01"))
+        assertTrue(policy.isMutatingCommand("hostname foo"))
+        // bare reads stay allowed
+        assertFalse(policy.isMutatingCommand("sort in.txt"))
+        assertFalse(policy.isMutatingCommand("date"))
+        assertFalse(policy.isMutatingCommand("hostname"))
+    }
 }
