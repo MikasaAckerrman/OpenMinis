@@ -69,11 +69,10 @@ object ToolPreflight {
         }
         val missing = mutableListOf<String>()
         for (field in enforced) {
-            val raw = args[field] ?: run {
-                missing.add(field); continue
-            }
-            if (raw is PreflightValue.Null) {
-                missing.add(field); continue
+            val raw = args[field]
+            if (raw == null || raw is PreflightValue.Null) {
+                missing.add(field)
+                continue
             }
             // Only the truly-empty literal "" is rejected — NOT whitespace:
             // file_edit's new_string:"\n" / old_string:"  " are real edits.
