@@ -16,7 +16,7 @@ package com.openminis.app.engine
  *
  * [T-read-only-shell-hardening] Deep-review hardening (2026-10-04): heads
  * that EXECUTE or WRITE through their own arguments are refused —
- *  - `find` with -exec/-execdir/-delete/-ok*/-fprint*/-fls (execution and
+ *  - `find` with -exec/-execdir/-delete/-ok/-fprint/-fls (execution and
  *    destruction primitives);
  *  - `env` with any non-assignment argument (env runs it as a command);
  *  - `sort` with -o (writes a file), `date` with -s/--set (sets the clock),
