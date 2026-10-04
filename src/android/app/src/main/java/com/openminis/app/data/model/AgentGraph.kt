@@ -18,6 +18,10 @@ enum class AgentRole {
     TEST_QUALITY_AUDITOR,
     FINAL_GATEKEEPER,
     DOCUMENTATION_AGENT,
+    // [T-explore-role] The ZCode Explore port: a strictly read-only
+    // researcher. Serializable-by-name — appending is backward-compatible
+    // with graphs persisted by older builds.
+    EXPLORE,
 }
 
 @Serializable

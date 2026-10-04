@@ -115,6 +115,8 @@ internal object ContextBudget {
         AgentRole.DEPENDENCY_GUARDIAN,
         AgentRole.DOCUMENTATION_AGENT,
         AgentRole.REQUIREMENTS_ANALYST,
+        // [T-explore-role] Research reads its OWN evidence, not the run.
+        AgentRole.EXPLORE,
         AgentRole.CODEBASE_DISCOVERY -> graphBudget / 4
     }
 }

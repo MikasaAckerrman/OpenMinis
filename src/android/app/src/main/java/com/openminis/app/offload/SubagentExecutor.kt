@@ -750,6 +750,25 @@ object SubagentExecutor {
 
     /** Role-specific system prompts for spawned subagents. */
     private fun promptForRole(role: AgentRole, task: String): String = when (role) {
+        // [T-explore-role] The ZCode Explore port: a strictly read-only
+        // researcher. The tool allowlist (defaultToolsForRole) enforces it
+        // structurally — no shell, no writes, no delegation — so the prompt
+        // describes the contract while the schema guarantees it.
+        AgentRole.EXPLORE -> """
+            You are a read-only research agent. Your ONE job:
+            $task
+
+            Gather evidence and report findings. You have NO write and NO
+            execute tools by design: read code with file_read/grep/glob, read
+            pages with webfetch/web_search, recall context with memory_get,
+            inspect images with read_image. Do not ask for tools you do not
+            have — work with what the schema gives you and stay precise.
+
+            Format: a findings list, each with file:line (or URL) evidence
+            and a one-line conclusion; close with a short DIRECT ANSWER
+            section for the agent that spawned you.
+        """.trimIndent()
+
         AgentRole.CODE_CORRECTNESS_REVIEWER -> """
             You are a code correctness reviewer. Your ONE job:
             $task
@@ -924,32 +943,10 @@ object SubagentExecutor {
         """.trimIndent()
     }
 
-    /** Scoped default tools per role (OpenAI Agents SDK pattern). */
-    private fun defaultToolsForRole(role: AgentRole): List<String> = when (role) {
-        AgentRole.SENIOR_IMPLEMENTER ->
-            listOf("shell_execute", "file_read", "file_write", "file_edit", "browser_use")
-        // Their deliverables ARE files (test files, documentation) — without
-        // file tools these roles could only describe the artifact they were
-        // spawned to produce.
-        AgentRole.INDEPENDENT_TEST_DESIGNER,
-        AgentRole.DOCUMENTATION_AGENT ->
-            listOf("shell_execute", "file_read", "file_write", "file_edit")
-        // [T-subagent-nesting] The orchestrator is the entry delegator: it
-        // plans, splits the task and spawns worker subagents (the Cursor
-        // 2-level tree pattern). Reviewers may arm ONE focused verifier for
-        // findings that need runtime proof (depth 3: ORCHESTRATOR ->
-        // REVIEWER -> leaf). The matrix that grants these tools lives in
-        // mayDelegate() — see the depth-cap comment there.
-        AgentRole.ORCHESTRATOR ->
-            listOf("shell_execute", "file_read", "spawn_subagent", "spawn_many", "task_board")
-        AgentRole.CODE_CORRECTNESS_REVIEWER,
-        AgentRole.SECURITY_REVIEWER,
-        AgentRole.PERFORMANCE_REVIEWER,
-        AgentRole.TEST_QUALITY_AUDITOR ->
-            listOf("shell_execute", "file_read", "browser_use", "spawn_subagent")
-        else ->
-            listOf("shell_execute", "file_read", "browser_use")
-    }
+    /** Role → default tool surface. Lives in [SubagentRoles] so the matrix
+     *  is testable without instantiating the executor. */
+    private fun defaultToolsForRole(role: AgentRole): List<String> =
+        SubagentRoles.defaultToolsForRole(role)
 
     /** [event-matrix G12] Lenient role resolution: models frequently
      * lowercase enum names ("senior_implementer"); valueOf() rejects them
@@ -1013,6 +1010,9 @@ object SubagentExecutor {
      * unless I say otherwise".
      */
     private fun modelRoleFor(role: AgentRole): String = when (role) {
+        // [T-explore-role] Research reads run on the light tier — the
+        // explore child is a bulk reader, not a decision maker.
+        AgentRole.EXPLORE -> "analyst"
         AgentRole.REQUIREMENTS_ANALYST -> "planner"
         AgentRole.CODEBASE_DISCOVERY -> "analyst"
         AgentRole.SOLUTION_ARCHITECT -> "architect"
@@ -1032,6 +1032,9 @@ object SubagentExecutor {
 /** Role names exposed to the LLM for the spawn_subagent tool enum. */
 object SubagentRoles {
     val SPAWNABLE = listOf(
+        // [T-explore-role] First in the list: research-first agents spawn
+        // explorers more often than any specialist.
+        "EXPLORE",
         "REQUIREMENTS_ANALYST",
         "CODEBASE_DISCOVERY",
         "SOLUTION_ARCHITECT",
@@ -1045,4 +1048,43 @@ object SubagentRoles {
         "FINAL_GATEKEEPER",
         "DOCUMENTATION_AGENT",
     )
+
+    /**
+     * Scoped default tools per role (OpenAI Agents SDK pattern). A testable
+     * pure function on purpose — the executor delegates here.
+     */
+    fun defaultToolsForRole(role: AgentRole): List<String> = when (role) {
+        // [T-explore-role] Read-only by construction: no shell (grep/glob
+        // cover search natively), no write tools, no delegation. A research
+        // child of a PLAN or EDIT parent cannot write around the mode — the
+        // allowlist IS the enforcement, not a prompt suggestion.
+        AgentRole.EXPLORE ->
+            listOf(
+                "file_read", "read_image", "grep", "glob",
+                "web_search", "webfetch", "memory_get", "todo_read",
+            )
+        AgentRole.SENIOR_IMPLEMENTER ->
+            listOf("shell_execute", "file_read", "file_write", "file_edit", "browser_use")
+        // Their deliverables ARE files (test files, documentation) — without
+        // file tools these roles could only describe the artifact they were
+        // spawned to produce.
+        AgentRole.INDEPENDENT_TEST_DESIGNER,
+        AgentRole.DOCUMENTATION_AGENT ->
+            listOf("shell_execute", "file_read", "file_write", "file_edit")
+        // [T-subagent-nesting] The orchestrator is the entry delegator: it
+        // plans, splits the task and spawns worker subagents (the Cursor
+        // 2-level tree pattern). Reviewers may arm ONE focused verifier for
+        // findings that need runtime proof (depth 3: ORCHESTRATOR ->
+        // REVIEWER -> leaf). The matrix that grants these tools lives in
+        // mayDelegate() — see the depth-cap comment there.
+        AgentRole.ORCHESTRATOR ->
+            listOf("shell_execute", "file_read", "spawn_subagent", "spawn_many", "task_board")
+        AgentRole.CODE_CORRECTNESS_REVIEWER,
+        AgentRole.SECURITY_REVIEWER,
+        AgentRole.PERFORMANCE_REVIEWER,
+        AgentRole.TEST_QUALITY_AUDITOR ->
+            listOf("shell_execute", "file_read", "browser_use", "spawn_subagent")
+        else ->
+            listOf("shell_execute", "file_read", "browser_use")
+    }
 }

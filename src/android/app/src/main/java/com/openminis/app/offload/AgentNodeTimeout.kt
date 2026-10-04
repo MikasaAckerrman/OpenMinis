@@ -41,6 +41,9 @@ object AgentNodeTimeout {
         AgentRole.SENIOR_IMPLEMENTER -> 4.0
         AgentRole.CODEBASE_DISCOVERY -> 2.5
         AgentRole.INDEPENDENT_TEST_DESIGNER -> 2.5
+        // [T-explore-role] Read-only research over many files/pages — the
+        // discovery profile without tool loops (grep/glob are near-instant).
+        AgentRole.EXPLORE -> 2.5
         // Bounded reading tasks — a modest bump over a chat turn is enough.
         AgentRole.CODE_CORRECTNESS_REVIEWER,
         AgentRole.SECURITY_REVIEWER,

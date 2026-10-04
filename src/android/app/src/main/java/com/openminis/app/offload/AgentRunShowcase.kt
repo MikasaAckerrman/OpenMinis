@@ -30,6 +30,8 @@ internal object AgentRunShowcase {
 
     private fun label(role: AgentRole): String = when (role) {
         AgentRole.ORCHESTRATOR -> "Orchestrator"
+        // [T-explore-role]
+        AgentRole.EXPLORE -> "Explore"
         AgentRole.REQUIREMENTS_ANALYST -> "Requirements Analyst"
         AgentRole.CODEBASE_DISCOVERY -> "Codebase Discovery"
         AgentRole.SOLUTION_ARCHITECT -> "Solution Architect"
