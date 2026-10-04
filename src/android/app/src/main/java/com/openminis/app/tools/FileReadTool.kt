@@ -59,7 +59,7 @@ object FileReadTool {
                 false, toolTitle = toolTitle)
         }
         val capped = if (out.length > maxLength) out.take(maxLength) + "\n…(truncated)" else out
-        val pages = result.output.split("\f").size
+        val pages = result.output.split("\u000C").size
         return ToolExecutionResult(
             "[$path | PDF | ~$pages page(s) | text extracted]\n\n$capped",
             true, toolTitle = toolTitle)
