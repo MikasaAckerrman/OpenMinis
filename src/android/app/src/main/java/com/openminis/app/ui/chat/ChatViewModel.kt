@@ -12605,7 +12605,7 @@ class ChatViewModel(
             // executor branches below stay platform-side (UI blocks).
             val resultParts = mutableListOf<AgentContentPart>()
             val batchPlanner = com.openminis.app.engine.ToolBatchPlanner(
-                pathOf = com.openminis.app.engine.jsonObjectPathExtractor,
+                pathOf = com.openminis.app.engine::jsonObjectPathExtractor,
             )
             val canParallelize = batchPlanner.canParallelize(
                 toolCalls.map { (id, name, args) ->
