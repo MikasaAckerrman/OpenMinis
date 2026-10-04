@@ -62,7 +62,13 @@ object ToolHooks {
             loadedAtMs = now
         }
         if (rules.isEmpty()) return null
-        val hay = argsJson.lowercase()
+        // [T-hook-redos] Cap the match input: user-authored regexes run
+        // against MODEL-CONTROLLED argument strings — a pathological
+        // pattern ((a+)+$) on a long string is an exponential blowup on
+        // the calling thread. 2000 chars bounds the blast radius (rules
+        // target commands and ids, never multi-KB payloads) while keeping
+        // every legitimate rule working.
+        val hay = argsJson.take(2000).lowercase()
         for (r in rules) {
             if (r.tool != null && r.tool != toolName) continue
             if (r.regex != null && !r.regex.containsMatchIn(hay)) continue
