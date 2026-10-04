@@ -71,6 +71,7 @@ object McpCallTool {
     suspend fun execute(
         argsJson: String,
         sessionId: String,
+        context: android.content.Context,
     ): ToolExecutionResult = withContext(Dispatchers.IO) {
         val args = runCatching { JSONObject(argsJson) }.getOrElse {
             return@withContext ToolExecutionResult("Error: malformed arguments", false)
@@ -82,13 +83,13 @@ object McpCallTool {
         val timeoutSec = args.optInt("timeout", DEFAULT_TIMEOUT_SEC).coerceIn(5, 300)
 
         when (action) {
-            "list" -> runCli(sessionId, listOf("list"), timeoutSec)
+            "list" -> runCli(sessionId, listOf("list"), timeoutSec, context)
             "tools" -> {
                 if (server.isEmpty()) {
                     return@withContext ToolExecutionResult(
                         "Error: 'server' is required for action=tools", false)
                 }
-                runCli(sessionId, listOf("tools", server), timeoutSec)
+                runCli(sessionId, listOf("tools", server), timeoutSec, context)
             }
             "call" -> {
                 if (server.isEmpty() || tool.isEmpty()) {
@@ -107,7 +108,7 @@ object McpCallTool {
                     argv.add("--input")
                     argv.add(toolArgs)
                 }
-                runCli(sessionId, argv, timeoutSec)
+                runCli(sessionId, argv, timeoutSec, context)
             }
             else -> ToolExecutionResult(
                 "Error: unknown action '$action' — use list | tools | call", false)
@@ -123,10 +124,12 @@ object McpCallTool {
         sessionId: String,
         argv: List<String>,
         timeoutSec: Int,
+        context: android.content.Context,
     ): ToolExecutionResult {
         // Server allowlist: disabled servers are refused before the guest
-        // roundtrip. servers.json path mirrors MCPRepository's host dir.
-        val serversJson = File("/var/minis/mcp-servers/servers.json")
+        // roundtrip. The HOST path mirrors MCPRepository's dir
+        // (filesDir/minis-global/mcp-servers ↔ guest /var/minis/mcp-servers).
+        val serversJson = File(context.filesDir, "minis-global/mcp-servers/servers.json")
         if (serversJson.exists() && argv.size >= 2 && argv[0] != "list") {
             val server = argv[1]
             runCatching {

@@ -51,6 +51,12 @@ object AskUserTool {
                 description = "'true' (default) to also let the user type a custom answer.",
                 enumValues = listOf("true", "false"),
             ),
+            "timeout" to AgentToolParam(
+                type = "integer",
+                description = "Seconds to wait for the user (default 0 = forever). Set " +
+                    "120-300 in AUTO/BACKGROUND modes with no user present — the tool " +
+                    "then returns 'TIMEOUT' and you continue with your best judgment.",
+            ),
         ),
         required = listOf("question", "options"),
     )
@@ -68,16 +74,28 @@ object AskUserTool {
                 "Error: 'options' is required — JSON array or 'A;B;C'",
                 false)
         val allowFreeText = args.optString("allow_free_text", "true") != "false"
+        val timeoutSec = args.optInt("timeout", 0).coerceIn(0, 3600)
         // The gate suspends on the MAIN context by design — the dialog
         // renders from Compose; withContext keeps the dispatcher hop honest
         // regardless of the caller's dispatcher.
         val answer = withContext(Dispatchers.Main) {
-            com.openminis.app.sandbox.AskUserGate.ask(
-                sessionId = sessionId,
-                question = question,
-                options = options,
-                allowFreeText = allowFreeText,
-            )
+            if (timeoutSec > 0) {
+                kotlinx.coroutines.withTimeoutOrNull(timeoutSec * 1000L) {
+                    com.openminis.app.sandbox.AskUserGate.ask(
+                        sessionId = sessionId,
+                        question = question,
+                        options = options,
+                        allowFreeText = allowFreeText,
+                    )
+                } ?: "TIMEOUT: the user did not answer within ${timeoutSec}s — continue with your best judgment."
+            } else {
+                com.openminis.app.sandbox.AskUserGate.ask(
+                    sessionId = sessionId,
+                    question = question,
+                    options = options,
+                    allowFreeText = allowFreeText,
+                )
+            }
         }
         return ToolExecutionResult(answer, true)
     }

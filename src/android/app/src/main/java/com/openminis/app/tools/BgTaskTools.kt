@@ -9,6 +9,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.io.File
+import java.io.RandomAccessFile
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -193,15 +194,26 @@ object BgTaskTools {
             }
         }
         task.job = scope.launch {
-            val (exit, _) = runCatching { exec(appendLine) }
-                .getOrElse { Pair(-1, "bg exec crashed: ${it.message}") }
-            task.exitCode = exit
-            task.state = when {
-                exit == 124 -> "TIMEOUT"
-                exit == 0 -> "DONE"
-                else -> "FAILED"
+            try {
+                val (exit, _) = exec(appendLine)
+                task.exitCode = exit
+                task.state = when {
+                    exit == 124 -> "TIMEOUT"
+                    exit == 0 -> "DONE"
+                    else -> "FAILED"
+                }
+                appendLine("[bg] finished: exit=$exit state=${task.state}")
+            } catch (ce: kotlinx.coroutines.CancellationException) {
+                // bg_kill path: the KILLED state was already set by kill()
+                // — do NOT overwrite it. runCatching would swallow the
+                // cancellation and mislabel the task FAILED.
+                if (task.state != "KILLED") task.state = "KILLED"
+                throw ce
+            } catch (t: Throwable) {
+                task.exitCode = -1
+                task.state = "FAILED"
+                runCatching { appendLine("[bg] crashed: ${t.message}") }
             }
-            appendLine("[bg] finished: exit=$exit state=${task.state}")
         }
         register(task)
         runCatching { log.appendText("[$started] bg_run: $command\n") }
@@ -221,17 +233,34 @@ object BgTaskTools {
         if (t == null) {
             // Registry lost (app restarted) — the log file may still exist.
             val log = logFileFor(taskId)
-            val tail = runCatching {
-                log.readLines().takeLast(tailLines).joinToString("\n")
-            }.getOrElse { "" }
+            val tail = tailOf(log, tailLines)
             return Triple(null, "LOST (task not in registry — app restarted?)", tail)
         }
         val runSec = (System.currentTimeMillis() - t.startedAtMs) / 1000
         val header = "state=${t.state} exit=${t.exitCode ?: "—"} runtime=${runSec}s cmd=${t.command}"
-        val tail = runCatching { t.logFile.readLines() }.getOrElse { emptyList() }
-            .takeLast(tailLines).joinToString("\n")
+        val tail = tailOf(t.logFile, tailLines)
         return Triple(t, header, tail)
     }
+
+    /**
+     * Bounded tail read: a background daemon can log megabytes over a day —
+     * readLines() of the whole file is an OOM on a phone. Read at most the
+     * last 256KB via RandomAccessFile, then take the requested lines.
+     */
+    private fun tailOf(log: File, lines: Int): String = runCatching {
+        if (!log.exists()) return@runCatching ""
+        val cap = 256 * 1024L
+        val len = log.length()
+        RandomAccessFile(log, "r").use { raf ->
+            if (len > cap) raf.seek(len - cap)
+            val buf = ByteArray(minOf(len, cap).toInt())
+            raf.readFully(buf)
+            val text = String(buf, Charsets.UTF_8)
+            // Drop the potentially-cut first line, then the requested tail.
+            val body = if (len > cap) text.substringAfter('\n') else text
+            body.lines().takeLast(lines).joinToString("\n")
+        }
+    }.getOrElse { "" }
 
     // ------------------------------------------------------------------
     // Arg parsing helpers (kept dumb-simple on purpose).

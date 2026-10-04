@@ -13292,7 +13292,7 @@ class ChatViewModel(
             com.openminis.app.tools.TodoTool.READ_NAME ->
                 com.openminis.app.tools.TodoTool.read(activeSessionId)
             com.openminis.app.tools.McpCallTool.NAME ->
-                com.openminis.app.tools.McpCallTool.execute(argsJson, activeSessionId)
+                com.openminis.app.tools.McpCallTool.execute(argsJson, activeSessionId, context)
             "memory_write" -> executeMemoryWriteTool(argsJson)
             "memory_get" -> executeMemoryGetTool(argsJson)
             "supermemory_search" -> executeSupermemorySearchTool(argsJson)
