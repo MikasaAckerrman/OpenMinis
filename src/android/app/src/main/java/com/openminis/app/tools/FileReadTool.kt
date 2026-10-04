@@ -10,9 +10,64 @@ import java.io.File
 object FileReadTool {
     const val NAME = "file_read"
 
+    // [T-pdf-fileread] True when the request targets a .pdf — the dispatch
+    // layer reroutes it to executePdf (needs the suspend coordinator).
+    fun isPdf(argsJson: String): Boolean =
+        runCatching { JSONObject(argsJson).optString("path", "") }
+            .getOrDefault("").lowercase().endsWith(".pdf")
+
+    /**
+     * [T-pdf-fileread] PDF text extraction: page text via the guest's
+     * pdftotext (poppler-utils). Self-healing contract — when the binary
+     * is absent the result tells the model the exact bootstrap command
+     * (apk add poppler-utils via shell_execute), so the FIRST pdf-read
+     * in a fresh rootfs teaches itself the tool.
+     */
+    suspend fun executePdf(
+        argsJson: String,
+        sessionId: String,
+        context: android.content.Context,
+    ): ToolExecutionResult {
+        val args = runCatching { JSONObject(argsJson) }.getOrElse {
+            return ToolExecutionResult("Error: malformed arguments", false)
+        }
+        val path = args.optString("path", "").trim()
+        val toolTitle = args.optString("tool_title", "Extract PDF text")
+        if (path.isEmpty()) return ToolExecutionResult("Error: 'path' is required", false)
+        // Host existence check for a clean early error; the guest command
+        // uses the SAME path string the model sent (guest-space == the
+        // tool's path namespace).
+        val hostFile = com.openminis.app.sandbox.PRootKernel.resolveSessionHostPath(
+            sessionId, path, context ?: return ToolExecutionResult(
+                "Error: no context for path resolution", false))
+        if (hostFile == null || !hostFile.exists()) {
+            return ToolExecutionResult("Error: file not found: $path", false, toolTitle = toolTitle)
+        }
+        val maxLength = args.optInt("max_length", 15000).coerceIn(1000, 60000)
+        val quoted = "'" + path.replace("'", "'\\''") + "'"
+        val result = com.openminis.app.sandbox.ExecutionCoordinator.execute(
+            sessionId = sessionId,
+            command = "command -v pdftotext >/dev/null 2>&1 && pdftotext -layout $quoted - 2>/dev/null || echo PDFTEXT_MISSING",
+            timeout = 30_000L,
+        )
+        val out = result.output.trim()
+        if (out == "PDFTEXT_MISSING" || out.isEmpty()) {
+            return ToolExecutionResult(
+                "PDF text extraction unavailable: pdftotext is not installed in the guest.\n" +
+                    "Bootstrap once with shell_execute: apk add poppler-utils\n" +
+                    "Then retry file_read on the same path.",
+                false, toolTitle = toolTitle)
+        }
+        val capped = if (out.length > maxLength) out.take(maxLength) + "\n…(truncated)" else out
+        val pages = result.output.split("\f").size
+        return ToolExecutionResult(
+            "[$path | PDF | ~$pages page(s) | text extracted]\n\n$capped",
+            true, toolTitle = toolTitle)
+    }
+
     fun definition(): AgentToolDefinition = AgentToolDefinition(
         name = NAME,
-        description = "Read a file from the Linux filesystem. Faster than shell_execute for reading files — no shell overhead. Returns file content with metadata. Rejects binary files.",
+        description = "Read a file from the Linux filesystem. Faster than shell_execute for reading files — no shell overhead. Returns file content with metadata. Rejects binary files. PDF: text layer is extracted automatically (needs pdftotext in the guest — the error tells you the bootstrap command).",
         parameters = mapOf(
             "tool_title" to AgentToolParam("string", "A concise 5-10 word summary of what this tool call does, shown to the user (e.g. 'Read Python script contents', 'Check system configuration file'). Use the same language as the user."),
             "path" to AgentToolParam("string", "Absolute Linux path to read (e.g. /var/minis/workspace/data.csv)"),
@@ -73,6 +128,9 @@ object FileReadTool {
             }
 
             if (isBinary) {
+                // [T-pdf-fileread] PDF text extraction happens in the
+                // DISPATCH layer (needs the suspend coordinator) — see
+                // isPdf()/executePdf(). Every other binary stays a stub.
                 return ToolExecutionResult(
                     "[$path | $size bytes | binary file — cannot display contents]",
                     true, toolTitle = toolTitle

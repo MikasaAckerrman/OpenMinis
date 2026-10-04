@@ -13237,7 +13237,13 @@ class ChatViewModel(
         try {
             val toolResult = when (name) {
             FileReadTool.NAME -> {
-                val result = FileReadTool.execute(argsJson, activeSessionId, context)
+                // [T-pdf-fileread] PDF requests reroute to the text-layer
+                // extractor (pdftotext in the guest, self-bootstrapping).
+                val result = if (FileReadTool.isPdf(argsJson)) {
+                    FileReadTool.executePdf(argsJson, activeSessionId, context)
+                } else {
+                    FileReadTool.execute(argsJson, activeSessionId, context)
+                }
                 // Record skill usage when SKILL.md under /var/minis/skills/<id>/ is read.
                 if (result.success) {
                     runCatching {
