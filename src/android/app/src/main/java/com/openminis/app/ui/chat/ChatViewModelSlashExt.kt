@@ -133,12 +133,19 @@ internal fun ChatViewModel.filteredSlashCommands(): List<SlashCommand> {
             "clear" -> cmd.copy(
                 subtitle = context.getString(R.string.slash_clear_subtitle),
             )
-            // [T-plan-mode] State-aware subtitle, like the memory row.
+            // [T-permission-modes] State-aware subtitles, like the memory row.
             "plan" -> cmd.copy(
-                subtitle = if (_planMode.value) {
+                subtitle = if (_permissionMode.value == com.openminis.app.engine.PermissionMode.PLAN) {
                     "ON — read-only exploration until the plan is approved"
                 } else {
                     "Agent explores read-only, then submits a plan for approval"
+                },
+            )
+            "edit" -> cmd.copy(
+                subtitle = if (_permissionMode.value == com.openminis.app.engine.PermissionMode.EDIT) {
+                    "ON — mutating calls ask; \"Always allow\" learns the call"
+                } else {
+                    "Mutating tool calls ask for confirmation before running"
                 },
             )
             else -> cmd

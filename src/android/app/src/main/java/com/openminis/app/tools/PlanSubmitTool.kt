@@ -84,8 +84,22 @@ object PlanSubmitTool {
             options = listOf(APPROVE, CANCEL),
         ).trim()
 
+        // [T-plan-mode-gate-prefix] AskUserGate prefixes its verdicts
+        // ("USER ANSWER: <label>" for chips, "USER TEXT: <text>" for free
+        // text, "SKIPPED/CANCELLED/REFUSED: …" for dismissals). Normalize
+        // BEFORE matching so the real dialog and test fakes (raw labels)
+        // take the same branch — the raw-prefix form never equals APPROVE,
+        // which silently turned every real approval into edit feedback.
+        val verdict = when {
+            answer.startsWith("USER ANSWER: ") -> answer.removePrefix("USER ANSWER: ").trim()
+            answer.startsWith("USER TEXT: ") -> answer.removePrefix("USER TEXT: ").trim()
+            answer.startsWith("SKIPPED") || answer.startsWith("CANCELLED") ||
+                answer.startsWith("REFUSED") -> ""
+            else -> answer
+        }
+
         return when {
-            answer.equals(APPROVE, ignoreCase = true) -> {
+            verdict.equals(APPROVE, ignoreCase = true) -> {
                 onApproved()
                 ToolExecutionResult(
                     "PLAN APPROVED. Plan mode is OFF — write/execute tools are available again " +
@@ -94,14 +108,14 @@ object PlanSubmitTool {
                     true,
                 )
             }
-            answer.equals(CANCEL, ignoreCase = true) ->
+            verdict.equals(CANCEL, ignoreCase = true) ->
                 ToolExecutionResult(
                     "PLAN REJECTED — the user cancelled. You are still in plan mode: keep " +
                         "exploring read-only and submit a revised plan with plan_submit, or ask " +
                         "the user what direction they want instead.",
                     true,
                 )
-            answer.isBlank() ->
+            verdict.isBlank() ->
                 ToolExecutionResult(
                     "PLAN NOT APPROVED — no answer arrived. Stay in plan mode; continue " +
                         "read-only exploration or re-submit later.",
@@ -109,7 +123,7 @@ object PlanSubmitTool {
                 )
             else ->
                 ToolExecutionResult(
-                    "PLAN NOT APPROVED — the user replied with edit feedback:\n$answer\n\n" +
+                    "PLAN NOT APPROVED — the user replied with edit feedback:\n$verdict\n\n" +
                         "Stay in plan mode. Revise the plan per the feedback and submit it " +
                         "again with plan_submit.",
                     true,

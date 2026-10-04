@@ -75,4 +75,35 @@ class PlanSubmitToolTest {
         assertTrue(approved)
         assertTrue(r.output.startsWith("PLAN APPROVED"))
     }
+
+    @Test
+    fun `real AskUserGate chip verdicts normalize before matching`() {
+        // [T-plan-mode-gate-prefix] The dialog returns "USER ANSWER: Approve" —
+        // the raw-prefix form must take the APPROVE branch, not the feedback one.
+        val r = run("USER ANSWER: Approve")
+        assertTrue(approved)
+        assertTrue(r.output.startsWith("PLAN APPROVED"))
+    }
+
+    @Test
+    fun `real AskUserGate cancel verdict normalizes`() {
+        val r = run("USER ANSWER: Cancel")
+        assertTrue(!approved)
+        assertTrue(r.output.startsWith("PLAN REJECTED"))
+    }
+
+    @Test
+    fun `dismissed dialog is the no-answer branch, not feedback`() {
+        val r = run("SKIPPED: the user closed the question — continue with your best judgment.")
+        assertTrue(!approved)
+        assertTrue(r.output.startsWith("PLAN NOT APPROVED — no answer"))
+    }
+
+    @Test
+    fun `real AskUserGate free text becomes edit feedback`() {
+        val r = run("USER TEXT: add a migration step")
+        assertTrue(!approved)
+        assertTrue(r.output.startsWith("PLAN NOT APPROVED"))
+        assertTrue(r.output.contains("add a migration step"))
+    }
 }

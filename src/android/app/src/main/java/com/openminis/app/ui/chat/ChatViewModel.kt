@@ -21,6 +21,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Compress
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.outlined.Extension
@@ -876,17 +877,22 @@ class ChatViewModel(
     val forceAgents: StateFlow<Boolean> = _forceAgents.asStateFlow()
 
     /**
-     * [T-plan-mode] PLAN mode for THIS chat: the agent explores read-only
-     * and must submit its plan via plan_submit before any write/execution.
-     * Seeded from disk so the mode survives process death mid-task, and
-     * written through on every change — see PlanModePrefs (mirrors
-     * AgentModePrefs; internal so the slash-menu extension can render the
-     * subtitle state).
+     * [T-permission-modes] The session's permission mode (ZCode plan/edit/
+     * yolo): PLAN — read-only exploration until plan_submit approval; EDIT —
+     * mutating tool calls surface a confirmation ("Always allow" learns the
+     * call for this session); AUTO — the historical default, the sandbox
+     * plus the offload gates remain the containment. Seeded from disk so
+     * the mode survives process death mid-task, and written through on
+     * every change — see PermissionModePrefs (internal so the slash-menu
+     * extension can render the subtitle state).
      */
-    internal val _planMode = MutableStateFlow(
-        PlanModePrefs.isEnabled(context, sessionId),
+    internal val _permissionMode = MutableStateFlow(
+        PermissionModePrefs.get(context, sessionId),
     )
-    val planMode: StateFlow<Boolean> = _planMode.asStateFlow()
+
+    /** PLAN-mode convenience for schema filtering and the executor gate. */
+    val planMode: Boolean
+        get() = _permissionMode.value == com.openminis.app.engine.PermissionMode.PLAN
 
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
@@ -1538,9 +1544,10 @@ class ChatViewModel(
             allowedTools = com.openminis.app.tools.AgentToolPolicyStore.policyFor(sessionId),
             // [T-scoped-agent-toggles] session override → legacy global.
             subagentsEnabled = isSubagentsEnabled(),
-            // [T-plan-mode] recomputed per read, like the memory gate above —
-            // an approval mid-turn unlocks the write tools on the next request.
-            planMode = _planMode.value,
+            // [T-permission-modes] recomputed per read, like the memory gate
+            // above — an approval mid-turn unlocks the write tools on the
+            // next request build.
+            planMode = _permissionMode.value == com.openminis.app.engine.PermissionMode.PLAN,
         )
 
     /**
@@ -2594,6 +2601,12 @@ class ChatViewModel(
             title = "Plan",
             subtitle = "",
         ),
+        SlashCommand(
+            id = "edit",
+            icon = Icons.Default.Edit,
+            title = "Edit mode",
+            subtitle = "",
+        ),
     )
 
     // [T-android-split-chat] filteredSlashCommands / updateSlashMenuState /
@@ -2655,7 +2668,8 @@ class ChatViewModel(
             "compact-level" -> _showCompactLevelPicker.value = true
             "memory" -> toggleMemoryEnabled()
             "thinking" -> toggleThinking()
-            "plan" -> togglePlanMode()
+            "plan" -> togglePermissionMode(com.openminis.app.engine.PermissionMode.PLAN)
+            "edit" -> togglePermissionMode(com.openminis.app.engine.PermissionMode.EDIT)
             "clear" -> _clearChatConfirmRequested.value = true
             else -> AppLogger.info(TAG, "[Slash] unrecognized id=${cmd.id} — no dispatch")
         }
@@ -6066,9 +6080,11 @@ class ChatViewModel(
             // draft's flag has to follow the promotion or it would persist under
             // an id that no longer exists.
             AgentModePrefs.migrate(context, fromDraft = sessionId, toReal = session.id)
-            // [T-plan-mode] Same carry for the plan-mode flag: armed on a
-            // draft must land on the persisted session id.
-            PlanModePrefs.migrate(context, fromDraft = sessionId, toReal = session.id)
+            // [T-permission-modes] Same carry for the permission mode and
+            // any learned allowances: armed on a draft must land on the
+            // persisted session id.
+            PermissionModePrefs.migrate(context, fromDraft = sessionId, toReal = session.id)
+            PermissionAllowlistPrefs.migrate(context, fromDraft = sessionId, toReal = session.id)
             // [crash-safe-draft] Carry the composer draft / send-backup slots
             // from the draft id to the real id so a failed first turn can still
             // restore the user's text under the persisted session. See DraftStore.
@@ -8543,31 +8559,49 @@ class ChatViewModel(
     }
 
     /**
-     * [T-plan-mode] Flip PLAN mode for this chat (slash /plan, plan approval).
-     * Writes through to disk immediately — same reasoning as [setForceAgents]:
-     * the mode must survive the process dying while the user composes.
+     * [T-permission-modes] Switch the session's mode (slash commands, plan
+     * approval). Writes through to disk immediately — same reasoning as
+     * [setForceAgents]: the mode must survive the process dying while the
+     * user composes.
      */
-    fun setPlanMode(enabled: Boolean) {
-        if (_planMode.value == enabled) return
-        _planMode.value = enabled
+    fun setPermissionMode(mode: com.openminis.app.engine.PermissionMode) {
+        if (_permissionMode.value == mode) return
+        // Entering PLAN remembers where the session came from, so an
+        // approval returns it to EDIT/AUTO rather than a hardcoded default.
+        // In-memory on purpose: a mid-plan process death restores AUTO,
+        // the safe default.
+        if (mode == com.openminis.app.engine.PermissionMode.PLAN &&
+            _permissionMode.value != com.openminis.app.engine.PermissionMode.PLAN
+        ) {
+            _modeBeforePlan = _permissionMode.value
+        }
+        _permissionMode.value = mode
         val sid = realSessionId.ifEmpty { sessionId }
-        PlanModePrefs.setEnabled(context, sid, enabled)
-        AppLogger.info("AgentRoute", "plan mode -> $enabled sid=${sid.take(8)}")
+        PermissionModePrefs.set(context, sid, mode)
+        AppLogger.info("AgentRoute", "permission mode -> $mode sid=${sid.take(8)}")
     }
 
-    /** Slash entry (/plan): flip and surface the state as a system-info card. */
-    private fun togglePlanMode() {
-        val newValue = !_planMode.value
-        setPlanMode(newValue)
-        appendSystemInfo(
-            text = if (newValue) {
-                "Plan mode ON. The agent explores read-only and must present its plan with " +
-                    "plan_submit; write and execute tools are gated until you approve it."
-            } else {
-                "Plan mode OFF. All tools are available."
-            },
-            iconKind = "plan",
-        )
+    private var _modeBeforePlan: com.openminis.app.engine.PermissionMode =
+        com.openminis.app.engine.PermissionMode.AUTO
+
+    /** Slash entries (/plan, /edit): flip the mode, surface it as a system-info card. */
+    private fun togglePermissionMode(mode: com.openminis.app.engine.PermissionMode) {
+        val newValue =
+            if (_permissionMode.value == mode) com.openminis.app.engine.PermissionMode.AUTO else mode
+        setPermissionMode(newValue)
+        appendSystemInfo(text = describeMode(newValue), iconKind = "plan")
+    }
+
+    private fun describeMode(mode: com.openminis.app.engine.PermissionMode): String = when (mode) {
+        com.openminis.app.engine.PermissionMode.PLAN ->
+            "Plan mode ON. The agent explores read-only and must present its plan with " +
+                "plan_submit; write and execute tools are gated until you approve it."
+        com.openminis.app.engine.PermissionMode.EDIT ->
+            "Edit mode ON. Mutating tool calls ask for confirmation; \"Always allow\" " +
+                "learns the exact call for this session."
+        com.openminis.app.engine.PermissionMode.AUTO ->
+            "Permission mode AUTO. All tools run; the sandbox and offload gates remain " +
+                "the containment."
     }
 
     /**
@@ -13288,29 +13322,101 @@ class ChatViewModel(
                     "(ruleset: /var/minis/.config/hooks.json — the user configured this refusal)",
                 false, toolTitle = friendlyToolTitle(name))
         }
-        // [T-plan-mode] Executor backstop behind the schema filter: WRITE
-        // tools are already absent from the schema, this catches a model
-        // replaying an old call or a provider ignoring the schema. EXECUTE
-        // is judged per-call by ReadOnlyShellPolicy — read-only exploration
-        // (ls/cat/grep/git log) stays possible in plan mode. plan_submit is
-        // META and always allowed: it is how the mode ends.
-        if (_planMode.value) {
-            val gate = com.openminis.app.engine.DefaultPermissionGate(
-                mode = com.openminis.app.engine.PermissionMode.PLAN,
-                writePolicy = com.openminis.app.engine.ReadOnlyShellPolicy,
-            )
-            val decision = gate.check(
-                name,
-                com.openminis.app.engine.ToolTaxonomy.kindOf(name),
-                argsJson,
-            )
-            if (decision is com.openminis.app.engine.GateDecision.Deny) {
-                return ToolExecutionResult(
-                    decision.reason,
-                    false,
-                    toolTitle = friendlyToolTitle(name),
+        // [T-permission-modes] Executor enforcement, per mode. PLAN: the
+        // M2 wall (read-only shell only). EDIT: mutating calls ask through
+        // AskUserGate — "Always allow" learns the exact call into the
+        // session allowlist, "Deny" refuses with text addressed to the
+        // model. AUTO: nothing here — the sandbox and offload gates remain
+        // the containment (the historical behavior).
+        when (_permissionMode.value) {
+            com.openminis.app.engine.PermissionMode.PLAN -> {
+                val gate = com.openminis.app.engine.DefaultPermissionGate(
+                    mode = com.openminis.app.engine.PermissionMode.PLAN,
+                    writePolicy = com.openminis.app.engine.ReadOnlyShellPolicy,
                 )
+                val decision = gate.check(
+                    name,
+                    com.openminis.app.engine.ToolTaxonomy.kindOf(name),
+                    argsJson,
+                )
+                if (decision is com.openminis.app.engine.GateDecision.Deny) {
+                    return ToolExecutionResult(
+                        decision.reason,
+                        false,
+                        toolTitle = friendlyToolTitle(name),
+                    )
+                }
             }
+            com.openminis.app.engine.PermissionMode.EDIT -> {
+                val gate = com.openminis.app.engine.DefaultPermissionGate(
+                    mode = com.openminis.app.engine.PermissionMode.EDIT,
+                    writePolicy = com.openminis.app.engine.ReadOnlyShellPolicy,
+                    allowlist = { tool, args ->
+                        PermissionAllowlistPrefs.isAllowed(context, activeSessionId, tool, args)
+                    },
+                )
+                when (val decision = gate.check(
+                    name,
+                    com.openminis.app.engine.ToolTaxonomy.kindOf(name),
+                    argsJson,
+                )) {
+                    is com.openminis.app.engine.GateDecision.Deny ->
+                        return ToolExecutionResult(
+                            decision.reason,
+                            false,
+                            toolTitle = friendlyToolTitle(name),
+                        )
+                    com.openminis.app.engine.GateDecision.Ask -> {
+                        // Read-only calls never reach Ask (the gate allows
+                        // them); what asks is a WRITE or a mutating/shell
+                        // EXECUTE — show the actual command when there is
+                        // one, so the tap is an informed one.
+                        val command = runCatching {
+                            JSONObject(argsJson).optString("command", "").trim()
+                        }.getOrNull().orEmpty()
+                        val question = if (command.isNotEmpty()) {
+                            "EDIT mode — allow this command?\n${command.take(500)}"
+                        } else {
+                            "EDIT mode — allow the '${friendlyToolTitle(name)}' call?"
+                        }
+                        val answer = com.openminis.app.sandbox.AskUserGate.ask(
+                            sessionId = activeSessionId,
+                            question = question,
+                            options = com.openminis.app.ui.chat.PermissionAskOptions.ALL.map {
+                                com.openminis.app.sandbox.AskUserGate.Option(it)
+                            },
+                            allowFreeText = false,
+                        )
+                        // [T-plan-mode-gate-prefix] AskUserGate prefixes its
+                        // verdicts; normalize before matching (same lesson
+                        // as plan_submit).
+                        val verdict = answer
+                            .removePrefix("USER ANSWER: ")
+                            .removePrefix("USER TEXT: ")
+                            .trim()
+                        when {
+                            verdict.equals(
+                                com.openminis.app.ui.chat.PermissionAskOptions.ALWAYS,
+                                ignoreCase = true,
+                            ) -> PermissionAllowlistPrefs.allow(
+                                context, activeSessionId, name, argsJson,
+                            )
+                            verdict.equals(
+                                com.openminis.app.ui.chat.PermissionAskOptions.ALLOW,
+                                ignoreCase = true,
+                            ) -> {}
+                            else -> return ToolExecutionResult(
+                                "DENIED by the user (edit mode). Do not repeat this call; " +
+                                    "adapt your approach or ask the user how to proceed.",
+                                false,
+                                toolTitle = friendlyToolTitle(name),
+                            )
+                        }
+                    }
+                    com.openminis.app.engine.GateDecision.Allow -> {}
+                }
+            }
+            com.openminis.app.engine.PermissionMode.AUTO -> {}
         }
         try {
             val toolResult = when (name) {
@@ -13387,7 +13493,18 @@ class ChatViewModel(
                             allowFreeText = true,
                         )
                     },
-                    onApproved = { setPlanMode(false) },
+                    onApproved = {
+                        // [T-permission-modes] Approval returns the session
+                        // to where the user was before arming plan mode
+                        // (EDIT/AUTO); PLAN itself is never "approved into".
+                        setPermissionMode(
+                            if (_modeBeforePlan == com.openminis.app.engine.PermissionMode.PLAN) {
+                                com.openminis.app.engine.PermissionMode.AUTO
+                            } else {
+                                _modeBeforePlan
+                            },
+                        )
+                    },
                 )
             com.openminis.app.tools.McpCallTool.NAME ->
                 com.openminis.app.tools.McpCallTool.execute(argsJson, activeSessionId, context)
@@ -13434,10 +13551,22 @@ class ChatViewModel(
             // [T-tool-hooks] warn-action wrap: the call ran (that is the
             // point of "warn"), but the user's annotation rides first so
             // the model cannot miss it.
-            val finalResult = if (hookVerdict?.warning != null) {
+            val warnedResult = if (hookVerdict?.warning != null) {
                 toolResult.copy(output = "[user hook] ${hookVerdict.warning}\n${toolResult.output}")
             } else {
                 toolResult
+            }
+            // [T-hook-engine] PostToolUse feedback (the hook-feedback loop):
+            // phase:"post" rules in hooks.json ride AFTER the result —
+            // format reminders, audit hints, review nudges. Best-effort
+            // decoration on the same discipline as the budget footer; the
+            // error path stays undecorated by design (failures already
+            // speak for themselves, and a post rule cannot un-run them).
+            val postFeedback = com.openminis.app.tools.ToolHooks.evaluatePost(name, argsJson)
+            val finalResult = if (postFeedback != null) {
+                warnedResult.copy(output = "${warnedResult.output}\n[post-hook] $postFeedback")
+            } else {
+                warnedResult
             }
             return applyTurnTimer(maybeAppendBudgetLine(maybeAppendMemoryNudge(finalResult), budgetStatus))
         } catch (e: kotlinx.coroutines.CancellationException) {
