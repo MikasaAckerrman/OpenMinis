@@ -1,6 +1,5 @@
 package com.openminis.app.engine
 
-import org.json.JSONObject
 
 /**
  * [T-m7-batch-planner] The conflict-aware parallel-batch DECISION, lifted
@@ -60,13 +59,3 @@ class ToolBatchPlanner(
         return keys.size == keys.distinct().size
     }
 }
-
-/**
- * [T-m7-path-extractor] The platform's real path extractor: the model's
- * args object carries the target under "path". Kept OUT of the planner
- * class so the engine core stays constructible without org.json.
- */
-fun jsonObjectPathExtractor(toolName: String, argsJson: String): String =
-    runCatching {
-        JSONObject(argsJson).optString("path", "").trim()
-    }.getOrNull() ?: ""
