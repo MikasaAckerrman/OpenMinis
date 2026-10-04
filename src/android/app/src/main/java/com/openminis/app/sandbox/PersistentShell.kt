@@ -460,6 +460,26 @@ class PersistentShell(
      *
      * @return Pair of (output, exitCode)
      */
+    /**
+     * [T-bg-steer] Write one line to the RUNNING command's stdin (message
+     * steering, ported from ZCode's runtime-task sink). Semantics: if the
+     * current command reads stdin, it receives the line; otherwise the
+     * shell buffers it and executes it AFTER the command exits (a way to
+     * queue a follow-up). Prefix with '#' for a no-op comment.
+     */
+    fun steerInput(text: String): Boolean {
+        val writer = stdinWriter
+        if (writer == null || !isAlive) return false
+        return runCatching {
+            synchronized(this) {
+                writer.write(text)
+                if (!text.endsWith("\n")) writer.write("\n")
+                writer.flush()
+            }
+            true
+        }.getOrDefault(false)
+    }
+
     suspend fun executeCommand(
         command: String,
         timeout: Long = 600_000L,

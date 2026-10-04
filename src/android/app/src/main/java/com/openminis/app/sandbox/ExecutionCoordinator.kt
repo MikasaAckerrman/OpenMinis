@@ -241,6 +241,14 @@ object ExecutionCoordinator {
     }
 
     /**
+     * [T-bg-steer] Write one line into the RUNNING command's stdin of a
+     * session's shell (message steering for background tasks). No-op-safe:
+     * missing shell / dead shell returns false.
+     */
+    fun steerSession(sessionId: String, text: String): Boolean =
+        shells[sessionId]?.steerInput(text) ?: false
+
+    /**
      * Called when a session is closed. Stops and removes the shell.
      */
     fun sessionDidTerminate(sessionId: String) {

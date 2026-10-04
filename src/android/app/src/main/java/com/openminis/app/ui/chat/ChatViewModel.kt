@@ -13283,6 +13283,7 @@ class ChatViewModel(
             com.openminis.app.tools.BgTaskTools.BG_CHECK_NAME -> executeBgCheck(argsJson)
             com.openminis.app.tools.BgTaskTools.BG_LIST_NAME -> executeBgList()
             com.openminis.app.tools.BgTaskTools.BG_KILL_NAME -> executeBgKill(argsJson)
+            com.openminis.app.tools.BgTaskTools.BG_STEER_NAME -> executeBgSteer(argsJson)
             com.openminis.app.tools.WebSearchTool.NAME ->
                 com.openminis.app.tools.WebSearchTool.execute(argsJson, context)
             com.openminis.app.tools.AskUserTool.NAME ->
@@ -14030,6 +14031,41 @@ class ChatViewModel(
                 "kill requested for $taskId (async — state=KILLED; check with bg_check)", true)
         } else {
             ToolExecutionResult("unknown task_id: $taskId (see bg_list)", false)
+        }
+    }
+
+    /**
+     * [T-bg-steer] One line to a RUNNING task's stdin via its private
+     * session shell. ZCode-port: their message sink, adapted to our
+     * persistent-shell architecture.
+     */
+    private fun executeBgSteer(argsJson: String): ToolExecutionResult {
+        val args = runCatching { JSONObject(argsJson) }.getOrElse {
+            return ToolExecutionResult("Error: malformed arguments", false)
+        }
+        val taskId = args.optString("task_id", "").trim()
+        val input = args.optString("input", "")
+        if (taskId.isEmpty()) return ToolExecutionResult("Error: 'task_id' is required", false)
+        if (input.isEmpty()) return ToolExecutionResult("Error: 'input' is required", false)
+        if (input.contains('\n')) {
+            return ToolExecutionResult(
+                "Error: 'input' must be a SINGLE line (no \\n) — one steer = one line", false)
+        }
+        val task = com.openminis.app.tools.BgTaskTools.get(taskId)
+            ?: return ToolExecutionResult("unknown task_id: $taskId (see bg_list)", false)
+        if (task.state != "RUNNING") {
+            return ToolExecutionResult(
+                "task $taskId is ${task.state} — steering only works on RUNNING tasks", false)
+        }
+        val ok = ExecutionCoordinator.steerSession("bg-${task.id}", input)
+        return if (ok) {
+            ToolExecutionResult(
+                "steered to $taskId: line delivered to its stdin\n" +
+                    "(read by the command, or queued as the next shell command)", true)
+        } else {
+            ToolExecutionResult(
+                "steer failed: task $taskId shell is not alive (state RUNNING but the " +
+                    "process ended?) — check with bg_check", false)
         }
     }
 

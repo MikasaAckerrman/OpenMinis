@@ -45,6 +45,7 @@ object BgTaskTools {
     const val BG_CHECK_NAME = "bg_check"
     const val BG_LIST_NAME = "bg_list"
     const val BG_KILL_NAME = "bg_kill"
+    const val BG_STEER_NAME = "bg_steer"
 
     private const val LOG_DIR = "/var/minis/workspace/.bg"
     private const val DEFAULT_TIMEOUT_SEC = 1800L
@@ -73,6 +74,7 @@ object BgTaskTools {
 
     fun definitions(): List<AgentToolDefinition> = listOf(
         bgRunDefinition(), bgCheckDefinition(), bgListDefinition(), bgKillDefinition(),
+        bgSteerDefinition(),
     )
 
     private fun bgRunDefinition(): AgentToolDefinition = AgentToolDefinition(
@@ -144,6 +146,26 @@ object BgTaskTools {
             ),
         ),
         required = listOf("task_id"),
+    )
+
+    private fun bgSteerDefinition(): AgentToolDefinition = AgentToolDefinition(
+        name = BG_STEER_NAME,
+        description = "Send one line to a RUNNING background task's stdin (message " +
+            "steering). Two effects depending on the command: if it READS stdin " +
+            "(server prompts, REPLs, 'read' loops) it receives the line; if not, the " +
+            "line is buffered by the shell and EXECUTES as a command after the current " +
+            "one exits — use that to queue follow-up commands, or prefix with '#' for " +
+            "a no-op. Only works while the task is RUNNING and its shell is alive.",
+        parameters = mapOf(
+            "task_id" to AgentToolParam(
+                type = "string", description = "Task id from bg_run.",
+            ),
+            "input" to AgentToolParam(
+                type = "string",
+                description = "The line to send (a trailing newline is added).",
+            ),
+        ),
+        required = listOf("task_id", "input"),
     )
 
     // ------------------------------------------------------------------
