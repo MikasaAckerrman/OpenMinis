@@ -90,9 +90,13 @@ object ReadOnlyShellPolicy : WritePolicy {
             return true
         }
         if (head == "env") {
-            // `env` with only VAR=value pairs (or bare) prints/exports —
-            // read; `env <command>` runs the command — mutating.
-            return rest.all { Regex("^[A-Za-z_][A-Za-z0-9_]*=.*").matches(it) }
+            // [T-read-only-shell-hardening] env is TRANSPARENT: env runs the
+            // command that follows its assignments — classify THAT command.
+            // `env LC_ALL=C sort x` → read-only (sort); `env rm -rf /` →
+            // mutating (rm). Recursion is bounded by the segment length.
+            val afterEnv = rest.dropWhile { Regex("^[A-Za-z_][A-Za-z0-9_]*=.*").matches(it) }
+            if (afterEnv.isEmpty()) return true // pure assignments/print
+            return segmentIsReadOnly(afterEnv.joinToString(" "))
         }
         if (head == "sort") {
             // -o chooses an output FILE (writes it).
