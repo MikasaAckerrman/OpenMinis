@@ -119,30 +119,7 @@ class ChatViewModel(
         // whole call over a missing one is pure downside. Preflight skips these
         // when checking for missing required fields. Mirrors iOS
         // AIChatViewModel.preflightNonBlockingFields.
-        private val PREFLIGHT_NON_BLOCKING_FIELDS = setOf("tool_title")
 
-        /**
-         * (tool name → field names) where an EMPTY STRING is a semantically
-         * valid value and must not be treated as "missing".
-         *
-         * Distinct from [PREFLIGHT_NON_BLOCKING_FIELDS], which skips the
-         * missing-field check entirely: these fields must still be PRESENT in
-         * args — they are just allowed to hold "" as their content.
-         *
-         * The canonical case is `file_edit.new_string`, whose schema documents
-         * "Use empty string to delete old_string". Blocking it broke a promised
-         * deletion workflow and pushed the model into shell_execute + python
-         * file-rewrite workarounds. Mirrors iOS
-         * AIChatViewModel.preflightEmptyStringAllowedFields.
-         * [T-preflight-empty-string-allowed]
-         */
-        private val PREFLIGHT_EMPTY_STRING_ALLOWED_FIELDS: Map<String, Set<String>> = mapOf(
-            "file_edit" to setOf("new_string"),
-        )
-
-        /** True when "" is a legal value for this exact (tool, field) pair. */
-        internal fun preflightEmptyStringAllowed(tool: String, field: String): Boolean =
-            PREFLIGHT_EMPTY_STRING_ALLOWED_FIELDS[tool]?.contains(field) == true
 
         /**
          * Reject tool calls that have empty args or are missing required fields
@@ -170,137 +147,46 @@ class ChatViewModel(
             args: JSONObject,
             tools: List<AgentToolDefinition>,
         ): String? {
-            // Unknown tool names go through to the existing `else` branch in
-            // executeTool() which returns "Unknown tool: …". Preflight stays
-            // silent so we don't double-fail.
+            // [T-m7-preflight] M7 slice 3: the validation core moved to
+            // engine.ToolPreflight (pure Kotlin, normalized values); this
+            // adapter normalizes org.json shapes and delegates. The 28-case
+            // ToolPreflightTest suite runs against this exact seam.
             val toolDef = tools.firstOrNull { it.name == name } ?: return null
-            // Required fields that actually gate execution (everything except the
-            // non-blocking ones like tool_title — see PREFLIGHT_NON_BLOCKING_FIELDS).
-            val enforced = toolDef.required.filter { it !in PREFLIGHT_NON_BLOCKING_FIELDS }
-            // Empty args on a tool that requires anything → block. Gate on
-            // `enforced` so a tool whose only required field is non-blocking isn't
-            // rejected for empty args, and the message lists only real blockers.
-            if (args.length() == 0 && enforced.isNotEmpty()) {
-                return "Tool '$name' was called with empty arguments {} but requires: ${enforced.joinToString(", ")}."
-            }
-            val missing = mutableListOf<String>()
-            for (field in enforced) {
-                // Absent — or present as an explicit JSON null. org.json reports
-                // has() == true for `{"x": null}` and opt() hands back
-                // JSONObject.NULL, which is not a String, so a null previously
-                // slipped through BOTH checks and reached the tool as a non-String
-                // value. Both spellings are genuinely missing.
-                if (!args.has(field) || args.isNull(field)) {
-                    missing.add(field)
-                    continue
-                }
-                val raw = args.opt(field)
-                // Only the truly-empty literal "" is rejected — NOT whitespace.
-                // The earlier `.trim().isEmpty()` over-rejected legitimate payloads,
-                // most notably file_edit with `new_string: "\n"` (replace a block
-                // with a newline) or `old_string: "  "` (match consecutive spaces).
-                // Both are valid edits, neither is stream corruption.
-                //
-                // And even "" is legal for whitelisted (tool, field) pairs:
-                // file_edit.new_string == "" is the documented "delete old_string"
-                // form, not a missing value. [T-preflight-empty-string-allowed]
-                if (raw is String && raw.isEmpty() &&
-                    !preflightEmptyStringAllowed(name, field)
-                ) {
-                    missing.add(field)
+            val normalized = mutableMapOf<String, com.openminis.app.engine.PreflightValue>()
+            for (key in args.keys()) {
+                val raw = args.opt(key)
+                normalized[key] = when (raw) {
+                    null, JSONObject.NULL -> com.openminis.app.engine.PreflightValue.Null
+                    is String -> com.openminis.app.engine.PreflightValue.Text(raw)
+                    is Boolean -> com.openminis.app.engine.PreflightValue.Bool(raw)
+                    is Int -> com.openminis.app.engine.PreflightValue.IntNum(raw.toLong())
+                    is Long -> com.openminis.app.engine.PreflightValue.IntNum(raw)
+                    is Double ->
+                        if (raw.isFinite() && raw == Math.floor(raw)) {
+                            com.openminis.app.engine.PreflightValue.IntNum(raw.toLong())
+                        } else {
+                            com.openminis.app.engine.PreflightValue.RealNum(raw)
+                        }
+                    is Float ->
+                        if (raw.isFinite() && raw.toDouble() == Math.floor(raw.toDouble())) {
+                            com.openminis.app.engine.PreflightValue.IntNum(raw.toLong())
+                        } else {
+                            com.openminis.app.engine.PreflightValue.RealNum(raw.toDouble())
+                        }
+                    is java.math.BigDecimal ->
+                        if (raw.stripTrailingZeros().scale() <= 0) {
+                            com.openminis.app.engine.PreflightValue.IntNum(raw.toLong())
+                        } else {
+                            com.openminis.app.engine.PreflightValue.RealNum(raw.toDouble())
+                        }
+                    is org.json.JSONArray -> com.openminis.app.engine.PreflightValue.Array
+                    is org.json.JSONObject -> com.openminis.app.engine.PreflightValue.Object
+                    else -> com.openminis.app.engine.PreflightValue.Text(raw.toString())
                 }
             }
-            if (missing.isNotEmpty()) {
-                return "Tool '$name' is missing required parameter(s): ${missing.joinToString(", ")}."
-            }
-            // [T-toolargs-typecheck] Declared JSON-schema types were never
-            // enforced: a model sending timeout:"900" (string) or
-            // command:123 (number) slipped straight into the executor,
-            // where org.json's optString/optInt silently coerced — the
-            // malformed call half-worked or failed deep inside the tool,
-            // surfacing as G13-class weirdness instead of a correctable
-            // schema error. Strict rejection with an actionable message
-            // converts that into a one-round self-correction. Optional
-            // params are checked only when PRESENT (required-absence is
-            // already handled above; an optional knob the model omitted is
-            // legal). Unknown extra fields stay non-errors on purpose:
-            // models append harmless keys (tab_id etc.) and the tools use
-            // graceful opt* reads.
-            for ((field, param) in toolDef.parameters) {
-                if (!args.has(field) || args.isNull(field)) continue
-                val raw = args.opt(field)
-                val expected = param.type.lowercase()
-                val typeOk = when (expected) {
-                    "string" -> raw is String
-                    // 900.0 is a whole number some providers emit for
-                    // integer fields — semantically correct, accept it.
-                    // 12.5 is genuinely not an integer and is refused.
-                    // BigDecimal: the JVM-side org.json (unit tests, CI)
-                    // returns decimal literals as BigDecimal while
-                    // Android's build yields Double — accept whole values
-                    // on BOTH shapes so the gate is shape-identical.
-                    "integer" -> raw is Int || raw is Long ||
-                        (raw is Double && raw.isFinite() && raw == Math.floor(raw)) ||
-                        (raw is java.math.BigDecimal &&
-                            raw.stripTrailingZeros().scale() <= 0)
-                    "number" -> raw is Int || raw is Long || raw is Double ||
-                        raw is Float || raw is java.math.BigDecimal
-                    "boolean" -> raw is Boolean
-                    "array" -> raw is org.json.JSONArray
-                    "object" -> raw is org.json.JSONObject
-                    else -> true
-                }
-                if (!typeOk) {
-                    return "Tool '$name' parameter '$field' must be ${articleFor(expected)} $expected, " +
-                        "got ${jsonTypeName(raw)}. ${typeFixHint(expected)} " +
-                        "Re-issue the call with the corrected JSON type."
-                }
-                if (param.enumValues != null && raw is String && raw !in param.enumValues!!) {
-                    return "Tool '$name' parameter '$field' must be one of " +
-                        "[${param.enumValues!!.joinToString(", ")}] (got \"$raw\"). " +
-                        "Check the spelling against the list and re-issue the call."
-                }
-            }
-            return null
+            return com.openminis.app.engine.ToolPreflight.validate(name, normalized, toolDef)
         }
 
-        /**
-         * Human article for a JSON type name, for the preflight message
-         * grammar ("a string", "an integer").
-         */
-        private fun articleFor(type: String): String =
-            if (type.startsWith("i") || type.startsWith("o") || type.startsWith("a")) "an" else "a"
-
-        /**
-         * JSON type of a raw org.json value, for the preflight message
-         * ("got an integer", "got a boolean"). Deliberately coarse — the
-         * model needs to recognise its own mistake, not a Java class name.
-         */
-        private fun jsonTypeName(raw: Any?): String = when (raw) {
-            is String -> "a string"
-            is Boolean -> "a boolean"
-            is Int, is Long -> "an integer"
-            is Double, is Float -> "a number"
-            is org.json.JSONArray -> "an array"
-            is org.json.JSONObject -> "an object"
-            JSONObject.NULL, null -> "null"
-            else -> raw.javaClass.simpleName
-        }
-
-        /**
-         * One-line concrete instruction for the preflight type message —
-         * WHAT to change, not just that it is wrong (a bare type name makes
-         * weaker models retry the same shape).
-         */
-        private fun typeFixHint(type: String): String = when (type) {
-            "string" -> "Send the value as a JSON string (quoted)."
-            "integer" -> "Send it as a bare JSON number without quotes (e.g. 900)."
-            "number" -> "Send it as a bare JSON number (e.g. 1.5)."
-            "boolean" -> "Send true or false unquoted."
-            "array" -> "Send a JSON array ([...])."
-            "object" -> "Send a JSON object ({...})."
-            else -> ""
-        }
 
         /**
          * [T-tool-budget-indicator] Post-call footer line for budgeted graph
