@@ -310,7 +310,7 @@ object AgentTools {
     }
 
     // Aligned with iOS AIChatViewModel.swift:4982-4993
-    private fun shellExecuteDefinition(): AgentToolDefinition = AgentToolDefinition(
+    internal fun shellExecuteDefinition(): AgentToolDefinition = AgentToolDefinition(
         name = "shell_execute",
         description = "Execute a command in an isolated Linux process (Alpine Linux via PRoot). " +
             "The command runs via /bin/sh -c with stdout and stderr merged. " +
@@ -327,7 +327,7 @@ object AgentTools {
     )
 
     // Aligned with iOS AIChatViewModel.swift browser_use definition
-    private fun browserUseDefinition(): AgentToolDefinition = AgentToolDefinition(
+    internal fun browserUseDefinition(): AgentToolDefinition = AgentToolDefinition(
         name = "browser_use",
         description = "Control a web browser with up to 3 tabs. " +
             "Do NOT use this tool for minis:// action URLs (open_terminal, views, settings) — those are app deep links, use Markdown links in chat instead. " +
@@ -375,7 +375,7 @@ object AgentTools {
     )
 
     // Aligned with iOS AIChatViewModel.swift:5059-5067
-    private fun memoryWriteDefinition(): AgentToolDefinition = AgentToolDefinition(
+    internal fun memoryWriteDefinition(): AgentToolDefinition = AgentToolDefinition(
         name = "memory_write",
         description = "Write a memory entry to today's daily log (YYYY-MM-DD.md). Memories persist across all sessions. " +
             "Each entry is prepended with a timestamp. " +
@@ -391,7 +391,7 @@ object AgentTools {
     )
 
     // Aligned with iOS AIChatViewModel.swift:5069-5078
-    private fun memoryGetDefinition(): AgentToolDefinition = AgentToolDefinition(
+    internal fun memoryGetDefinition(): AgentToolDefinition = AgentToolDefinition(
         name = "memory_get",
         description = "Retrieve memories from persistent storage. Supports keyword-based fuzzy search across memory files. " +
             "Returns matching lines with surrounding context. Use this to recall previous knowledge, user preferences, or past notes.",
@@ -411,7 +411,7 @@ object AgentTools {
      * demand), core blocks are always in-context: the model reads them as
      * standing instructions and edits them when the facts change.
      */
-    private fun memoryBlocksViewDefinition(): AgentToolDefinition = AgentToolDefinition(
+    internal fun memoryBlocksViewDefinition(): AgentToolDefinition = AgentToolDefinition(
         name = "memory_blocks_view",
         description = "List ALL core-memory blocks (id, label, value, pinned, last edited). Core blocks are standing facts " +
             "injected into every request. Use this when the injection header was truncated by the budget, " +
@@ -424,7 +424,7 @@ object AgentTools {
     )
 
     /** [T-letta-core-memory] Create/update/delete a core-memory block by id. */
-    private fun memoryBlocksEditDefinition(): AgentToolDefinition = AgentToolDefinition(
+    internal fun memoryBlocksEditDefinition(): AgentToolDefinition = AgentToolDefinition(
         name = "memory_blocks_edit",
         description = "Create, update, or delete a core-memory block. Core blocks are standing facts in every request — " +
             "keep them few, stable and high-signal (user preferences, project conventions, key constraints). " +
@@ -444,7 +444,7 @@ object AgentTools {
     )
 
     /** [T-supermemory-tool] Semantic search over the local supermemory service. */
-    private fun supermemorySearchDefinition(): AgentToolDefinition = AgentToolDefinition(
+    internal fun supermemorySearchDefinition(): AgentToolDefinition = AgentToolDefinition(
         name = "supermemory_search",
         description = "Semantic (meaning-based) search over the long-term associative memory store. " +
             "Unlike memory_get (keyword scan of daily logs), this recalls by MEANING across every " +
@@ -469,7 +469,7 @@ object AgentTools {
      * never deleting rows, never touching the protected tail, compact
      * markers, or failed results.
      */
-    private fun sessionGcDefinition(): AgentToolDefinition = AgentToolDefinition(
+    internal fun sessionGcDefinition(): AgentToolDefinition = AgentToolDefinition(
         name = "session_gc",
         description = "Report this session's weight and optionally collect garbage SAFELY. " +
             "Default (no confirm): dry-run report — rows, chars by role, tool-result share, " +
@@ -501,7 +501,7 @@ object AgentTools {
      *   • root unavailable (KSU down after reboot) → a clean error with the
      *     recovery hint, never a crash.
      */
-    private fun rootShellDefinition(): AgentToolDefinition = AgentToolDefinition(
+    internal fun rootShellDefinition(): AgentToolDefinition = AgentToolDefinition(
         name = "root_shell",
         description = "Execute a shell command with KERNEL ROOT (su 0) on the Android side. " +
             "Use ONLY when a task genuinely needs privileged access: system settings (settings/device_config), " +
