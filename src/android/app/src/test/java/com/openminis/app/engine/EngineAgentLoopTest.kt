@@ -15,9 +15,8 @@ import org.junit.Test
  */
 class EngineAgentLoopTest {
 
-    private class ScriptedGateway(vararg rounds: List<StreamEvent>) : ModelGateway {
+    private class ScriptedGateway(private val script: List<List<StreamEvent>>) : ModelGateway {
         override val modelId = "fake"
-        private val script = rounds.toList()
         private var index = 0
         override fun stream(
             messages: List<EngineMessage>,
