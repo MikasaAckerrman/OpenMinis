@@ -63,12 +63,12 @@ object NativeSearch {
         context: Context,
         argv: List<String>,
         timeoutSec: Int = 30,
-    ): Triple<String, Int> {
+    ): Pair<String, Int> {
         val bin = ensureBinary(context)
         if (!verified) {
             val probe = runRg(bin, listOf("--version"), 5)
             if (!probe.first.startsWith("ripgrep")) {
-                return Triple(
+                return Pair(
                     "native rg failed self-check: ${probe.first.take(120)}", -1)
             }
             verified = true
@@ -76,7 +76,7 @@ object NativeSearch {
         return runRg(bin, argv, timeoutSec)
     }
 
-    private fun runRg(bin: File, argv: List<String>, timeoutSec: Int): Triple<String, Int> {
+    private fun runRg(bin: File, argv: List<String>, timeoutSec: Int): Pair<String, Int> {
         val cmd = listOf(bin.absolutePath) + argv
         return runCatching {
             val proc = ProcessBuilder(cmd).start()
@@ -94,7 +94,7 @@ object NativeSearch {
             val finished = proc.waitFor(timeoutSec.toLong(), TimeUnit.SECONDS)
             if (!finished) {
                 proc.destroyForcibly()
-                return@runCatching Triple(
+                return@runCatching Pair(
                     sb.toString() +
                         "\n[ripgrep timed out after ${timeoutSec}s — narrow the path or pattern]",
                     124)
@@ -109,7 +109,7 @@ object NativeSearch {
             val out = if (code > 1 && err.isNotBlank()) {
                 "$capped\n[rg stderr] $err"
             } else capped
-            Triple(out, code)
-        }.getOrElse { Triple("rg exec failed: ${it.message?.take(200)}", -1) }
+            Pair(out, code)
+        }.getOrElse { Pair("rg exec failed: ${it.message?.take(200)}", -1) }
     }
 }
