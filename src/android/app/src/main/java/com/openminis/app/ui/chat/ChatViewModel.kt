@@ -142,6 +142,10 @@ class ChatViewModel(
          * it without constructing a ChatViewModel and its dependency graph. Mirrors
          * the same `nonisolated static` move on iOS.
          */
+        /** [T-m7-preflight] Thin delegate — the table lives in engine.ToolPreflight. */
+        internal fun preflightEmptyStringAllowed(tool: String, field: String): Boolean =
+            com.openminis.app.engine.ToolPreflight.emptyStringAllowed(tool, field)
+
         internal fun preflightValidateToolCallImpl(
             name: String,
             args: JSONObject,
