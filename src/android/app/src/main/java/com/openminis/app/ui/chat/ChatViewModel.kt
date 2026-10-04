@@ -13962,18 +13962,26 @@ class ChatViewModel(
             command = command,
             label = label,
             timeoutSec = timeoutSec,
-        ) { appendLine ->
-            val result = ExecutionCoordinator.execute(
-                sessionId = dispatchSessionId,
-                command = command,
-                timeout = timeoutSec * 1000L,
-                lineCallback = appendLine,
-            )
-            Pair(result.exitCode, result.output)
+            context = context,
+        ) { bgSessionId, appendLine ->
+            // Private session: a background server must NOT hold the user
+            // session's shell mutex for its runtime (self-blocking bug,
+            // caught in review). The finally releases the private shell.
+            try {
+                val result = ExecutionCoordinator.execute(
+                    sessionId = bgSessionId,
+                    command = command,
+                    timeout = timeoutSec * 1000L,
+                    lineCallback = appendLine,
+                )
+                Pair(result.exitCode, result.output)
+            } finally {
+                ExecutionCoordinator.sessionDidTerminate(bgSessionId)
+            }
         }
         return ToolExecutionResult(
             "background task started: task_id=${task.id}\n" +
-                "state=RUNNING timeout=${timeoutSec}s log=${task.logFile.path}\n" +
+                "state=RUNNING timeout=${timeoutSec}s log=${task.guestLogPath}\n" +
                 "check with bg_check (task_id=${task.id}) — or file_read the log path.",
             true, toolTitle = toolTitle)
     }
@@ -13982,10 +13990,11 @@ class ChatViewModel(
         val parsed = com.openminis.app.tools.BgTaskTools.parseCheckArgs(argsJson)
             ?: return ToolExecutionResult("Error: 'task_id' is required", false)
         val (taskId, lines) = parsed
-        val (task, header, tail) = com.openminis.app.tools.BgTaskTools.check(taskId, lines)
+        val (task, header, tail) = com.openminis.app.tools.BgTaskTools.check(
+            taskId, lines, activeSessionId, context)
         val body = buildString {
             append(header)
-            if (task != null) append("\nlog=${task.logFile.path}")
+            if (task != null) append("\nlog=${task.guestLogPath}")
             if (tail.isNotBlank()) {
                 append("\n--- tail ($lines lines) ---\n")
                 append(tail)

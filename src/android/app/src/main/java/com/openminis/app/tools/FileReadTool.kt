@@ -38,8 +38,7 @@ object FileReadTool {
         // uses the SAME path string the model sent (guest-space == the
         // tool's path namespace).
         val hostFile = com.openminis.app.sandbox.PRootKernel.resolveSessionHostPath(
-            sessionId, path, context ?: return ToolExecutionResult(
-                "Error: no context for path resolution", false))
+            sessionId, path, context)
         if (hostFile == null || !hostFile.exists()) {
             return ToolExecutionResult("Error: file not found: $path", false, toolTitle = toolTitle)
         }

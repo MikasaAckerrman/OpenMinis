@@ -60,7 +60,10 @@ object BgTaskTools {
         val startedAtMs: Long,
         @Volatile var state: String, // RUNNING | DONE | FAILED | TIMEOUT | KILLED
         @Volatile var exitCode: Int? = null,
+        /** HOST file actually written (bind-resolved). */
         val logFile: File,
+        /** GUEST-facing path for the model's file_read ("/var/minis/…"). */
+        val guestLogPath: String,
         @Volatile var job: Job? = null,
     )
 
@@ -154,9 +157,6 @@ object BgTaskTools {
         return "t$stamp-$n$l"
     }
 
-    fun logFileFor(taskId: String): File =
-        File(LOG_DIR, "$taskId.log").apply { parentFile.mkdirs() }
-
     fun register(task: Task) {
         tasks[task.id] = task
     }
@@ -170,32 +170,54 @@ object BgTaskTools {
      * (ExecutionCoordinator + policy gates live there); this wraps it in a
      * supervised coroutine, wires the registry state transitions, and tees
      * every output line into the task log file. Returns immediately.
+     *
+     * [T-bg-host-log] The log lives at the HOST-resolved bind of the guest
+     * /var/minis/workspace/.bg/<id>.log — writing the guest path from the
+     * app process silently fails (Android has no writable /var for apps);
+     * the guest-facing path is kept in [Task.guestLogPath] for the model's
+     * file_read. Resolution failure (rare) falls back to the app cache dir
+     * — bg_check keeps working, only cross-restart file_read doesn't.
      */
     fun launchDetached(
         sessionId: String,
         command: String,
         label: String?,
         timeoutSec: Long,
-        exec: suspend (appendLine: (String) -> Unit) -> Pair<Int, String>, // (exitCode, output)
+        context: android.content.Context,
+        exec: suspend (bgSessionId: String, appendLine: (String) -> Unit) -> Pair<Int, String>, // (exitCode, output)
     ): Task {
         val id = nextId(label)
-        val log = logFileFor(id)
+        val guestLog = "$LOG_DIR/$id.log"
+        val hostLog = com.openminis.app.sandbox.PRootKernel
+            .resolveSessionHostPath(sessionId, guestLog, context)
+            ?: java.io.File(context.cacheDir, "bg-tasks/$id.log")
+        val log = hostLog.apply { parentFile?.mkdirs() }
         val task = Task(
             id = id, sessionId = sessionId, command = command,
-            startedAtMs = System.currentTimeMillis(), state = "RUNNING", logFile = log,
+            startedAtMs = System.currentTimeMillis(), state = "RUNNING",
+            logFile = log, guestLogPath = guestLog,
         )
-        val sb = StringBuilder()
         val started = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
-        sb.append("[$started] bg_run: $command\n")
+        runCatching { log.appendText("[$started] bg_run: $command\n") }
         val appendLine: (String) -> Unit = { line ->
-            synchronized(sb) {
-                sb.append(line).append('\n')
+            // One writer per file per task; the synchronized key is the
+            // task object itself (unique per task). The in-memory builder
+            // was removed — it was never read (dead weight).
+            synchronized(task) {
                 runCatching { log.appendText(line + "\n") }
             }
         }
         task.job = scope.launch {
+            // [T-bg-private-session] The exec runs under a PRIVATE session id
+            // ("bg-<taskId>"): the coordinator's per-session mutex would
+            // otherwise hold the USER session's shell slot for the whole
+            // runtime of a background server (every foreground
+            // shell_execute would queue behind it for hours). The caller's
+            // exec block owns the private-session lifecycle and MUST
+            // terminate it (sessionDidTerminate) in a finally.
+            val bgSessionId = "bg-${task.id}"
             try {
-                val (exit, _) = exec(appendLine)
+                val (exit, _) = exec(bgSessionId, appendLine)
                 task.exitCode = exit
                 task.state = when {
                     exit == 124 -> "TIMEOUT"
@@ -228,12 +250,20 @@ object BgTaskTools {
     }
 
     /** Human-facing snapshot for bg_check — pure read, no side effects. */
-    fun check(taskId: String, tailLines: Int): Triple<Task?, String, String> {
+    fun check(
+        taskId: String,
+        tailLines: Int,
+        callingSessionId: String,
+        context: android.content.Context,
+    ): Triple<Task?, String, String> {
         val t = tasks[taskId]
         if (t == null) {
-            // Registry lost (app restarted) — the log file may still exist.
-            val log = logFileFor(taskId)
-            val tail = tailOf(log, tailLines)
+            // Registry lost (app restarted) — resolve the guest path in the
+            // CALLING session's workspace (best effort: the owning session
+            // died with the registry; same-session restarts still find it).
+            val host = com.openminis.app.sandbox.PRootKernel
+                .resolveSessionHostPath(callingSessionId, "$LOG_DIR/$taskId.log", context)
+            val tail = host?.let { tailOf(it, tailLines) } ?: ""
             return Triple(null, "LOST (task not in registry — app restarted?)", tail)
         }
         val runSec = (System.currentTimeMillis() - t.startedAtMs) / 1000
