@@ -39,8 +39,28 @@ interface EngineTool {
 /**
  * Everything a tool call needs from its surroundings, injected — the engine
  * never reaches into globals. Constructed per call by the loop.
+ *
+ * [T-m6-tool-context] M6: the context now carries the permission gate, the
+ * hook engine, and the executor callback. The engine-side tools enforce
+ * policy uniformly through these seams; the platform executor (the
+ * ChatViewModel dispatch in the pre-M7 world) is reachable only through
+ * [dispatch] — the engine never learns where the code actually runs.
  */
 class ToolContext(
     val sessionId: String,
     val logger: EngineLogger = EngineLogger.NONE,
+    /** Per-call permission backstop (PLAN read-only shell etc.). */
+    val gate: DefaultPermissionGate? = null,
+    /** Pre/Post tool hooks — the user's ruleset. */
+    val hooks: HookEngine? = null,
+    /**
+     * The single route to the real implementation behind a tool name —
+     * the thin-adapter seam of M6. Adapters call it; the loop injects the
+     * platform dispatch. Default refuses: an engine-only construction
+     * (tests, previews) cannot accidentally execute anything.
+     */
+    val dispatch: suspend (toolName: String, argsJson: String) -> ToolExecutionResult =
+        { name, _ ->
+            throw IllegalStateException("no dispatch wired for tool '$name' — engine-only context")
+        },
 )

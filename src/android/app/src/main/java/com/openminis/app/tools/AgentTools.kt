@@ -124,6 +124,50 @@ object AgentTools {
          */
         planMode: Boolean = false,
     ): List<AgentToolDefinition> {
+        // [T-m6-registry] M6: the registry is the single source of the tool
+        // surface. Registration carries the feature gates (see
+        // ToolSurfaceAdapter — kept verbatim from the legacy builder); the
+        // MODE filter happens engine-side, in schemaFor.
+        val registry = ToolSurfaceAdapter.buildRegistry(
+            supportsImageInput = supportsImageInput,
+            memoryEnabled = memoryEnabled,
+            allowedTools = allowedTools,
+            subagentsEnabled = subagentsEnabled,
+            coreMemoryEnabled = coreMemoryEnabled,
+            rootShellEnabled = rootShellEnabled,
+        )
+        if (planMode) {
+            val allow = expandAllowlist(allowedTools)
+            if (allow == null || PlanSubmitTool.NAME in allow) {
+                registry.register(EngineToolShell(PlanSubmitTool.NAME, PlanSubmitTool.definition()))
+            }
+        }
+        return registry.schemaFor(
+            com.openminis.app.engine.DefaultPermissionGate(
+                mode = if (planMode) {
+                    com.openminis.app.engine.PermissionMode.PLAN
+                } else {
+                    com.openminis.app.engine.PermissionMode.AUTO
+                },
+                writePolicy = com.openminis.app.engine.ReadOnlyShellPolicy,
+            ),
+        )
+    }
+
+    /**
+     * [T-m6-registry] The pre-M6 builder, kept verbatim as the equivalence
+     * oracle for ToolSurfaceAdapterTest — the registry path must reproduce
+     * it exactly. Deleted together with that test in M7.
+     */
+    internal fun legacyMakeAgentTools(
+        supportsImageInput: Boolean = true,
+        memoryEnabled: Boolean = true,
+        allowedTools: List<String>? = null,
+        subagentsEnabled: Boolean = com.openminis.app.data.SubagentPrefs.isEnabled(),
+        coreMemoryEnabled: Boolean = com.openminis.app.data.CoreMemoryPrefs.isEnabled(),
+        rootShellEnabled: Boolean = com.openminis.app.data.RootShellPrefs.isEnabled(),
+        planMode: Boolean = false,
+    ): List<AgentToolDefinition> {
         val allow = expandAllowlist(allowedTools)
 
         fun permitted(name: String): Boolean = allow == null || name in allow
