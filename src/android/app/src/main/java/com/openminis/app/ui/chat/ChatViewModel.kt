@@ -28,6 +28,7 @@ import androidx.compose.material.icons.outlined.Extension
 import com.openminis.app.data.BPETokenizer
 import com.openminis.app.data.ContextOffload
 import com.openminis.app.data.ContextPolicy
+import com.openminis.app.engine.jsonObjectPathExtractor
 import com.openminis.app.logging.AppLogger
 import com.openminis.app.data.FileMentionIndex
 import com.openminis.app.data.db.CompactMarkerEntity
@@ -12605,7 +12606,7 @@ class ChatViewModel(
             // executor branches below stay platform-side (UI blocks).
             val resultParts = mutableListOf<AgentContentPart>()
             val batchPlanner = com.openminis.app.engine.ToolBatchPlanner(
-                pathOf = com.openminis.app.engine::jsonObjectPathExtractor,
+                pathOf = ::jsonObjectPathExtractor,
             )
             val canParallelize = batchPlanner.canParallelize(
                 toolCalls.map { (id, name, args) ->
