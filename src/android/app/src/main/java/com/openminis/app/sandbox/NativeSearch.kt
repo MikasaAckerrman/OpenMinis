@@ -1,115 +1,87 @@
 package com.openminis.app.sandbox
 
 import android.content.Context
-import java.io.BufferedReader
 import java.io.File
-import java.io.InputStreamReader
 import java.util.concurrent.TimeUnit
 
 /**
- * [T-embedded-search] ripgrep as a bundled native binary (ZCode port —
- * their dependencies/native-search pattern: vendor a musl-static build,
- * extract once, exec directly).
- *
- * WHY musl-static: the binary has zero libc linkage — it runs on Android's
- * bionic unmodified. WHY direct exec (not through the PRoot shell):
- * a search call skips the proot+pty roundtrip entirely (~50-150ms saved
- * per call) and ripgrep's parallel scanner handles large trees far faster
- * than BusyBox grep.
- *
- * Lifecycle: the asset is copied to filesDir/native/rg on first use and
- * chmod +x'd; the copy is verified once per process by a version probe.
- * Path space: callers resolve MODEL paths (guest /var/minis/...) to HOST
- * paths via [PRootKernel.resolveSessionHostPath] before scanning — the
- * binary sees the same files the agent addresses.
+ * [T-embedded-search] Native ripgrep execution for the agent's grep/glob
+ * tools. The binary ships as `jniLibs/arm64-v8a/librg.so` — the package
+ * installer extracts it into `nativeLibraryDir`, the ONLY app-writable
+ * location Android's SELinux allows exec() from on API 29+ (same pattern
+ * as our proot: RootfsManager.libproot). Executing from filesDir was
+ * EACCES (live-tested on device, vc83 self-check).
  */
 object NativeSearch {
 
-    private const val ASSET_PATH = "native/rg"
-    private const val OUTPUT_CAP_BYTES = 400 * 1024
-    private const val MIN_BINARY_BYTES = 1_000_000
+    /** First-version output we accept (any "ripgrep <ver>" prefix). */
+    private const val VERSION_PREFIX = "ripgrep"
+
+    /** Output cap — matches the tool-result conventions of other tools. */
+    private const val MAX_OUTPUT_BYTES = 400_000
 
     @Volatile
     private var verified = false
 
-    /** Executable rg for this process, extracting on first use. */
-    fun ensureBinary(context: Context): File {
-        val out = File(context.filesDir, "native/rg")
-        if (out.exists() && out.length() >= MIN_BINARY_BYTES) return out
-        synchronized(this) {
-            if (out.exists() && out.length() >= MIN_BINARY_BYTES) return out
-            out.parentFile?.mkdirs()
-            val tmp = File(out.path + ".tmp")
-            context.assets.open(ASSET_PATH).use { input ->
-                tmp.outputStream().use { input.copyTo(it) }
-            }
-            if (!tmp.renameTo(out)) {
-                // A concurrent extractor won the race — tmp is
-                // byte-identical, drop ours.
-                tmp.delete()
-            }
-            out.setExecutable(true, false)
-            out.setReadable(true, false)
+    /**
+     * The installed binary; null (with an error message) if the package
+     * is broken or the ABI is wrong — callers degrade to their error text.
+     */
+    fun binary(context: Context): Pair<File?, String> {
+        val bin = File(context.applicationInfo.nativeLibraryDir, "librg.so")
+        if (!bin.exists() || bin.length() < 1_000_000) {
+            return null to "native rg binary missing from nativeLibraryDir " +
+                "(broken install or wrong ABI)"
         }
-        return out
+        return bin to ""
+    }
+
+    /** One-per-process version probe; sets [verified] on success. */
+    private fun selfCheck(bin: File): Pair<Boolean, String> {
+        if (verified) return true to ""
+        val probe = runRg(bin, listOf("--version"), 5)
+        val ok = probe.second == 0 && probe.first.startsWith(VERSION_PREFIX)
+        if (ok) verified = true
+        return ok to if (ok) "" else
+            "native rg failed self-check: ${probe.first.take(120)}"
     }
 
     /**
-     * Run rg with argv (paths already HOST-space). NOT through a shell:
-     * ProcessBuilder + raw argv = zero quoting surface. Exit codes: 0
-     * matches, 1 no matches, 2+ error. Output capped hard.
+     * Run rg with [argv]; returns (stdout, exitCode). Exit 1 = no matches
+     * (caller decides semantics); negative = infra failure (timeout/exec).
      */
-    fun exec(
-        context: Context,
-        argv: List<String>,
-        timeoutSec: Int = 30,
-    ): Pair<String, Int> {
-        val bin = ensureBinary(context)
-        if (!verified) {
-            val probe = runRg(bin, listOf("--version"), 5)
-            if (!probe.first.startsWith("ripgrep")) {
-                return Pair(
-                    "native rg failed self-check: ${probe.first.take(120)}", -1)
-            }
-            verified = true
-        }
+    fun exec(context: Context, argv: List<String>, timeoutSec: Int = 30): Pair<String, Int> {
+        val (bin, err) = binary(context)
+        if (bin == null) return err to -1
+        val (ok, checkErr) = selfCheck(bin)
+        if (!ok) return checkErr to -1
         return runRg(bin, argv, timeoutSec)
     }
 
     private fun runRg(bin: File, argv: List<String>, timeoutSec: Int): Pair<String, Int> {
-        val cmd = listOf(bin.absolutePath) + argv
         return runCatching {
-            val proc = ProcessBuilder(cmd).start()
-            val sb = StringBuilder()
-            var bytes = 0
-            BufferedReader(InputStreamReader(proc.inputStream, Charsets.UTF_8)).use { r ->
-                while (true) {
-                    val line = r.readLine() ?: break
-                    if (bytes < OUTPUT_CAP_BYTES) {
-                        sb.append(line).append('\n')
-                        bytes += line.length + 1
-                    }
+            val cmd = listOf(bin.absolutePath) + argv
+            val proc = ProcessBuilder(cmd)
+                .redirectErrorStream(false)
+                .start()
+            try {
+                val out = proc.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
+                val finished = proc.waitFor(timeoutSec.toLong(), TimeUnit.SECONDS)
+                if (!finished) {
+                    proc.destroyForcibly()
+                    return@runCatching "(rg timed out after ${timeoutSec}s — pattern too " +
+                        "expensive or tree too large; narrow it)" to -1
                 }
-            }
-            val finished = proc.waitFor(timeoutSec.toLong(), TimeUnit.SECONDS)
-            if (!finished) {
+                // [T-output-cap] Truncate to the tool budget before returning.
+                val text = if (out.length > MAX_OUTPUT_BYTES) {
+                    out.take(MAX_OUTPUT_BYTES) + "\n…(rg output truncated at 400KB)"
+                } else {
+                    out
+                }
+                text to proc.exitValue()
+            } finally {
                 proc.destroyForcibly()
-                return@runCatching Pair(
-                    sb.toString() +
-                        "\n[ripgrep timed out after ${timeoutSec}s — narrow the path or pattern]",
-                    124)
             }
-            val err = runCatching {
-                proc.errorStream.bufferedReader().readText().take(300)
-            }.getOrDefault("")
-            val code = proc.exitValue()
-            val capped = if (bytes >= OUTPUT_CAP_BYTES) {
-                sb.toString() + "\n…(output truncated at 400KB)"
-            } else sb.toString()
-            val out = if (code > 1 && err.isNotBlank()) {
-                "$capped\n[rg stderr] $err"
-            } else capped
-            Pair(out, code)
         }.getOrElse { Pair("rg exec failed: ${it.message?.take(200)}", -1) }
     }
 }
