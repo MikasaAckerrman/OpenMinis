@@ -133,6 +133,14 @@ internal fun ChatViewModel.filteredSlashCommands(): List<SlashCommand> {
             "clear" -> cmd.copy(
                 subtitle = context.getString(R.string.slash_clear_subtitle),
             )
+            // [T-plan-mode] State-aware subtitle, like the memory row.
+            "plan" -> cmd.copy(
+                subtitle = if (_planMode.value) {
+                    "ON — read-only exploration until the plan is approved"
+                } else {
+                    "Agent explores read-only, then submits a plan for approval"
+                },
+            )
             else -> cmd
         }
     }

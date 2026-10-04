@@ -875,6 +875,19 @@ class ChatViewModel(
     )
     val forceAgents: StateFlow<Boolean> = _forceAgents.asStateFlow()
 
+    /**
+     * [T-plan-mode] PLAN mode for THIS chat: the agent explores read-only
+     * and must submit its plan via plan_submit before any write/execution.
+     * Seeded from disk so the mode survives process death mid-task, and
+     * written through on every change — see PlanModePrefs (mirrors
+     * AgentModePrefs; internal so the slash-menu extension can render the
+     * subtitle state).
+     */
+    internal val _planMode = MutableStateFlow(
+        PlanModePrefs.isEnabled(context, sessionId),
+    )
+    val planMode: StateFlow<Boolean> = _planMode.asStateFlow()
+
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
@@ -1525,6 +1538,9 @@ class ChatViewModel(
             allowedTools = com.openminis.app.tools.AgentToolPolicyStore.policyFor(sessionId),
             // [T-scoped-agent-toggles] session override → legacy global.
             subagentsEnabled = isSubagentsEnabled(),
+            // [T-plan-mode] recomputed per read, like the memory gate above —
+            // an approval mid-turn unlocks the write tools on the next request.
+            planMode = _planMode.value,
         )
 
     /**
@@ -2572,6 +2588,12 @@ class ChatViewModel(
             title = "Thinking",
             subtitle = "",
         ),
+        SlashCommand(
+            id = "plan",
+            icon = Icons.Default.Psychology,
+            title = "Plan",
+            subtitle = "",
+        ),
     )
 
     // [T-android-split-chat] filteredSlashCommands / updateSlashMenuState /
@@ -2633,6 +2655,7 @@ class ChatViewModel(
             "compact-level" -> _showCompactLevelPicker.value = true
             "memory" -> toggleMemoryEnabled()
             "thinking" -> toggleThinking()
+            "plan" -> togglePlanMode()
             "clear" -> _clearChatConfirmRequested.value = true
             else -> AppLogger.info(TAG, "[Slash] unrecognized id=${cmd.id} — no dispatch")
         }
@@ -6043,6 +6066,9 @@ class ChatViewModel(
             // draft's flag has to follow the promotion or it would persist under
             // an id that no longer exists.
             AgentModePrefs.migrate(context, fromDraft = sessionId, toReal = session.id)
+            // [T-plan-mode] Same carry for the plan-mode flag: armed on a
+            // draft must land on the persisted session id.
+            PlanModePrefs.migrate(context, fromDraft = sessionId, toReal = session.id)
             // [crash-safe-draft] Carry the composer draft / send-backup slots
             // from the draft id to the real id so a failed first turn can still
             // restore the user's text under the persisted session. See DraftStore.
@@ -8514,6 +8540,34 @@ class ChatViewModel(
         val sid = realSessionId.ifEmpty { sessionId }
         AgentModePrefs.setForced(context, sid, enabled)
         AppLogger.info("AgentRoute", "composer agents toggle -> $enabled sid=${sid.take(8)}")
+    }
+
+    /**
+     * [T-plan-mode] Flip PLAN mode for this chat (slash /plan, plan approval).
+     * Writes through to disk immediately — same reasoning as [setForceAgents]:
+     * the mode must survive the process dying while the user composes.
+     */
+    fun setPlanMode(enabled: Boolean) {
+        if (_planMode.value == enabled) return
+        _planMode.value = enabled
+        val sid = realSessionId.ifEmpty { sessionId }
+        PlanModePrefs.setEnabled(context, sid, enabled)
+        AppLogger.info("AgentRoute", "plan mode -> $enabled sid=${sid.take(8)}")
+    }
+
+    /** Slash entry (/plan): flip and surface the state as a system-info card. */
+    private fun togglePlanMode() {
+        val newValue = !_planMode.value
+        setPlanMode(newValue)
+        appendSystemInfo(
+            text = if (newValue) {
+                "Plan mode ON. The agent explores read-only and must present its plan with " +
+                    "plan_submit; write and execute tools are gated until you approve it."
+            } else {
+                "Plan mode OFF. All tools are available."
+            },
+            iconKind = "plan",
+        )
     }
 
     /**
@@ -13234,6 +13288,30 @@ class ChatViewModel(
                     "(ruleset: /var/minis/.config/hooks.json — the user configured this refusal)",
                 false, toolTitle = friendlyToolTitle(name))
         }
+        // [T-plan-mode] Executor backstop behind the schema filter: WRITE
+        // tools are already absent from the schema, this catches a model
+        // replaying an old call or a provider ignoring the schema. EXECUTE
+        // is judged per-call by ReadOnlyShellPolicy — read-only exploration
+        // (ls/cat/grep/git log) stays possible in plan mode. plan_submit is
+        // META and always allowed: it is how the mode ends.
+        if (_planMode.value) {
+            val gate = com.openminis.app.engine.DefaultPermissionGate(
+                mode = com.openminis.app.engine.PermissionMode.PLAN,
+                writePolicy = com.openminis.app.engine.ReadOnlyShellPolicy,
+            )
+            val decision = gate.check(
+                name,
+                com.openminis.app.engine.ToolTaxonomy.kindOf(name),
+                argsJson,
+            )
+            if (decision is com.openminis.app.engine.GateDecision.Deny) {
+                return ToolExecutionResult(
+                    decision.reason,
+                    false,
+                    toolTitle = friendlyToolTitle(name),
+                )
+            }
+        }
         try {
             val toolResult = when (name) {
             FileReadTool.NAME -> {
@@ -13292,6 +13370,25 @@ class ChatViewModel(
                 com.openminis.app.tools.TodoTool.write(argsJson, activeSessionId)
             com.openminis.app.tools.TodoTool.READ_NAME ->
                 com.openminis.app.tools.TodoTool.read(activeSessionId)
+            com.openminis.app.tools.PlanSubmitTool.NAME ->
+                // [T-plan-mode] The verdict dialog rides AskUserGate; an
+                // approval flips the session out of plan mode (persisted —
+                // the next schema build unlocks the write tools).
+                com.openminis.app.tools.PlanSubmitTool.execute(
+                    argsJson,
+                    activeSessionId,
+                    confirm = { question, options ->
+                        com.openminis.app.sandbox.AskUserGate.ask(
+                            sessionId = activeSessionId,
+                            question = question,
+                            options = options.map {
+                                com.openminis.app.sandbox.AskUserGate.Option(it)
+                            },
+                            allowFreeText = true,
+                        )
+                    },
+                    onApproved = { setPlanMode(false) },
+                )
             com.openminis.app.tools.McpCallTool.NAME ->
                 com.openminis.app.tools.McpCallTool.execute(argsJson, activeSessionId, context)
             com.openminis.app.tools.WebFetchTool.NAME ->

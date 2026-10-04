@@ -114,12 +114,21 @@ object AgentTools {
          * attempt a root call).
          */
         rootShellEnabled: Boolean = com.openminis.app.data.RootShellPrefs.isEnabled(),
+        /**
+         * [T-plan-mode] PLAN session mode: WRITE tools leave the schema
+         * entirely (the model cannot plan around a tool it will never get)
+         * and plan_submit joins it as the mode's exit. EXECUTE tools STAY
+         * visible — read-only shell exploration is legitimate in plan mode;
+         * the per-call backstop lives in the executor (ChatViewModel's
+         * plan gate via engine.DefaultPermissionGate).
+         */
+        planMode: Boolean = false,
     ): List<AgentToolDefinition> {
         val allow = expandAllowlist(allowedTools)
 
         fun permitted(name: String): Boolean = allow == null || name in allow
 
-        return buildList {
+        val tools = buildList {
             if (permitted("shell_execute")) add(shellExecuteDefinition())
             if (permitted(FileReadTool.NAME)) add(FileReadTool.definition())
             if (permitted(FileWriteTool.NAME)) add(FileWriteTool.definition())
@@ -233,6 +242,26 @@ object AgentTools {
             if (rootShellEnabled) {
                 if (permitted("root_shell")) add(rootShellDefinition())
             }
+            // [T-plan-mode] The mode's exit: submit the plan, user approves
+            // on screen. META — it only ever asks the user, so it is allowed
+            // in every mode (registered only while the mode is on: outside
+            // plan mode its description would just burn schema tokens).
+            if (planMode && permitted(com.openminis.app.tools.PlanSubmitTool.NAME)) {
+                add(com.openminis.app.tools.PlanSubmitTool.definition())
+            }
+        }
+
+        // [T-plan-mode] Schema-level enforcement: WRITE tools vanish so the
+        // model cannot plan around them; EXECUTE stays (gated per-call —
+        // read-only shell is legitimate exploration). Zero cost when the
+        // mode is off (identity return, no filter pass).
+        return if (planMode) {
+            tools.filter {
+                com.openminis.app.engine.ToolTaxonomy.kindOf(it.name) !=
+                    com.openminis.app.engine.MutationKind.WRITE
+            }
+        } else {
+            tools
         }
     }
 
