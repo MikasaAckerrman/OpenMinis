@@ -12600,20 +12600,20 @@ class ChatViewModel(
             // shell/browser/offload/subagent tools NEVER join: shared
             // session state, ordered side effects. Mixed batches (safe +
             // shell) also stay sequential for the same reason.
+            // [T-m7-batch-planner] M7 slice 1: the DECISION moved to
+            // engine.ToolBatchPlanner (declarative, unit-tested); the
+            // executor branches below stay platform-side (UI blocks).
             val resultParts = mutableListOf<AgentContentPart>()
-            val CONFLICT_PARALLEL_TOOLS = setOf(
-                FileReadTool.NAME, ReadImageTool.NAME, "memory_get",
-                FileWriteTool.NAME, FileEditTool.NAME,
+            val batchPlanner = com.openminis.app.engine.ToolBatchPlanner(
+                pathOf = com.openminis.app.engine.jsonObjectPathExtractor,
             )
-            val batchTargetPaths = toolCalls.map { (id, name, args) ->
-                if (name in CONFLICT_PARALLEL_TOOLS && name != "memory_get") {
-                    args.optString("path", "")
-                } else ""
-            }
-            val pathsInPlay = batchTargetPaths.filter { it.isNotEmpty() }
-            val canParallelize = toolCalls.size > 1 &&
-                toolCalls.all { (id, name, args) -> name in CONFLICT_PARALLEL_TOOLS } &&
-                pathsInPlay.size == pathsInPlay.distinct().size
+            val canParallelize = batchPlanner.canParallelize(
+                toolCalls.map { (id, name, args) ->
+                    com.openminis.app.engine.ToolBatchPlanner.PendingToolCall(
+                        id, name, args.toString(),
+                    )
+                },
+            )
             if (canParallelize) {
                 val parallelStart = System.currentTimeMillis()
                 // Mark ALL blocks RUNNING first (sequential UI update, no
