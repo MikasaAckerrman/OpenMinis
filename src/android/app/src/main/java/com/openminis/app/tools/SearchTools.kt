@@ -109,7 +109,7 @@ object SearchTools {
             val guestPath = args.optString("path", "/var/minis").trim()
             val maxResults = args.optInt("max_results", DEFAULT_MAX_RESULTS).coerceIn(1, 2000)
 
-            val host = resolveHost(sessionId, guestPath)
+            val host = resolveHost(sessionId, guestPath, context)
                 ?: return@withContext ToolExecutionResult(
                     "Error: cannot resolve path: $guestPath", false)
 
@@ -144,7 +144,7 @@ object SearchTools {
             }
             val guestPath = args.optString("path", "/var/minis").trim()
             val maxResults = args.optInt("max_results", DEFAULT_MAX_RESULTS).coerceIn(1, 2000)
-            val host = resolveHost(sessionId, guestPath)
+            val host = resolveHost(sessionId, guestPath, context)
                 ?: return@withContext ToolExecutionResult(
                     "Error: cannot resolve path: $guestPath", false)
 
@@ -158,10 +158,13 @@ object SearchTools {
             finishSearch(out, code, "glob")
         }
 
-    private fun resolveHost(sessionId: String, guestPath: String): File? {
-        val ctx = context ?: return null
+    private fun resolveHost(
+        sessionId: String,
+        guestPath: String,
+        context: android.content.Context,
+    ): File? {
         val abs = if (guestPath.startsWith("/")) guestPath else "/var/minis/$guestPath"
-        return com.openminis.app.sandbox.PRootKernel.resolveSessionHostPath(sessionId, abs, ctx)
+        return com.openminis.app.sandbox.PRootKernel.resolveSessionHostPath(sessionId, abs, context)
     }
 
     private fun finishSearch(out: String, code: Int, tool: String): ToolExecutionResult {

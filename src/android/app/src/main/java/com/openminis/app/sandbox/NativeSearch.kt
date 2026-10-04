@@ -66,17 +66,17 @@ object NativeSearch {
     ): Triple<String, Int> {
         val bin = ensureBinary(context)
         if (!verified) {
-            val probe = run(bin, listOf("--version"), 5)
+            val probe = runRg(bin, listOf("--version"), 5)
             if (!probe.first.startsWith("ripgrep")) {
                 return Triple(
                     "native rg failed self-check: ${probe.first.take(120)}", -1)
             }
             verified = true
         }
-        return run(bin, argv, timeoutSec)
+        return runRg(bin, argv, timeoutSec)
     }
 
-    private fun run(bin: File, argv: List<String>, timeoutSec: Int): Triple<String, Int> {
+    private fun runRg(bin: File, argv: List<String>, timeoutSec: Int): Triple<String, Int> {
         val cmd = listOf(bin.absolutePath) + argv
         return runCatching {
             val proc = ProcessBuilder(cmd).start()
