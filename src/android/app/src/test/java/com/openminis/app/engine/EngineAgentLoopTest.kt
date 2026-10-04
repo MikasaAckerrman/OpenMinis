@@ -143,8 +143,8 @@ class EngineAgentLoopTest {
         val gw = ScriptedGateway(
             listOf(
                 listOf(
-                    // missing the required "path"
-                    StreamEvent.ToolCall(EngineToolCall("c1", "file_read", "{}")),
+                    // present but MISSING the required "path"
+                    StreamEvent.ToolCall(EngineToolCall("c1", "file_read", "{\"other\":1}")),
                     StreamEvent.Done,
                 ),
                 listOf(StreamEvent.Done),
