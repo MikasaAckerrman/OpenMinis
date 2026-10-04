@@ -2,9 +2,11 @@ package com.openminis.app.tools
 
 import com.openminis.app.data.model.AgentToolDefinition
 import com.openminis.app.data.model.AgentToolParam
+import com.openminis.app.engine.TodoItem
+import com.openminis.app.engine.TodoStatus
+import com.openminis.app.engine.TodoStore
 import org.json.JSONArray
 import org.json.JSONObject
-import java.util.concurrent.ConcurrentHashMap
 
 /**
  * [T-todo] Persistent task checklist — the ZCode "todo/plan" entity: the
@@ -16,22 +18,18 @@ import java.util.concurrent.ConcurrentHashMap
  * list — the model always sends the complete state. Idempotent, no
  * merge logic, no drift between what the model believes and what's shown.
  *
- * Storage is process-memory per session (ConcurrentHashMap): todos are
- * working state — they survive session switches in the app process and
- * intentionally don't outlive it (the agent re-derives the plan from its
- * memory notes after a restart).
+ * Storage lives in the engine ([TodoStore]): process-memory per session —
+ * todos are working state, they survive session switches in the app
+ * process and intentionally don't outlive it (the agent re-derives the
+ * plan from its memory notes after a restart). This object is the thin
+ * tool-surface adapter: argument parsing + result shaping only.
  */
 object TodoTool {
 
     const val WRITE_NAME = "todo_write"
     const val READ_NAME = "todo_read"
 
-    data class TodoItem(
-        val content: String,
-        val status: String, // pending | in_progress | done
-    )
-
-    private val bySession = ConcurrentHashMap<String, List<TodoItem>>()
+    private val store = TodoStore.shared
 
     fun writeDefinition(): AgentToolDefinition = AgentToolDefinition(
         name = WRITE_NAME,
@@ -67,17 +65,19 @@ object TodoTool {
         val items = parseItems(args.opt("todos"))
             ?: return ToolExecutionResult(
                 "Error: 'todos' is required — JSON array [{content,status}]", false)
-        if (items.size > 50) {
-            return ToolExecutionResult("Error: max 50 todo items", false)
+        if (items.size > store.maxItems) {
+            return ToolExecutionResult("Error: max ${store.maxItems} todo items", false)
         }
-        bySession[sessionId] = items
-        return ToolExecutionResult(render(items) + "\n(list saved for this session)", true)
+        val stored = store.write(sessionId, items)
+        return ToolExecutionResult(TodoStore.render(stored) + "\n(list saved for this session)", true)
     }
 
     fun read(sessionId: String): ToolExecutionResult {
-        val items = bySession[sessionId]
-            ?: return ToolExecutionResult("no todos for this session", true)
-        return ToolExecutionResult(render(items), true)
+        val items = store.read(sessionId)
+        if (items.isEmpty()) {
+            return ToolExecutionResult("no todos for this session", true)
+        }
+        return ToolExecutionResult(TodoStore.render(items), true)
     }
 
     /** Lenient parsing: array of objects, array of strings, or 'a;b;c' text. */
@@ -90,15 +90,10 @@ object TodoTool {
                         is JSONObject -> {
                             val content = item.optString("content", item.optString("text", "")).trim()
                             if (content.isNotEmpty()) {
-                                val status = when (item.optString("status", "pending").trim().lowercase()) {
-                                    "in_progress", "active", "doing" -> "in_progress"
-                                    "done", "complete", "completed" -> "done"
-                                    else -> "pending"
-                                }
-                                out.add(TodoItem(content, status))
+                                out.add(TodoItem(content, TodoStatus.fromString(item.optString("status", "pending"))))
                             }
                         }
-                        is String -> if (item.isNotBlank()) out.add(TodoItem(item.trim(), "pending"))
+                        is String -> if (item.isNotBlank()) out.add(TodoItem(item.trim(), TodoStatus.PENDING))
                     }
                 }
                 return out.ifEmpty { null }
@@ -110,24 +105,9 @@ object TodoTool {
                     runCatching { parseItems(JSONArray(trimmed)) }.getOrNull()?.let { return it }
                 }
                 val parts = trimmed.split('\n', ';').map { it.trim() }.filter { it.isNotEmpty() }
-                return parts.ifEmpty { null }?.map { TodoItem(it, "pending") }
+                return parts.ifEmpty { null }?.map { TodoItem(it, TodoStatus.PENDING) }
             }
         }
         return null
-    }
-
-    private fun render(items: List<TodoItem>): String {
-        val done = items.count { it.status == "done" }
-        val sb = StringBuilder()
-        sb.append("TODO [").append(done).append('/').append(items.size).append("]\n")
-        items.forEach { item ->
-            val marker = when (item.status) {
-                "done" -> "✓"
-                "in_progress" -> "▸"
-                else -> "○"
-            }
-            sb.append(marker).append(' ').append(item.content).append('\n')
-        }
-        return sb.toString().trim()
     }
 }
