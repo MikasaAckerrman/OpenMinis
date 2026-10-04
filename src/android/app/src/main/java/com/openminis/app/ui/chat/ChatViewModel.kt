@@ -13296,6 +13296,10 @@ class ChatViewModel(
                 com.openminis.app.tools.McpCallTool.execute(argsJson, activeSessionId, context)
             com.openminis.app.tools.WebFetchTool.NAME ->
                 com.openminis.app.tools.WebFetchTool.execute(argsJson)
+            com.openminis.app.tools.SearchTools.GREP_NAME ->
+                com.openminis.app.tools.SearchTools.executeGrep(argsJson, activeSessionId, context)
+            com.openminis.app.tools.SearchTools.GLOB_NAME ->
+                com.openminis.app.tools.SearchTools.executeGlob(argsJson, activeSessionId, context)
             "memory_write" -> executeMemoryWriteTool(argsJson)
             "memory_get" -> executeMemoryGetTool(argsJson)
             "supermemory_search" -> executeSupermemorySearchTool(argsJson)

@@ -173,7 +173,11 @@ android {
     }
 
     androidResources {
-        noCompress += listOf("tar.gz", "proot-aarch64")
+        // [T-embedded-search] rg must NOT be zip-deflate-stored: the ELF is
+        // extracted then mmap-exec'd; a compressed asset inflates during
+        // copy (fine) but keeping parity with proot-aarch64 avoids any
+        // packaging weirdness with executable blobs.
+        noCompress += listOf("tar.gz", "proot-aarch64", "rg")
     }
 
     // [T-clone-variant] The clone shares debug's generated assets.

@@ -155,6 +155,12 @@ object AgentTools {
             if (permitted(com.openminis.app.tools.WebFetchTool.NAME)) {
                 add(com.openminis.app.tools.WebFetchTool.definition())
             }
+            // [T-embedded-search] Native grep/glob over the bundled
+            // ripgrep — no shell spawn, guest paths resolved to host
+            // bind targets, direct process exec.
+            for (def in com.openminis.app.tools.SearchTools.definitions()) {
+                if (permitted(def.name)) add(def)
+            }
             // [T-spawn-subagent] Claude Code + OpenAI Agents SDK pattern:
             // the LLM can delegate subtasks to specialist agents at runtime.
             // [T-subagent-gate] User decision 23.09.2026: subagents are
