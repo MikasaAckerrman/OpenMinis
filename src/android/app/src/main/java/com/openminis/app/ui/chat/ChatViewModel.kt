@@ -13294,6 +13294,8 @@ class ChatViewModel(
                 com.openminis.app.tools.TodoTool.read(activeSessionId)
             com.openminis.app.tools.McpCallTool.NAME ->
                 com.openminis.app.tools.McpCallTool.execute(argsJson, activeSessionId, context)
+            com.openminis.app.tools.WebFetchTool.NAME ->
+                com.openminis.app.tools.WebFetchTool.execute(argsJson)
             "memory_write" -> executeMemoryWriteTool(argsJson)
             "memory_get" -> executeMemoryGetTool(argsJson)
             "supermemory_search" -> executeSupermemorySearchTool(argsJson)

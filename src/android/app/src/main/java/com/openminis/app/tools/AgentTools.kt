@@ -149,6 +149,12 @@ object AgentTools {
             if (permitted(com.openminis.app.tools.McpCallTool.NAME)) {
                 add(com.openminis.app.tools.McpCallTool.definition())
             }
+            // [T-webfetch] The light "read THIS page" path — one GET,
+            // HTML→markdown, cached. Complements web_search (find) and
+            // browser_use (interact).
+            if (permitted(com.openminis.app.tools.WebFetchTool.NAME)) {
+                add(com.openminis.app.tools.WebFetchTool.definition())
+            }
             // [T-spawn-subagent] Claude Code + OpenAI Agents SDK pattern:
             // the LLM can delegate subtasks to specialist agents at runtime.
             // [T-subagent-gate] User decision 23.09.2026: subagents are
