@@ -143,6 +143,12 @@ object AgentTools {
             for (def in com.openminis.app.tools.TodoTool.definitions()) {
                 if (permitted(def.name)) add(def)
             }
+            // [T-mcp-first-class] MCP as ONE structured tool (list/tools/
+            // call) — no more minis-mcp-cli through raw shell_execute, no
+            // schema bloat from per-tool registration.
+            if (permitted(com.openminis.app.tools.McpCallTool.NAME)) {
+                add(com.openminis.app.tools.McpCallTool.definition())
+            }
             // [T-spawn-subagent] Claude Code + OpenAI Agents SDK pattern:
             // the LLM can delegate subtasks to specialist agents at runtime.
             // [T-subagent-gate] User decision 23.09.2026: subagents are
