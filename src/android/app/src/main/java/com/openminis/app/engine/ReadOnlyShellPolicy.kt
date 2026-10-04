@@ -21,10 +21,10 @@ package com.openminis.app.engine
  *  - `env` with any non-assignment argument (env runs it as a command);
  *  - `sort` with -o (writes a file), `date` with -s/--set (sets the clock),
  *    `hostname` with arguments (sets the hostname);
- *  - `awk`/`man`/`less`/`more` dropped entirely: awk's system()/getline
- *    escapes any static policy, man -P runs an arbitrary pager, pagers
- *    have their own `!`/--log-file escape hatches. cat/head/tail cover
- *    the reading those tools did.
+ *  - `awk` dropped entirely: its system()/getline escapes any static
+ *    policy — cat/head/tail cover the same reading. `man`/`less`/`more`
+ *    kept but their execution/write flags (-P, --pager, --log-file) are
+ *    refused.
  */
 object ReadOnlyShellPolicy : WritePolicy {
 
@@ -33,6 +33,7 @@ object ReadOnlyShellPolicy : WritePolicy {
         "file", "stat", "du", "df", "ps", "pwd", "echo", "printf",
         "which", "whereis", "printenv", "whoami", "id",
         "date", "uname", "hostname", "sort", "uniq", "cut",
+        "man", "less", "more",
         "readlink", "realpath", "dirname", "basename",
         "md5sum", "sha256sum", "cksum", "diff", "comm", "tr",
         "true", "false",
@@ -109,6 +110,15 @@ object ReadOnlyShellPolicy : WritePolicy {
         if (head == "hostname") {
             // bare `hostname` reads; `hostname <name>` sets.
             return rest.isEmpty()
+        }
+        if (head == "man" || head == "less" || head == "more") {
+            // [T-read-only-shell-hardening] pagers are reading tools, but
+            // they can EXECUTE or WRITE through their own flags: man -P
+            // runs an arbitrary pager command; less --log-file writes.
+            // Interactive `!` escapes are user-initiated, out of scope.
+            return rest.none {
+                it == "-P" || it.startsWith("--pager") || it.startsWith("--log-file")
+            }
         }
         return head in READ_ONLY_HEADS
     }
