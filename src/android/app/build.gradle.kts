@@ -250,7 +250,7 @@ dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2025.09.00")
     implementation(composeBom)
     implementation("androidx.compose.material3:material3")
-    // [T-m13-fts-bundle] Bundled SQLite with FTS5 (Apache-2.0, requery):
+    // [T-m13-fts-bundle] Bundled SQLite WITH FTS5 (Apache-2.0, requery; probe: bindEngine reads through the virtual table):
     // the vivo SM8650 platform SQLite is compiled WITHOUT the fts5 module
     // (vc86 crash-loop) — this lib provides the same engine family
     // in-process; arm64-only via existing abiFilters, ~1.8MB.
