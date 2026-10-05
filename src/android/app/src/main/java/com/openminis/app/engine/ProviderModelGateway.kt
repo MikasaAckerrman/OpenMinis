@@ -37,12 +37,12 @@ import org.json.JSONObject
  *    tool_result blocks.
  *
  * Event mapping: Text→TextDelta, ToolCallComplete→ToolCall (args
- * serialized once — the engine's preflight re-parses; the progressive
- * ToolInputDelta deltas are swallowed: the engine consumes COMPLETE
- * calls only), Usage→Usage, Finished→Done. ThinkingDelta/
- * ReasoningContent are dropped — the engine contract has no reasoning
- * surface yet; extending it is an M9 candidate BEFORE any loop swap
- * (progressive reasoning display is a production feature to preserve).
+ * serialized once — the engine's preflight re-parses; ToolInputDelta
+ * fragments map through since M9, the progressive-args surface the
+ * production UI renders). Usage→Usage, Finished→Done. ThinkingDelta→
+ * ReasoningDelta and ReasoningContent→ReasoningDelta carry the
+ * thinking stream since M9/M10 — the loop accumulates them into the
+ * round's reasoningContent (DeepSeek history invariant).
  *
  * Stream failures (thrown from the cold flow — connection closed, TLS,
  * provider errors) become [StreamEvent.Failure] with recoverable=true:
@@ -53,6 +53,13 @@ class ProviderModelGateway(
     private val provider: LLMProvider,
     private val systemPrompt: String? = null,
     private val thinkingLevel: ThinkingLevel = ThinkingLevel.OFF,
+    /**
+     * [T-m12-image-parts] The turn's user image attachments — turn-scoped
+     * input exactly like [systemPrompt], so they ride the same constructor
+     * seam. The engine message history is text-shaped; attachments enter
+     * at the wire call where the production path passes them.
+     */
+    private val imageParts: List<LLMMessage.ImagePart> = emptyList(),
 ) : ModelGateway {
 
     override val modelId: String get() = provider.name
@@ -67,6 +74,7 @@ class ProviderModelGateway(
         maxTokens = maxTokens,
         tools = tools,
         thinkingLevel = thinkingLevel,
+        imageParts = imageParts,
     )
         .mapNotNull(::toStreamEvent)
         .catch { cause ->

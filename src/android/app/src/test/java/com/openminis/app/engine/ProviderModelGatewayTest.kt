@@ -40,6 +40,10 @@ class ProviderModelGatewayTest {
         )
         var seenMessages: List<LLMMessage> = emptyList()
             private set
+        var lastImageParts: List<LLMMessage.ImagePart> = emptyList()
+            private set
+        var lastSystemPrompt: String? = null
+            private set
         override fun streamMessageClamped(
             messages: List<LLMMessage>,
             systemPrompt: String?,
@@ -50,6 +54,8 @@ class ProviderModelGatewayTest {
             thinkingLevel: ThinkingLevel,
         ): Flow<LLMStreamChunk> {
             seenMessages = messages
+            lastImageParts = imageParts
+            lastSystemPrompt = systemPrompt
             return script[index.coerceAtMost(script.size - 1)].also { index++ }
         }
 
@@ -177,6 +183,28 @@ class ProviderModelGatewayTest {
         val toolUse = fake.seenMessages[0].contentParts
             .filterIsInstance<AgentContentPart.ToolUse>().single()
         assertEquals(0, toolUse.input.length())
+    }
+
+    @Test
+    fun `turn image attachments ride the constructor seam to the wire`() {
+        // the turn's user attachments must reach the provider call —
+        // without this seam the engine swap would silently drop photos
+        val fake = FakeProvider()
+        val g = ProviderModelGateway(
+            provider = fake,
+            systemPrompt = "sys",
+            imageParts = listOf(LLMMessage.ImagePart("file:///a.png", isMarkdownNative = false)),
+        )
+        kotlinx.coroutines.test.runTest {
+            g.stream(
+                listOf(EngineMessage(EngineRole.USER, text = "look")),
+                emptyList(),
+                128,
+            ).collect { }
+        }
+        org.junit.Assert.assertEquals(1, fake.lastImageParts.size)
+        org.junit.Assert.assertEquals("file:///a.png", fake.lastImageParts[0].url)
+        org.junit.Assert.assertEquals("sys", fake.lastSystemPrompt)
     }
 
     @Test
