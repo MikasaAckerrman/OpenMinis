@@ -196,7 +196,7 @@ object FtsMemoryIndex {
                 // module — and would then fail every later write. Reading
                 // THROUGH the virtual table forces module instantiation:
                 // the honest probe.
-                e.query("SELECT docid FROM docs LIMIT 1", emptyArray()) { row -> row }
+                e.query("SELECT rowid FROM docs LIMIT 1", emptyArray()) { row -> row }
                 engine = e
                 true
             } catch (t: Throwable) {
