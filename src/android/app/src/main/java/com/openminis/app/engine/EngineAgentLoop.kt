@@ -211,6 +211,13 @@ class EngineAgentLoop(
         val regex = Regex("\"([^\"]+)\"\\s*:\\s*(\"((?:[^\"\\\\]|\\\\.)*)\"|\\[|\\{|(?:true|false)|(?:-?\\d+(?:\\.\\d+)?)|null)")
         for (m in regex.findAll(trimmed)) {
             val key = m.groupValues[1]
+            // FIRST match wins: regex cannot respect JSON nesting, so a
+            // nested object like {"path":[{"path":"/a"}]} yields both the
+            // OUTER "path" (Array) and an inner one (Text) — taking the
+            // last would let the inner value MASK a wrong-typed outer
+            // field and bypass the type check. The outer level is the
+            // schema-relevant one; inner spill is ignored.
+            if (key in normalized) continue
             val value = m.groupValues[2]
             normalized[key] = when {
                 value.startsWith("\"") -> PreflightValue.Text(m.groupValues[3])

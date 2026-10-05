@@ -109,11 +109,14 @@ class EngineAgentLoopTest {
         )
         val start = java.util.concurrent.atomic.AtomicInteger(0)
         val loop = EngineAgentLoop(gw, registry()) { _, _ ->
-            // both must overlap: signal entry, wait for the partner
+            // both must overlap: signal entry, wait for the partner.
+            // Generous barrier: on a slow CI runner the second async may
+            // take seconds to reach the pool — the test asserts OVERLAP,
+            // so a timeout short enough to expire first would flake.
             if (start.incrementAndGet() == 1) {
                 var waited = 0
-                while (start.get() == 1 && waited < 500) {
-                    Thread.sleep(2); waited += 2
+                while (start.get() == 1 && waited < 4000) {
+                    Thread.sleep(5); waited += 5
                 }
             }
             EngineAgentLoop.ToolOutcome("x", true)
@@ -160,6 +163,37 @@ class EngineAgentLoopTest {
         val toolEvent = events.filterIsInstance<AgentEvent.ToolCallFinished>().single()
         assertTrue(!toolEvent.success)
         assertTrue(toolEvent.summary.contains("missing required parameter"))
+    }
+
+    @Test
+    fun `nested same-name field cannot mask a wrong-typed outer field`() = runTest {
+        // regression: the headless regex parser must take the FIRST
+        // (outer) occurrence of a key — an inner "path" inside an array
+        // value must not turn a wrong-typed outer field into a string.
+        val gw = ScriptedGateway(
+            listOf(
+                listOf(
+                    StreamEvent.ToolCall(
+                        EngineToolCall(
+                            "c1", "file_read",
+                            "{\"path\":[{\"path\":\"/a.kt\"}]}",
+                        ),
+                    ),
+                    StreamEvent.Done,
+                ),
+                listOf(StreamEvent.Done),
+            ),
+        )
+        var executed = 0
+        val loop = EngineAgentLoop(gw, registry()) { _, _ ->
+            executed++
+            EngineAgentLoop.ToolOutcome("never", true)
+        }
+        val events = loop.runTurn(turnInput()).toList()
+        assertEquals(0, executed) // blocked: outer path is an ARRAY
+        val toolEvent = events.filterIsInstance<AgentEvent.ToolCallFinished>().single()
+        assertTrue(!toolEvent.success)
+        assertTrue(toolEvent.summary.contains("must be a string"))
     }
 
     @Test
