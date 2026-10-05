@@ -238,7 +238,11 @@ class EngineAgentLoop(
         if (!trimmed.startsWith("{")) return null // not an object — platform parse will reject
         // Minimal field split: "key":<value> at the top level. Good enough
         // for presence/type checks; the authoritative parse is platform-side.
-        val regex = Regex("\"([^\"]+)\"\\s*:\\s*(\"((?:[^\"\\\\]|\\\\.)*)\"|\\[|\\{|(?:true|false)|(?:-?\\d+(?:\\.\\d+)?)|null)")
+        // Number alternative accepts scientific notation (1e3 is legal
+        // JSON the org.json platform parser reads as a Double) so the
+        // structural presence check matches the platform's notion of
+        // "field present".
+        val regex = Regex("\"([^\"]+)\"\\s*:\\s*(\"((?:[^\"\\\\]|\\\\.)*)\"|\\[|\\{|(?:true|false)|(?:-?\\d+(?:\\.\\d+)?(?:[eE][-+]?\\d+)?)|null)")
         for (m in regex.findAll(trimmed)) {
             val key = m.groupValues[1]
             // FIRST match wins: regex cannot respect JSON nesting, so a
@@ -255,7 +259,18 @@ class EngineAgentLoop(
                 value == "null" -> PreflightValue.Null
                 value == "[" -> PreflightValue.Array
                 value == "{" -> PreflightValue.Object
-                value.contains(".") -> PreflightValue.RealNum(value.toDouble())
+                value.contains("."), value.contains("e"), value.contains("E") -> {
+                    // Class-parity with the org.json adapter: a whole-valued
+                    // decimal (3.0, 1e3) is an IntNum there — the two
+                    // parsers must agree or preflight verdicts diverge
+                    // between headless and platform paths.
+                    val d = value.toDouble()
+                    if (d.isFinite() && d == Math.floor(d)) {
+                        PreflightValue.IntNum(d.toLong())
+                    } else {
+                        PreflightValue.RealNum(d)
+                    }
+                }
                 else -> PreflightValue.IntNum(value.toLong())
             }
         }

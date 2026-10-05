@@ -290,6 +290,56 @@ class EngineAgentLoopTest {
     }
 
     @Test
+    fun `headless parser class-parity - whole decimals are IntNum like org.json`() = runTest {
+        // 3.0 must classify as an integer value exactly as the platform
+        // org.json adapter does, or preflight verdicts diverge.
+        val gw = ScriptedGateway(
+            listOf(
+                listOf(
+                    StreamEvent.ToolCall(
+                        EngineToolCall("c1", "file_read", "{\"offset\": 3.0}"),
+                    ),
+                    StreamEvent.Done,
+                ),
+                listOf(StreamEvent.Done),
+            ),
+        )
+        val loop = EngineAgentLoop(gw, registry()) { _, _ ->
+            EngineAgentLoop.ToolOutcome("read", true)
+        }
+        val events = loop.runTurn(turnInput()).toList()
+        val finished = events.filterIsInstance<AgentEvent.ToolCallFinished>().single()
+        org.junit.Assert.assertTrue(
+            "3.0 must pass as integer: ${finished.summary}",
+            finished.success && !finished.summary.contains("integer"),
+        )
+    }
+
+    @Test
+    fun `headless parser accepts scientific notation as present`() = runTest {
+        val gw = ScriptedGateway(
+            listOf(
+                listOf(
+                    StreamEvent.ToolCall(
+                        EngineToolCall("c1", "file_read", "{\"offset\": 1e3}"),
+                    ),
+                    StreamEvent.Done,
+                ),
+                listOf(StreamEvent.Done),
+            ),
+        )
+        val loop = EngineAgentLoop(gw, registry()) { _, _ ->
+            EngineAgentLoop.ToolOutcome("read", true)
+        }
+        val events = loop.runTurn(turnInput()).toList()
+        val finished = events.filterIsInstance<AgentEvent.ToolCallFinished>().single()
+        org.junit.Assert.assertTrue(
+            "1e3 must be field-present: ${finished.summary}",
+            !finished.summary.contains("missing required parameter"),
+        )
+    }
+
+    @Test
     fun `round limit fires TurnFinished`() = runTest {
         // every round issues one more tool call — never stops on its own
         val gw = object : ModelGateway {

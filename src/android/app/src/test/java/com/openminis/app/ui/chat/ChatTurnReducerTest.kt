@@ -59,6 +59,16 @@ class ChatTurnReducerTest {
     }
 
     @Test
+    fun `thinking card seals when a tool starts without text`() {
+        val r = reducer()
+        r.reduce(AgentEvent.ThinkingDelta("reasoning only"))
+        org.junit.Assert.assertNull(r.currentBlocks()[0].toolStatus)
+        r.reduce(AgentEvent.ToolUseStarted("c1", "file_read"))
+        // the DeepSeek pattern: reasoning -> tool, no answer text
+        assertEquals(ToolBlockStatus.SUCCESS, r.currentBlocks()[0].toolStatus)
+    }
+
+    @Test
     fun `text after tool blocks inserts before them`() {
         val r = reducer()
         r.reduce(AgentEvent.ToolUseStarted("c1", "shell_execute"))

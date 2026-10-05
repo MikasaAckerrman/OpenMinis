@@ -99,6 +99,14 @@ class ChatTurnReducer(
             }
 
             is AgentEvent.ToolUseStarted -> {
+                // Oracle-parity: production seals the thinking card when a
+                // tool use starts, not only when answer text flows — the
+                // DeepSeek pattern (reasoning -> tool_calls, no text) would
+                // otherwise leave the thinking card open forever.
+                val thinkIdx = blocks.indexOfFirst { it.kind == "thinking" }
+                if (thinkIdx >= 0 && blocks[thinkIdx].toolStatus != ToolBlockStatus.SUCCESS) {
+                    blocks[thinkIdx] = blocks[thinkIdx].copy(toolStatus = ToolBlockStatus.SUCCESS)
+                }
                 val idx = blocks.indexOfFirst { it.kind == "tool_use" && it.id == event.callId }
                 if (idx < 0) {
                     blocks.add(
