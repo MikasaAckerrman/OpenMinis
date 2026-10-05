@@ -152,6 +152,24 @@ jobs:
             --tests 'com.openminis.app.data.MutationJournalTest' \
             --tests 'com.openminis.app.data.SessionDeletionPolicyTest' \
             --tests 'com.openminis.app.debug.HeadlessRetryStatusTest' \
+            --tests 'com.openminis.app.engine.EngineAgentLoopTest' \
+            --tests 'com.openminis.app.engine.ToolBatchPlannerTest' \
+            --tests 'com.openminis.app.engine.ToolPreflightEngineTest' \
+            --tests 'com.openminis.app.engine.ToolRegistryTest' \
+            --tests 'com.openminis.app.engine.ToolTaxonomyTest' \
+            --tests 'com.openminis.app.engine.HookEngineTest' \
+            --tests 'com.openminis.app.engine.ReadOnlyShellPolicyTest' \
+            --tests 'com.openminis.app.engine.PlanSubmitToolTest' \
+            --tests 'com.openminis.app.engine.PermissionGateTest' \
+            --tests 'com.openminis.app.engine.PermissionModePrefsLogicTest' \
+            --tests 'com.openminis.app.engine.PlanModePrefsLogicTest' \
+            --tests 'com.openminis.app.engine.PermissionAllowlistPrefsLogicTest' \
+            --tests 'com.openminis.app.engine.ExploreRoleTest' \
+            --tests 'com.openminis.app.engine.AgentToolsPlanFilterTest' \
+            --tests 'com.openminis.app.engine.TodoStoreTest' \
+            --tests 'com.openminis.app.tools.ExecutionSeamTest' \
+            --tests 'com.openminis.app.tools.ToolSurfaceAdapterTest' \
+            --tests 'com.openminis.app.ui.chat.ChatTurnReducerTest' \
             --tests 'com.openminis.app.ui.chat.UiCopyCapsuleTest' \
             --tests 'com.openminis.app.ui.chat.UiCopyDiffVerdictTest' \
             --tests 'com.openminis.app.ui.chat.MinisTextKitSelectionOrderTest' \
