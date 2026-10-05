@@ -86,6 +86,7 @@ jobs:
             --tests 'com.openminis.app.engine.ToolPreflightEngineTest' \
             --tests 'com.openminis.app.engine.EngineAgentLoopTest' \
             --tests 'com.openminis.app.engine.ProviderModelGatewayTest' \
+            --tests 'com.openminis.app.tools.ExecutionSeamTest' \
             --tests 'com.openminis.app.config.ConfigPathResolverTest' \
             --tests 'com.openminis.app.data.model.ProviderFoldersTest' \
             --tests 'com.openminis.app.data.model.EndpointHistoryTest' \
