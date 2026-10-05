@@ -89,7 +89,7 @@ object FtsMemoryIndex {
             if (binds.isEmpty()) {
                 db.execSQL(sql)
             } else {
-                db.execSQL(sql, binds.toTypedArray())
+                @Suppress("UNCHECKED_CAST") db.execSQL(sql, binds as Array<Any?>)
             }
         }
 
@@ -99,7 +99,7 @@ object FtsMemoryIndex {
             map: (Array<Any?>) -> T,
         ): List<T> {
             val out = mutableListOf<T>()
-            db.query(sql, binds.toTypedArray() as Array<Any?>).use { c ->
+            @Suppress("UNCHECKED_CAST") db.query(sql, binds as Array<Any?>).use { c ->
                 while (c.moveToNext()) {
                     val row = Array<Any?>(c.columnCount) { i ->
                         when (c.getType(i)) {
