@@ -101,7 +101,9 @@ object AskUserTool {
     }
 
     /** Lenient option parsing — see class doc. Null only when nothing usable arrived. */
-    private fun parseOptions(raw: Any?): List<AskUserGate.Option>? {
+    // [T-m12-testable] internal: pure option-format parsing, oracle-tested
+    // (JSON arrays, objects, embedded JSON, separator lists, caps).
+    internal fun parseOptions(raw: Any?): List<AskUserGate.Option>? {
         when (raw) {
             is JSONArray -> {
                 val out = ArrayList<AskUserGate.Option>()
