@@ -50,7 +50,15 @@ class EngineAgentLoop(
     )
 
     override fun runTurn(input: TurnInput): Flow<AgentEvent> = flow {
+        // [T-m10-user-turn-seed] The input's userText is THIS turn's
+        // prompt: the prior conversation arrives in history, the new
+        // message must lead the request — round 1 without it would send
+        // the model a history that never contains what the user asked
+        // (caught by the reasoning-echo oracle test).
         val workingHistory = input.history.toMutableList()
+        if (input.userText.isNotEmpty()) {
+            workingHistory.add(EngineMessage(EngineRole.USER, text = input.userText))
+        }
         val schema = registry.schemaFor(
             DefaultPermissionGate(
                 mode = input.mode,
