@@ -99,22 +99,35 @@ class ProviderModelGateway(
                 contentParts = parts,
             )
         }
-        EngineRole.TOOL -> LLMMessage(
-            role = LLMMessage.Role.USER,
-            content = "",
-            contentParts = listOf(
-                AgentContentPart.ToolResult(
-                    id = msg.toolCallId ?: "",
-                    name = msg.toolName ?: "",
-                    content = msg.text,
+        EngineRole.TOOL -> {
+            // Fail fast at the boundary: an empty tool_call_id would be
+            // rejected by the provider with a cryptic wire-level error;
+            // here the caller sees the actual contract violation.
+            val callId = msg.toolCallId
+                ?: throw IllegalStateException(
+                    "EngineMessage(TOOL) requires toolCallId — the provider " +
+                        "wire protocol answers a specific call.",
+                )
+            LLMMessage(
+                role = LLMMessage.Role.USER,
+                content = "",
+                contentParts = listOf(
+                    AgentContentPart.ToolResult(
+                        id = callId,
+                        name = msg.toolName ?: "",
+                        content = msg.text,
+                    ),
                 ),
-            ),
-        )
-        // The gateway carries the system prompt as a constructor seam;
-        // the engine loop never emits SYSTEM messages today.
-        EngineRole.SYSTEM -> LLMMessage(
-            role = LLMMessage.Role.USER,
-            content = msg.text,
+            )
+        }
+        // The gateway carries the system prompt as a constructor seam.
+        // Mapping SYSTEM content to a USER message would silently poison
+        // the request — a future SYSTEM emitter must surface HERE, not as
+        // an invisible masquerade at the provider.
+        EngineRole.SYSTEM -> throw IllegalStateException(
+            "EngineMessage(SYSTEM) is not mapped: the gateway owns the " +
+                "system prompt (constructor parameter). Inject context " +
+                "through that seam, not through the history.",
         )
     }
 

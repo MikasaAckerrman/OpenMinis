@@ -177,6 +177,30 @@ class ProviderModelGatewayTest {
     }
 
     @Test
+    fun `TOOL message without toolCallId fails fast at the boundary`() {
+        val g = gw()
+        val err = runCatching {
+            g.toLLMMessage(EngineMessage(EngineRole.TOOL, text = "body"))
+        }.exceptionOrNull()
+        org.junit.Assert.assertNotNull(err)
+        org.junit.Assert.assertTrue(
+            err!!.message!!.contains("toolCallId"),
+        )
+    }
+
+    @Test
+    fun `SYSTEM message is rejected not masqueraded as user`() {
+        val g = gw()
+        val err = runCatching {
+            g.toLLMMessage(EngineMessage(EngineRole.SYSTEM, text = "secret system"))
+        }.exceptionOrNull()
+        org.junit.Assert.assertNotNull(err)
+        org.junit.Assert.assertTrue(
+            err!!.message!!.contains("system prompt"),
+        )
+    }
+
+    @Test
     fun `end to end loop over the production adapter`() = runTest {
         // The full M8 seam: EngineAgentLoop + ProviderModelGateway + a
         // scripted provider — one tool round then stop.
