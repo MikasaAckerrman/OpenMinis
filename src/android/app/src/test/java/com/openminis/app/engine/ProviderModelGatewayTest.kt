@@ -30,7 +30,11 @@ class ProviderModelGatewayTest {
         private val chunks: Flow<LLMStreamChunk> = flowOf(),
     ) : LLMProvider {
         override val name = "fake"
-        override val model = "fake-model"
+        override var model = com.openminis.app.data.model.LLMModel(
+            id = "fake-model",
+            displayName = "Fake",
+            provider = "fake",
+        )
         var seenMessages: List<LLMMessage> = emptyList()
             private set
         override fun streamMessageClamped(
