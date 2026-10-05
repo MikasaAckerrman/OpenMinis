@@ -100,9 +100,13 @@ object FtsMemoryIndex {
     /** Test entry: run against a caller-provided engine (JDBC etc.). */
     internal fun initWith(engineForTest: SqliteEngine, reset: Boolean = true) {
         synchronized(initLock) {
+            // Schema FIRST: a fresh in-memory DB has no tables yet — the
+            // reset deletes below would throw before any test ran (the
+            // zombie-CI lesson: a green run proves nothing unless the
+            // tests actually executed).
+            ensureSchema(engineForTest)
             if (reset) engineForTest.exec("DELETE FROM docs")
             engineForTest.exec("DELETE FROM ingested_files")
-            ensureSchema(engineForTest)
             engine = engineForTest
         }
     }

@@ -89,6 +89,7 @@ jobs:
             --tests 'com.openminis.app.tools.ExecutionSeamTest' \
             --tests 'com.openminis.app.tools.AskUserToolParseTest' \
             --tests 'com.openminis.app.tools.EngineSwapPrefsLogicTest' \
+            --tests 'com.openminis.app.memory.FtsMemoryIndexTest' \
             --tests 'com.openminis.app.ui.chat.ChatTurnReducerTest' \
             --tests 'com.openminis.app.config.ConfigPathResolverTest' \
             --tests 'com.openminis.app.data.model.ProviderFoldersTest' \
@@ -172,6 +173,7 @@ jobs:
             --tests 'com.openminis.app.tools.ExecutionSeamTest' \
             --tests 'com.openminis.app.tools.AskUserToolParseTest' \
             --tests 'com.openminis.app.tools.EngineSwapPrefsLogicTest' \
+            --tests 'com.openminis.app.memory.FtsMemoryIndexTest' \
             --tests 'com.openminis.app.tools.ToolSurfaceAdapterTest' \
             --tests 'com.openminis.app.ui.chat.ChatTurnReducerTest' \
             --tests 'com.openminis.app.ui.chat.UiCopyCapsuleTest' \
