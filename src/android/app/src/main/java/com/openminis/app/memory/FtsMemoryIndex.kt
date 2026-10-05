@@ -124,6 +124,11 @@ object FtsMemoryIndex {
     @Volatile
     private var engine: SqliteEngine? = null
 
+    /** [T-m13-diag] Last indexing failure (per-file catch is silent in prod by design). */
+    @Volatile
+    var lastIndexError: String? = null
+        private set
+
     private val initLock = Any()
 
     /** Bind the backing DB; idempotent, safe from any thread. */
@@ -292,8 +297,26 @@ object FtsMemoryIndex {
             indexMemoryFiles(dir)
         } catch (t: Throwable) {
             // never let the memory tier break a send
+            lastIndexError = "scan: ${t.message}"
         }
     }
+
+    /** [T-m13-diag] Engine bound + which tier of the cascade won. */
+    fun engineBound(): String? {
+        val e = engine ?: return null
+        return when (e) {
+            is AndroidEngine -> "platform"
+            is RequeryEngine -> "bundled"
+            else -> e.javaClass.simpleName
+        }
+    }
+
+    /** [T-m13-diag] Live self-test for the RPC surface. */
+    fun selfTest(): Map<String, Any?> = mapOf(
+        "engine" to (engineBound() ?: "unbound"),
+        "docs" to docCount(),
+        "lastIndexError" to lastIndexError,
+    )
 
     /**
      * Incremental keyword-corpus indexing: stat-check every file, re-index
@@ -340,7 +363,7 @@ object FtsMemoryIndex {
                 reindexed++
             } catch (t: Throwable) {
                 // unreadable file: skip, stat stays unchanged, no loop
-            }
+                lastIndexError = "${f.name}: ${t.message}"
         }
         return reindexed
     }

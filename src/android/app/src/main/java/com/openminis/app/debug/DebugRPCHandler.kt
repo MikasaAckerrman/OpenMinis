@@ -95,12 +95,17 @@ class DebugRPCHandler(private val context: Context) {
             // engine chain (M6–M11). Reversible at runtime — the live
             // experiment that retires (or rolls back) the legacy loop.
             "debug.memoryFts" -> {
-                val enable = params.optBoolean("enabled", true)
-                com.openminis.app.memory.MemorySearchPrefs.setUseFts(enable)
+                if (params.has("enabled")) {
+                    val enable = params.optBoolean("enabled", true)
+                    com.openminis.app.memory.MemorySearchPrefs.setUseFts(enable)
+                }
+                val selfTest = com.openminis.app.memory.FtsMemoryIndex.selfTest()
                 JSONObject()
                     .put("fts", com.openminis.app.memory.MemorySearchPrefs.useFts())
-                    .put("docs", com.openminis.app.memory.FtsMemoryIndex.docCount())
-                    .put("hint", "false reverts to the supermemory Node server")
+                    .put("docs", selfTest["docs"])
+                    .put("engine", selfTest["engine"])
+                    .put("lastIndexError", selfTest["lastIndexError"] ?: JSONObject.NULL)
+                    .put("hint", "selfTest reports the live engine; enabled:N reverts to the server")
             }
             "debug.engineSwap" -> {
                 val enable = params.optBoolean("enabled", false)
