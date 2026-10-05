@@ -77,6 +77,50 @@ object FtsMemoryIndex {
         }
     }
 
+    /**
+     * [T-m13-fts-bundle] Engine on the bundled requery SQLite (FTS5
+     * guaranteed). Same [SqliteEngine] contract, so every query/mapping
+     * above is engine-agnostic by construction.
+     */
+    internal class RequeryEngine(
+        private val db: io.requery.android.database.sqlite.SQLiteDatabase,
+    ) : SqliteEngine {
+        override fun exec(sql: String, vararg binds: Any?) {
+            if (binds.isEmpty()) {
+                db.execSQL(sql)
+            } else {
+                db.execSQL(sql, binds.toTypedArray())
+            }
+        }
+
+        override fun <T> query(
+            sql: String,
+            binds: Array<out Any?>,
+            map: (Array<Any?>) -> T,
+        ): List<T> {
+            val out = mutableListOf<T>()
+            db.query(sql, binds.toTypedArray() as Array<Any?>).use { c ->
+                while (c.moveToNext()) {
+                    val row = Array<Any?>(c.columnCount) { i ->
+                        when (c.getType(i)) {
+                            android.database.Cursor.FIELD_TYPE_INTEGER -> c.getLong(i)
+                            android.database.Cursor.FIELD_TYPE_FLOAT -> c.getDouble(i)
+                            android.database.Cursor.FIELD_TYPE_STRING -> c.getString(i)
+                            android.database.Cursor.FIELD_TYPE_BLOB -> c.getBlob(i)
+                            else -> null
+                        }
+                    }
+                    out += map(row)
+                }
+            }
+            return out
+        }
+
+        override fun close() {
+            db.close()
+        }
+    }
+
     @Volatile
     private var engine: SqliteEngine? = null
 
@@ -89,8 +133,39 @@ object FtsMemoryIndex {
             if (engine != null) return
             val dir = File(File(context.filesDir, "minis-global"), "memory-fts")
             if (dir.exists() || dir.mkdirs()) {
-                val db = SQLiteDatabase.openOrCreateDatabase(File(dir, "memory-fts.db"), null)
-                bindEngine(AndroidEngine(db))
+                val file = File(dir, "memory-fts.db")
+                // Capability cascade [T-m13-fts-bundle]: (1) platform
+                // SQLite (has FTS5 on most builds), (2) the bundled
+                // requery SQLite (FTS5 guaranteed, vivo SM8650's platform
+                // engine lacks the module), (3) the supermemory server.
+                val platform = try {
+                    SQLiteDatabase.openOrCreateDatabase(file, null)
+                } catch (t: Throwable) {
+                    null
+                }
+                if (platform != null && bindEngine(AndroidEngine(platform))) {
+                    return
+                }
+                try {
+                    platform?.close()
+                } catch (ignore: Throwable) {
+                }
+                val bundled = try {
+                    io.requery.android.database.sqlite.SQLiteDatabase
+                        .openOrCreateDatabase(file, null)
+                } catch (t: Throwable) {
+                    null
+                }
+                if (bundled != null && bindEngine(RequeryEngine(bundled))) {
+                    return
+                }
+                try {
+                    bundled?.close()
+                } catch (ignore: Throwable) {
+                }
+                // Both engines failed the capability probe: the memory
+                // path stays on the supermemory server (never crashes).
+                revertRouterToServer()
             }
         }
     }
@@ -99,9 +174,10 @@ object FtsMemoryIndex {
      * [crash-2026-10-05_20-30] Capability probe + bind. The PLATFORM
      * SQLite may be compiled without the fts5 module (vivo SM8650
      * Android 15: "no such module: fts5"). A memory backend must NEVER
-     * take the app down: on failure we revert the router to the
-     * supermemory server and keep the engine unbound. init() therefore
-     * cannot throw — the app starts. Returns true when FTS is live.
+     * take the app down: probe + bind, never throw. The ROUTER decision
+     * (flip to the server) is made by [init] only when the whole
+     * cascade fails — an intermediate engine's failure must not flip
+     * while a later engine can still bind. Returns true when bound.
      */
     internal fun bindEngine(e: SqliteEngine): Boolean {
         synchronized(initLock) {
@@ -111,23 +187,31 @@ object FtsMemoryIndex {
                 engine = e
                 true
             } catch (t: Throwable) {
-                if (MemorySearchPrefs.isInitialized() && MemorySearchPrefs.useFts()) {
-                    MemorySearchPrefs.setUseFts(false)
-                }
                 try {
-                    (e as? AndroidEngine)?.db?.close()
+                    e.close()
                 } catch (closeFailure: Throwable) {
                     // close best-effort; the original failure wins
                 }
                 // JVM-safe logging (android.util.Log would break the unit
                 // suite; stdout is visible in logcat on device).
                 println(
-                    "[FtsMemoryIndex] FTS5 unavailable on this platform SQLite " +
-                        "(${t.message}) — memory search reverts to the server",
+                    "[FtsMemoryIndex] engine rejected (${t.message}) — " +
+                        "trying the next backend in the cascade",
                 )
                 false
             }
         }
+    }
+
+    /** True when every engine in the cascade failed (router → server). */
+    private fun revertRouterToServer() {
+        if (MemorySearchPrefs.isInitialized() && MemorySearchPrefs.useFts()) {
+            MemorySearchPrefs.setUseFts(false)
+        }
+        println(
+            "[FtsMemoryIndex] FTS5 unavailable on this build — memory " +
+                "search reverts to the supermemory server",
+        )
     }
 
     /** Test entry: run against a caller-provided engine (JDBC etc.). */
