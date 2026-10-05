@@ -30,6 +30,7 @@ class ProviderModelGatewayTest {
         private val chunks: Flow<LLMStreamChunk> = flowOf(),
     ) : LLMProvider {
         override val name = "fake"
+        override val model = "fake-model"
         var seenMessages: List<LLMMessage> = emptyList()
             private set
         override fun streamMessageClamped(
@@ -169,7 +170,7 @@ class ProviderModelGatewayTest {
     }
 
     @Test
-    fun `end-to-end: loop over the production adapter`() = runTest {
+    fun `end to end loop over the production adapter`() = runTest {
         // The full M8 seam: EngineAgentLoop + ProviderModelGateway + a
         // scripted provider — one tool round then stop.
         val fake = FakeProvider(
