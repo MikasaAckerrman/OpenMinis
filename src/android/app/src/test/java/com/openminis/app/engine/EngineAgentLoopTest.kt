@@ -227,6 +227,69 @@ class EngineAgentLoopTest {
     }
 
     @Test
+    fun `reasoning deltas become the history round's reasoningContent`() = runTest {
+        // Round 1 streams reasoning + a tool call; round 2 stops. The
+        // gateway's SECOND stream call must receive the round-1 assistant
+        // message with reasoningContent assembled from the deltas.
+        val seen = mutableListOf<List<EngineMessage>>()
+        val gw = object : ModelGateway {
+            override val modelId = "fake"
+            override fun stream(
+                messages: List<EngineMessage>,
+                tools: List<com.openminis.app.data.model.AgentToolDefinition>,
+                maxTokens: Int,
+            ) = flow {
+                seen.add(messages)
+                if (seen.size == 1) {
+                    emit(StreamEvent.ReasoningDelta("step one. "))
+                    emit(StreamEvent.ReasoningDelta("step two."))
+                    emit(
+                        StreamEvent.ToolCall(
+                            EngineToolCall("c1", "file_read", "{\"path\":\"/a.kt\"}"),
+                        ),
+                    )
+                }
+                emit(StreamEvent.Done)
+            }
+        }
+        val loop = EngineAgentLoop(gw, registry()) { _, _ ->
+            EngineAgentLoop.ToolOutcome("x", true)
+        }
+        loop.runTurn(turnInput()).toList()
+        // round 2's request history: [user, assistant(reasoning), tool]
+        val round2 = seen[1]
+        assertEquals(3, round2.size)
+        val assistant = round2[1]
+        assertEquals(EngineRole.ASSISTANT, assistant.role)
+        assertEquals("step one. step two.", assistant.reasoningContent)
+    }
+
+    @Test
+    fun `empty reasoning stays null not empty-string`() = runTest {
+        val seen = mutableListOf<List<EngineMessage>>()
+        val gw = object : ModelGateway {
+            override val modelId = "fake"
+            override fun stream(
+                messages: List<EngineMessage>,
+                tools: List<com.openminis.app.data.model.AgentToolDefinition>,
+                maxTokens: Int,
+            ) = flow {
+                seen.add(messages)
+                if (seen.size == 1) {
+                    emit(StreamEvent.ToolCall(EngineToolCall("c1", "file_read", "{\"path\":\"/a.kt\"}")))
+                }
+                emit(StreamEvent.Done)
+            }
+        }
+        val loop = EngineAgentLoop(gw, registry()) { _, _ ->
+            EngineAgentLoop.ToolOutcome("x", true)
+        }
+        loop.runTurn(turnInput()).toList()
+        val assistant = seen[1][1]
+        org.junit.Assert.assertNull(assistant.reasoningContent)
+    }
+
+    @Test
     fun `round limit fires TurnFinished`() = runTest {
         // every round issues one more tool call — never stops on its own
         val gw = object : ModelGateway {

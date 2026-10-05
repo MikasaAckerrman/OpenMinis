@@ -97,6 +97,10 @@ class ProviderModelGateway(
                 role = LLMMessage.Role.ASSISTANT,
                 content = msg.text,
                 contentParts = parts,
+                // [T-m10-reasoning-echo] DeepSeek thinking-history contract:
+                // assistant rounds carry their reasoning when thinking is
+                // enabled. Same field the production loop persists.
+                reasoningContent = msg.reasoningContent,
             )
         }
         EngineRole.TOOL -> {

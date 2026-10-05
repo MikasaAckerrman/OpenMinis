@@ -180,6 +180,19 @@ class ProviderModelGatewayTest {
     }
 
     @Test
+    fun `assistant reasoningContent passes to the provider message`() {
+        val g = gw()
+        val m = g.toLLMMessage(
+            EngineMessage(
+                role = EngineRole.ASSISTANT,
+                text = "answer",
+                reasoningContent = "thought chain",
+            ),
+        )
+        org.junit.Assert.assertEquals("thought chain", m.reasoningContent)
+    }
+
+    @Test
     fun `TOOL message without toolCallId fails fast at the boundary`() {
         val g = gw()
         val err = runCatching {

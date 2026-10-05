@@ -32,6 +32,15 @@ data class EngineMessage(
      * gateway adapter reads it when mapping to AgentContentPart.ToolResult.
      */
     val toolName: String? = null,
+    /**
+     * [T-m10-reasoning-echo] For role == ASSISTANT: the round's
+     * reasoning/thinking content, captured from ReasoningDelta stream
+     * events. DeepSeek-class models REJECT history where any assistant
+     * turn lacks reasoning_content once thinking is enabled — the loop
+     * fills this so a production swap keeps the DeepSeek contract alive
+     * (the same invariant ReasoningElider trims on the request side).
+     */
+    val reasoningContent: String? = null,
 )
 
 /** Provider stream events, provider-agnostic. */

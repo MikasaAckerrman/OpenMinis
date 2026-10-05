@@ -65,6 +65,10 @@ class EngineAgentLoop(
                 return@flow
             }
             val turnText = StringBuilder()
+            // [T-m10-reasoning-echo] Reasoning deltas accumulate per round;
+            // the assistant history message carries them as
+            // reasoningContent (the DeepSeek thinking-history invariant).
+            val turnReasoning = StringBuilder()
             val pendingCalls = mutableListOf<EngineToolCall>()
             var failure: AgentEvent.Error? = null
 
@@ -81,8 +85,12 @@ class EngineAgentLoop(
                         // consumer renders reasoning/arg-echo UI exactly as
                         // the ViewModel loop does today — the engine never
                         // drops a production feature silently.
-                        is StreamEvent.ReasoningDelta ->
-                            if (failure == null) emit(AgentEvent.ThinkingDelta(event.text))
+                        is StreamEvent.ReasoningDelta -> {
+                            if (failure == null) {
+                                turnReasoning.append(event.text)
+                                emit(AgentEvent.ThinkingDelta(event.text))
+                            }
+                        }
                         is StreamEvent.ToolUseStarted ->
                             if (failure == null) {
                                 emit(AgentEvent.ToolUseStarted(event.callId, event.toolName))
@@ -137,6 +145,7 @@ class EngineAgentLoop(
                     role = EngineRole.ASSISTANT,
                     text = turnText.toString(),
                     toolCalls = pendingCalls,
+                    reasoningContent = turnReasoning.toString().ifEmpty { null },
                 ),
             )
             for ((call, outcome) in results) {
