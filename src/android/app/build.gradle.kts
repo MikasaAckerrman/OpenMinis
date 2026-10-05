@@ -341,6 +341,9 @@ dependencies {
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
     testImplementation("org.json:json:20231013")
+    // [T-m13-fts-memory] JVM suite runs the REAL FTS5 SQL (the identical
+    // statements the Android SQLite executes) against sqlite-jdbc.
+    testImplementation("org.xerial:sqlite-jdbc:3.47.1.0")
 
     // Testing — Instrumented (on-device) tests
     androidTestImplementation("androidx.test:runner:1.6.2")

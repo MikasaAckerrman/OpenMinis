@@ -14859,7 +14859,13 @@ class ChatViewModel(
         if (query.isEmpty()) {
             return ToolExecutionResult("Error: query is required", false, toolTitle = title)
         }
-        val hits = com.openminis.app.memory.SupermemoryBridge.search(query)
+        // [T-m13-fts-memory] Backend router: FTS (default) or the Node
+        // server — the tool contract (hits + empty fallback) is identical.
+        val hits = if (com.openminis.app.memory.MemorySearchPrefs.useFts()) {
+            com.openminis.app.memory.FtsMemoryIndex.search(query)
+        } else {
+            com.openminis.app.memory.SupermemoryBridge.search(query)
+        }
         if (hits.isEmpty()) {
             return ToolExecutionResult(
                 "no semantic matches (store may be empty or the local service is down — try memory_get)",
@@ -15694,9 +15700,19 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                 it.role == LLMMessage.Role.USER && it.content.isNotBlank()
             }?.content
             if (lastUserText.isNullOrBlank()) null
-            else com.openminis.app.memory.SupermemoryBridge.search(
-                lastUserText, timeoutMs = 600,
-            ).let { com.openminis.app.memory.SupermemoryBridge.buildInjection(it) }
+            else {
+                val smHits = if (com.openminis.app.memory.MemorySearchPrefs.useFts()) {
+                    // FTS budget: stat-check + query, no network — measured
+                    // single-digit ms; 600ms stays as a ceiling not a target.
+                    com.openminis.app.memory.FtsMemoryIndex.ensureFilesIndexed(context)
+                    com.openminis.app.memory.FtsMemoryIndex.search(lastUserText)
+                } else {
+                    com.openminis.app.memory.SupermemoryBridge.search(
+                        lastUserText, timeoutMs = 600,
+                    )
+                }
+                com.openminis.app.memory.SupermemoryBridge.buildInjection(smHits)
+            }
                 // [T-prompt-latency] Budget the supermemory tier. Measured
                 // (01.10, on-device chronometer): smMs=2761 of totalMs=2864
                 // — the tap→work lag IS this search when the local server

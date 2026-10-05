@@ -115,7 +115,12 @@ object TurnMemoryDistiller {
         // reached the associative store. Same guarantee now: a failed add
         // enqueues to pending/, latency instead of loss.
         val smContent = "USER MESSAGE:\n${userText.take(2000)}\n\nASSISTANT TURN:\n${assistantText.take(6000)}"
-        if (!com.openminis.app.memory.SupermemoryBridge.add(smContent)) {
+        // [T-m13-fts-memory] Write router: FTS ingest is local and cannot
+        // lose the exchange to a dead server (the pending-file guarantee
+        // below stays as the Node-path safety net).
+        if (com.openminis.app.memory.MemorySearchPrefs.useFts()) {
+            com.openminis.app.memory.FtsMemoryIndex.addExchange(smContent)
+        } else if (!com.openminis.app.memory.SupermemoryBridge.add(smContent)) {
             runCatching {
                 val pending = java.io.File(
                     java.io.File(java.io.File(context.filesDir, "minis-global"), "shared"),

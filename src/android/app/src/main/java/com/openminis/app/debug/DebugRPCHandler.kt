@@ -94,6 +94,14 @@ class DebugRPCHandler(private val context: Context) {
             // migration: ON routes the streaming resume path through the
             // engine chain (M6–M11). Reversible at runtime — the live
             // experiment that retires (or rolls back) the legacy loop.
+            "debug.memoryFts" -> {
+                val enable = params.optBoolean("enabled", true)
+                com.openminis.app.memory.MemorySearchPrefs.setUseFts(enable)
+                JSONObject()
+                    .put("fts", com.openminis.app.memory.MemorySearchPrefs.useFts())
+                    .put("docs", com.openminis.app.memory.FtsMemoryIndex.docCount())
+                    .put("hint", "false reverts to the supermemory Node server")
+            }
             "debug.engineSwap" -> {
                 val enable = params.optBoolean("enabled", false)
                 com.openminis.app.tools.EngineSwapPrefs.setEnabled(enable)

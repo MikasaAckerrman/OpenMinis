@@ -353,6 +353,11 @@ class MinisApp : Application(), ImageLoaderFactory {
         // [T-m12-engine-swap] Strangler switch init: shared-prefs backed,
         // default OFF — see EngineSwapPrefs.
         com.openminis.app.tools.EngineSwapPrefs.init(this)
+        // [T-m13-fts-memory] In-process FTS5 associative store: init the
+        // engine + prefs (default ON — the Node server's boot/RAM/timeouts
+        // are measured; see FtsMemoryIndex).
+        com.openminis.app.memory.MemorySearchPrefs.init(this)
+        com.openminis.app.memory.FtsMemoryIndex.init(this)
 
         database = AppDatabase.getInstance(this)
         chatRepository = ChatRepository(database.chatDao())
@@ -396,7 +401,9 @@ class MinisApp : Application(), ImageLoaderFactory {
         // port, kicks run.sh through the persistent shell when dead, waits
         // bounded for the boot. Down-server consumers degrade honestly
         // (compact → pending, bridge → circuit breaker).
-        com.openminis.app.memory.SupermemoryAutostart.bootIfNeeded()
+        if (!com.openminis.app.memory.MemorySearchPrefs.useFts()) {
+            com.openminis.app.memory.SupermemoryAutostart.bootIfNeeded()
+        }
 
         // Privacy Mode store + redactor wiring. Mirrors iOS
         // EnvVarPrivacyStore.init / EnvVarRedactor static handoff.
@@ -699,7 +706,13 @@ class MinisApp : Application(), ImageLoaderFactory {
                     com.openminis.app.memory.SupermemoryAutostart.bootIfNeeded(
                         delayMs =
                             com.openminis.app.memory.SupermemoryAutostart.FG_BOOT_DELAY_MS,
-                        onlyIf = { isAppForeground() },
+                        onlyIf = {
+                            // [T-m13-fts-memory] FTS backend on = the Node
+                            // server is not part of the memory path: no
+                            // boot, no RAM, no boot-storm jank at all.
+                            !com.openminis.app.memory.MemorySearchPrefs.useFts() &&
+                                isAppForeground()
+                        },
                     )
                     com.openminis.app.logging.AppLogger.info(
                         "BgDiag",
