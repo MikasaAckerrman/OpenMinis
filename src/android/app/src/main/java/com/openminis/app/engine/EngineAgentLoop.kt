@@ -259,7 +259,7 @@ class EngineAgentLoop(
                 value == "null" -> PreflightValue.Null
                 value == "[" -> PreflightValue.Array
                 value == "{" -> PreflightValue.Object
-                value.contains("."), value.contains("e"), value.contains("E") -> {
+                value.contains(".") || value.contains("e") || value.contains("E") -> {
                     // Class-parity with the org.json adapter: a whole-valued
                     // decimal (3.0, 1e3) is an IntNum there — the two
                     // parsers must agree or preflight verdicts diverge
