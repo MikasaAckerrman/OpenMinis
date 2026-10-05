@@ -57,7 +57,15 @@ object FtsMemoryIndex {
             db.rawQuery(sql, binds.map { if (it == null) null else it.toString() }.toTypedArray())
                 .use { c ->
                     while (c.moveToNext()) {
-                        val row = Array(c.columnCount) { i -> c.get(i) }
+                        val row = Array(c.columnCount) { i ->
+                            when (c.getType(i)) {
+                                android.database.Cursor.FIELD_TYPE_INTEGER -> c.getLong(i)
+                                android.database.Cursor.FIELD_TYPE_FLOAT -> c.getDouble(i)
+                                android.database.Cursor.FIELD_TYPE_STRING -> c.getString(i)
+                                android.database.Cursor.FIELD_TYPE_BLOB -> c.getBlob(i)
+                                else -> null
+                            }
+                        }
                         out += map(row)
                     }
                 }
