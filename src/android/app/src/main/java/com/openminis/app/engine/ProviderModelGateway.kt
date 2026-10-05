@@ -169,6 +169,9 @@ class ProviderModelGateway(
         is ReasoningContent, is MediaAttachment, is Started -> null
     }
 
+
+
+    companion object {
     /**
      * [T-m12-engine-swap] History direction: the production agent history is
      * LLMMessage-shaped; the engine chain consumes EngineMessage. This is
@@ -176,7 +179,7 @@ class ProviderModelGateway(
      * toolCalls, ToolResult parts become TOOL messages, reasoning rides the
      * same field the DeepSeek contract expects on the way back out.
      */
-    internal fun fromLLMMessage(msg: LLMMessage): List<EngineMessage> {
+    fun fromLLMMessage(msg: LLMMessage): List<EngineMessage> {
         val parts = msg.contentParts ?: return listOf(
             EngineMessage(
                 role = when (msg.role) {
@@ -218,3 +221,4 @@ class ProviderModelGateway(
         return out
     }
 }
+

@@ -10939,7 +10939,6 @@ class ChatViewModel(
             memoryEnabled = _memoryEnabled.value,
             allowedTools = com.openminis.app.tools.AgentToolPolicyStore.policyFor(sessionId),
             subagentsEnabled = isSubagentsEnabled(),
-            planMode = _permissionMode.value == com.openminis.app.engine.PermissionMode.PLAN,
         )
 
         val gateway = com.openminis.app.engine.ProviderModelGateway(
@@ -10955,7 +10954,7 @@ class ChatViewModel(
             com.openminis.app.engine.ProviderModelGateway.fromLLMMessage(it)
         }
 
-        val input = com.openminis.app.engine.AgentLoop.TurnInput(
+        val input = com.openminis.app.engine.TurnInput(
             sessionId = sessionId,
             userText = "",
             history = engineHistory,
