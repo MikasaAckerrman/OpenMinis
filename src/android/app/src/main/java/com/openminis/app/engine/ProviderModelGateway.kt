@@ -15,7 +15,7 @@ import com.openminis.app.data.model.LLMStreamChunk.MediaAttachment
 import com.openminis.app.data.model.LLMStreamChunk.Started
 import com.openminis.app.data.model.LLMStreamChunk.Text
 import com.openminis.app.provider.LLMProvider
-import com.openminis.app.provider.ThinkingLevel
+import com.openminis.app.data.model.ThinkingLevel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.mapNotNull
