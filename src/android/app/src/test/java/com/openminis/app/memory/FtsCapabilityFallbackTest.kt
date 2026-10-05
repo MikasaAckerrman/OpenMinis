@@ -26,6 +26,10 @@ class FtsCapabilityFallbackTest {
             binds: Array<out Any?>,
             map: (Array<Any?>) -> T,
         ): List<T> = throw RuntimeException("no such module: fts5")
+
+        override fun close() {
+            // nothing to close on a failing engine
+        }
     }
 
     private class JdbcEngine(conn: Connection) : FtsMemoryIndex.SqliteEngine {
