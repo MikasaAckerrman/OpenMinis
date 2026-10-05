@@ -26,6 +26,12 @@ data class EngineMessage(
     val toolCalls: List<EngineToolCall> = emptyList(),
     /** For role == TOOL: the call this message answers. */
     val toolCallId: String? = null,
+    /**
+     * For role == TOOL: the called tool's name. The provider wire protocol
+     * (Anthropic tool_result blocks) requires it alongside the id; the
+     * gateway adapter reads it when mapping to AgentContentPart.ToolResult.
+     */
+    val toolName: String? = null,
 )
 
 /** Provider stream events, provider-agnostic. */

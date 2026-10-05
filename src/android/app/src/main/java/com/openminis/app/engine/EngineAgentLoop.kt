@@ -133,6 +133,7 @@ class EngineAgentLoop(
                         role = EngineRole.TOOL,
                         text = outcome.output,
                         toolCallId = call.id,
+                        toolName = call.name,
                     ),
                 )
             }
