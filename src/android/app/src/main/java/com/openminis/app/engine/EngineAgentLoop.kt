@@ -77,6 +77,18 @@ class EngineAgentLoop(
                                 emit(AgentEvent.TextDelta(event.text))
                             }
                         }
+                        // Progressive surfaces pass straight through: the
+                        // consumer renders reasoning/arg-echo UI exactly as
+                        // the ViewModel loop does today — the engine never
+                        // drops a production feature silently.
+                        is StreamEvent.ReasoningDelta ->
+                            if (failure == null) emit(AgentEvent.ThinkingDelta(event.text))
+                        is StreamEvent.ToolUseStarted ->
+                            if (failure == null) {
+                                emit(AgentEvent.ToolUseStarted(event.callId, event.toolName))
+                            }
+                        is StreamEvent.ToolInputDelta ->
+                            if (failure == null) emit(AgentEvent.ToolInputDelta(event.callId, event.fragment))
                         is StreamEvent.ToolCall -> pendingCalls.add(event.call)
                         is StreamEvent.Usage -> Unit // accounting is the caller's seam
                         is StreamEvent.Failure -> failure = AgentEvent.Error(

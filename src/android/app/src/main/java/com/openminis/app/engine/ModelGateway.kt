@@ -37,6 +37,12 @@ data class EngineMessage(
 /** Provider stream events, provider-agnostic. */
 sealed interface StreamEvent {
     data class TextDelta(val text: String) : StreamEvent
+    /** Progressive reasoning/thinking display (reasoning models). */
+    data class ReasoningDelta(val text: String) : StreamEvent
+    /** A tool call's argument JSON is streaming in fragment-by-fragment. */
+    data class ToolInputDelta(val callId: String, val fragment: String) : StreamEvent
+    /** A tool call has been announced (id+name known, args not yet complete). */
+    data class ToolUseStarted(val callId: String, val toolName: String) : StreamEvent
     data class ToolCall(val call: EngineToolCall) : StreamEvent
     data class Usage(val inputTokens: Int, val outputTokens: Int) : StreamEvent
     data class Failure(val message: String, val recoverable: Boolean) : StreamEvent

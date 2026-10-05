@@ -85,10 +85,13 @@ class ProviderModelGatewayTest {
             ),
         )
         val events = g.stream(emptyList(), emptyList(), 100).toList()
-        // dropped: Started, ThinkingDelta, ToolUseStart, ToolInputDelta
+        // dropped: Started (no engine event); progressive surfaces pass 1:1
         assertEquals(
             listOf(
                 StreamEvent.TextDelta("hello "),
+                StreamEvent.ReasoningDelta("thinking..."),
+                StreamEvent.ToolUseStarted("c1", "file_read"),
+                StreamEvent.ToolInputDelta("c1", "{\"pa"),
                 StreamEvent.ToolCall(EngineToolCall("c1", "file_read", "{\"path\":\"/a.kt\"}")),
                 StreamEvent.Usage(10, 5),
                 StreamEvent.Done,

@@ -71,6 +71,36 @@ class EngineAgentLoopTest {
     }
 
     @Test
+    fun `progressive reasoning and arg deltas flow through the loop`() = runTest {
+        val gw = ScriptedGateway(
+            listOf(
+                listOf(
+                    StreamEvent.ReasoningDelta("let me think "),
+                    StreamEvent.ReasoningDelta("harder"),
+                    StreamEvent.ToolUseStarted("c1", "file_read"),
+                    StreamEvent.ToolInputDelta("c1", "{\"path\":"),
+                    StreamEvent.ToolInputDelta("c1", "\"/a.kt\"}"),
+                    StreamEvent.ToolCall(EngineToolCall("c1", "file_read", "{\"path\":\"/a.kt\"}")),
+                    StreamEvent.Done,
+                ),
+                listOf(StreamEvent.Done),
+            ),
+        )
+        val loop = EngineAgentLoop(gw, registry()) { _, _ ->
+            EngineAgentLoop.ToolOutcome("body", true)
+        }
+        val events = loop.runTurn(turnInput()).toList()
+        val think = events.filterIsInstance<AgentEvent.ThinkingDelta>()
+        assertEquals(listOf("let me think ", "harder"), think.map { it.text })
+        val started = events.filterIsInstance<AgentEvent.ToolUseStarted>()
+        assertEquals(listOf("c1"), started.map { it.callId })
+        val argDeltas = events.filterIsInstance<AgentEvent.ToolInputDelta>()
+        assertEquals(2, argDeltas.size)
+        // fragments preserved verbatim, order preserved
+        assertEquals("{\"path\":", argDeltas[0].fragment)
+    }
+
+    @Test
     fun `tool round executes and the second round stops`() = runTest {
         val gw = ScriptedGateway(
             listOf(

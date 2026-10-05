@@ -132,15 +132,20 @@ class ProviderModelGateway(
     }
 
     /**
-     * Provider chunks → engine events. Progressive-arg and reasoning
-     * surfaces (ToolUseStart/ToolInputDelta/ThinkingDelta/
-     * ReasoningContent/MediaAttachment/Started) are deliberately not in
-     * the engine contract yet — they map to NULL and are dropped here,
-     * never to a synthetic event. Extending the contract is an M9
-     * candidate BEFORE any production loop swap.
+     * Provider chunks → engine events. Progressive surfaces map 1:1
+     * (ThinkingDelta→ReasoningDelta, ToolUseStart→ToolUseStarted,
+     * ToolInputDelta→ToolInputDelta) so the production reasoning UI
+     * survives a loop swap. ReasoningContent (the accumulated blob
+     * echoed by DeepSeek-class models), MediaAttachment, and Started
+     * still map to NULL — they are request-side/persistence concerns
+     * the engine loop does not consume; their handling lives in the
+     * persistence seam (M10), never as synthetic stream events.
      */
     internal fun toStreamEvent(chunk: LLMStreamChunk): StreamEvent? = when (chunk) {
         is Text -> StreamEvent.TextDelta(chunk.text)
+        is ThinkingDelta -> StreamEvent.ReasoningDelta(chunk.text)
+        is ToolUseStart -> StreamEvent.ToolUseStarted(chunk.id, chunk.name)
+        is ToolInputDelta -> StreamEvent.ToolInputDelta(chunk.id, chunk.partial)
         is ToolCallComplete -> StreamEvent.ToolCall(
             EngineToolCall(
                 id = chunk.id,
@@ -150,8 +155,6 @@ class ProviderModelGateway(
         )
         is Usage -> StreamEvent.Usage(chunk.usage.inputTokens, chunk.usage.outputTokens)
         is Finished -> StreamEvent.Done
-        is ToolUseStart, is ToolInputDelta, is ThinkingDelta,
-        is ReasoningContent, is MediaAttachment, is Started,
-        -> null
+        is ReasoningContent, is MediaAttachment, is Started -> null
     }
 }
