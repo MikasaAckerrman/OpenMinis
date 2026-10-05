@@ -27,8 +27,11 @@ import org.junit.Test
 class ProviderModelGatewayTest {
 
     private class FakeProvider(
-        private val chunks: Flow<LLMStreamChunk> = flowOf(),
+        vararg rounds: Flow<LLMStreamChunk>,
     ) : LLMProvider {
+        private val script: List<Flow<LLMStreamChunk>> =
+            (if (rounds.isEmpty()) listOf(flowOf()) else rounds.toList())
+        private var index = 0
         override val name = "fake"
         override var model = com.openminis.app.data.model.LLMModel(
             id = "fake-model",
@@ -47,7 +50,7 @@ class ProviderModelGatewayTest {
             thinkingLevel: ThinkingLevel,
         ): Flow<LLMStreamChunk> {
             seenMessages = messages
-            return chunks
+            return script[index.coerceAtMost(script.size - 1)].also { index++ }
         }
 
         override suspend fun sendMessageClamped(
@@ -184,6 +187,7 @@ class ProviderModelGatewayTest {
                 ),
                 LLMStreamChunk.Finished("tool_calls"),
             ),
+            flowOf(LLMStreamChunk.Finished(null)),
         )
         val registry = ToolRegistry().apply {
             register(
