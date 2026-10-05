@@ -32,6 +32,35 @@ class FtsCapabilityFallbackTest {
         }
     }
 
+    /**
+     * [T-m13-cascade-bug] A module-less engine owning a file whose fts5
+     * tables were created by the bundled engine: exec (CREATE IF NOT
+     * EXISTS) parses "fine", but reading through the virtual table needs
+     * the module. bindEngine MUST reject it (the vc89 device state).
+     */
+    private object SchemaOnlyNoModuleEngine : FtsMemoryIndex.SqliteEngine {
+        override fun exec(sql: String, vararg binds: Any?) {
+            // silently accepts DDL/DML — the real loophole
+        }
+
+        override fun <T> query(
+            sql: String,
+            binds: Array<out Any?>,
+            map: (Array<Any?>) -> T,
+        ): List<T> = throw RuntimeException("no such module: fts5")
+
+        override fun close() {
+        }
+    }
+
+    @Test
+    fun `bindEngine rejects a schema-only engine without the fts5 module`() {
+        FtsMemoryIndex.resetForTest()
+        val bound = FtsMemoryIndex.bindEngine(SchemaOnlyNoModuleEngine)
+        assertFalse("the loophole engine must not bind", bound)
+        assertTrue(FtsMemoryIndex.search("anything").isEmpty())
+    }
+
     private class JdbcEngine(conn: Connection) : FtsMemoryIndex.SqliteEngine {
         private val c = conn
         override fun exec(sql: String, vararg binds: Any?) {

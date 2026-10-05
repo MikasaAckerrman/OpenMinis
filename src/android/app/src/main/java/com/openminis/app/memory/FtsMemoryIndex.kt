@@ -189,6 +189,14 @@ object FtsMemoryIndex {
             if (engine != null) return true
             return try {
                 ensureSchema(e)
+                // Capability probe [T-m13-cascade-bug]: on a file whose
+                // fts5 tables were created by ANOTHER (bundled) engine, a
+                // module-less platform SQLite accepts "CREATE VIRTUAL
+                // TABLE IF NOT EXISTS" without ever loading the fts5
+                // module — and would then fail every later write. Reading
+                // THROUGH the virtual table forces module instantiation:
+                // the honest probe.
+                e.query("SELECT docid FROM docs LIMIT 1", emptyArray()) { row -> row }
                 engine = e
                 true
             } catch (t: Throwable) {
