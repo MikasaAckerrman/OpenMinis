@@ -8146,6 +8146,20 @@ class ChatViewModel(
                 }
                 val fallbackProviders = buildFallbackProviders(launchedProvider)
                 try {
+                    // [T-m12-engine-swap] Strangler switch: the engine chain
+                    // (registry -> gateway -> EngineAgentLoop -> reducer)
+                    // runs the turn when the debug flag is on. The legacy
+                    // loop keeps every other path; the flag is flipped by
+                    // debug.engineSwap RPC for live verification.
+                    if (com.openminis.app.tools.EngineSwapPrefs.isEnabled()) {
+                        AppLogger.info(TAG_STREAM, "$label runEngineTurn CALL (swap flag ON)")
+                        runEngineTurn(
+                            placeholderAssistantId = null,
+                            provider = launchedProvider,
+                            systemPrompt = systemPrompt,
+                        )
+                        AppLogger.info(TAG_STREAM, "$label runEngineTurn RETURN normal")
+                    } else {
                     AppLogger.info(TAG_STREAM, "$label runAgentLoop CALL")
                     runAgentLoop(
                         provider = launchedProvider,
@@ -8154,6 +8168,7 @@ class ChatViewModel(
                         fallbackStrategy = activeFallbackStrategy,
                     )
                     AppLogger.info(TAG_STREAM, "$label runAgentLoop RETURN normal")
+                    }
                 } catch (e: CancellationException) {
                     AppLogger.info(TAG_STREAM, "$label runAgentLoop CANCELLED")
                     Log.d(TAG, "Agent loop cancelled")
@@ -10887,6 +10902,140 @@ class ChatViewModel(
             AppLogger.info(TAG, "  Before: $beforeTokens/$contextWindow ($pct%)")
             AppLogger.info(TAG, "  After:  $currentTokens/$contextWindow ($afterPct%)")
             AppLogger.info(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        }
+    }
+
+    /**
+     * [T-m12-engine-swap] The strangler driver: one agent turn through the
+     * M6–M11 engine chain — [com.openminis.app.tools.ToolSurfaceAdapter]
+     * registry, [com.openminis.app.engine.ProviderModelGateway] (system
+     * prompt + thinking level seams), [com.openminis.app.engine.EngineAgentLoop]
+     * rounds, [com.openminis.app.ui.chat.ChatTurnReducer] block lifecycle —
+     * against the PRODUCTION surfaces: updateAssistantMessage (inherits
+     * T94/T256 side-channel throttling), executeTool (allowlist, write-jail,
+     * destructive gate, hooks — every policy intact), persistAssistantTurn.
+     *
+     * Deliberate v1 limits, documented, not silent:
+     *  - usage accounting: the loop treats Usage as the caller's seam; the
+     *    legacy loop's context-attribution update is not wired here yet.
+     *  - the fallback chain / auto-resume still run OUTSIDE (the resume
+     *    branch's own machinery, unchanged).
+     *  - queued-message interrupt mid-turn is legacy-only (the queue gate
+     *    checks _isStreaming; the engine path keeps the flag contract).
+     *
+     * Gated by [com.openminis.app.tools.EngineSwapPrefs] — OFF by default;
+     * the resume branch routes here only when the flag is on.
+     */
+    private suspend fun runEngineTurn(
+        placeholderAssistantId: String?,
+        provider: LLMProvider,
+        systemPrompt: String?,
+    ) {
+        val assistantId = placeholderAssistantId
+            ?: "assistant_${System.currentTimeMillis()}"
+        val reducer = ChatTurnReducer(assistantId, 0)
+
+        val registry = com.openminis.app.tools.ToolSurfaceAdapter.buildRegistry(
+            memoryEnabled = _memoryEnabled.value,
+            allowedTools = com.openminis.app.tools.AgentToolPolicyStore.policyFor(sessionId),
+            subagentsEnabled = isSubagentsEnabled(),
+            planMode = _permissionMode.value == com.openminis.app.engine.PermissionMode.PLAN,
+        )
+
+        val gateway = com.openminis.app.engine.ProviderModelGateway(
+            provider = provider,
+            systemPrompt = systemPrompt,
+            thinkingLevel = _thinkingLevel.value,
+        )
+
+        // History direction: agentHistory is LLMMessage-shaped and ALREADY
+        // carries the user's turn (persisted before the loop starts) — the
+        // seed stays empty or we would send the message twice.
+        val engineHistory = agentHistory.flatMap {
+            com.openminis.app.engine.ProviderModelGateway.fromLLMMessage(it)
+        }
+
+        val input = com.openminis.app.engine.AgentLoop.TurnInput(
+            sessionId = sessionId,
+            userText = "",
+            history = engineHistory,
+            mode = _permissionMode.value,
+        )
+
+        val loop = com.openminis.app.engine.EngineAgentLoop(
+            gateway,
+            registry,
+        ) { name, argsJson ->
+            // Production executor, all policies intact. The block list is a
+            // throwaway: the reducer's event-driven blocks are the single UI
+            // source of truth (executeTool's own mutations land in the
+            // throwaway and are discarded — no double-driven bubbles).
+            val res = executeTool(
+                name,
+                argsJson,
+                "tool_${System.nanoTime()}",
+                mutableListOf(),
+                assistantId,
+                "",
+            )
+            com.openminis.app.engine.EngineAgentLoop.ToolOutcome(res.output, res.success)
+        }
+
+        var finished = false
+        try {
+            loop.runTurn(input).collect { event ->
+                when (event) {
+                    is com.openminis.app.engine.AgentEvent.TurnFinished -> {
+                        reducer.reduce(event)
+                        finished = true
+                    }
+                    is com.openminis.app.engine.AgentEvent.Error -> {
+                        throw java.io.IOException(
+                            "engine turn error: ${event.message}",
+                        )
+                    }
+                    else -> {
+                        reducer.reduce(event)
+                        updateAssistantMessage(
+                            assistantId,
+                            reducer.text.toString(),
+                            true,
+                            reducer.currentBlocks(),
+                        )
+                    }
+                }
+            }
+        } finally {
+            if (finished || reducer.text.isNotEmpty() || reducer.currentBlocks().isNotEmpty()) {
+                // Terminal persist through the production per-turn writer
+                // (buildAssistantPartsJson off-main inside, same as legacy).
+                val inputs = mutableMapOf<String, String>()
+                for (b in reducer.currentBlocks()) {
+                    if (b.kind == "tool_use" && b.id.isNotEmpty()) {
+                        inputs[b.id] = b.toolArgs
+                    }
+                }
+                val parts = buildTurnParts(reducer.currentBlocks(), 0, inputs)
+                if (parts.isNotEmpty()) {
+                    val reasoning = reducer.currentBlocks()
+                        .firstOrNull { it.kind == "thinking" && it.content.isNotEmpty() }
+                        ?.content
+                    persistAssistantTurn(
+                        parts,
+                        usage = null,
+                        reasoningContent = reasoning,
+                        toolBlockMeta = reducer.currentBlocks()
+                            .filter { it.kind == "tool_use" }
+                            .associateBy { it.id },
+                    )
+                }
+                updateAssistantMessage(
+                    assistantId,
+                    reducer.text.toString(),
+                    false,
+                    reducer.currentBlocks(),
+                )
+            }
         }
     }
 

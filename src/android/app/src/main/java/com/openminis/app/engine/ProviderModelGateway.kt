@@ -87,8 +87,7 @@ class ProviderModelGateway(
         }
 
     /** Engine history → the app's provider message shape. */
-    internal fun toLLMMessage(msg: EngineMessage): LLMMessage = when (msg.role) {
-        EngineRole.USER -> LLMMessage(
+    internal fun toLLMMessage(msg: EngineMessage): LLMMessage = when (msg.role) {        EngineRole.USER -> LLMMessage(
             role = LLMMessage.Role.USER,
             content = msg.text,
         )
@@ -168,5 +167,54 @@ class ProviderModelGateway(
         is Usage -> StreamEvent.Usage(chunk.usage.inputTokens, chunk.usage.outputTokens)
         is Finished -> StreamEvent.Done
         is ReasoningContent, is MediaAttachment, is Started -> null
+    }
+
+    /**
+     * [T-m12-engine-swap] History direction: the production agent history is
+     * LLMMessage-shaped; the engine chain consumes EngineMessage. This is
+     * the inverse of [toLLMMessage] — ToolUse contentParts become engine
+     * toolCalls, ToolResult parts become TOOL messages, reasoning rides the
+     * same field the DeepSeek contract expects on the way back out.
+     */
+    internal fun fromLLMMessage(msg: LLMMessage): List<EngineMessage> {
+        val parts = msg.contentParts ?: return listOf(
+            EngineMessage(
+                role = when (msg.role) {
+                    LLMMessage.Role.USER -> EngineRole.USER
+                    LLMMessage.Role.ASSISTANT -> EngineRole.ASSISTANT
+                },
+                text = msg.content,
+                reasoningContent = msg.reasoningContent,
+            ),
+        )
+        val out = mutableListOf<EngineMessage>()
+        val toolCalls = parts.mapNotNull { p ->
+            (p as? AgentContentPart.ToolUse)?.let {
+                EngineToolCall(
+                    id = it.id,
+                    name = it.name,
+                    argsJson = it.input.toString(),
+                )
+            }
+        }
+        if (toolCalls.isNotEmpty() || msg.role == LLMMessage.Role.ASSISTANT) {
+            out += EngineMessage(
+                role = EngineRole.ASSISTANT,
+                text = msg.content,
+                toolCalls = toolCalls,
+                reasoningContent = msg.reasoningContent,
+            )
+        }
+        parts.mapNotNull { p ->
+            (p as? AgentContentPart.ToolResult)?.let { r ->
+                EngineMessage(
+                    role = EngineRole.TOOL,
+                    toolCallId = r.id,
+                    toolName = r.name,
+                    text = r.content,
+                )
+            }
+        }.forEach { out += it }
+        return out
     }
 }

@@ -350,6 +350,9 @@ class MinisApp : Application(), ImageLoaderFactory {
         // "Minis.Jank" + daily AppLogger file. Must start before the DB /
         // repository bring-up below so cold-start jank is measured too.
         com.openminis.app.diagnostics.JankMonitor.start(this)
+        // [T-m12-engine-swap] Strangler switch init: shared-prefs backed,
+        // default OFF — see EngineSwapPrefs.
+        com.openminis.app.tools.EngineSwapPrefs.init(this)
 
         database = AppDatabase.getInstance(this)
         chatRepository = ChatRepository(database.chatDao())

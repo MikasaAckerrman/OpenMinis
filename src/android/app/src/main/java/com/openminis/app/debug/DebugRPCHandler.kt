@@ -90,6 +90,17 @@ class DebugRPCHandler(private val context: Context) {
             // UI-operation markers with ages) — a lag complaint becomes
             // measurable evidence instead of an adjective.
             "debug.jankStats" -> JankMonitor.statsJson()
+            // [T-m12-engine-swap] The strangler switch for the engine-loop
+            // migration: ON routes the streaming resume path through the
+            // engine chain (M6–M11). Reversible at runtime — the live
+            // experiment that retires (or rolls back) the legacy loop.
+            "debug.engineSwap" -> {
+                val enable = params.optBoolean("enabled", false)
+                com.openminis.app.tools.EngineSwapPrefs.setEnabled(enable)
+                JSONObject()
+                    .put("enabled", com.openminis.app.tools.EngineSwapPrefs.isEnabled())
+                    .put("hint", "resume-path engine chain; takes effect next stream turn")
+            }
             // [T-device-load-awareness] force-refresh: an RPC caller wants
             // the CURRENT zones, not the 30s TTL cache.
             "debug.deviceState" -> {
