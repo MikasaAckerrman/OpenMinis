@@ -297,7 +297,7 @@ class EngineAgentLoopTest {
             listOf(
                 listOf(
                     StreamEvent.ToolCall(
-                        EngineToolCall("c1", "file_read", "{\"offset\": 3.0}"),
+                        EngineToolCall("c1", "file_read", "{\"path\": \"/a.kt\", \"offset\": 3.0}"),
                     ),
                     StreamEvent.Done,
                 ),
@@ -321,7 +321,7 @@ class EngineAgentLoopTest {
             listOf(
                 listOf(
                     StreamEvent.ToolCall(
-                        EngineToolCall("c1", "file_read", "{\"offset\": 1e3}"),
+                        EngineToolCall("c1", "file_read", "{\"path\": \"/a.kt\", \"offset\": 1e3}"),
                     ),
                     StreamEvent.Done,
                 ),
