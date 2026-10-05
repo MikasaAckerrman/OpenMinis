@@ -33,4 +33,7 @@ object MemorySearchPrefs {
     fun setUseFts(value: Boolean) {
         prefs?.edit()?.putBoolean(KEY, value)?.apply()
     }
+
+    /** [crash-2026-10-05_20-30] Guard for the capability fallback. */
+    fun isInitialized(): Boolean = prefs != null
 }

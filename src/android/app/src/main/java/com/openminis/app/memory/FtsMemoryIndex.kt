@@ -90,9 +90,42 @@ object FtsMemoryIndex {
             val dir = File(File(context.filesDir, "minis-global"), "memory-fts")
             if (dir.exists() || dir.mkdirs()) {
                 val db = SQLiteDatabase.openOrCreateDatabase(File(dir, "memory-fts.db"), null)
-                val e = AndroidEngine(db)
+                bindEngine(AndroidEngine(db))
+            }
+        }
+    }
+
+    /**
+     * [crash-2026-10-05_20-30] Capability probe + bind. The PLATFORM
+     * SQLite may be compiled without the fts5 module (vivo SM8650
+     * Android 15: "no such module: fts5"). A memory backend must NEVER
+     * take the app down: on failure we revert the router to the
+     * supermemory server and keep the engine unbound. init() therefore
+     * cannot throw — the app starts. Returns true when FTS is live.
+     */
+    internal fun bindEngine(e: SqliteEngine): Boolean {
+        synchronized(initLock) {
+            if (engine != null) return true
+            return try {
                 ensureSchema(e)
                 engine = e
+                true
+            } catch (t: Throwable) {
+                if (MemorySearchPrefs.isInitialized() && MemorySearchPrefs.useFts()) {
+                    MemorySearchPrefs.setUseFts(false)
+                }
+                try {
+                    (e as? AndroidEngine)?.db?.close()
+                } catch (closeFailure: Throwable) {
+                    // close best-effort; the original failure wins
+                }
+                // JVM-safe logging (android.util.Log would break the unit
+                // suite; stdout is visible in logcat on device).
+                println(
+                    "[FtsMemoryIndex] FTS5 unavailable on this platform SQLite " +
+                        "(${t.message}) — memory search reverts to the server",
+                )
+                false
             }
         }
     }
@@ -182,7 +215,8 @@ object FtsMemoryIndex {
      * Incremental keyword-corpus indexing: stat-check every file, re-index
      * only changed ones. Returns the number of re-indexed files.
      */
-    fun indexMemoryFiles(dir: File): Int {        val e = requireEngine() ?: return 0
+    fun indexMemoryFiles(dir: File): Int {
+        val e = requireEngine() ?: return 0
         if (!dir.isDirectory) return 0
         var reindexed = 0
         val files = dir.listFiles { f -> f.isFile && f.name.endsWith(".md") }
