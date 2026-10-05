@@ -290,7 +290,7 @@ class EngineAgentLoopTest {
     }
 
     @Test
-    fun `headless parser class-parity - whole decimals are IntNum like org.json`() = runTest {
+    fun `headless parser whole decimals classify as integers`() = runTest {
         // 3.0 must classify as an integer value exactly as the platform
         // org.json adapter does, or preflight verdicts diverge.
         val gw = ScriptedGateway(
@@ -316,7 +316,7 @@ class EngineAgentLoopTest {
     }
 
     @Test
-    fun `headless parser accepts scientific notation as present`() = runTest {
+    fun `headless parser scientific notation is field present`() = runTest {
         val gw = ScriptedGateway(
             listOf(
                 listOf(
