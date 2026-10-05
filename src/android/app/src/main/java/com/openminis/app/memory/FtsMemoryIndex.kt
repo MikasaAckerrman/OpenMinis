@@ -43,7 +43,7 @@ object FtsMemoryIndex {
     }
 
     internal class AndroidEngine(db: SQLiteDatabase) : SqliteEngine {
-        private val db = db
+        internal val db = db
         override fun exec(sql: String, vararg binds: Any?) {
             db.execSQL(sql, binds)
         }
