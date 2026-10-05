@@ -196,15 +196,15 @@ object FtsMemoryIndex {
             val size = f.length()
             val mtime = f.lastModified()
             if (known != null &&
-                (known.first as? Long) == size &&
-                (known.second as? Long) == mtime
+                (known.first as? Number)?.toLong() == size &&
+                (known.second as? Number)?.toLong() == mtime
             ) {
                 continue
             }
             try {
                 val text = f.readText()
                 if (known != null) {
-                    e.exec("DELETE FROM docs WHERE rowid = ?", known.third)
+                    e.exec("DELETE FROM docs WHERE rowid = ?", (known.third as? Number)?.toLong())
                 }
                 e.exec(
                     "INSERT INTO docs(content) VALUES (?)",

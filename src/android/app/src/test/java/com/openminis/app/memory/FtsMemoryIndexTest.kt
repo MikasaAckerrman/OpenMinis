@@ -97,7 +97,7 @@ class FtsMemoryIndexTest {
             assertNull(FtsMemoryIndex.buildMatchQuery(""))
             assertNull(FtsMemoryIndex.buildMatchQuery("!!! ???"))
             // FTS operators neutralized: no exception, tokens only
-            assertEquals("\" NEAR\"* OR \"AND\"*", FtsMemoryIndex.buildMatchQuery("NEAR AND"))
+            assertEquals("\"NEAR\"* OR \"AND\"*", FtsMemoryIndex.buildMatchQuery("NEAR AND"))
             assertTrue(FtsMemoryIndex.search("!!! ???").isEmpty())
         }
     }
