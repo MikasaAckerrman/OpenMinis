@@ -210,10 +210,10 @@ object FtsMemoryIndex {
                     "INSERT INTO docs(content) VALUES (?)",
                     "FILE ${f.name}\n$text",
                 )
-                val rowid = e.query(
+                val rowid = e.query<Long>(
                     "SELECT last_insert_rowid()",
                     emptyArray(),
-                ) { row -> row[0] }.firstOrNull()
+                ) { row -> (row[0] as? Number)?.toLong() ?: 0L }.firstOrNull() ?: 0L
                 e.exec(
                     "INSERT OR REPLACE INTO ingested_files(path, size, mtime, doc_rowid) " +
                         "VALUES (?, ?, ?, ?)",
