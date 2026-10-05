@@ -193,7 +193,7 @@ class ProviderModelGatewayTest {
         val g = ProviderModelGateway(
             provider = fake,
             systemPrompt = "sys",
-            imageParts = listOf(LLMMessage.ImagePart("file:///a.png", isMarkdownNative = false)),
+            imageParts = listOf(LLMMessage.ImagePart(byteArrayOf(1, 2), "image/png")),
         )
         kotlinx.coroutines.test.runTest {
             g.stream(
@@ -203,7 +203,7 @@ class ProviderModelGatewayTest {
             ).collect { }
         }
         org.junit.Assert.assertEquals(1, fake.lastImageParts.size)
-        org.junit.Assert.assertEquals("file:///a.png", fake.lastImageParts[0].url)
+        org.junit.Assert.assertEquals("image/png", fake.lastImageParts[0].mimeType)
         org.junit.Assert.assertEquals("sys", fake.lastSystemPrompt)
     }
 
