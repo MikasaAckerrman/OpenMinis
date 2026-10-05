@@ -40,19 +40,18 @@ interface EngineTool {
  * Everything a tool call needs from its surroundings, injected — the engine
  * never reaches into globals. Constructed per call by the loop.
  *
- * [T-m6-tool-context] M6: the context now carries the permission gate, the
- * hook engine, and the executor callback. The engine-side tools enforce
- * policy uniformly through these seams; the platform executor (the
- * ChatViewModel dispatch in the pre-M7 world) is reachable only through
+ * [T-m6-tool-context] The context carries the executor callback. The
+ * platform executor (the ChatViewModel dispatch) is reachable only through
  * [dispatch] — the engine never learns where the code actually runs.
+ *
+ * [T-m11-verify] The pre-declared `gate`/`hooks`/`logger` fields were
+ * removed by the dead-code sweep: they had ZERO readers (hooks run in the
+ * platform dispatcher BELOW dispatch; the gate lives engine-side in
+ * schemaFor; logging is the loop's concern). The loop swap reintroduces
+ * a seam ONLY when a consumer exists — fields are not declared on credit.
  */
 class ToolContext(
     val sessionId: String,
-    val logger: EngineLogger = EngineLogger.NONE,
-    /** Per-call permission backstop (PLAN read-only shell etc.). */
-    val gate: DefaultPermissionGate? = null,
-    /** Pre/Post tool hooks — the user's ruleset. */
-    val hooks: HookEngine? = null,
     /**
      * The single route to the real implementation behind a tool name —
      * the thin-adapter seam of M6. Adapters call it; the loop injects the

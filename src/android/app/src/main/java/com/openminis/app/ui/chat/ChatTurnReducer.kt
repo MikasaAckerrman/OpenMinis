@@ -100,18 +100,17 @@ class ChatTurnReducer(
 
             is AgentEvent.ToolUseStarted -> {
                 val idx = blocks.indexOfFirst { it.kind == "tool_use" && it.id == event.callId }
-                val block = if (idx < 0) {
-                    AssistantBlock(
-                        id = event.callId,
-                        kind = "tool_use",
-                        toolName = event.toolName,
-                        toolTitle = event.toolName,
-                        toolStatus = ToolBlockStatus.PENDING,
+                if (idx < 0) {
+                    blocks.add(
+                        AssistantBlock(
+                            id = event.callId,
+                            kind = "tool_use",
+                            toolName = event.toolName,
+                            toolTitle = event.toolName,
+                            toolStatus = ToolBlockStatus.PENDING,
+                        ),
                     )
-                } else {
-                    blocks[idx]
                 }
-                if (idx < 0) blocks.add(block) else blocks[idx] = block
                 return listOf(ui())
             }
 

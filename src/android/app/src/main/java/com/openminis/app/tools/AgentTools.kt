@@ -157,7 +157,9 @@ object AgentTools {
     /**
      * [T-m6-registry] The pre-M6 builder, kept verbatim as the equivalence
      * oracle for ToolSurfaceAdapterTest — the registry path must reproduce
-     * it exactly. Deleted together with that test in M7.
+     * it exactly. Retired together with that test when the LOOP swap lands
+     * (the registry path then carries production alone; the oracle guards
+     * it until then — plan updated in the M11 verification pass).
      */
     internal fun legacyMakeAgentTools(
         supportsImageInput: Boolean = true,
