@@ -364,6 +364,7 @@ object FtsMemoryIndex {
             } catch (t: Throwable) {
                 // unreadable file: skip, stat stays unchanged, no loop
                 lastIndexError = "${f.name}: ${t.message}"
+            }
         }
         return reindexed
     }
