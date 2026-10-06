@@ -10987,7 +10987,7 @@ class ChatViewModel(
             mode = _permissionMode.value,
             writePolicy = com.openminis.app.engine.ReadOnlyShellPolicy,
             allowlist = { tool, args ->
-                com.openminis.app.tools.PermissionAllowlistPrefs.isAllowed(
+                com.openminis.app.ui.chat.PermissionAllowlistPrefs.isAllowed(
                     context, activeSessionId, tool, args)
             },
         )
@@ -11191,7 +11191,7 @@ class ChatViewModel(
                     // stream ended with nothing persistable and no tool row —
                     // impossible on a healthy turn; if this line appears, the
                     // chain lost events and the log now SAYS so.
-                    AppLogger.warn(TAG_STREAM, "[Engine] EMPTY TURN " +
+                    AppLogger.warning(TAG_STREAM, "[Engine] EMPTY TURN " +
                         "finished=$finished first=${firstEventMs}ms — events lost?")
                 }
                 updateAssistantMessage(
