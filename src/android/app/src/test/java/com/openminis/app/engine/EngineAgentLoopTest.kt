@@ -449,7 +449,8 @@ class EngineAgentLoopTest {
         assertEquals(0, executed)
         val finished = events.last() as AgentEvent.TurnFinished
         assertEquals("stop", finished.reason)
-        assertEquals("", finished.text)
+        // Text rides TextDelta events; the finish is a terminator only.
+        assertTrue(events.none { it is AgentEvent.TextDelta })
     }
 
     @Test
@@ -473,7 +474,7 @@ class EngineAgentLoopTest {
         }
         val events = loop.runTurn(turnInput()).toList()
         assertEquals(0, executed)
-        assertEquals("recovered", (events.last() as AgentEvent.TurnFinished).text)
+        assertEquals("recovered", events.filterIsInstance<AgentEvent.TextDelta>().single().text)
     }
 
     @Test
