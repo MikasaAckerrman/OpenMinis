@@ -27,7 +27,7 @@ object PermissionAskOptions {
  *    sandbox plus the offload gates remain the containment.
  *
  * Persisted rather than held in the ViewModel because Android kills this
- * process freely (same reasoning as AgentModePrefs/PlanModePrefs). Split
+ * process freely (same reasoning as PlanModePrefs). Split
  * into [Logic] plus a thin SharedPreferences adapter so [Logic] is
  * testable without Android.
  */
@@ -75,7 +75,7 @@ object PermissionModePrefs {
         return object : Store {
             override fun get(key: String): String? = prefs.getString(key, null)
             // commit(), not apply(): the mode must survive the process being
-            // killed (mirrors AgentModePrefs).
+            // killed (mirrors PlanModePrefs).
             override fun put(key: String, value: String) {
                 prefs.edit().putString(key, value).commit()
             }

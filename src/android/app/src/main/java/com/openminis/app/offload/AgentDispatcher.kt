@@ -193,32 +193,6 @@ object AgentDispatcher {
      * Still fail-safe: if graph storage has nothing runnable, this degrades to
      * [Decision.NormalChat] rather than handing the runner a dead id.
      */
-    suspend fun forced(
-        context: Context,
-        providerRepository: ProviderRepository,
-    ): Decision {
-        val pinned = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getString(KEY_DEFAULT_GRAPH, null)
-            ?.trim()
-            .orEmpty()
-        // Resolved before the call, not inside the lambda: graphExists is
-        // suspend and AgentRouteGate is deliberately free of coroutines so it
-        // stays unit-testable without a dispatcher.
-        val pinnedExists = pinned.isNotEmpty() && graphExists(providerRepository, pinned)
-        val graphId = AgentRouteGate.forcedGraphId(pinned) { pinnedExists }
-        if (!graphExists(providerRepository, graphId)) {
-            Log.w(TAG, "forced run: no runnable graph ('$graphId' missing)")
-            return Decision.NormalChat("no runnable graph found (built-ins not seeded?)")
-        }
-        // Level is reported for the UI only; a forced run did not go through
-        // classification, and L2 is the level the light graph is built for.
-        return Decision.RunGraph(
-            graphId = graphId,
-            level = Level.L2,
-            rationale = "forced by the composer's Agents button",
-        )
-    }
-
     private suspend fun graphExists(
         providerRepository: ProviderRepository,
         graphId: String,

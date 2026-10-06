@@ -5,7 +5,7 @@ import android.content.Context
 /**
  * [T-plan-mode] Remembers PLAN mode per chat.
  *
- * Per chat, not global — mirrors AgentModePrefs: one conversation can be a
+ * Per chat, not global: one conversation can be a
  * cautious "show me the plan first" task while another runs free, and a
  * global switch would leak the restriction into chats that never asked for
  * it. Persisted rather than held in the ViewModel because Android kills
@@ -16,7 +16,7 @@ import android.content.Context
  * accident.
  *
  * Split into [Logic] plus a thin SharedPreferences adapter on purpose
- * (same discipline as AgentModePrefs): unit tests run with
+ * (split discipline): unit tests run with
  * `unitTests.isReturnDefaultValues = true` and no Robolectric, so [Logic]
  * carries the rules and is tested; this object only supplies storage.
  */

@@ -46,7 +46,7 @@ object DraftStore {
      * overloads below are thin adapters — this module's unit tests run with no
      * Robolectric, so `getSharedPreferences` returns null and any Context-
      * touching test fails for reasons unrelated to the logic. Mirrors the
-     * AgentModePrefs.Logic split.
+     * prefs-Logic split (the pattern PlanModePrefs uses).
      */
     object Logic {
         fun draftKey(sessionId: String) = DRAFT_PREFIX + sessionId

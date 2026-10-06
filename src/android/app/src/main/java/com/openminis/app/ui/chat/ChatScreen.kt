@@ -5568,43 +5568,14 @@ fun ChatScreen(
                             )
                         }
 
-                        // [A1] Agents toggle: ON forces the agent team for every
-                        // turn in this chat, OFF hands the decision back to the
-                        // auto-route classifier. Placed next to + and / because
-                        // it is a composer mode, not a settings option — the
-                        // choice to spend minutes and money belongs on the same
-                        // row as the send button.
-                        val forceAgents by viewModel.forceAgents.collectAsState()
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Box(
-                            modifier = Modifier
-                                .size(38.dp)
-                                .background(
-                                    if (forceAgents) MaterialTheme.colorScheme.primary
-                                    else ChatColors.inputIconBg,
-                                    CircleShape,
-                                )
-                                .border(
-                                    0.5.dp,
-                                    if (forceAgents) Color.Transparent
-                                    else ChatColors.inputIconBorder,
-                                    CircleShape,
-                                )
-                                .clip(CircleShape)
-                                .clickable { viewModel.setForceAgents(!forceAgents) },
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                Icons.Default.Groups,
-                                contentDescription = stringResource(
-                                    if (forceAgents) R.string.chat_agents_toggle_on
-                                    else R.string.chat_agents_toggle_off,
-                                ),
-                                tint = if (forceAgents) MaterialTheme.colorScheme.onPrimary
-                                else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(20.dp),
-                            )
-                        }
+                        // [A1-REMOVED 2026-10-06, USER VERDICT] The "Agents"
+                        // composer toggle was deleted: the user never used it
+                        // (the normal agent loop already runs tools/subagents
+                        // on every turn), and when it WAS flipped it forced the
+                        // graph route ("agentic team") which the user
+                        // experienced as the assistant silently not working.
+                        // Legacy-baggage removal — the auto-route classifier
+                        // and the in-loop agent surface stay.
 
                         // T187: Exit Edit Mode pill, only while editingMessageId
                         // is non-null. Tap clears the edit flag + composer text
