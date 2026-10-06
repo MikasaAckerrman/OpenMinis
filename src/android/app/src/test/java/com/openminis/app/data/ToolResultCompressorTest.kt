@@ -106,3 +106,41 @@ class ToolResultCompressorTest {
         assertSame(emptyList<LLMMessage>(), r.messages)
     }
 }
+
+    fun `freshness window compresses old results within the same turn`() {
+        // One user turn carrying 6 tool rounds; freshness window = 3.
+        val results = (1..6).map { round ->
+            LLMMessage(
+                role = LLMMessage.Role.USER,
+                content = "",
+                contentParts = listOf(
+                    AgentContentPart.ToolResult(
+                        toolCallId = "c$round",
+                        toolName = "shell",
+                        content = "ROUND-$round OUTPUT ".repeat(120), // >1500 chars
+                    ),
+                ),
+            )
+        }
+        val history = listOf(
+            LLMMessage(role = LLMMessage.Role.USER, content = "задача"),
+            LLMMessage(role = LLMMessage.Role.ASSISTANT, content = "ok"),
+        ) + results
+        val r = ToolResultCompressor.compress(
+            history,
+            protectRecentUserTextTurns = 1,
+            freshToolResultsInTurn = 3,
+        )
+        val parts = r.messages.drop(2).flatMap { it.contentParts }
+        val heads = parts.filterIsInstance<AgentContentPart.ToolResult>()
+        assertEquals(6, heads.size)
+        // Rounds 4-6 (the newest three) must ride verbatim.
+        assertTrue(heads[3].content.startsWith("ROUND-4 OUTPUT"))
+        assertTrue(heads[4].content.startsWith("ROUND-5 OUTPUT"))
+        assertTrue(heads[5].content.startsWith("ROUND-6 OUTPUT"))
+        // Rounds 1-3 of the SAME turn are head-compressed.
+        assertTrue(heads[0].content.contains("compressed"))
+        assertTrue(heads[1].content.contains("compressed"))
+        assertTrue(heads[2].content.contains("compressed"))
+        assertTrue(r.savedChars > 0)
+    }

@@ -37,6 +37,15 @@ object ToolResultCompressor {
     /** Bodies shorter than this are left alone — micro-trims churn tokens. */
     const val DEFAULT_MIN_CHARS_TO_COMPRESS = 1500
 
+    /**
+     * [T-fresh-tools-window] Tool results of the CURRENT turn that stay
+     * verbatim (counted from the END of the history). 8 rounds ≈ the
+     * model's live working set; older results of the same turn ride the
+     * 600-char head. Tuned from the 1.28 MB mid-turn regression
+     * (2026-10-07).
+     */
+    const val DEFAULT_FRESH_TOOLS_IN_TURN = 8
+
     data class Result(
         val messages: List<LLMMessage>,
         val compressedCount: Int,
@@ -48,6 +57,7 @@ object ToolResultCompressor {
         protectRecentUserTextTurns: Int = DEFAULT_PROTECT_RECENT_USER_TEXT_TURNS,
         headChars: Int = DEFAULT_HEAD_CHARS,
         minCharsToCompress: Int = DEFAULT_MIN_CHARS_TO_COMPRESS,
+        freshToolResultsInTurn: Int = DEFAULT_FRESH_TOOLS_IN_TURN,
     ): Result {
         if (messages.isEmpty()) return Result(messages, 0, 0)
 
@@ -96,14 +106,34 @@ object ToolResultCompressor {
         var compressed = 0
         var saved = 0
         var changed = false
+        // [T-fresh-tools-window] Device trace (2026-10-07, vc95): the body
+        // crept back to 1.28 MB mid-turn — the current turn accumulated
+        // 15+ tool outputs and EVERY round re-uploaded them all verbatim.
+        // The model's live working set is only the LAST few results; by
+        // round 15 it has long acted on round 3's output. Keep the last
+        // [freshToolResultsInTurn] results of the CURRENT turn verbatim;
+        // older results of the same turn ride a 600-char head (DB keeps
+        // the full text; PostAnchorPrune remains the hard transport cap).
+        // The boundary MUST be walked from the END backwards — the budget
+        // belongs to the newest results, not the oldest.
+        val freshBoundaryIdx = run {
+            var left = freshToolResultsInTurn
+            var i = messages.size - 1
+            while (i >= currentTurnFromIdx) {
+                val toolParts = messages[i].contentParts.count { it is AgentContentPart.ToolResult }
+                if (toolParts > 0 && left <= 0) break
+                if (toolParts > 0) left -= toolParts
+                i -= 1
+            }
+            i + 1
+        }
         val out = ArrayList<LLMMessage>(messages.size)
         for ((idx, m) in messages.withIndex()) {
             // [T-current-turn-tools-only] Full protection ONLY from the
-            // current turn's boundary: legacy rides tool results on
-            // USER-role rounds, so a role exemption would keep the whole
-            // storm verbatim — the exact 1.26 MB regression measured
-            // on-device. Rounds from PREVIOUS turns keep their heads.
-            if (idx >= currentTurnFromIdx || m.contentParts.isEmpty()) {
+            // freshness boundary: legacy rides tool results on USER-role
+            // rounds, so a role exemption would keep the whole storm
+            // verbatim — the exact 1.26 MB regression measured on-device.
+            if (idx >= freshBoundaryIdx || m.contentParts.isEmpty()) {
                 out.add(m)
                 continue
             }
