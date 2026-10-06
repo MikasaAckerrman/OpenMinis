@@ -115,8 +115,8 @@ class ToolResultCompressorTest {
                 content = "",
                 contentParts = listOf(
                     AgentContentPart.ToolResult(
-                        toolCallId = "c$round",
-                        toolName = "shell",
+                        id = "c$round",
+                        name = "shell",
                         content = "ROUND-$round OUTPUT ".repeat(120), // >1500 chars
                     ),
                 ),
@@ -142,5 +142,5 @@ class ToolResultCompressorTest {
         assertTrue(heads[0].content.contains("compressed"))
         assertTrue(heads[1].content.contains("compressed"))
         assertTrue(heads[2].content.contains("compressed"))
-        assertTrue(r.savedChars > 0)
+        assertTrue(r.charsSaved > 0)
     }
