@@ -390,7 +390,7 @@ class EngineAgentLoopTest {
         assertEquals(
             "no failed-outcome conversion of the cancel",
             0,
-            events.count { it is AgentEvent.ToolCallFinished && !it.result.success },
+            events.count { it is AgentEvent.ToolCallFinished && !it.success },
         )
     }
 }
