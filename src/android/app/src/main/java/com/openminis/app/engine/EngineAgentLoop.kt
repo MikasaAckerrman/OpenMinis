@@ -74,7 +74,8 @@ class EngineAgentLoop(
             // boundary: a STOP tapped during tool execution must not start
             // another model round. CancellationException propagates out of
             // runTurn to the driver's cleanup path.
-            kotlinx.coroutines.currentCoroutineContext().ensureActive()            if (round > input.limits.maxRounds) {
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            if (round > input.limits.maxRounds) {
                 emit(AgentEvent.TurnFinished("round_limit"))
                 return@flow
             }
