@@ -3474,6 +3474,14 @@ fun ChatScreen(
                         .lastOrNull { it.role == "assistant" }
                         ?.error
                         ?.isNotBlank() == true
+                    // [T-user-retry-removed] The tool-pill "Re-run from here"
+                    // is the only remaining truncating affordance, and by the
+                    // same verdict it must anchor to the assistant TAIL:
+                    // re-running a tool block inside an OLD message amputates
+                    // everything below it (identical data-loss shape as the
+                    // removed user-bubble Retry). Only the latest assistant
+                    // message's tool blocks keep the pill.
+                    val lastAssistantId = messages.lastOrNull { it.role == "assistant" }?.id
                     // [T-resume-banner-false-stopped] Gate also checks the
                     // PROCESS-wide streaming set (hoisted above the LazyColumn as
                     // `sessionStreamingNow` — LazyListScope is not a composable
@@ -3675,18 +3683,21 @@ fun ChatScreen(
                                     val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
                                     clipboard.setPrimaryClip(android.content.ClipData.newPlainText("message", item.message.content))
                                 },
-                                // T119: pass null while a turn is in flight so
-                                // the long-press menu hides Retry; once the
-                                // stream stops (cancel or natural end) the
-                                // option reappears. Gating execution alone
-                                // wasn't enough — users still saw a tappable
-                                // Retry that silently no-op'd.
-                                onRetry = if (isStreaming) null else ({
-                                    coroutineScope.launch {
-                                        tracedScrollToItem("RETRY-FROM-MSG", 0, 0)
-                                    }
-                                    safeMutate { viewModel.retryFromMessage(item.message.id) }
-                                }),
+                                // [T-user-retry-removed] PROVEN USER VERDICT
+                                // (2026-10-06): retrying from ANY user
+                                // message truncates the history at that row —
+                                // everything after (tool outputs, answers,
+                                // entire agent turns) is DELETED. On a 7k-row
+                                // session one accidental tap silently amputates
+                                // hours of context. Retry is therefore NOT
+                                // offered on user bubbles at all: the
+                                // regeneration affordances live on the
+                                // assistant tail only — the tool-block
+                                // "Re-run from here" pill and the red
+                                // error/unfinished banner with its Retry
+                                // button (both anchor to the LATEST state,
+                                // never below a settled prefix).
+                                onRetry = null,
                                 // [T-remove-edit-action] The "Edit" item is gone.
                                 // It re-ran the conversation from this turn
                                 // (truncating everything after it), which read as
@@ -3968,7 +3979,16 @@ fun ChatScreen(
                                 // state, same rule as Retry on the user bubble).
                                 // safeMutate tears down the selection toolbar
                                 // before the truncation reshuffles the list.
-                                onRerunFromHere = if (!isStreaming) ({
+                                // [T-rerun-tail-only] PROVEN USER VERDICT
+                                // (2026-10-06): Re-run truncates below THIS
+                                // tool block. On an old assistant turn that
+                                // amputates everything after it silently —
+                                // the same data-loss class as the removed
+                                // user-bubble Retry. Offered only when this
+                                // pill belongs to the LAST assistant
+                                // message (its cut can only drop the tail
+                                // that would be regenerated anyway).
+                                onRerunFromHere = if (!isStreaming && item.messageId == originalMessageId(lastAssistantId ?: "")) ({
                                     coroutineScope.launch {
                                         tracedScrollToItem("RERUN-FROM-TOOL", 0, 0)
                                     }

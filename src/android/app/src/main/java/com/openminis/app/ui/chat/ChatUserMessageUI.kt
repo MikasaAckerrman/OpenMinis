@@ -288,7 +288,7 @@ internal fun UserMessageBubble(
     // user→assistant→user cadence.
     precededByUser: Boolean = false,
     onCopy: () -> Unit = {},
-    onRetry: (() -> Unit)? = {},
+    onRetry: (() -> Unit)? = null,
     // [T-remove-edit-action] Kept in the signature (default null → the row never
     // renders) rather than deleted: no caller passes it today, but a future
     // "edit and re-run" affordance with clearer wording may want it back.
