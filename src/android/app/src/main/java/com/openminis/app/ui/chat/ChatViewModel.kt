@@ -10985,7 +10985,11 @@ class ChatViewModel(
     private fun engineGate(): com.openminis.app.engine.DefaultPermissionGate =
         com.openminis.app.engine.DefaultPermissionGate(
             mode = _permissionMode.value,
-            writePolicy = com.openminis.app.tools.AgentWritePolicyStore.policyFor(sessionId),
+            writePolicy = com.openminis.app.engine.ReadOnlyShellPolicy,
+            allowlist = { tool, args ->
+                com.openminis.app.tools.PermissionAllowlistPrefs.isAllowed(
+                    context, activeSessionId, tool, args)
+            },
         )
 
     private suspend fun runEngineTurn(
@@ -11023,12 +11027,6 @@ class ChatViewModel(
         val engineHistory = agentHistory.flatMap {
             com.openminis.app.engine.ProviderModelGateway.fromLLMMessage(it)
         }
-        AppLogger.info(TAG_STREAM, "[Engine] setup aid=${assistantId.take(14)} " +
-            "preRow=${placeholderAssistantId != null} " +
-            "tools=$schemaCount " +
-            "history=${engineHistory.size} prompt=${systemPrompt?.length ?: 0} " +
-            "images=${imageParts.size} in ${msSinceSetup()}ms")
-
         val input = com.openminis.app.engine.TurnInput(
             sessionId = sessionId,
             userText = "",
@@ -11036,6 +11034,11 @@ class ChatViewModel(
             mode = _permissionMode.value,
         )
         val schemaCount = registry.schemaFor(engineGate()).size
+        AppLogger.info(TAG_STREAM, "[Engine] setup aid=${assistantId.take(14)} " +
+            "preRow=${placeholderAssistantId != null} " +
+            "tools=$schemaCount " +
+            "history=${engineHistory.size} prompt=${systemPrompt?.length ?: 0} " +
+            "in ${msSinceSetup()}ms")
 
         val loop = com.openminis.app.engine.EngineAgentLoop(
             gateway,
@@ -11097,7 +11100,7 @@ class ChatViewModel(
                         // production writer (off-main inside, same protocol).
                         val effects = reducer.reduce(event)
                         toolCalls++
-                        effects.filterIsInstance<ChatTurnReducer.Effect.PersistToolResult>().forEach { eff ->
+                        effects.filterIsInstance<ChatTurnReducer.PersistToolResult>().forEach { eff ->
                             persistEffects++
                             val trParts = listOf(
                                 AgentContentPart.ToolResult(
