@@ -375,7 +375,8 @@ class EngineAgentLoopTest {
             },
         )
         val events = mutableListOf<AgentEvent>()
-        runCatching {
+        var cancelled = false
+        try {
             loop.runTurn(
                 EngineAgentLoop.TurnInput(
                     history = emptyList(),
@@ -385,18 +386,9 @@ class EngineAgentLoopTest {
                     limits = EngineAgentLoop.LoopLimits(maxRounds = 3),
                 ),
             ).collect { events.add(it) }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            cancelled = true
         }
-        assertTrue(
-            "cancellation must propagate, not convert to a failed tool outcome",
-            runCatching {
-                @Suppress("CONTROL_FLOW_WITH_EMPTY_BODY_FOR_STATEMENT")
-                if (false) throw kotlinx.coroutines.CancellationException("probe")
-                true
-            }.let { true },
-        )
-        val failureOutcomes = events.count {
-            it is AgentEvent.ToolCallFinished && !it.result.success &&
-                it.result.output.contains("tool execution failed")
-        }
-        assertEquals("no failed-outcome conversion of a cancel", 0, failureOutcomes)
+        assertTrue("cancellation must propagate out of runTurn", cancelled)
+        assertEquals("no events after cancellation", 0, events.size)
     }
