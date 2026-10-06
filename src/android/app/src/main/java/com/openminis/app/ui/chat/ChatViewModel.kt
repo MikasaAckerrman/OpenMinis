@@ -8153,12 +8153,32 @@ class ChatViewModel(
                     // debug.engineSwap RPC for live verification.
                     if (com.openminis.app.tools.EngineSwapPrefs.isEnabled()) {
                         AppLogger.info(TAG_STREAM, "$label runEngineTurn CALL (swap flag ON)")
-                        runEngineTurn(
-                            placeholderAssistantId = null,
-                            provider = launchedProvider,
-                            systemPrompt = systemPrompt,
-                        )
-                        AppLogger.info(TAG_STREAM, "$label runEngineTurn RETURN normal")
+                        try {
+                            runEngineTurn(
+                                placeholderAssistantId = null,
+                                provider = launchedProvider,
+                                systemPrompt = systemPrompt,
+                            )
+                            AppLogger.info(TAG_STREAM, "$label runEngineTurn RETURN normal")
+                        } catch (e: Exception) {
+                            if (e is CancellationException) throw e
+                            // [T-m12-audit-fallback] Fatal engine failure
+                            // (non-recoverable: auth/quota) must not lose the
+                            // dead-provider reroute this campaign added —
+                            // that logic lives in the legacy loop. Degrade
+                            // the turn onto the legacy path, which carries
+                            // the fallback chain itself.
+                            AppLogger.info(
+                                TAG_STREAM,
+                                "$label engine path failed (${e.javaClass.simpleName}: ${e.message?.take(80)}) — degrading to legacy with fallback",
+                            )
+                            runAgentLoop(
+                                provider = launchedProvider,
+                                systemPrompt = systemPrompt,
+                                fallbackProviders = fallbackProviders,
+                                fallbackStrategy = activeFallbackStrategy,
+                            )
+                        }
                     } else {
                     AppLogger.info(TAG_STREAM, "$label runAgentLoop CALL")
                     runAgentLoop(
@@ -10989,9 +11009,19 @@ class ChatViewModel(
                         finished = true
                     }
                     is com.openminis.app.engine.AgentEvent.Error -> {
-                        throw java.io.IOException(
-                            "engine turn error: ${event.message}",
-                        )
+                        // [T-m12-error-recoverability] The event carries the
+                        // gateway's verdict. Recoverable (transport) →
+                        // IOException so the resume gate classifies it as
+                        // transient (auto-resume, "connection closed" self-
+                        // healing). Non-recoverable (content filter, auth)
+                        // → RuntimeException: the gate must NOT auto-resume
+                        // a turn that can never succeed (3 wasted retries).
+                        val msg = event.message
+                        if (event.recoverable) {
+                            throw java.io.IOException(msg)
+                        } else {
+                            throw RuntimeException(msg)
+                        }
                     }
                     else -> {
                         reducer.reduce(event)
