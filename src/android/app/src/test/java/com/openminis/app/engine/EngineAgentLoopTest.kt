@@ -394,3 +394,109 @@ class EngineAgentLoopTest {
         )
     }
 }
+
+    @Test
+    fun `terminal failure after partial text is not recoverable`() = runTest {
+        val gw = ScriptedGateway(
+            listOf(
+                listOf(
+                    StreamEvent.TextDelta("half"),
+                    StreamEvent.Failure("content policy", recoverable = false),
+                ),
+            ),
+        )
+        val events = EngineAgentLoop(gw, registry()).runTurn(turnInput()).toList()
+        // The partial text must survive as an event before the error.
+        assertTrue(events.any { it is AgentEvent.TextDelta })
+        val err = events.last() as AgentEvent.Error
+        assertFalse(err.recoverable)
+    }
+
+    @Test
+    fun `parallel batch failure keeps the sibling result`() = runTest {
+        val gw = ScriptedGateway(
+            listOf(
+                listOf(
+                    StreamEvent.ToolCall(EngineToolCall("c1", "file_read", "{\"path\":\"/a.kt\"}")),
+                    StreamEvent.ToolCall(EngineToolCall("c2", "file_read", "{\"path\":\"/b.kt\"}")),
+                    StreamEvent.Done,
+                ),
+                listOf(StreamEvent.Done),
+            ),
+        )
+        val loop = EngineAgentLoop(gw, registry()) { call, _ ->
+            if (call.id == "c1") EngineAgentLoop.ToolOutcome("good", true)
+            else EngineAgentLoop.ToolOutcome("boom: disk full", false)
+        }
+        val events = loop.runTurn(turnInput()).toList()
+        val finishes = events.filterIsInstance<AgentEvent.ToolCallFinished>()
+        assertEquals(2, finishes.size)
+        assertTrue(finishes.any { it.success && it.summary == "good" })
+        assertTrue(finishes.any { !it.success })
+        // The turn still reaches a clean finish (the model sees the failure).
+        assertTrue(events.last() is AgentEvent.TurnFinished)
+    }
+
+    @Test
+    fun `empty stream ends the turn without executor calls`() = runTest {
+        val gw = ScriptedGateway(listOf(listOf(StreamEvent.Done)))
+        var executed = 0
+        val loop = EngineAgentLoop(gw, registry()) { _, _ ->
+            executed++
+            EngineAgentLoop.ToolOutcome("x", true)
+        }
+        val events = loop.runTurn(turnInput()).toList()
+        assertEquals(0, executed)
+        val finished = events.last() as AgentEvent.TurnFinished
+        assertEquals("stop", finished.reason)
+        assertEquals("", finished.text)
+    }
+
+    @Test
+    fun `incomplete tool call is never executed`() = runTest {
+        // A stream that announces a tool but never completes it (provider
+        // died mid-args). The batch is built from COMPLETED calls only.
+        val gw = ScriptedGateway(
+            listOf(
+                listOf(
+                    StreamEvent.ToolUseStarted("c1", "file_read"),
+                    StreamEvent.ToolInputDelta("c1", "{\"pa"),
+                    StreamEvent.Done,
+                ),
+                listOf(StreamEvent.TextDelta("recovered"), StreamEvent.Done),
+            ),
+        )
+        var executed = 0
+        val loop = EngineAgentLoop(gw, registry()) { _, _ ->
+            executed++
+            EngineAgentLoop.ToolOutcome("x", true)
+        }
+        val events = loop.runTurn(turnInput()).toList()
+        assertEquals(0, executed)
+        assertEquals("recovered", (events.last() as AgentEvent.TurnFinished).text)
+    }
+
+    @Test
+    fun `second-round failure preserves round one tool results`() = runTest {
+        val gw = ScriptedGateway(
+            listOf(
+                listOf(
+                    StreamEvent.ToolCall(EngineToolCall("c1", "file_read", "{\"path\":\"/a.kt\"}")),
+                    StreamEvent.Done,
+                ),
+                listOf(
+                    StreamEvent.TextDelta("mid"),
+                    StreamEvent.Failure("connection closed", recoverable = true),
+                ),
+            ),
+        )
+        val loop = EngineAgentLoop(gw, registry()) { _, _ ->
+            EngineAgentLoop.ToolOutcome("file body", true)
+        }
+        val events = loop.runTurn(turnInput()).toList()
+        // Round one's result is an event BEFORE the failure lands.
+        val toolIdx = events.indexOfFirst { it is AgentEvent.ToolCallFinished }
+        val errIdx = events.indexOfLast { it is AgentEvent.Error }
+        assertTrue(toolIdx in 0 until errIdx)
+        assertTrue((events.last() as AgentEvent.Error).recoverable)
+    }
