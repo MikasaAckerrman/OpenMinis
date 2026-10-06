@@ -8470,9 +8470,8 @@ class ChatViewModel(
 
     /**
      * [T-permission-modes] Switch the session's mode (slash commands, plan
-     * approval). Writes through to disk immediately — same reasoning as
-     * [setForceAgents]: the mode must survive the process dying while the
-     * user composes.
+     * approval). Writes through to disk immediately so the mode survives the
+     * process dying while the user composes.
      */
     fun setPermissionMode(mode: com.openminis.app.engine.PermissionMode) {
         if (_permissionMode.value == mode) return

@@ -43,7 +43,9 @@ import com.openminis.app.provider.failOnSilentEmptyCompletion
 // retryOnConnectionFailure (which don't false-fire on a slow-but-alive
 // server); a wall-clock TTFB at 15s killed legitimate reasoning first-token
 // latency and large agent-history uploads, breaking turns.
-private const val GEMINI_STREAM_TTFB_TIMEOUT_MS = 120_000L
+// [T-ttfb-60s 2026-10-06] 120s -> 60s (stale-connection hang halved;
+// false positive is recoverable via auto-resume on a fresh conn).
+private const val GEMINI_STREAM_TTFB_TIMEOUT_MS = 60_000L
 
 private const val REQUEST_BUDGET_PROTECT_TURNS = 24
 

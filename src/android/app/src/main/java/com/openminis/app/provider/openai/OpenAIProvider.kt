@@ -160,7 +160,16 @@ class OpenAIProvider private constructor(
         // breaking every turn. 120s only guards the rare transparent-proxy
         // stall (proxy PONGs but never forwards), capping it at 2min instead
         // of the 10min readTimeout, without touching real slow-start traffic.
-        private const val STREAM_TTFB_TIMEOUT_MS = 120_000L
+        // [T-ttfb-60s 2026-10-06] Lowered 120s -> 60s: the user's device log
+        // showed a stale pooled connection burning the FULL 120s on a retry
+        // (perceived as a hang). Two things changed since the 15-30s era:
+        // (1) the request diet (ReasoningElider + ToolResultCompressor) cut
+        // the upload body several-fold, so legit slow-start fits in 60s with
+        // ~4x margin; (2) a false positive is now RECOVERABLE — the TTFB
+        // cancel surfaces as a transport failure and the auto-resume policy
+        // restarts the turn on a fresh connection, where the old era broke
+        // the turn outright.
+        private const val STREAM_TTFB_TIMEOUT_MS = 60_000L
 
         /**
          * Factory for OAuth-bearer OpenAI-compatible providers that aren't
