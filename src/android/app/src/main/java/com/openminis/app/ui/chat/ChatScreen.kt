@@ -3474,14 +3474,21 @@ fun ChatScreen(
                         .lastOrNull { it.role == "assistant" }
                         ?.error
                         ?.isNotBlank() == true
-                    // [T-user-retry-removed] The tool-pill "Re-run from here"
-                    // is the only remaining truncating affordance, and by the
-                    // same verdict it must anchor to the assistant TAIL:
-                    // re-running a tool block inside an OLD message amputates
-                    // everything below it (identical data-loss shape as the
-                    // removed user-bubble Retry). Only the latest assistant
-                    // message's tool blocks keep the pill.
+                    // [T-retry-last-message] The truncating affordances
+                    // (user-bubble Retry, tool-block Re-run) are gated to the
+                    // session's LAST message by the user's verdict — whoever
+                    // sent it. The assistant-tail error banner stays as the
+                    // recovery surface for failed turns.
                     val lastAssistantId = messages.lastOrNull { it.role == "assistant" }?.id
+                    // [T-retry-last-message] USER VERDICT, refined (2026-10-06):
+                    // "кнопка повторить будет только у последнего сообщения —
+                    // твоего или моего, в зависимости у кого сообщение
+                    // последним". Retrying the LAST message is safe by
+                    // construction — nothing exists below it, so the
+                    // truncating retry cuts an empty tail and re-sends. The
+                    // data-loss footgun was retrying an OLD message; the gate
+                    // keeps the affordance anchored to the session tail.
+                    val lastMessageId = messages.lastOrNull()?.id
                     // [T-resume-banner-false-stopped] Gate also checks the
                     // PROCESS-wide streaming set (hoisted above the LazyColumn as
                     // `sessionStreamingNow` — LazyListScope is not a composable
@@ -3683,21 +3690,23 @@ fun ChatScreen(
                                     val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
                                     clipboard.setPrimaryClip(android.content.ClipData.newPlainText("message", item.message.content))
                                 },
-                                // [T-user-retry-removed] PROVEN USER VERDICT
-                                // (2026-10-06): retrying from ANY user
-                                // message truncates the history at that row —
-                                // everything after (tool outputs, answers,
-                                // entire agent turns) is DELETED. On a 7k-row
-                                // session one accidental tap silently amputates
-                                // hours of context. Retry is therefore NOT
-                                // offered on user bubbles at all: the
-                                // regeneration affordances live on the
-                                // assistant tail only — the tool-block
-                                // "Re-run from here" pill and the red
-                                // error/unfinished banner with its Retry
-                                // button (both anchor to the LATEST state,
-                                // never below a settled prefix).
-                                onRetry = null,
+                                // [T-retry-last-message] USER VERDICT, refined
+                                // (2026-10-06): retrying from ANY user message
+                                // used to truncate the history at that row —
+                                // an OLD message's tap silently amputated
+                                // hours of context. The affordance now lives
+                                // ONLY on the session's LAST message (user or
+                                // assistant, whoever is last): its cut is
+                                // empty by construction, so "repeat" is
+                                // always safe. While streaming the item hides
+                                // (T119: a tappable Retry that no-op'd read
+                                // as a dead button).
+                                onRetry = if (isStreaming || item.message.id != lastMessageId) null else ({
+                                    coroutineScope.launch {
+                                        tracedScrollToItem("RETRY-FROM-MSG", 0, 0)
+                                    }
+                                    safeMutate { viewModel.retryFromMessage(item.message.id) }
+                                }),
                                 // [T-remove-edit-action] The "Edit" item is gone.
                                 // It re-ran the conversation from this turn
                                 // (truncating everything after it), which read as
@@ -3979,16 +3988,16 @@ fun ChatScreen(
                                 // state, same rule as Retry on the user bubble).
                                 // safeMutate tears down the selection toolbar
                                 // before the truncation reshuffles the list.
-                                // [T-rerun-tail-only] PROVEN USER VERDICT
-                                // (2026-10-06): Re-run truncates below THIS
-                                // tool block. On an old assistant turn that
-                                // amputates everything after it silently —
-                                // the same data-loss class as the removed
-                                // user-bubble Retry. Offered only when this
-                                // pill belongs to the LAST assistant
-                                // message (its cut can only drop the tail
-                                // that would be regenerated anyway).
-                                onRerunFromHere = if (!isStreaming && item.messageId == originalMessageId(lastAssistantId ?: "")) ({
+                                // [T-retry-last-message] USER VERDICT, refined
+                                // (2026-10-06): the Re-run pill stays only when
+                                // its assistant message IS the session's LAST
+                                // message. A user message sitting below it
+                                // would be amputated by the re-run cut — the
+                                // same data-loss shape the verdict forbids.
+                                // Old assistant turns never show the pill.
+                                onRerunFromHere = if (!isStreaming &&
+                                    item.messageId == originalMessageId(lastAssistantId ?: "") &&
+                                    lastAssistantId == lastMessageId) ({
                                     coroutineScope.launch {
                                         tracedScrollToItem("RERUN-FROM-TOOL", 0, 0)
                                     }
