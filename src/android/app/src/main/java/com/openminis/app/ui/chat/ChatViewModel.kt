@@ -7939,6 +7939,24 @@ class ChatViewModel(
         AppLogger.info(TAG_STREAM, "retry _isStreaming=true (sync, sid=$activeSessionId)")
         _isStreaming.value = true
 
+        // [T-retry-instant-thinking] User report (2026-10-06): «нажимаю
+        // повторить — ты не работаешь». The tap DID work — but between the
+        // tap and the first visible feedback lay the ENTIRE setup: DB cutoff
+        // resolution + a full history reload (heavy sessions: seconds) + OAuth
+        // refresh + prompt build. The old answer is already trimmed away at
+        // this point, so the screen showed… nothing at all. Same fix the send
+        // path got ([T-instant-thinking-indicator]): pre-create the assistant
+        // row with the typing dots NOW, and hand its id down to the loop so
+        // the first streaming write targets THIS row (no twin bubbles).
+        val retryAssistantId = "assistant_${System.currentTimeMillis()}"
+        if (_messages.value.none { m -> m.id == retryAssistantId }) {
+            _messages.value = _messages.value + ChatMessage(
+                id = retryAssistantId, role = "assistant", content = "",
+                isStreaming = true, isAwaitingModelResponse = true,
+                thinkingLevel = _thinkingLevel.value,
+            )
+        }
+
         viewModelScope.launch {
             // If setup throws before the inner streamJob is launched, the
             // streaming flag would be stuck true forever. Reset on the
@@ -8049,11 +8067,17 @@ class ChatViewModel(
                 agentHistory.add(entity.toLLMMessage())
             }
 
-            streamLaunched = runRerunStreamTail(provider, "retryFromMessage")
+            streamLaunched = runRerunStreamTail(provider, "retryFromMessage", placeholderAssistantId = retryAssistantId)
             } finally {
                 if (!streamLaunched) {
                     AppLogger.info(TAG_STREAM, "retry _isStreaming=false (setup aborted)")
                     _isStreaming.value = false
+                    // [T-retry-instant-thinking] Setup died before the loop
+                    // adopted the pre-created row — remove the dangling dots
+                    // bubble so the chat doesn't show a stuck «thinking» row.
+                    _messages.value = _messages.value.filterNot {
+                        m -> m.id == retryAssistantId && m.content.isEmpty()
+                    }
                 }
             }
         }
@@ -8077,6 +8101,11 @@ class ChatViewModel(
     private suspend fun runRerunStreamTail(
         initialProvider: LLMProvider,
         label: String,
+        // [T-retry-instant-thinking] The pre-created thinking row's id — see
+        // retryFromMessage. Null = the tool-block re-run path (its target row
+        // is the existing assistant message, regenerated in place) and the
+        // internal fallback re-launch (the loop already owns a row).
+        placeholderAssistantId: String? = null,
     ): Boolean {
         var provider = initialProvider
         // Refresh OAuth token if needed
@@ -8145,7 +8174,7 @@ class ChatViewModel(
                         AppLogger.info(TAG_STREAM, "$label runEngineTurn CALL (swap flag ON)")
                         try {
                             runEngineTurn(
-                                placeholderAssistantId = null,
+                                placeholderAssistantId = placeholderAssistantId,
                                 provider = launchedProvider,
                                 systemPrompt = systemPrompt,
                             )
@@ -8163,6 +8192,7 @@ class ChatViewModel(
                                 "$label engine path failed (${e.javaClass.simpleName}: ${e.message?.take(80)}) — degrading to legacy with fallback",
                             )
                             runAgentLoop(
+                                placeholderAssistantId = placeholderAssistantId,
                                 provider = launchedProvider,
                                 systemPrompt = systemPrompt,
                                 fallbackProviders = fallbackProviders,
@@ -8172,6 +8202,7 @@ class ChatViewModel(
                     } else {
                     AppLogger.info(TAG_STREAM, "$label runAgentLoop CALL")
                     runAgentLoop(
+                        placeholderAssistantId = placeholderAssistantId,
                         provider = launchedProvider,
                         systemPrompt = systemPrompt,
                         fallbackProviders = fallbackProviders,

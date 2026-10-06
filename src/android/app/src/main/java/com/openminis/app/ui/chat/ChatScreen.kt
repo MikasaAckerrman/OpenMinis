@@ -3473,10 +3473,13 @@ fun ChatScreen(
                         .lastOrNull { it.role == "assistant" }
                         ?.error
                         ?.isNotBlank() == true
-                    // [T-retry-restore 2026-10-06, user verdict]: Retry is
-                    // offered on EVERY user bubble (the old habitual
-                    // behavior the user asked to have back) — see the
-                    // onRetry site for the full story.
+                    // [T-retry-last-message] USER SPEC (2026-10-06,
+                    // re-confirmed): Retry is anchored to the session's LAST
+                    // message — whoever sent it ("у кого действительно было
+                    // сообщение последним"). Retrying the last row is safe by
+                    // construction (empty cut); the user's complaint is that
+                    // the BUTTON MUST WORK, not that it should be everywhere.
+                    val lastMessageId = messages.lastOrNull()?.id
                     val lastAssistantId = messages.lastOrNull { it.role == "assistant" }?.id
                     // [T-resume-banner-false-stopped] Gate also checks the
                     // PROCESS-wide streaming set (hoisted above the LazyColumn as
@@ -3679,16 +3682,15 @@ fun ChatScreen(
                                     val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
                                     clipboard.setPrimaryClip(android.content.ClipData.newPlainText("message", item.message.content))
                                 },
-                                // [T-retry-restore 2026-10-06, USER VERDICT]:
-                                // "когда я нажимаю по своему сообщению
-                                // повторить — оно у меня как раньше, сразу ты
-                                // начинаешь работать". The last-message-only
-                                // gating (two revisions of it) broke the
-                                // habitual flow and read as a dead button;
-                                // the user asked for the OLD behavior back.
-                                // Retry is offered on EVERY user bubble.
+                                // [T-retry-last-message] USER SPEC
+                                // (2026-10-06, re-confirmed): Retry lives ONLY
+                                // on the session's LAST message — whoever
+                                // sent it. Retrying the last message cuts an
+                                // empty tail (nothing exists below it), so
+                                // "repeat" is always safe. An old message's
+                                // tap would amputate everything after it.
                                 // While streaming the item hides (T119).
-                                onRetry = if (isStreaming) null else ({
+                                onRetry = if (isStreaming || item.message.id != lastMessageId) null else ({
                                     coroutineScope.launch {
                                         tracedScrollToItem("RETRY-FROM-MSG", 0, 0)
                                     }
