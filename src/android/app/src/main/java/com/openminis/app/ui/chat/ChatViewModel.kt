@@ -8955,12 +8955,37 @@ class ChatViewModel(
             ))
 
             try {
+                // [T-m12-engine-swap] Queue-drain turn: engine chain under
+                // the flag, legacy (with fallback) otherwise. No placeholder
+                // here — the queued bubble already rendered.
+                if (com.openminis.app.tools.EngineSwapPrefs.isEnabled()) {
+                    try {
+                        runEngineTurn(
+                            placeholderAssistantId = null,
+                            provider = provider,
+                            systemPrompt = systemPrompt,
+                        )
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
+                        AppLogger.info(
+                            TAG_STREAM,
+                            "queued-drain engine path failed (${e.javaClass.simpleName}: ${e.message?.take(80)}) — degrading to legacy with fallback",
+                        )
+                        runAgentLoop(
+                            provider = provider,
+                            systemPrompt = systemPrompt,
+                            fallbackProviders = fallbackProviders,
+                            fallbackStrategy = fallbackStrategy,
+                        )
+                    }
+                } else {
                 runAgentLoop(
                     provider = provider,
                     systemPrompt = systemPrompt,
                     fallbackProviders = fallbackProviders,
                     fallbackStrategy = fallbackStrategy,
                 )
+                }
                 // [T-auto-mode] Turn ended inside the drain loop: park the
                 // next continuation — the while-condition re-checks the queue
                 // and runs it in this same loop. At 100% context, break and
@@ -9401,6 +9426,35 @@ class ChatViewModel(
                     val fallbackProviders = buildFallbackProviders(provider)
 
                     try {
+                        // [T-m12-engine-swap] Strangler switch on the SEND
+                        // path — same contract as the retry flip: engine
+                        // chain when the debug flag is on, legacy (with its
+                        // fallback machinery) otherwise AND on fatal engine
+                        // failure. Cancellation rethrows (STOP semantics).
+                        if (com.openminis.app.tools.EngineSwapPrefs.isEnabled()) {
+                            AppLogger.info(TAG_STREAM, "send runEngineTurn CALL (swap flag ON)")
+                            try {
+                                runEngineTurn(
+                                    placeholderAssistantId = preAssistantId,
+                                    provider = provider,
+                                    systemPrompt = systemPrompt,
+                                )
+                                AppLogger.info(TAG_STREAM, "send runEngineTurn RETURN normal")
+                            } catch (e: Exception) {
+                                if (e is CancellationException) throw e
+                                AppLogger.info(
+                                    TAG_STREAM,
+                                    "send engine path failed (${e.javaClass.simpleName}: ${e.message?.take(80)}) — degrading to legacy with fallback",
+                                )
+                                runAgentLoop(
+                                    provider = provider,
+                                    systemPrompt = systemPrompt,
+                                    fallbackProviders = fallbackProviders,
+                                    fallbackStrategy = activeFallbackStrategy,
+                                    placeholderAssistantId = preAssistantId,
+                                )
+                            }
+                        } else {
                         AppLogger.info(TAG_STREAM, "send runAgentLoop CALL")
                         runAgentLoop(
                             provider = provider,
@@ -9410,6 +9464,7 @@ class ChatViewModel(
                             placeholderAssistantId = preAssistantId,
                         )
                         AppLogger.info(TAG_STREAM, "send runAgentLoop RETURN normal")
+                        }
                         // [crash-safe-draft] Turn completed — drop the send
                         // backup so it can't resurface. See DraftStore.
                         runCatching {
