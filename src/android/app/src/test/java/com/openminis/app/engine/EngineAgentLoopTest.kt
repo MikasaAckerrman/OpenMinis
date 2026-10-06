@@ -6,6 +6,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -423,8 +424,8 @@ class EngineAgentLoopTest {
                 listOf(StreamEvent.Done),
             ),
         )
-        val loop = EngineAgentLoop(gw, registry()) { call, _ ->
-            if (call.id == "c1") EngineAgentLoop.ToolOutcome("good", true)
+        val loop = EngineAgentLoop(gw, registry()) { _, argsJson ->
+            if (argsJson.contains("/a.kt")) EngineAgentLoop.ToolOutcome("good", true)
             else EngineAgentLoop.ToolOutcome("boom: disk full", false)
         }
         val events = loop.runTurn(turnInput()).toList()
