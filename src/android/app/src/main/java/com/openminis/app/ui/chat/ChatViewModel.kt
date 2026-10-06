@@ -11102,7 +11102,13 @@ class ChatViewModel(
         // History direction: agentHistory is LLMMessage-shaped and ALREADY
         // carries the user's turn (persisted before the loop starts) — the
         // seed stays empty or we would send the message twice.
-        val engineHistory = agentHistory.flatMap {
+        // [T-engine-diet-parity] Device trace (2026-10-07, vc96): the
+        // engine path uploaded RAW agentHistory — 1.25–1.35 MB bodies —
+        // while the legacy loop sends the DIETED outbound view (reasoning
+        // elider + tool-result compressor + freshness window + image
+        // budget). The engine chain now consumes the exact same
+        // effectiveAgentHistory() diet: one outbound shape, both paths.
+        val engineHistory = effectiveAgentHistory().flatMap {
             com.openminis.app.engine.ProviderModelGateway.fromLLMMessage(it)
         }
         val input = com.openminis.app.engine.TurnInput(
