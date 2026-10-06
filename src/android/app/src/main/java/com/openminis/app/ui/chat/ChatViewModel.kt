@@ -11108,8 +11108,17 @@ class ChatViewModel(
         // elider + tool-result compressor + freshness window + image
         // budget). The engine chain now consumes the exact same
         // effectiveAgentHistory() diet: one outbound shape, both paths.
-        val engineHistory = effectiveAgentHistory().flatMap {
-            com.openminis.app.engine.ProviderModelGateway.fromLLMMessage(it)
+        // [T-engine-setup-off-main] The diet over a 10K-message history is
+        // pure CPU (measured 557ms live; grows with history) — it ran on
+        // viewModelScope's Main dispatcher. Setup now rides Default; the
+        // event collection below stays on Main (it drives UI state).
+        val engineHistory: List<com.openminis.app.engine.EngineMessage>
+        val schemaCount: Int
+        withContext(kotlinx.coroutines.Dispatchers.Default) {
+            engineHistory = effectiveAgentHistory().flatMap {
+                com.openminis.app.engine.ProviderModelGateway.fromLLMMessage(it)
+            }
+            schemaCount = registry.schemaFor(engineGate()).size
         }
         val input = com.openminis.app.engine.TurnInput(
             sessionId = sessionId,
@@ -11117,7 +11126,6 @@ class ChatViewModel(
             history = engineHistory,
             mode = _permissionMode.value,
         )
-        val schemaCount = registry.schemaFor(engineGate()).size
         AppLogger.info(TAG_STREAM, "[Engine] setup aid=${assistantId.take(14)} " +
             "preRow=${placeholderAssistantId != null} " +
             "tools=$schemaCount " +
