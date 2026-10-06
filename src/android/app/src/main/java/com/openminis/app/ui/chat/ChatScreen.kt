@@ -4244,7 +4244,7 @@ fun ChatScreen(
                 // the message list and the tool sheet — the command is blocked
                 // until answered, so nothing else in the chat can proceed.
                 DestructiveCommandDialog()
-                AskUserDialog()
+                AskUserDialog(viewModel.realSessionId.ifEmpty { sessionId })
 
                 // Scroll-to-bottom FAB (iOS: circle chevron.down, bottom-right)
                 // T138 phase 2 v3: show on user-scroll intent, not transient
