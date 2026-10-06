@@ -10982,11 +10982,25 @@ class ChatViewModel(
      * Gated by [com.openminis.app.tools.EngineSwapPrefs] — OFF by default;
      * the resume branch routes here only when the flag is on.
      */
+    private fun engineGate(): com.openminis.app.engine.DefaultPermissionGate =
+        com.openminis.app.engine.DefaultPermissionGate(
+            mode = _permissionMode.value,
+            writePolicy = com.openminis.app.tools.AgentWritePolicyStore.policyFor(sessionId),
+        )
+
     private suspend fun runEngineTurn(
         placeholderAssistantId: String?,
         provider: LLMProvider,
         systemPrompt: String?,
     ) {
+        // [T-engine-observability] Mirror of the legacy loop's stage markers
+        // (ENTER/CALL/RETURN/FINALLY + per-stage detail). The engine chain
+        // previously logged ONLY the outer CALL/RETURN — anything failing
+        // inside (tool result lost, reducer divergence, persist skip) was
+        // invisible in the device log. Every decision point below now
+        // leaves a [Engine] line: grep "[Engine]" for the whole story.
+        val tSetupNs = System.nanoTime()
+        fun msSinceSetup() = (System.nanoTime() - tSetupNs) / 1_000_000
         val assistantId = placeholderAssistantId
             ?: "assistant_${System.currentTimeMillis()}"
         val reducer = ChatTurnReducer(assistantId, 0)
@@ -11009,6 +11023,11 @@ class ChatViewModel(
         val engineHistory = agentHistory.flatMap {
             com.openminis.app.engine.ProviderModelGateway.fromLLMMessage(it)
         }
+        AppLogger.info(TAG_STREAM, "[Engine] setup aid=${assistantId.take(14)} " +
+            "preRow=${placeholderAssistantId != null} " +
+            "tools=$schemaCount " +
+            "history=${engineHistory.size} prompt=${systemPrompt?.length ?: 0} " +
+            "images=${imageParts.size} in ${msSinceSetup()}ms")
 
         val input = com.openminis.app.engine.TurnInput(
             sessionId = sessionId,
@@ -11016,6 +11035,7 @@ class ChatViewModel(
             history = engineHistory,
             mode = _permissionMode.value,
         )
+        val schemaCount = registry.schemaFor(engineGate()).size
 
         val loop = com.openminis.app.engine.EngineAgentLoop(
             gateway,
@@ -11037,12 +11057,20 @@ class ChatViewModel(
         }
 
         var finished = false
+        var firstEventMs = -1L
+        var textChars = 0
+        var toolCalls = 0
+        var persistEffects = 0
         try {
             loop.runTurn(input).collect { event ->
+                if (firstEventMs < 0) firstEventMs = msSinceSetup()
                 when (event) {
                     is com.openminis.app.engine.AgentEvent.TurnFinished -> {
                         reducer.reduce(event)
                         finished = true
+                        AppLogger.info(TAG_STREAM, "[Engine] finished reason=${event.reason} " +
+                            "text=${reducer.text.length}ch blocks=${reducer.currentBlocks().size} " +
+                            "tools=$toolCalls persistedRows=$persistEffects total=${msSinceSetup()}ms")
                     }
                     is com.openminis.app.engine.AgentEvent.Error -> {
                         // [T-m12-error-recoverability] The event carries the
@@ -11059,7 +11087,50 @@ class ChatViewModel(
                             throw RuntimeException(msg)
                         }
                     }
+                    is com.openminis.app.engine.AgentEvent.ToolCallFinished -> {
+                        // [T-engine-persist-mirror] The reducer emits a
+                        // PersistToolResult effect exactly here — legacy
+                        // persists each tool result the moment it lands
+                        // (13128 site). The engine driver previously
+                        // DROPPED the effect: a process death mid-tools lost
+                        // every executed tool row. Drain it through the
+                        // production writer (off-main inside, same protocol).
+                        val effects = reducer.reduce(event)
+                        toolCalls++
+                        effects.filterIsInstance<ChatTurnReducer.Effect.PersistToolResult>().forEach { eff ->
+                            persistEffects++
+                            val trParts = listOf(
+                                AgentContentPart.ToolResult(
+                                    id = eff.callId,
+                                    name = eff.toolName,
+                                    content = eff.content,
+                                    isError = eff.isError,
+                                ),
+                            )
+                            val toolDbId = persistToolResultMessage(trParts)
+                            agentHistory.add(
+                                LLMMessage(
+                                    role = LLMMessage.Role.USER,
+                                    content = "",
+                                    contentParts = trParts,
+                                    dbMessageId = toolDbId,
+                                ),
+                            )
+                            AppLogger.info(TAG_STREAM, "[Engine] tool ${eff.toolName} " +
+                                "ok=${!eff.isError} db=${toolDbId != null} " +
+                                "len=${eff.content.length} at ${msSinceSetup()}ms")
+                        }
+                        updateAssistantMessage(
+                            assistantId,
+                            reducer.text.toString(),
+                            true,
+                            reducer.currentBlocks(),
+                        )
+                    }
                     else -> {
+                        if (event is com.openminis.app.engine.AgentEvent.TextDelta) {
+                            textChars += event.text.length
+                        }
                         reducer.reduce(event)
                         updateAssistantMessage(
                             assistantId,
@@ -11085,7 +11156,7 @@ class ChatViewModel(
                     val reasoning = reducer.currentBlocks()
                         .firstOrNull { it.kind == "thinking" && it.content.isNotEmpty() }
                         ?.content
-                    persistAssistantTurn(
+                    val assistantDbId = persistAssistantTurn(
                         parts,
                         usage = null,
                         reasoningContent = reasoning,
@@ -11093,6 +11164,32 @@ class ChatViewModel(
                             .filter { it.kind == "tool_use" }
                             .associateBy { it.id },
                     )
+                    // [T-engine-history-mirror] Legacy appends the finished
+                    // assistant message to agentHistory at turn end (9807
+                    // protocol). Without this the NEXT turn's model context
+                    // silently lost the whole engine-driven reply — the
+                    // user's follow-up would be answered blind.
+                    agentHistory.add(
+                        LLMMessage(
+                            role = LLMMessage.Role.ASSISTANT,
+                            content = reducer.text.toString(),
+                            contentParts = parts,
+                            reasoningContent = reasoning,
+                            dbMessageId = assistantDbId,
+                        ),
+                    )
+                    AppLogger.info(TAG_STREAM, "[Engine] persist " +
+                        "aid=${assistantId.take(14)} db=${assistantDbId != null} " +
+                        "text=${reducer.text.length}ch blocks=${reducer.currentBlocks().size} " +
+                        "history=${agentHistory.size} rows=$persistEffects " +
+                        "first=${firstEventMs}ms total=${msSinceSetup()}ms")
+                } else if (textChars == 0 && persistEffects == 0) {
+                    // [T-engine-observability] The empty-coverage case: the
+                    // stream ended with nothing persistable and no tool row —
+                    // impossible on a healthy turn; if this line appears, the
+                    // chain lost events and the log now SAYS so.
+                    AppLogger.warn(TAG_STREAM, "[Engine] EMPTY TURN " +
+                        "finished=$finished first=${firstEventMs}ms — events lost?")
                 }
                 updateAssistantMessage(
                     assistantId,
