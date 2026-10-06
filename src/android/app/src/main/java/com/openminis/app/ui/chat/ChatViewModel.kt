@@ -8375,8 +8375,12 @@ class ChatViewModel(
                     // we're in the finally block of the agent loop and
                     // the stream has already flushed its last delta.
                     publishOverlayReplyExcerpt(activeSessionId)
-                    SessionActivityTracker.setInactive(activeSessionId)
-                    SessionConcurrencyManager.releaseSlot(activeSessionId)
+                    // [T-stale-finally-deactivation] Owner-gated — see the
+                    // 4-space twin above for the full rationale.
+                    if (streamJob === coroutineContext[Job]) {
+                        SessionActivityTracker.setInactive(activeSessionId)
+                        SessionConcurrencyManager.releaseSlot(activeSessionId)
+                    }
                     // [T-proactive-memory] Same hook as sendMessage's
                     // finally — a rerun turn is still a turn.
                     onTurnEnded()
@@ -9450,8 +9454,19 @@ class ChatViewModel(
                         // we're in the finally block of the agent loop and
                         // the stream has already flushed its last delta.
                         publishOverlayReplyExcerpt(activeSessionId)
-                        SessionActivityTracker.setInactive(activeSessionId)
-                        SessionConcurrencyManager.releaseSlot(activeSessionId)
+                        // [T-stale-finally-deactivation] Only the job that
+                        // still owns the stream may deactivate the session
+                        // and release its concurrency slot. A takeover
+                        // (double-retry / re-send) cancels the previous job;
+                        // its finally drains AFTER the new turn is live —
+                        // unguarded setInactive() here flips the sessions
+                        // list to «stopped» over an ACTIVE stream, and
+                        // releaseSlot() drops the NEW turn's slot. Mirrors
+                        // the _isStreaming stale guard two blocks below.
+                        if (streamJob === coroutineContext[Job]) {
+                            SessionActivityTracker.setInactive(activeSessionId)
+                            SessionConcurrencyManager.releaseSlot(activeSessionId)
+                        }
                         // [T-proactive-memory] Turn over: reset the nudge
                         // counter and fire the post-turn distiller
                         // (fire-and-forget, silent, ephemeral — see
@@ -9602,8 +9617,12 @@ class ChatViewModel(
                     SessionActivityTracker.markStreamError(activeSessionId)
                 } finally {
                     publishOverlayReplyExcerpt(activeSessionId)
-                    SessionActivityTracker.setInactive(activeSessionId)
-                    SessionConcurrencyManager.releaseSlot(activeSessionId)
+                    // [T-stale-finally-deactivation] Owner-gated — see the
+                    // 4-space twin above for the full rationale.
+                    if (streamJob === coroutineContext[Job]) {
+                        SessionActivityTracker.setInactive(activeSessionId)
+                        SessionConcurrencyManager.releaseSlot(activeSessionId)
+                    }
                     // The chat has committed its message by now, so the run's
                     // progress state has no reader left — drop it here rather
                     // than in the runner, which finishes before the commit.
@@ -10256,8 +10275,19 @@ class ChatViewModel(
                         // we're in the finally block of the agent loop and
                         // the stream has already flushed its last delta.
                         publishOverlayReplyExcerpt(activeSessionId)
-                        SessionActivityTracker.setInactive(activeSessionId)
-                        SessionConcurrencyManager.releaseSlot(activeSessionId)
+                        // [T-stale-finally-deactivation] Only the job that
+                        // still owns the stream may deactivate the session
+                        // and release its concurrency slot. A takeover
+                        // (double-retry / re-send) cancels the previous job;
+                        // its finally drains AFTER the new turn is live —
+                        // unguarded setInactive() here flips the sessions
+                        // list to «stopped» over an ACTIVE stream, and
+                        // releaseSlot() drops the NEW turn's slot. Mirrors
+                        // the _isStreaming stale guard two blocks below.
+                        if (streamJob === coroutineContext[Job]) {
+                            SessionActivityTracker.setInactive(activeSessionId)
+                            SessionConcurrencyManager.releaseSlot(activeSessionId)
+                        }
                         // [T-proactive-memory] Same hook as sendMessage's
                         // finally — a retried turn is still a turn.
                         onTurnEnded()
@@ -16865,8 +16895,19 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                         // we're in the finally block of the agent loop and
                         // the stream has already flushed its last delta.
                         publishOverlayReplyExcerpt(activeSessionId)
-                        SessionActivityTracker.setInactive(activeSessionId)
-                        SessionConcurrencyManager.releaseSlot(activeSessionId)
+                        // [T-stale-finally-deactivation] Only the job that
+                        // still owns the stream may deactivate the session
+                        // and release its concurrency slot. A takeover
+                        // (double-retry / re-send) cancels the previous job;
+                        // its finally drains AFTER the new turn is live —
+                        // unguarded setInactive() here flips the sessions
+                        // list to «stopped» over an ACTIVE stream, and
+                        // releaseSlot() drops the NEW turn's slot. Mirrors
+                        // the _isStreaming stale guard two blocks below.
+                        if (streamJob === coroutineContext[Job]) {
+                            SessionActivityTracker.setInactive(activeSessionId)
+                            SessionConcurrencyManager.releaseSlot(activeSessionId)
+                        }
                         AppLogger.info(TAG_STREAM, "resumeQueueAfterCancel streamJob FINALLY exit")
                     }
                 } catch (e: CancellationException) {
@@ -16992,16 +17033,7 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                 }
                 persistToolResultMessage(parts)
             }
-            // [T-stale-cancel-canresume] Raise canResume ONLY when THIS job
-            // still owns the stream. A double-retry takeover cancels the
-            // previous job; its cancel-path finally drains AFTER the new
-            // turn already reset canResume=false — an unguarded raise here
-            // re-arms the PAUSED badge over a LIVE stream (user sees
-            // «session stopped» while the agent works). Same stale-job guard
-            // the _isStreaming reset uses, applied to every cancel-path raise.
-            if (streamJob === coroutineContext[Job]) {
-                _canResume.value = true
-            }
+            _canResume.value = true
             return
         }
 
@@ -17072,17 +17104,11 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                     reasoningContent = survivingThinking,
                 )
             }
-            // [T-stale-cancel-canresume] Same stale-job guard as Case 1.
-            if (streamJob === coroutineContext[Job]) {
-                _canResume.value = true
-            }
+            _canResume.value = true
         } else if (historyEndsWithAssistant) {
             // Already committed (tool cancel path above handled or prior turn
             // wrote an assistant row). Still allow resume.
-            // [T-stale-cancel-canresume] Same stale-job guard as Case 1.
-            if (streamJob === coroutineContext[Job]) {
-                _canResume.value = true
-            }
+            _canResume.value = true
         }
     }
 
@@ -17211,8 +17237,19 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                         // we're in the finally block of the agent loop and
                         // the stream has already flushed its last delta.
                         publishOverlayReplyExcerpt(activeSessionId)
-                        SessionActivityTracker.setInactive(activeSessionId)
-                        SessionConcurrencyManager.releaseSlot(activeSessionId)
+                        // [T-stale-finally-deactivation] Only the job that
+                        // still owns the stream may deactivate the session
+                        // and release its concurrency slot. A takeover
+                        // (double-retry / re-send) cancels the previous job;
+                        // its finally drains AFTER the new turn is live —
+                        // unguarded setInactive() here flips the sessions
+                        // list to «stopped» over an ACTIVE stream, and
+                        // releaseSlot() drops the NEW turn's slot. Mirrors
+                        // the _isStreaming stale guard two blocks below.
+                        if (streamJob === coroutineContext[Job]) {
+                            SessionActivityTracker.setInactive(activeSessionId)
+                            SessionConcurrencyManager.releaseSlot(activeSessionId)
+                        }
                         AppLogger.info(TAG_STREAM, "resume streamJob FINALLY exit")
                     }
                 } catch (e: CancellationException) {
