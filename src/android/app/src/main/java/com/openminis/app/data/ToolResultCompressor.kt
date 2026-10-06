@@ -71,12 +71,39 @@ object ToolResultCompressor {
         }
         if (protectedFromIdx <= 0) return Result(messages, 0, 0)
 
+        // [T-current-turn-tools-only] Device measurement (2026-10-06): the
+        // outbound body hit 1.26 MB — six-plus SECONDS of upload on mobile
+        // data before the first token. The 3-turn protected window kept the
+        // assistant's ENTIRE tool storms of the previous turns verbatim:
+        // the model already consumed those results and emitted its answer
+        // on them; a 600-char head per result preserves continuity, and the
+        // DB keeps the full text. The CURRENT turn (from the last user-text
+        // message) stays untouched — the model is still actively working
+        // with those results.
+        val currentTurnFromIdx = run {
+            var i = messages.size - 1
+            while (i >= 0) {
+                val m = messages[i]
+                if (m.role == LLMMessage.Role.USER &&
+                    (m.content.isNotBlank() ||
+                        m.contentParts.any { it is AgentContentPart.Text && it.text.isNotBlank() })
+                ) return@run i
+                i -= 1
+            }
+            messages.size
+        }
+
         var compressed = 0
         var saved = 0
         var changed = false
         val out = ArrayList<LLMMessage>(messages.size)
         for ((idx, m) in messages.withIndex()) {
-            if (idx >= protectedFromIdx || m.contentParts.isEmpty()) {
+            // [T-current-turn-tools-only] Full protection ONLY from the
+            // current turn's boundary: legacy rides tool results on
+            // USER-role rounds, so a role exemption would keep the whole
+            // storm verbatim — the exact 1.26 MB regression measured
+            // on-device. Rounds from PREVIOUS turns keep their heads.
+            if (idx >= currentTurnFromIdx || m.contentParts.isEmpty()) {
                 out.add(m)
                 continue
             }

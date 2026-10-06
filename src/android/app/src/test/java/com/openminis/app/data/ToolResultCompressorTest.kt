@@ -59,13 +59,16 @@ class ToolResultCompressorTest {
             realRound("t3", big()),
         )
         val r = ToolResultCompressor.compress(msgs)
-        assertEquals(1, r.compressedCount)
+        // [T-current-turn-tools-only] Previous turns' tool rounds are now
+        // head-trimmed too (the on-device 1.26 MB body regression): the
+        // model already answered on them, heads keep continuity.
+        assertEquals(3, r.compressedCount)
         assertTrue(r.charsSaved > 0)
         val oldPart = r.messages[0].contentParts[0] as AgentContentPart.ToolResult
         // Head + explicit "+N chars compressed" marker.
         assertTrue(oldPart.content.startsWith("O".repeat(ToolResultCompressor.DEFAULT_HEAD_CHARS)))
         assertTrue(oldPart.content.contains("+${big().length - ToolResultCompressor.DEFAULT_HEAD_CHARS} chars compressed"))
-        // Protected: the tool_result inside a REAL round stays verbatim.
+        // Protected: the tool_result of the CURRENT (last) round stays verbatim.
         val kept = r.messages[6].contentParts
             .filterIsInstance<AgentContentPart.ToolResult>()
             .first()
