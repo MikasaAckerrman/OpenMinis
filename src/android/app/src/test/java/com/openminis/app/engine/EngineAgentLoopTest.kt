@@ -393,7 +393,6 @@ class EngineAgentLoopTest {
             events.count { it is AgentEvent.ToolCallFinished && !it.success },
         )
     }
-}
 
     @Test
     fun `terminal failure after partial text is not recoverable`() = runTest {
@@ -501,3 +500,5 @@ class EngineAgentLoopTest {
         assertTrue(toolIdx in 0 until errIdx)
         assertTrue((events.last() as AgentEvent.Error).recoverable)
     }
+
+}
