@@ -16992,7 +16992,16 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                 }
                 persistToolResultMessage(parts)
             }
-            _canResume.value = true
+            // [T-stale-cancel-canresume] Raise canResume ONLY when THIS job
+            // still owns the stream. A double-retry takeover cancels the
+            // previous job; its cancel-path finally drains AFTER the new
+            // turn already reset canResume=false — an unguarded raise here
+            // re-arms the PAUSED badge over a LIVE stream (user sees
+            // «session stopped» while the agent works). Same stale-job guard
+            // the _isStreaming reset uses, applied to every cancel-path raise.
+            if (streamJob === coroutineContext[Job]) {
+                _canResume.value = true
+            }
             return
         }
 
@@ -17063,11 +17072,17 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                     reasoningContent = survivingThinking,
                 )
             }
-            _canResume.value = true
+            // [T-stale-cancel-canresume] Same stale-job guard as Case 1.
+            if (streamJob === coroutineContext[Job]) {
+                _canResume.value = true
+            }
         } else if (historyEndsWithAssistant) {
             // Already committed (tool cancel path above handled or prior turn
             // wrote an assistant row). Still allow resume.
-            _canResume.value = true
+            // [T-stale-cancel-canresume] Same stale-job guard as Case 1.
+            if (streamJob === coroutineContext[Job]) {
+                _canResume.value = true
+            }
         }
     }
 
