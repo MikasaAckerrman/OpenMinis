@@ -456,7 +456,10 @@ class EngineAgentLoopTest {
     @Test
     fun `incomplete tool call is never executed`() = runTest {
         // A stream that announces a tool but never completes it (provider
-        // died mid-args). The batch is built from COMPLETED calls only.
+        // died mid-args). The batch is built from COMPLETED calls only, so
+        // the round is effectively empty — the turn ends with a clean stop
+        // and the executor never runs. (A mid-STREAM death surfaces as
+        // Failure instead — covered by the failure tests above.)
         val gw = ScriptedGateway(
             listOf(
                 listOf(
@@ -464,7 +467,6 @@ class EngineAgentLoopTest {
                     StreamEvent.ToolInputDelta("c1", "{\"pa"),
                     StreamEvent.Done,
                 ),
-                listOf(StreamEvent.TextDelta("recovered"), StreamEvent.Done),
             ),
         )
         var executed = 0
@@ -474,7 +476,12 @@ class EngineAgentLoopTest {
         }
         val events = loop.runTurn(turnInput()).toList()
         assertEquals(0, executed)
-        assertEquals("recovered", events.filterIsInstance<AgentEvent.TextDelta>().single().text)
+        // The announcement still surfaced for the UI (arg echo), but the
+        // incomplete call produced no execution and no fabricated result.
+        assertTrue(events.any { it is AgentEvent.ToolUseStarted })
+        assertTrue(events.none { it is AgentEvent.ToolCallStarted })
+        assertTrue(events.none { it is AgentEvent.ToolCallFinished })
+        assertEquals("stop", (events.last() as AgentEvent.TurnFinished).reason)
     }
 
     @Test
