@@ -68,6 +68,11 @@ class EngineAgentLoop(
         var round = 0
         while (true) {
             round++
+            // [T-m12-cancel-semantics] Cooperative cancellation at the round
+            // boundary: a STOP tapped during tool execution must not start
+            // another model round. CancellationException propagates out of
+            // runTurn to the driver's cleanup path.
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
             if (round > input.limits.maxRounds) {
                 emit(AgentEvent.TurnFinished("round_limit"))
                 return@flow
@@ -217,6 +222,10 @@ class EngineAgentLoop(
         runCatching { toolExecutor(call.name, call.argsJson) }
             .map { it }
             .getOrElse { err ->
+                // [T-m12-cancel-semantics] A cancelled coroutine MUST die,
+                // not report a tool failure: swallowing CancellationException
+                // here would eat the user's STOP and let the loop run on.
+                if (err is kotlinx.coroutines.CancellationException) throw err
                 ToolOutcome(
                     "Error: tool execution failed: ${err.message ?: err.javaClass.simpleName}",
                     success = false,

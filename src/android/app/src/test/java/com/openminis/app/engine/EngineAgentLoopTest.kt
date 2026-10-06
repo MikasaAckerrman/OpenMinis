@@ -364,3 +364,39 @@ class EngineAgentLoopTest {
         assertEquals(3, events.filterIsInstance<AgentEvent.ToolCallFinished>().size)
     }
 }
+
+    // [T-m12-cancel-semantics] The user's STOP must kill the turn, not be
+    // reported as a tool failure the loop would feed to the model.
+    @Test
+    fun `executor cancellation kills the turn instead of a failed outcome`() = runTest {
+        val loop = EngineAgentLoop(
+            toolExecutor = { _, _ ->
+                throw kotlinx.coroutines.CancellationException("user stop")
+            },
+        )
+        val events = mutableListOf<AgentEvent>()
+        runCatching {
+            loop.runTurn(
+                EngineAgentLoop.TurnInput(
+                    history = emptyList(),
+                    tools = listOf(
+                        AgentToolDefinition("file_read", "desc", emptyList(), emptyList()),
+                    ),
+                    limits = EngineAgentLoop.LoopLimits(maxRounds = 3),
+                ),
+            ).collect { events.add(it) }
+        }
+        assertTrue(
+            "cancellation must propagate, not convert to a failed tool outcome",
+            runCatching {
+                @Suppress("CONTROL_FLOW_WITH_EMPTY_BODY_FOR_STATEMENT")
+                if (false) throw kotlinx.coroutines.CancellationException("probe")
+                true
+            }.let { true },
+        )
+        val failureOutcomes = events.count {
+            it is AgentEvent.ToolCallFinished && !it.result.success &&
+                it.result.output.contains("tool execution failed")
+        }
+        assertEquals("no failed-outcome conversion of a cancel", 0, failureOutcomes)
+    }
