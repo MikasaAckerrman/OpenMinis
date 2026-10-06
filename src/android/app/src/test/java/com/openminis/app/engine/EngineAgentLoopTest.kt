@@ -363,7 +363,6 @@ class EngineAgentLoopTest {
         assertEquals("round_limit", finished.reason)
         assertEquals(3, events.filterIsInstance<AgentEvent.ToolCallFinished>().size)
     }
-}
 
     // [T-m12-cancel-semantics] The user's STOP must kill the turn, not be
     // reported as a tool failure the loop would feed to the model.
@@ -394,3 +393,4 @@ class EngineAgentLoopTest {
             events.count { it is AgentEvent.ToolCallFinished && !it.result.success },
         )
     }
+}
