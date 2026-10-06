@@ -6087,6 +6087,10 @@ class ChatViewModel(
             fullHistoryReady.value = false
             // [T-send-gate-deadlock] новая попытка загрузки снимает «сломано»
             historyDegraded.value = false
+            // [T-early-session-gate] re-entry: the early flip inside the
+            // load coroutine belongs to the PREVIOUS session — close the
+            // gate again so the new load's own lifecycle owns it.
+            sessionLoaded.value = false
         }
         olderHistoryLoadJob?.cancel()
         olderHistoryLoadJob = null
@@ -6378,11 +6382,30 @@ class ChatViewModel(
                 val chatUi = uiRows.toChatMessages(uiJsonCache, sessionKey = sessionId)
                 uiJsonCache.clear()
                 // Publish the bounded UI tail before loading and parsing the
-                // complete LLM history. Sending remains gated by sessionLoaded.
+                // complete LLM history.
+                //
+                // [T-early-session-gate] Device measurement (2026-10-07): the
+                // composer stayed locked for the FULL history parse (2.6s on
+                // a 10 889-row session) because sessionLoaded only opened in
+                // the coroutine's finally. The send path already carries its
+                // own completeness gate — requireFullSessionHistory →
+                // SendGatePolicy (BLOCK_LOADING waits for fullHistoryReady) —
+                // so opening the session gate here is safe: UI is interactive
+                // immediately, and a send fired mid-parse simply awaits the
+                // history (it does NOT go out with an empty context).
                 withContext(Dispatchers.Main) {
                     loadedHistoryFromIndex = uiWindow.fromIndex
                     _hasUnloadedOlderMessages.value = uiWindow.hasOlder
                     _messages.value = chatUi
+                    if (!sessionLoaded.value) {
+                        sessionLoaded.value = true
+                        AppLogger.info(
+                            TAG,
+                            "[SendGate] UI window ready (early gate) rows=$totalRows " +
+                                "window=${chatUi.size} — session interactive; " +
+                                "full history continues loading",
+                        )
+                    }
                 }
                 val tIoAfterTransform = System.currentTimeMillis()
                 com.openminis.app.diagnostics.PerfLongCtx.step(
