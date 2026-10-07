@@ -1,7 +1,7 @@
 package com.openminis.app.diagnostics
 
 import android.util.Log
-import com.openminis.app.debug.AppLogger
+import com.openminis.app.logging.AppLogger
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
