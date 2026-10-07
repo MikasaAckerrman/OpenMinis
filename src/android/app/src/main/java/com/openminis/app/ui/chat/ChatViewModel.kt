@@ -11279,7 +11279,10 @@ class ChatViewModel(
                                     isError = eff.isError,
                                 ),
                             )
-                            val toolDbId = persistToolResultMessage(trParts)
+                            val toolDbId = persistToolResultMessage(
+                                trParts,
+                                listOf(eff.durationMs),
+                            )
                             // [T-engine-history-mirror-order] Index recorded so
                             // the finally-mirror can RESTORE canonical order:
                             // results are mirrored here (during the turn) for
@@ -13025,6 +13028,9 @@ class ChatViewModel(
             // engine.ToolBatchPlanner (declarative, unit-tested); the
             // executor branches below stay platform-side (UI blocks).
             val resultParts = mutableListOf<AgentContentPart>()
+            // [T-tool-duration-persist] Aligned per-result durations for the
+            // batch persist call — each branch below records its own elapsed.
+            val resultDurations = mutableListOf<Long>()
             val batchPlanner = com.openminis.app.engine.ToolBatchPlanner(
                 pathOf = ::jsonObjectPathExtractor,
             )
@@ -13108,8 +13114,9 @@ class ChatViewModel(
                         }
                     }
                     val blockIdx = allToolBlocks.indexOfFirst { it.id == id }
+                    val elapsed = if (blockIdx >= 0)
+                        System.currentTimeMillis() - allToolBlocks[blockIdx].startTimeMs else 0L
                     if (blockIdx >= 0) {
-                        val elapsed = System.currentTimeMillis() - allToolBlocks[blockIdx].startTimeMs
                         allToolBlocks[blockIdx] = allToolBlocks[blockIdx].copy(
                             toolStatus = if (result.success) ToolBlockStatus.SUCCESS else ToolBlockStatus.FAILED,
                             content = result.output,
@@ -13124,6 +13131,7 @@ class ChatViewModel(
                             isError = !result.success,
                         )
                     )
+                    resultDurations.add(elapsed)
                 }
                 withContext(Dispatchers.Main) {
                     updateAssistantMessage(assistantId, accumulatedText, true, allToolBlocks)
@@ -13218,8 +13226,9 @@ class ChatViewModel(
                     AppLogger.warning("ChatViewModel",
                         "tool blocked by loop detector name=$name reason=$blockedMsg")
                     val blockIdx = allToolBlocks.indexOfFirst { it.id == id }
+                    val elapsed = if (blockIdx >= 0)
+                        System.currentTimeMillis() - allToolBlocks[blockIdx].startTimeMs else 0L
                     if (blockIdx >= 0) {
-                        val elapsed = System.currentTimeMillis() - allToolBlocks[blockIdx].startTimeMs
                         allToolBlocks[blockIdx] = allToolBlocks[blockIdx].copy(
                             toolStatus = ToolBlockStatus.FAILED,
                             content = blockedMsg,
@@ -13235,6 +13244,7 @@ class ChatViewModel(
                         content = blockedMsg,
                         isError = true,
                     ))
+                    resultDurations.add(elapsed)
                     continue
                 }
 
@@ -13271,8 +13281,9 @@ class ChatViewModel(
                     val uiMessage = "Blocked invalid tool call"
                     val modelMessage = "Error: Tool call rejected before execution. $preflightError The arguments your client sent were empty or missing required fields — re-issue the call with all required parameters filled in. Do not retry with the same empty arguments."
                     val blockIdxPre = allToolBlocks.indexOfFirst { it.id == id }
+                    val elapsedPre = if (blockIdxPre >= 0)
+                        System.currentTimeMillis() - allToolBlocks[blockIdxPre].startTimeMs else 0L
                     if (blockIdxPre >= 0) {
-                        val elapsedPre = System.currentTimeMillis() - allToolBlocks[blockIdxPre].startTimeMs
                         allToolBlocks[blockIdxPre] = allToolBlocks[blockIdxPre].copy(
                             toolStatus = ToolBlockStatus.FAILED,
                             content = uiMessage,
@@ -13288,6 +13299,7 @@ class ChatViewModel(
                         content = modelMessage,
                         isError = true,
                     ))
+                    resultDurations.add(elapsedPre)
                     withContext(Dispatchers.Main) {
                         updateAssistantMessage(assistantId, accumulatedText, true, allToolBlocks)
                     }
@@ -13332,8 +13344,9 @@ class ChatViewModel(
                 }.toString()
 
                 val blockIdx = allToolBlocks.indexOfFirst { it.id == id }
+                val elapsed = if (blockIdx >= 0)
+                    System.currentTimeMillis() - allToolBlocks[blockIdx].startTimeMs else 0L
                 if (blockIdx >= 0) {
-                    val elapsed = System.currentTimeMillis() - allToolBlocks[blockIdx].startTimeMs
                     // Keep live-streamed content if it has more data than the truncated result.
                     // T263: takeLast(80) was applied uniformly, but it was sized for
                     // shell_execute (long stdout streams where the tail is what
@@ -13391,6 +13404,7 @@ class ChatViewModel(
                     imageMimeType = result.imageMimeType,
                     imageLinuxPath = result.imageLinuxPath,
                 ))
+                resultDurations.add(elapsed)
             }
             } // [T-parallel-read-tools] end of sequential else branch
 
@@ -13441,7 +13455,7 @@ class ChatViewModel(
             com.openminis.app.data.StreamHeartbeat.delete(streamHeartbeatDir(), assistantId)
 
             // Persist tool results as user-role message (mirrors iOS)
-            val toolResultDbId = persistToolResultMessage(resultParts)
+            val toolResultDbId = persistToolResultMessage(resultParts, resultDurations)
 
             // Add tool results to history
             agentHistory.add(LLMMessage(
@@ -15800,7 +15814,14 @@ class ChatViewModel(
     }
 
     /** Persist tool results as a user-role message (mirrors iOS behavior). */
-    private suspend fun persistToolResultMessage(parts: List<AgentContentPart>): String? {
+    private suspend fun persistToolResultMessage(
+        parts: List<AgentContentPart>,
+        // [T-tool-duration-persist] Per-result durations (ms), aligned with
+        // the ToolResult parts order. Persisted into the row JSON so the
+        // reloaded tool cards rebuild their "N с" badge — the duration used
+        // to live only in reducer memory and every DB-restored card showed 0s.
+        durations: List<Long> = emptyList(),
+    ): String? {
         val results = parts.filterIsInstance<AgentContentPart.ToolResult>()
         if (results.isEmpty()) return null
         // [T-persist-off-main] tool_result payloads are the largest parts in
@@ -15813,7 +15834,8 @@ class ChatViewModel(
                 results.forEachIndexed { index, result ->
                     if (index > 0) append(",")
                     val snapshotText = escapeJson(result.content.lines().takeLast(30).joinToString("\n"))
-                    append("""{"type":"toolResult","value":{"toolUseId":${escapeJson(result.id)},"name":${escapeJson(result.name)},"output":${escapeJson(result.content)},"success":${!result.isError},"snapshot":{"type":"text","text":$snapshotText}}}""")
+                    val dur = durations.getOrElse(index) { 0L }
+                    append("""{"type":"toolResult","value":{"toolUseId":${escapeJson(result.id)},"name":${escapeJson(result.name)},"output":${escapeJson(result.content)},"success":${!result.isError},"durationMs":$dur,"snapshot":{"type":"text","text":$snapshotText}}}""")
                 }
                 append("]")
             }
@@ -17773,6 +17795,7 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                             toolResultMap[toolUseId] = ToolResultData(
                                 output = value.optString("output", ""),
                                 success = value.optBoolean("success", true),
+                                durationMs = value.optLong("durationMs", 0L),
                             )
                         }
                     }
@@ -17866,6 +17889,10 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                                 toolTitle = value.optString("description", ""),
                                 toolArgs = toolInput,
                                 content = result?.output?.lines()?.takeLast(80)?.joinToString("\n") ?: "",
+                                // [T-tool-duration-persist] Badge survives the
+                                // reload — the duration rides the toolResult
+                                // row JSON since this fix; older rows read 0.
+                                durationMs = result?.durationMs ?: 0L,
                                 toolStatus = when {
                                     result == null -> ToolBlockStatus.SUCCESS
                                     !result.success && (
@@ -18020,7 +18047,12 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         }
     }
 
-    private data class ToolResultData(val output: String, val success: Boolean)
+    private data class ToolResultData(
+        val output: String,
+        val success: Boolean,
+        // [T-tool-duration-persist] Restored duration for the "N с" badge.
+        val durationMs: Long = 0L,
+    )
 
     private fun MessageEntity.toLLMMessage(
         jsonCache: PartsJsonCache? = null,

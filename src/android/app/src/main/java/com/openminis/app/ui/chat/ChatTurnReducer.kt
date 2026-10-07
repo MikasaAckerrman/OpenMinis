@@ -40,6 +40,12 @@ class ChatTurnReducer(
         val toolName: String,
         val content: String,
         val isError: Boolean,
+        // [T-tool-duration-persist] Execution duration, measured
+        // Started→Finished. The toolResult row JSON carries it so reloaded
+        // sessions rebuild the "N с" badge — previously the duration lived
+        // only in the live reducer memory and every DB-restored tool card
+        // showed 0s.
+        val durationMs: Long = 0L,
     ) : Effect
 
     val text = StringBuilder()
@@ -157,12 +163,16 @@ class ChatTurnReducer(
 
             is AgentEvent.ToolCallFinished -> {
                 val idx = blocks.indexOfFirst { it.kind == "tool_use" && it.id == event.callId }
+                val start = if (idx >= 0) blocks[idx].startTimeMs else 0L
+                // [T-tool-duration-persist] Measured Started→Finished;
+                // flows into the block, the PersistToolResult effect → the
+                // row JSON → the reloaded tool card's "N с" badge.
+                val durationMs = if (start > 0) System.currentTimeMillis() - start else 0L
                 if (idx >= 0) {
-                    val start = blocks[idx].startTimeMs
                     blocks[idx] = blocks[idx].copy(
                         toolStatus = if (event.success) ToolBlockStatus.SUCCESS else ToolBlockStatus.FAILED,
                         content = event.summary,
-                        durationMs = if (start > 0) System.currentTimeMillis() - start else 0L,
+                        durationMs = durationMs,
                     )
                 }
                 val persist = PersistToolResult(
@@ -170,6 +180,7 @@ class ChatTurnReducer(
                     toolName = event.toolName,
                     content = event.summary,
                     isError = !event.success,
+                    durationMs = durationMs,
                 )
                 return listOf(ui(), persist)
             }

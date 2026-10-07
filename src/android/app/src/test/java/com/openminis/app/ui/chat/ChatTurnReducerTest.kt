@@ -15,6 +15,33 @@ class ChatTurnReducerTest {
     private fun reducer() = ChatTurnReducer("a1", 0)
 
     @Test
+    fun `tool result effect carries the execution duration`() {
+        // [T-tool-duration-persist] Started→Finished must ride the
+        // PersistToolResult effect into the row JSON — previously the
+        // duration lived only in the block (reducer memory) and every
+        // DB-restored tool card showed 0s.
+        val r = reducer()
+        r.reduce(AgentEvent.ToolCallStarted("d1", "shell_execute", "Run Command"))
+        Thread.sleep(25)
+        val effects = r.reduce(AgentEvent.ToolCallFinished("d1", "shell_execute", true, "ok"))
+        val persist = effects.filterIsInstance<ChatTurnReducer.PersistToolResult>().single()
+        assertTrue("duration should be measured, got ${persist.durationMs}", persist.durationMs >= 20)
+        // …and the block's own duration matches the effect's.
+        val block = r.currentBlocks().single { it.id == "d1" }
+        assertEquals(persist.durationMs, block.durationMs)
+    }
+
+    @Test
+    fun `tool result without a started block reports zero duration`() {
+        // Defensive: a Finished for an unknown call id must not crash the
+        // effect construction.
+        val r = reducer()
+        val effects = r.reduce(AgentEvent.ToolCallFinished("ghost", "grep", true, "ok"))
+        val persist = effects.filterIsInstance<ChatTurnReducer.PersistToolResult>().single()
+        assertEquals(0L, persist.durationMs)
+    }
+
+    @Test
     fun `full turn - thinking, text, tool, finish`() {
         val r = reducer()
         // reasoning streams
