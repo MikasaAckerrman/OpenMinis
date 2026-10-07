@@ -388,6 +388,19 @@ internal sealed class FlatChatItem {
         val messageIsStreaming: Boolean,
         /** Joined raw markdown of the parent message, used by Copy Markdown. */
         val messageMarkdown: String,
+        // [T-zcode-text-fold] True when the parent text block is NOT part of
+        // the trailing text run of the message — a tool_use / thinking block
+        // stands at or after it. ZCode final view: the user sees only the
+        // FINAL answer; intermediate text folds into a slim capsule row
+        // exactly where it stood (tap to reopen). Live turns never fold —
+        // the work is always visible while it happens.
+        val isIntermediateText: Boolean = false,
+        // [T-zcode-text-fold] Raw parent-message streaming flag — NOT the
+        // streaming-tail flag above (true only for the trailing block while
+        // tokens arrive). The fold gate needs the message-level state: every
+        // intermediate block stays visible while the message streams, and
+        // the whole run folds together at rest.
+        val parentMessageIsStreaming: Boolean = false,
     ) : FlatChatItem() {
         override val key = "mdblock:$messageId:$parentBlockId:$blockIndex"
         override val contentType = "mdblock"
@@ -401,6 +414,8 @@ internal sealed class FlatChatItem {
                 blockIndex == other.blockIndex &&
                 isLastBlockOfMessage == other.isLastBlockOfMessage &&
                 messageIsStreaming == other.messageIsStreaming &&
+                isIntermediateText == other.isIntermediateText &&
+                parentMessageIsStreaming == other.parentMessageIsStreaming &&
                 rawText.length == other.rawText.length &&
                 messageMarkdown.length == other.messageMarkdown.length
         }
@@ -410,6 +425,8 @@ internal sealed class FlatChatItem {
             h = h * 31 + blockIndex
             h = h * 31 + isLastBlockOfMessage.hashCode()
             h = h * 31 + messageIsStreaming.hashCode()
+            h = h * 31 + isIntermediateText.hashCode()
+            h = h * 31 + parentMessageIsStreaming.hashCode()
             h = h * 31 + rawText.length
             h = h * 31 + messageMarkdown.length
             return h
@@ -744,6 +761,8 @@ internal fun buildFlatChatItems(
                 isLastBlockOfMessage = item.isLastBlockOfMessage,
                 messageIsStreaming = item.messageIsStreaming,
                 messageMarkdown = item.messageMarkdown,
+                isIntermediateText = item.isIntermediateText,
+                parentMessageIsStreaming = item.parentMessageIsStreaming,
             )
             is FlatChatItem.AssistantThinking -> item.copy(messageId = "${item.messageId}#$n")
             is FlatChatItem.AssistantToolUse -> item.copy(messageId = "${item.messageId}#$n")
@@ -846,6 +865,14 @@ internal fun buildFlatChatItems(
         // AssistantThinking.isLastBlockOverall KDoc.
         val lastBlockId = blocks.lastOrNull()?.id
         val lastTextIdx = blocks.indexOfLast { it.kind == "text" }
+        // [T-zcode-text-fold] Last non-text/non-info block index. Text blocks
+        // at or before it are INTERMEDIATE work (folded into capsule rows at
+        // rest — the ZCode final view: only the final answer stays visible);
+        // the trailing text run after it is the final answer (always shown).
+        // Pure-text messages (-1) fold nothing — the whole message IS the
+        // answer. "info" rows are exempt: they are one-line system notices,
+        // not part of the answer's narrative.
+        val lastNonTextIdx = blocks.indexOfLast { it.kind != "text" && it.kind != "info" }
         val hasAnyTextBlock = lastTextIdx >= 0
         // Only the last cancelled tool_use in the message gets the Retry button —
         // retryLast() re-runs the whole turn, so one button is enough.
@@ -929,6 +956,8 @@ internal fun buildFlatChatItems(
                                 isLastBlockOfMessage = isLastText && message.isStreaming,
                                 messageIsStreaming = message.isStreaming && isLastText,
                                 messageMarkdown = joinedMarkdown,
+                                isIntermediateText = index <= lastNonTextIdx,
+                                parentMessageIsStreaming = message.isStreaming,
                             )))
                         } else {
                             fragments.forEachIndexed { fragIdx, raw ->
@@ -941,6 +970,8 @@ internal fun buildFlatChatItems(
                                     isLastBlockOfMessage = isLastText && isLastFragOfText,
                                     messageIsStreaming = message.isStreaming && isLastText,
                                     messageMarkdown = joinedMarkdown,
+                                    isIntermediateText = index <= lastNonTextIdx,
+                                    parentMessageIsStreaming = message.isStreaming,
                                 )))
                             }
                         }

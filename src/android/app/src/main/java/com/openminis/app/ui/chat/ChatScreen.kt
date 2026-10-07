@@ -474,6 +474,13 @@ fun ChatScreen(
     // state ONLY — the flatItems list, its LazyColumn keys and the frozen
     // prefix cache are untouched by a toggle (no rebuild, no reflow).
     val expandedToolGroups = remember { mutableStateMapOf<String, Boolean>() }
+    // [T-zcode-text-fold] Same pattern for the INTERMEDIATE text of finished
+    // turns: every text block that stood before/between tool/thinking blocks
+    // folds into a TextGroupSummaryRow capsule at rest (tap to reopen the
+    // full markdown). Keyed "messageId:parentBlockId" — one fold state per
+    // text block, so multiple intermediate blocks fold independently.
+    // Render-time state ONLY — same no-reflow guarantee as above.
+    val expandedTextBlocks = remember { mutableStateMapOf<String, Boolean>() }
     val error by viewModel.error.collectAsState()
     val modelName by viewModel.modelName.collectAsState()
     val sessionTitle by viewModel.sessionTitle.collectAsState()
@@ -3897,27 +3904,79 @@ fun ChatScreen(
                                     )
                                 }
                             }
-                            is FlatChatItem.AssistantMarkdownBlock -> BoundsTrackedBlock(
-                                messageId = item.messageId,
-                                slotKey = "mdblock:${item.parentBlockId}:${item.blockIndex}",
-                                markdown = item.messageMarkdown,
-                            ) {
-                                LargeContentGuard(
-                                    content = item.rawText,
-                                    isStreaming = item.isStreaming,
-                                    stableKey = "mdblock:${item.messageId}:${item.parentBlockId}:${item.blockIndex}",
-                                ) {
-                                    SideEffect {
-                                        selectionController.rememberMessageMarkdown(item.messageId, item.messageMarkdown)
+                            is FlatChatItem.AssistantMarkdownBlock -> {
+                                // [T-zcode-text-fold] ZCode final view: only
+                                // the FINAL answer text stays visible at rest.
+                                // Intermediate text (before/between tool and
+                                // thinking blocks) folds into a slim capsule
+                                // with a one-line preview — tap reopens the
+                                // full markdown, tap again folds. LIVE turns
+                                // never fold: the work is always visible as
+                                // it happens, and NO counters of any kind are
+                                // shown live — numbers only appear on
+                                // finished turns (user's standing rule).
+                                val foldKey = "${originalMessageId(item.messageId)}:${item.parentBlockId}"
+                                val textExpanded = expandedTextBlocks[foldKey] == true
+                                val mustFold = item.isIntermediateText &&
+                                    !item.parentMessageIsStreaming && !textExpanded
+                                if (mustFold) {
+                                    if (item.blockIndex == 0) {
+                                        TextGroupSummaryRow(
+                                            preview = item.rawText,
+                                            charCount = item.rawText.length,
+                                            expanded = false,
+                                            onToggle = {
+                                                expandedTextBlocks[foldKey] = true
+                                                AppLogger.info(
+                                                    "ChatUI",
+                                                    "[Fold] text expand $foldKey",
+                                                )
+                                            },
+                                        )
                                     }
-                                    MarkdownBlock(
-                                        rawText = item.rawText,
-                                        isStreaming = item.isStreaming,
-                                        shardId = TextShardId(
-                                            messageId = item.messageId,
-                                            shardId = "mdblock:${item.parentBlockId}:${item.blockIndex}",
-                                        ),
-                                    )
+                                    // Non-first fragments of a folded block
+                                    // compose nothing — zero-height slots,
+                                    // LazyColumn keys stay stable (no reflow).
+                                } else {
+                                    if (item.isIntermediateText && item.blockIndex == 0) {
+                                        // Expanded header — the fold control
+                                        // sits above the reopened text.
+                                        TextGroupSummaryRow(
+                                            preview = item.rawText,
+                                            charCount = item.rawText.length,
+                                            expanded = true,
+                                            onToggle = {
+                                                expandedTextBlocks[foldKey] = false
+                                                AppLogger.info(
+                                                    "ChatUI",
+                                                    "[Fold] text collapse $foldKey",
+                                                )
+                                            },
+                                        )
+                                    }
+                                    BoundsTrackedBlock(
+                                        messageId = item.messageId,
+                                        slotKey = "mdblock:${item.parentBlockId}:${item.blockIndex}",
+                                        markdown = item.messageMarkdown,
+                                    ) {
+                                        LargeContentGuard(
+                                            content = item.rawText,
+                                            isStreaming = item.isStreaming,
+                                            stableKey = "mdblock:${item.messageId}:${item.parentBlockId}:${item.blockIndex}",
+                                        ) {
+                                            SideEffect {
+                                                selectionController.rememberMessageMarkdown(item.messageId, item.messageMarkdown)
+                                            }
+                                            MarkdownBlock(
+                                                rawText = item.rawText,
+                                                isStreaming = item.isStreaming,
+                                                shardId = TextShardId(
+                                                    messageId = item.messageId,
+                                                    shardId = "mdblock:${item.parentBlockId}:${item.blockIndex}",
+                                                ),
+                                            )
+                                        }
+                                    }
                                 }
                             }
                             is FlatChatItem.AssistantThinking -> {
@@ -3988,7 +4047,13 @@ fun ChatScreen(
                                         ToolGroupSummaryRow(
                                             blocks = item.allToolBlocks,
                                             expanded = true,
-                                            onToggle = { expandedToolGroups[groupKey] = false },
+                                            onToggle = {
+                                                expandedToolGroups[groupKey] = false
+                                                AppLogger.info(
+                                                    "ChatUI",
+                                                    "[Fold] tools collapse $groupKey",
+                                                )
+                                            },
                                         )
                                     }
                                     ToolCallPill(
@@ -4045,7 +4110,13 @@ fun ChatScreen(
                                     ToolGroupSummaryRow(
                                         blocks = item.allToolBlocks,
                                         expanded = false,
-                                        onToggle = { expandedToolGroups[groupKey] = true },
+                                        onToggle = {
+                                            expandedToolGroups[groupKey] = true
+                                            AppLogger.info(
+                                                "ChatUI",
+                                                "[Fold] tools expand $groupKey",
+                                            )
+                                        },
                                     )
                                 }
                             }

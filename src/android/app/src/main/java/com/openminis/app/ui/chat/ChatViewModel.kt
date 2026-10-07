@@ -15728,6 +15728,24 @@ class ChatViewModel(
                 finishedAtMs = current[idx].finishedAtMs ?: System.currentTimeMillis(),
             )
             changed = true
+            // [T-turn-done-metrics] One greppable terminal line per turn —
+            // BOTH engines drain through here (normal end, error, cancel,
+            // turn limit), so this closes the forensics gap the live-only
+            // logs left: what the turn actually produced, in numbers. Pairs
+            // with [Engine] finished on the engine path.
+            runCatching {
+                val tb = delta.toolBlocks
+                val tools = tb.count { it.kind == "tool_use" }
+                val ok = tb.count { it.kind == "tool_use" && it.toolStatus == ToolBlockStatus.SUCCESS }
+                val fail = tb.count { it.kind == "tool_use" && (it.toolStatus == ToolBlockStatus.FAILED || it.toolStatus == ToolBlockStatus.TIMEOUT) }
+                val thinkChars = tb.sumOf { if (it.kind == "thinking") it.content.length else 0 }
+                val toolMs = tb.sumOf { if (it.kind == "tool_use") it.durationMs else 0L }
+                AppLogger.info(
+                    TAG_STREAM,
+                    "[TurnDone] msg=$id text=${delta.content.length}ch think=${thinkChars}ch " +
+                        "tools=$tools(ok=$ok fail=$fail) toolMs=$toolMs blocks=${tb.size}",
+                )
+            }
         }
         if (changed) _messages.value = current
         _streamingById.value = emptyMap()

@@ -857,6 +857,72 @@ internal fun ToolGroupSummaryRow(
     }
 }
 
+/**
+ * [T-zcode-text-fold] Collapsed form of a finished turn's INTERMEDIATE text
+ * (any text that stood before/between tool or thinking blocks — everything
+ * except the final answer). One slim capsule row showing a one-line preview
+ * of the content; tap reopens the full markdown block, tap the header again
+ * folds it. Live turns never fold — the user sees the work as it happens
+ * (their standing requirement); the row only appears once the turn rests.
+ * No live counters anywhere: numbers appear only on finished turns.
+ * Visual DNA matches ToolGroupSummaryRow (same capsule, border, 28dp).
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+internal fun TextGroupSummaryRow(
+    preview: String,
+    charCount: Int,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+) {
+    val clean = preview.lineSequence().firstOrNull { it.isNotBlank() }?.trim() ?: ""
+    val shown = if (clean.length > 56) clean.take(56) + "…" else clean
+    val label = when {
+        shown.isNotEmpty() -> shown
+        charCount > 0 -> "$charCount симв."
+        else -> "Текст"
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Row(
+            modifier = Modifier
+                .background(ChatColors.toolCapsuleBg, CircleShape)
+                .border(0.5.dp, ChatColors.toolBorder, CircleShape)
+                .clip(CircleShape)
+                .combinedClickable(onClick = onToggle)
+                .padding(horizontal = 12.dp)
+                .height(28.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Default.Description,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
+                modifier = Modifier.size(14.dp),
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Icon(
+                imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                contentDescription = if (expanded) "Свернуть" else "Показать",
+                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f),
+                modifier = Modifier.size(16.dp),
+            )
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun ToolCallPill(
