@@ -75,7 +75,7 @@ class ChatTextFoldTest {
         val items = flatFor(
             textBlock("t1", "Промежуточный текст."),
             toolBlock("u1"),
-            isStreaming = true,
+            streaming = true,
         )
         val t1 = items.filterIsInstance<FlatChatItem.AssistantMarkdownBlock>()
             .first { it.parentBlockId == "t1" }
