@@ -350,6 +350,10 @@ class MinisApp : Application(), ImageLoaderFactory {
         // "Minis.Jank" + daily AppLogger file. Must start before the DB /
         // repository bring-up below so cold-start jank is measured too.
         com.openminis.app.diagnostics.JankMonitor.start(this)
+        // [T-thread-watch] OS-thread exhaustion guard: daemon that ticks in
+        // the BACKGROUND too (frame loop dies when backgrounded; the 07.10
+        // pthread_create deaths happened invisibly in the background).
+        com.openminis.app.diagnostics.ThreadWatch.start()
         // [T-m12-engine-swap] Strangler switch init: shared-prefs backed,
         // default OFF — see EngineSwapPrefs.
         com.openminis.app.tools.EngineSwapPrefs.init(this)
