@@ -6422,6 +6422,41 @@ class ChatViewModel(
                                 "full history continues loading",
                         )
                     }
+                    // [T-queue-persist-fix] Rebuild queued bubbles for prompts
+                    // that survived a process death (vivo background freeze /
+                    // crash). restorePromptQueue() was DEAD CODE since its
+                    // introduction — nothing ever called it — so a persisted
+                    // queue never came back and the user watched their pending
+                    // message evaporate. Dedupe against the DB tail: a drain
+                    // that died between appendMessage and its persist-empty
+                    // leaves a stale entry; the DB copy (already sent) wins.
+                    runCatching {
+                        restorePromptQueue()
+                        val restored = _promptQueue.value
+                        if (restored.isNotEmpty()) {
+                            val lastUserText = chatUi.lastOrNull { it.role == "user" }?.content?.trim()
+                            val live = restored.filter { p -> p.text.trim() != lastUserText }
+                            if (live.isNotEmpty()) {
+                                _messages.value = _messages.value + live.map { p ->
+                                    ChatMessage(
+                                        id = "queued_msg_${p.id}",
+                                        role = "user",
+                                        content = p.text,
+                                        isQueued = true,
+                                        queuedPromptId = p.id,
+                                    )
+                                }
+                                _promptQueue.value = live
+                            } else {
+                                _promptQueue.value = emptyList()
+                            }
+                            persistPromptQueue()
+                            AppLogger.info(
+                                TAG_STREAM,
+                                "[Queue] restored ${live.size}/${restored.size} queued prompt(s) after reload",
+                            )
+                        }
+                    }
                 }
                 val tIoAfterTransform = System.currentTimeMillis()
                 com.openminis.app.diagnostics.PerfLongCtx.step(
@@ -8690,7 +8725,22 @@ class ChatViewModel(
     fun enqueuePrompt(text: String) {
         val trimmed = text.trim()
         val pendingAttachments = _attachments.value
-        if ((trimmed.isBlank() && pendingAttachments.isEmpty()) || !_isStreaming.value) return
+        if (trimmed.isBlank() && pendingAttachments.isEmpty()) return
+        // [T-queue-persist-fix] The race: sendMessage checked _isStreaming
+        // just before calling here; if the turn flipped to false in between,
+        // the queue is no longer the destination. Previously this returned
+        // SILENTLY — the composer was already cleared by the UI, so the
+        // user's text was lost completely (07.10 forensics: session 67a3c6e3,
+        // "message in sending state that never sends"). Hand off to the
+        // normal send path instead — a real turn for a real message.
+        if (!_isStreaming.value) {
+            AppLogger.info(
+                TAG_STREAM,
+                "[Queue] enqueue raced turn-end (not streaming anymore) — routing to normal send",
+            )
+            sendMessage(text)
+            return
+        }
 
         val prompt = QueuedPrompt(
             id = "queued_${System.currentTimeMillis()}_${(Math.random() * 1_000_000).toInt()}",
@@ -8698,6 +8748,19 @@ class ChatViewModel(
             attachments = pendingAttachments,
         )
         _promptQueue.value = _promptQueue.value + prompt
+        // [T-queue-persist-fix] Persist AT ENQUEUE TIME. Previously the
+        // queue was memory-only until an edit/withdraw happened — the ONE
+        // persistPromptQueue() caller was removeQueuedPrompt — so a process
+        // death (vivo background freeze, crash) silently erased every
+        // queued message: no bubble (not in the DB either), no queue, no
+        // trace. The persistent log line makes the queue lifecycle
+        // diagnosable from the file log, not just logcat.
+        persistPromptQueue()
+        AppLogger.info(
+            TAG_STREAM,
+            "[Queue] enqueued id=${prompt.id} len=${trimmed.length} " +
+                "atts=${pendingAttachments.size} queue=${_promptQueue.value.size}",
+        )
 
         val attachmentNames = pendingAttachments.map { it.fileName }
         val imageUris = pendingAttachments.filter { it.isImage }.map { it.uri }
@@ -8714,8 +8777,7 @@ class ChatViewModel(
         )
         _messages.value = _messages.value + chatMsg
         clearAttachments()
-        Log.i(TAG, "Enqueued prompt (${trimmed.length}ch, ${pendingAttachments.size} attachments), queue=${_promptQueue.value.size}")
-    }
+        Log.i(TAG, "Enqueued prompt (${trimmed.length}ch, ${pendingAttachments.size} attachments), queue=${_promptQueue.value.size}")    }
 
     /** Remove a queued prompt and its chat message by prompt id. */
     fun removeQueuedPrompt(promptId: String) {
@@ -8919,8 +8981,14 @@ class ChatViewModel(
             // [T-auto-mode] The parked continuation is now the active turn —
             // allow the NEXT turn-end to park the one after it.
             autoModeParked = false
-            Log.i(TAG, "📨[DRAIN] Draining ${queued.size} queued prompt(s): " +
-                queued.joinToString(", ") { "${it.id}=\"${it.text.take(20)}...\"" })
+            // [T-queue-persist-fix] File-log visibility: the queue lifecycle
+            // was logcat-only (Log.i), invisible in the persistent log —
+            // the 07.10 forensics could not see enqueue/drain events at all.
+            AppLogger.info(
+                TAG_STREAM,
+                "[Queue] draining ${queued.size} queued prompt(s): " +
+                    queued.joinToString(", ") { "${it.id}=\"${it.text.take(20)}...\"" },
+            )
 
             // Flip isQueued=false on corresponding chat messages so they render as sent.
             // T189: also clear queuedPromptId so a later retry of this bubble
@@ -8962,6 +9030,13 @@ class ChatViewModel(
             val userText = combinedText.toString()
             val userPartsJson = buildUserPartsJson(userText, prepared.mediaRefPartsJson, prepared.attachedFilesXml)
             chatRepository.appendMessage(sid, "user", userPartsJson)
+            // [T-queue-persist-fix] The drained message is now durable in
+            // the DB — persist the (now empty) queue so a process death in
+            // this window doesn't resurrect an already-sent prompt as a
+            // queued duplicate on the next reload. A death BEFORE the
+            // appendMessage above is covered by the enqueue-time persist:
+            // the entry restores and re-drains — never silently lost.
+            persistPromptQueue()
 
             agentHistory.add(LLMMessage(
                 role = LLMMessage.Role.USER,
@@ -9512,6 +9587,17 @@ class ChatViewModel(
                             _autoModeArmed.value = false
                             autoModeCompactPending = false
                             AppLogger.info(TAG_STREAM, "[AutoMode] DISARMED by user Stop")
+                        }
+                        // [T-queue-persist-fix] The cancel path used to
+                        // abandon the queue to memory-only state — a Stop
+                        // followed by a process death erased the user's
+                        // queued words. Persist so they survive.
+                        if (_promptQueue.value.isNotEmpty()) {
+                            persistPromptQueue()
+                            AppLogger.info(
+                                TAG_STREAM,
+                                "[Queue] turn cancelled with ${_promptQueue.value.size} queued prompt(s) — persisted for resume",
+                            )
                         }
                         Log.d(TAG, "Agent loop cancelled")
                     } catch (e: Exception) {
