@@ -446,6 +446,13 @@ internal sealed class FlatChatItem {
         val allToolBlocks: List<AssistantBlock>,
         /** True if this is the last cancelled tool in its message — only one Retry button per message. */
         val isLastCancelled: Boolean = false,
+        // [T-zcode-tool-collapse] Per-message streaming flag — the exact
+        // pattern AssistantThinking already uses. Drives the ZCode-style
+        // collapse-at-rest: tool pills render live while the turn runs and
+        // fold into ONE summary row the moment the turn finishes (see the
+        // render branch in ChatScreen). Default false so DB-restored /
+        // legacy items render collapsed — the correct rest state.
+        val messageIsStreaming: Boolean = false,
     ) : FlatChatItem() {
         override val key = "tool:$messageId:${block.id}"
         override val contentType = "tool"
@@ -935,6 +942,9 @@ internal fun buildFlatChatItems(
                     block = block,
                     allToolBlocks = toolPillBlocks,
                     isLastCancelled = block.id == lastCancelledToolId,
+                    // [T-zcode-tool-collapse] Per-message streaming flag for
+                    // the collapse-at-rest rule (see AssistantToolUse).
+                    messageIsStreaming = message.isStreaming,
                 )))
             }
         }

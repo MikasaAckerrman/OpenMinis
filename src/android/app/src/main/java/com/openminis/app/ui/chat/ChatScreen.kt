@@ -466,6 +466,14 @@ fun ChatScreen(
     // chat is in flight; swaps the typing dots for the per-agent progress card.
     val activeAgentRunTaskId by viewModel.activeAgentRunTaskId.collectAsState()
     val canResume by viewModel.canResume.collectAsState()
+    // [T-zcode-tool-collapse] ZCode-style tool groups: while a turn runs its
+    // tool pills stay visible (live work); the moment the turn finishes they
+    // fold into ONE "N инструментов · Xs" summary row. Absent from this map =
+    // collapsed (the rest state for every finished turn); true = the user
+    // expanded that message's group to inspect the pills again. Render-time
+    // state ONLY — the flatItems list, its LazyColumn keys and the frozen
+    // prefix cache are untouched by a toggle (no rebuild, no reflow).
+    val expandedToolGroups = remember { mutableStateMapOf<String, Boolean>() }
     val error by viewModel.error.collectAsState()
     val modelName by viewModel.modelName.collectAsState()
     val sessionTitle by viewModel.sessionTitle.collectAsState()
@@ -3950,54 +3958,89 @@ fun ChatScreen(
                                     )
                                 }
                             }
-                            is FlatChatItem.AssistantToolUse -> ToolCallPill(
-                                block = item.block,
-                                allToolBlocks = item.allToolBlocks,
-                                onRetry = if (item.isLastCancelled && !isStreaming && !canResume) ({ safeMutate { viewModel.retryLast() } }) else null,
-                                // T14: route per-card stop to the global
-                                // cancelStream(). The button only renders
-                                // when the block is RUNNING/STREAMING — see
-                                // ToolCallPill `isRunning && onStop != null`
-                                // — so passing it unconditionally is safe.
-                                onStop = { viewModel.cancelStream() },
-                                onOpenTerminalWithCommand = onOpenTerminalWithCommand,
-                                // T261: route detail open through ViewModel so
-                                // the sheet is hoisted out of LazyColumn item
-                                // scope (otherwise the sheet snaps shut when
-                                // the pill scrolls off-screen and Compose
-                                // disposes the item).
-                                onOpenDetail = { viewModel.openToolDetail(it) },
-                                // [T-android-rerun-from-tool-block-position]
-                                // Re-run cuts at THIS tool_use block: keep the
-                                // blocks before it in the same turn, drop it +
-                                // everything after, then regenerate. The block
-                                // id (== tool_use id for a tool_use block) is
-                                // the stable anchor. Gated off while streaming
-                                // (mutating an in-flight turn corrupts agent
-                                // state, same rule as Retry on the user bubble).
-                                // safeMutate tears down the selection toolbar
-                                // before the truncation reshuffles the list.
-                                // [T-rerun-tail-only] The Re-run pill anchors
-                                // to the LAST assistant message — its cut only
-                                // drops the tail that would be regenerated.
-                                onRerunFromHere = if (!isStreaming &&
-                                    item.messageId == originalMessageId(lastAssistantId ?: "")) ({
-                                    coroutineScope.launch {
-                                        tracedScrollToItem("RERUN-FROM-TOOL", 0, 0)
+                            is FlatChatItem.AssistantToolUse -> {
+                                // [T-zcode-tool-collapse] ZCode semantics:
+                                // the pills of a LIVE turn render exactly as
+                                // before (the user always sees the work in
+                                // progress); the moment the turn finishes
+                                // (messageIsStreaming flips false) every
+                                // tool group folds into one summary row —
+                                // tap to reopen, tap the header to fold
+                                // again. Non-first members of a collapsed
+                                // group render nothing (zero-height item
+                                // slots; LazyColumn keys stay stable, so the
+                                // fold is not a reflow event).
+                                val groupMessageId = originalMessageId(item.messageId)
+                                val userExpanded = expandedToolGroups[groupMessageId] == true
+                                val showPills = item.messageIsStreaming || userExpanded
+                                if (showPills) {
+                                    if (!item.messageIsStreaming && item.allToolBlocks.firstOrNull()?.id == item.block.id) {
+                                        // Expanded header — the collapse control
+                                        // sits above the reopened pills.
+                                        ToolGroupSummaryRow(
+                                            blocks = item.allToolBlocks,
+                                            expanded = true,
+                                            onToggle = { expandedToolGroups[groupMessageId] = false },
+                                        )
                                     }
-                                    safeMutate { viewModel.rerunFromToolBlock(item.messageId, item.block.id) }
-                                }) else null,
-                                onCopyDetails = {
-                                    val text = formatToolDetailsForClipboard(item.block)
-                                    val cb = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                                    cb.setPrimaryClip(android.content.ClipData.newPlainText("tool", text))
-                                    android.widget.Toast.makeText(
-                                        context,
-                                        context.getString(R.string.tool_longpress_copied_toast),
-                                        android.widget.Toast.LENGTH_SHORT,
-                                    ).show()
-                                },
-                            )
+                                    ToolCallPill(
+                                        block = item.block,
+                                        allToolBlocks = item.allToolBlocks,
+                                        onRetry = if (item.isLastCancelled && !isStreaming && !canResume) ({ safeMutate { viewModel.retryLast() } }) else null,
+                                        // T14: route per-card stop to the global
+                                        // cancelStream(). The button only renders
+                                        // when the block is RUNNING/STREAMING — see
+                                        // ToolCallPill `isRunning && onStop != null`
+                                        // — so passing it unconditionally is safe.
+                                        onStop = { viewModel.cancelStream() },
+                                        onOpenTerminalWithCommand = onOpenTerminalWithCommand,
+                                        // T261: route detail open through ViewModel so
+                                        // the sheet is hoisted out of LazyColumn item
+                                        // scope (otherwise the sheet snaps shut when
+                                        // the pill scrolls off-screen and Compose
+                                        // disposes the item).
+                                        onOpenDetail = { viewModel.openToolDetail(it) },
+                                        // [T-android-rerun-from-tool-block-position]
+                                        // Re-run cuts at THIS tool_use block: keep the
+                                        // blocks before it in the same turn, drop it +
+                                        // everything after, then regenerate. The block
+                                        // id (== tool_use id for a tool_use block) is
+                                        // the stable anchor. Gated off while streaming
+                                        // (mutating an in-flight turn corrupts agent
+                                        // state, same rule as Retry on the user bubble).
+                                        // safeMutate tears down the selection toolbar
+                                        // before the truncation reshuffles the list.
+                                        // [T-rerun-tail-only] The Re-run pill anchors
+                                        // to the LAST assistant message — its cut only
+                                        // drops the tail that would be regenerated.
+                                        onRerunFromHere = if (!isStreaming &&
+                                            item.messageId == originalMessageId(lastAssistantId ?: "")) ({
+                                            coroutineScope.launch {
+                                                tracedScrollToItem("RERUN-FROM-TOOL", 0, 0)
+                                            }
+                                            safeMutate { viewModel.rerunFromToolBlock(item.messageId, item.block.id) }
+                                        }) else null,
+                                        onCopyDetails = {
+                                            val text = formatToolDetailsForClipboard(item.block)
+                                            val cb = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                            cb.setPrimaryClip(android.content.ClipData.newPlainText("tool", text))
+                                            android.widget.Toast.makeText(
+                                                context,
+                                                context.getString(R.string.tool_longpress_copied_toast),
+                                                android.widget.Toast.LENGTH_SHORT,
+                                            ).show()
+                                        },
+                                    )
+                                } else if (item.allToolBlocks.firstOrNull()?.id == item.block.id) {
+                                    // Collapsed: exactly ONE summary row for
+                                    // the whole group — the first member.
+                                    ToolGroupSummaryRow(
+                                        blocks = item.allToolBlocks,
+                                        expanded = false,
+                                        onToggle = { expandedToolGroups[groupMessageId] = true },
+                                    )
+                                }
+                            }
                             is FlatChatItem.AssistantInfo -> if (item.block.toolName == "compact") {
                                 // [T-compact-progress] Rich minimal pill with
                                 // count/token/time + summary sheet + revert.

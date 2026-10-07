@@ -95,6 +95,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Construction
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
@@ -740,6 +741,124 @@ internal fun formatToolDetailsForClipboard(block: AssistantBlock): String {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
+// [T-zcode-tool-collapse] Russian plural for the tool-group row label.
+internal fun toolCountLabel(n: Int): String {
+    val mod10 = n % 10
+    val mod100 = n % 100
+    return when {
+        mod10 == 1 && mod100 != 11 -> "$n инструмент"
+        mod10 in 2..4 && (mod100 < 12 || mod100 > 14) -> "$n инструмента"
+        else -> "$n инструментов"
+    }
+}
+
+// [T-zcode-tool-collapse] Group duration for the summary row: sum of the
+// recorded per-tool durations. Formats like the pill ("4.2s" / "45s"),
+// switching to m+s once the total passes a minute — agent turns regularly
+// run minutes and "187.0s" reads worse than "3m 7s".
+internal fun toolGroupDurationLabel(blocks: List<AssistantBlock>): String? {
+    var totalMs = 0L
+    var counted = 0
+    for (b in blocks) {
+        if (b.durationMs > 0 && b.toolStatus != null) {
+            totalMs += b.durationMs
+            counted++
+        }
+    }
+    if (counted == 0 || totalMs <= 0) return null
+    val totalSeconds = totalMs / 1000.0
+    return if (totalSeconds >= 60) {
+        val m = (totalMs / 60_000).toInt()
+        val s = ((totalMs % 60_000) / 1000).toInt()
+        "${m}м ${s}с"
+    } else if (totalSeconds < 10) {
+        String.format("%.1fs", totalSeconds)
+    } else {
+        String.format("%.0fs", totalSeconds)
+    }
+}
+
+/**
+ * [T-zcode-tool-collapse] ZCode-style collapsed summary of a finished
+ * turn's tool work: ONE slim capsule row — "⚙ N инструментов · 45s" —
+ * replacing the stack of tool pills the moment the turn completes. While
+ * the turn is live the row never renders (the pills show the work as it
+ * happens); on finish the pills fold into this row. Tap expands back to
+ * the full pills; the row then stays as the header/collapse control.
+ *
+ * Status coloring follows the pill language: all-SUCCESS → green tint,
+ * any FAILED/TIMEOUT → red, any CANCELLED → yellow, otherwise neutral.
+ * Visual DNA matches ToolCallPill (capsule shape, border, 14dp icon) but
+ * slimmer (28dp) — it must read as a quiet footnote, not a tool.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+internal fun ToolGroupSummaryRow(
+    blocks: List<AssistantBlock>,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+) {
+    if (blocks.isEmpty()) return
+    val hasFailure = blocks.any {
+        it.toolStatus == ToolBlockStatus.FAILED || it.toolStatus == ToolBlockStatus.TIMEOUT
+    }
+    val hasCancelled = blocks.any { it.toolStatus == ToolBlockStatus.CANCELLED }
+    val tint = when {
+        hasFailure -> ToolErrorColor
+        hasCancelled -> ToolCancelColor
+        blocks.all { it.toolStatus == ToolBlockStatus.SUCCESS } -> ToolCheckColor
+        else -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
+    }
+    val duration = toolGroupDurationLabel(blocks)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Row(
+            modifier = Modifier
+                .background(ChatColors.toolCapsuleBg, CircleShape)
+                .border(0.5.dp, ChatColors.toolBorder, CircleShape)
+                .clip(CircleShape)
+                .combinedClickable(onClick = onToggle)
+                .padding(horizontal = 12.dp)
+                .height(28.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Default.Construction,
+                contentDescription = null,
+                tint = tint,
+                modifier = Modifier.size(14.dp),
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = toolCountLabel(blocks.size),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
+                maxLines = 1,
+            )
+            if (duration != null) {
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "· $duration",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                    maxLines = 1,
+                )
+            }
+            Spacer(modifier = Modifier.width(4.dp))
+            Icon(
+                imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                contentDescription = if (expanded) "Свернуть" else "Показать",
+                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f),
+                modifier = Modifier.size(16.dp),
+            )
+        }
+    }
+}
+
 internal fun ToolCallPill(
     block: AssistantBlock,
     allToolBlocks: List<AssistantBlock> = listOf(block),
