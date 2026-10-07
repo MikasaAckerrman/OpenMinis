@@ -739,8 +739,6 @@ internal fun formatToolDetailsForClipboard(block: AssistantBlock): String {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
 // [T-zcode-tool-collapse] Russian plural for the tool-group row label.
 internal fun toolCountLabel(n: Int): String {
     val mod10 = n % 10
@@ -859,6 +857,8 @@ internal fun ToolGroupSummaryRow(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
 internal fun ToolCallPill(
     block: AssistantBlock,
     allToolBlocks: List<AssistantBlock> = listOf(block),
