@@ -11143,6 +11143,11 @@ class ChatViewModel(
         // event collection below stays on Main (it drives UI state).
         val engineHistory: List<com.openminis.app.engine.EngineMessage>
         val schemaCount: Int
+        // [T-engine-history-mirror-order] AgentHistory indices of the tool
+        // result messages mirrored during this turn; drained by the
+        // finally-mirror to restore canonical order. See the comment at the
+        // drain site.
+        val engineResultMsgIndices = mutableListOf<Int>()
         withContext(kotlinx.coroutines.Dispatchers.Default) {
             engineHistory = effectiveAgentHistory().flatMap {
                 com.openminis.app.engine.ProviderModelGateway.fromLLMMessage(it)
@@ -11275,6 +11280,21 @@ class ChatViewModel(
                                 ),
                             )
                             val toolDbId = persistToolResultMessage(trParts)
+                            // [T-engine-history-mirror-order] Index recorded so
+                            // the finally-mirror can RESTORE canonical order:
+                            // results are mirrored here (during the turn) for
+                            // mid-turn-death safety, but the assistant round
+                            // carrying the tool_use parts only lands at turn
+                            // end — leaving [results…, ASSISTANT(uses)] which
+                            // sanitizeAgentHistory() reads as orphaned
+                            // tool_uses and "repairs" with error placeholders.
+                            // The next turn's model then BELIEVES its tools
+                            // failed while they succeeded (poisoned
+                            // self-perception, 07.10 vc102 incident). Finally
+                            // removes these rows and re-appends them AFTER
+                            // the assistant message as ONE batch user message
+                            // — the exact protocol legacy/sanitize expect.
+                            engineResultMsgIndices.add(agentHistory.size)
                             agentHistory.add(
                                 LLMMessage(
                                     role = LLMMessage.Role.USER,
@@ -11336,6 +11356,25 @@ class ChatViewModel(
                     // protocol). Without this the NEXT turn's model context
                     // silently lost the whole engine-driven reply — the
                     // user's follow-up would be answered blind.
+                    // [T-engine-history-mirror-order] The per-result mirrors
+                    // added during the turn sit BEFORE this assistant message
+                    // — inverted. Restore the canonical legacy protocol:
+                    // remove them, append the assistant round, then re-append
+                    // ALL of the turn's results as ONE user message (the
+                    // batch form sanitizeAgentHistory and the Anthropic
+                    // contract expect). Without this the next turn's sanitize
+                    // saw orphaned tool_uses and injected error placeholders —
+                    // the model answered believing its tools had failed.
+                    val mirroredResults = mutableListOf<AgentContentPart>()
+                    val mirroredDbIds = mutableListOf<String?>()
+                    for (idx in engineResultMsgIndices.sortedDescending()) {
+                        if (idx < agentHistory.size) {
+                            val removed = agentHistory.removeAt(idx)
+                            mirroredDbIds += removed.dbMessageId
+                            mirroredResults += removed.contentParts
+                                .filterIsInstance<AgentContentPart.ToolResult>()
+                        }
+                    }
                     agentHistory.add(
                         LLMMessage(
                             role = LLMMessage.Role.ASSISTANT,
@@ -11345,6 +11384,19 @@ class ChatViewModel(
                             dbMessageId = assistantDbId,
                         ),
                     )
+                    if (mirroredResults.isNotEmpty()) {
+                        // Stable batch order: results re-appended in the
+                        // order their messages were added (sortedAscending
+                        // == model/round order).
+                        agentHistory.add(
+                            LLMMessage(
+                                role = LLMMessage.Role.USER,
+                                content = "",
+                                contentParts = mirroredResults,
+                                dbMessageId = mirroredDbIds.lastOrNull(),
+                            ),
+                        )
+                    }
                     AppLogger.info(TAG_STREAM, "[Engine] persist " +
                         "aid=${assistantId.take(14)} db=${assistantDbId != null} " +
                         "text=${reducer.text.length}ch blocks=${reducer.currentBlocks().size} " +
