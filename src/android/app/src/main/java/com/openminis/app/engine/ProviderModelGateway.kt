@@ -215,9 +215,15 @@ class ProviderModelGateway(
         // awareness; full image fidelity remains a legacy-path feature and
         // one of the reasons the swap flag defaults OFF.
         if (msg.role == LLMMessage.Role.USER) {
-            val userText = parts.mapNotNull { p ->
+            val textFromParts = parts.mapNotNull { p ->
                 (p as? AgentContentPart.Text)?.text
             }.joinToString("\n").trim()
+            // [T-engine-user-text-annihilation] Part-less user messages:
+            // contentParts defaults to emptyList (NOT null) — a message
+            // built without parts carries its text in msg.content and the
+            // null-branch above never fires. Fall back so the text survives
+            // in both shapes (caught by the plain-message regression test).
+            val userText = textFromParts.ifEmpty { msg.content.trim() }
             if (userText.isNotEmpty()) {
                 out += EngineMessage(role = EngineRole.USER, text = userText)
             }
