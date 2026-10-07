@@ -27,6 +27,18 @@ data class TurnInput(
     val limits: LoopLimits = LoopLimits(),
 )
 
+/**
+ * [T-engine-blind-turn-guard] Thrown when a converted engine history
+ * contains ZERO user messages: the pipeline lost the user's input
+ * (converter regression, diet bug, history rebuild gap) and sending the
+ * request would make the model answer blind — pattern-continuing the
+ * last assistant turn instead of the user. Call sites catch this and
+ * degrade the turn onto the legacy loop, which builds the request
+ * directly from the same agentHistory.
+ */
+class EngineHistoryContractException(message: String) :
+    IllegalStateException(message)
+
 interface AgentLoop {
     /**
      * Run one turn. Cold stream: collection starts the turn, cancellation

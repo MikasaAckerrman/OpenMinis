@@ -75,6 +75,32 @@ class ProviderModelGatewayTest {
         ProviderModelGateway(FakeProvider(chunks), systemPrompt = sys)
 
     @Test
+    fun `turn image attachments ride the constructor seam to the provider`() = runTest {
+        // [T-m12-image-parts] runEngineTurn never wired this seam — a turn
+        // with photos rode the engine path with only the text placeholder
+        // while the legacy path sent the pixels. The gateway must forward
+        // turn-scoped attachments to streamMessage.
+        val fake = FakeProvider(flowOf(LLMStreamChunk.Finished(null)))
+        val img = LLMMessage.ImagePart(
+            data = ByteArray(3) { 1 },
+            mimeType = "image/png",
+        )
+        val g = ProviderModelGateway(
+            fake,
+            systemPrompt = sys,
+            imageParts = listOf(img),
+        )
+        g.stream(
+            listOf(EngineMessage(role = EngineRole.USER, text = "смотри фото")),
+            tools = emptyList(),
+            maxTokens = 8,
+        ).toList()
+        assertEquals(1, fake.lastImageParts.size)
+        // And the user text still rides the message list itself.
+        assertEquals("смотри фото", fake.seenMessages.last().content)
+    }
+
+    @Test
     fun `chunk mapping covers the engine contract`() = runTest {
         val g = gw(
             flowOf(

@@ -200,6 +200,28 @@ class ProviderModelGateway(
                 )
             }
         }
+        // [T-engine-user-text-annihilation] USER text parts were silently
+        // dropped here: a user message with contentParts — which is EVERY
+        // message the send path produces (send() builds [Text(trimmed), …]
+        // before agentHistory.add) — converted to an EMPTY list. The engine
+        // request then carried zero user messages: the model pattern-continued
+        // the last assistant/tool turn instead of answering the user (the
+        // 07.10 vc100 "agent doesn't see my messages" incident — diet sent
+        // 116 messages, engine kept 105, the 11 missing were exactly the
+        // user turns). USER text now maps to an EngineMessage(USER) before
+        // any tool emissions. ImageData parts stay unconverted: the engine
+        // message model is text-only — send() already plants a
+        // "[attached image: path]" text placeholder, so the model keeps
+        // awareness; full image fidelity remains a legacy-path feature and
+        // one of the reasons the swap flag defaults OFF.
+        if (msg.role == LLMMessage.Role.USER) {
+            val userText = parts.mapNotNull { p ->
+                (p as? AgentContentPart.Text)?.text
+            }.joinToString("\n").trim()
+            if (userText.isNotEmpty()) {
+                out += EngineMessage(role = EngineRole.USER, text = userText)
+            }
+        }
         if (toolCalls.isNotEmpty() || msg.role == LLMMessage.Role.ASSISTANT) {
             out += EngineMessage(
                 role = EngineRole.ASSISTANT,

@@ -9454,6 +9454,9 @@ class ChatViewModel(
                                     placeholderAssistantId = preAssistantId,
                                     provider = provider,
                                     systemPrompt = systemPrompt,
+                                    // [T-m12-image-parts] live turn attachments
+                                    // ride the gateway seam — see runEngineTurn.
+                                    imageParts = imageParts,
                                 )
                                 AppLogger.info(TAG_STREAM, "send runEngineTurn RETURN normal")
                             } catch (e: Exception) {
@@ -11090,6 +11093,7 @@ class ChatViewModel(
         placeholderAssistantId: String?,
         provider: LLMProvider,
         systemPrompt: String?,
+        imageParts: List<LLMMessage.ImagePart> = emptyList(),
     ) {
         // [T-engine-observability] Mirror of the legacy loop's stage markers
         // (ENTER/CALL/RETURN/FINALLY + per-stage detail). The engine chain
@@ -11113,6 +11117,15 @@ class ChatViewModel(
             provider = provider,
             systemPrompt = systemPrompt,
             thinkingLevel = _thinkingLevel.value,
+            // [T-m12-image-parts] The seam exists precisely for turn-scoped
+            // image attachments — but runEngineTurn never wired it, so a
+            // turn with photos rode the engine path with ONLY the
+            // "[attached image: path]" text placeholder while the legacy
+            // path sent the pixels. Live send-path attachments now ride
+            // the seam; retry/queue-drain turns re-run history whose
+            // images the text-shaped engine history cannot carry (known
+            // limitation, one reason the flag defaults OFF).
+            imageParts = imageParts,
         )
 
         // History direction: agentHistory is LLMMessage-shaped and ALREADY
@@ -11136,6 +11149,31 @@ class ChatViewModel(
             }
             schemaCount = registry.schemaFor(engineGate()).size
         }
+        // [T-engine-blind-turn-guard] A conversion regression upstream
+        // (fromLLMMessage, the diet, the history rebuild) must NEVER reach
+        // the provider as a request with zero user messages — the model
+        // would pattern-continue the last assistant turn and the user
+        // experiences exactly "you don't see my messages" (07.10 vc100:
+        // three days of forensics, the missing user turns were the whole
+        // bug). The guard is structural: any engine turn — main session or
+        // graph worker — carries at least one USER message once converted,
+        // because send() always adds the turn text to agentHistory before
+        // the engine runs. Zero user messages here = the pipeline lost
+        // them = degrade to the legacy loop, which builds the request
+        // directly and has carried the contract for months. The call
+        // sites catch this and fall back with the full provider chain.
+        val userMsgCount = engineHistory.count {
+            it.role == com.openminis.app.engine.EngineRole.USER
+        }
+        if (userMsgCount == 0) {
+            AppLogger.warning(TAG_STREAM, "[Engine] BLIND TURN GUARD: " +
+                "engineHistory carries ZERO user messages " +
+                "(history=${engineHistory.size}) — degrading to legacy loop")
+            throw com.openminis.app.engine.EngineHistoryContractException(
+                "engine history contains zero user messages " +
+                    "(size=${engineHistory.size})"
+            )
+        }
         val input = com.openminis.app.engine.TurnInput(
             sessionId = sessionId,
             userText = "",
@@ -11145,7 +11183,9 @@ class ChatViewModel(
         AppLogger.info(TAG_STREAM, "[Engine] setup aid=${assistantId.take(14)} " +
             "preRow=${placeholderAssistantId != null} " +
             "tools=$schemaCount " +
-            "history=${engineHistory.size} prompt=${systemPrompt?.length ?: 0} " +
+            "history=${engineHistory.size} userMsg=$userMsgCount " +
+            "images=${imageParts.size} " +
+            "prompt=${systemPrompt?.length ?: 0} " +
             "in ${msSinceSetup()}ms")
 
         val loop = com.openminis.app.engine.EngineAgentLoop(
