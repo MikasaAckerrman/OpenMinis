@@ -10,6 +10,9 @@ import org.junit.Test
  * or between tool/thinking blocks folds into a capsule row; the trailing
  * text run (everything after the last tool/thinking block) stays visible.
  * Live turns never fold (the work is always shown as it happens).
+ *
+ * NOTE: this suite must execute on CI — see the [T-test-only-ci] marker in
+ * .github/workflows/tests.yml; empty commits do not trigger workflows.
  */
 class ChatTextFoldTest {
 
