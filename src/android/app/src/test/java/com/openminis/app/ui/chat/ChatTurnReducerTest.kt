@@ -96,17 +96,81 @@ class ChatTurnReducerTest {
     }
 
     @Test
-    fun `text after tool blocks inserts before them`() {
+    fun `text after finished tool is the next round - appends after it`() {
         val r = reducer()
         r.reduce(AgentEvent.ToolUseStarted("c1", "shell_execute"))
         r.reduce(AgentEvent.ToolCallStarted("c1", "shell_execute", "Run Command"))
         r.reduce(AgentEvent.ToolCallFinished("c1", "shell_execute", true, "ok"))
-        r.reduce(AgentEvent.TextDelta("after tools"))
+        r.reduce(AgentEvent.TextDelta("next round answer"))
         val blocks = r.currentBlocks()
-        // text first, then the tool — the canonical wire order
+        // [T-round-text-order] A FINISHED tool means the round boundary
+        // passed — this text belongs to the NEXT round and keeps its
+        // natural position AFTER the tool. (The pre-fix expectation — text
+        // hoisted above the finished tool — was exactly the "текст сверху,
+        // тула снизу" scramble the 07.10 report describes: every round's
+        // answer rendered above ALL tools.)
+        assertEquals("tool_use", blocks[0].kind)
+        assertEquals("text", blocks[1].kind)
+        assertEquals("next round answer", blocks[1].content)
+    }
+
+    @Test
+    fun `same-response trailing text still lands before its pending tools`() {
+        val r = reducer()
+        // qwen-style content-after-tool_calls chunking: the tool is still
+        // PENDING (its result cannot exist — the response hasn't ended),
+        // so the trailing content is the SAME response's {content} — the
+        // canonical wire shape puts it before the tool.
+        r.reduce(AgentEvent.ToolUseStarted("c1", "web_search"))
+        r.reduce(AgentEvent.TextDelta("trailing content"))
+        val blocks = r.currentBlocks()
         assertEquals("text", blocks[0].kind)
         assertEquals("tool_use", blocks[1].kind)
-        assertEquals("after tools", blocks[0].content)
+        assertEquals(ToolBlockStatus.PENDING, blocks[1].toolStatus)
+        assertEquals("trailing content", blocks[0].content)
+    }
+
+    @Test
+    fun `multi-round turn keeps text between tools - narrative order`() {
+        val r = reducer()
+        // Round 1: text + tool call, tool executes and finishes
+        r.reduce(AgentEvent.TextDelta("checking the log"))
+        r.reduce(AgentEvent.ToolUseStarted("t1", "shell_execute"))
+        r.reduce(AgentEvent.ToolCallFinished("t1", "shell_execute", true, "done"))
+        // Round 2: answer text + second tool, finishes
+        r.reduce(AgentEvent.TextDelta("found it, now writing"))
+        r.reduce(AgentEvent.ToolUseStarted("t2", "file_write"))
+        r.reduce(AgentEvent.ToolCallFinished("t2", "file_write", true, "written"))
+        // Round 3: final answer
+        r.reduce(AgentEvent.TextDelta("all done"))
+        val blocks = r.currentBlocks()
+        val shape = blocks.joinToString("|") { it.kind }
+        // The exact narrative: each text sits where it was emitted —
+        // between the tool rounds it followed and precedes. Pre-fix this
+        // collapsed to [text|text|text|tool|tool] (all text merged at top).
+        assertEquals("text|tool_use|text|tool_use|text", shape)
+        assertEquals("checking the log", blocks[0].content)
+        assertEquals("found it, now writing", blocks[2].content)
+        assertEquals("all done", blocks[4].content)
+        // The whole-turn mirror still carries every segment's text
+        assertEquals("checking the logfound it, now writingall done", r.text.toString())
+    }
+
+    @Test
+    fun `rounds of thinking sum into one block and seal on text`() {
+        val r = reducer()
+        r.reduce(AgentEvent.ThinkingDelta("think one"))
+        r.reduce(AgentEvent.ToolUseStarted("t1", "shell_execute"))
+        r.reduce(AgentEvent.ToolCallFinished("t1", "shell_execute", true, "ok"))
+        // Round 2's reasoning continues the SAME thinking card (summed)
+        r.reduce(AgentEvent.ThinkingDelta("think two"))
+        r.reduce(AgentEvent.TextDelta("answer"))
+        val blocks = r.currentBlocks()
+        val thinkingBlocks = blocks.filter { it.kind == "thinking" }
+        assertEquals(1, thinkingBlocks.size)
+        assertEquals("think onethink two", thinkingBlocks[0].content)
+        // sealed the moment the answer text flows
+        assertEquals(ToolBlockStatus.SUCCESS, thinkingBlocks[0].toolStatus)
     }
 
     @Test

@@ -817,7 +817,28 @@ internal fun buildFlatChatItems(
         }
 
         val blocks = message.toolBlocks
-        val toolPillBlocks = blocks.filter { it.kind == "tool_use" }
+        // [T-zcode-tool-collapse-segments] Collapse groups are CONTIGUOUS
+        // tool runs, not "all tools of the message": with the interleaved
+        // round order (text between tool rounds — [T-round-text-order])
+        // each run folds into its OWN summary row at ITS position, so the
+        // narrative [text][tools][text][tools][text] reads as
+        // [text][⚙ run1][text][⚙ run2][text] — positions preserved, exactly
+        // the "как раньше, всё на своих местах" the 07.10 report demands.
+        // A single group for the whole message would hoist round-2's fold
+        // above round-1's text — the same scramble the reducer fix kills.
+        val toolSegmentFor = HashMap<String, List<AssistantBlock>>()
+        run {
+            var run: MutableList<AssistantBlock>? = null
+            for (b in blocks) {
+                if (b.kind == "tool_use") {
+                    if (run == null) run = mutableListOf()
+                    run.add(b)
+                    toolSegmentFor[b.id] = run
+                } else {
+                    run = null
+                }
+            }
+        }
         val lastThinkingId = blocks.lastOrNull { it.kind == "thinking" }?.id
         // [T-android-thinking-auto-collapse] Id of the last block of ANY
         // kind — used to flip the trailing thinking block's auto-collapse
@@ -940,7 +961,11 @@ internal fun buildFlatChatItems(
                 else -> out.add(dedupe(FlatChatItem.AssistantToolUse(
                     messageId = message.id,
                     block = block,
-                    allToolBlocks = toolPillBlocks,
+                    // [T-zcode-tool-collapse-segments] The item's group is
+                    // its CONTIGUOUS RUN — the fold lands at the run's
+                    // first member, between the very texts the tools were
+                    // emitted between (see toolSegmentFor above).
+                    allToolBlocks = toolSegmentFor[block.id] ?: listOf(block),
                     isLastCancelled = block.id == lastCancelledToolId,
                     // [T-zcode-tool-collapse] Per-message streaming flag for
                     // the collapse-at-rest rule (see AssistantToolUse).

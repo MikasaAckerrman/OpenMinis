@@ -3970,8 +3970,16 @@ fun ChatScreen(
                                 // group render nothing (zero-height item
                                 // slots; LazyColumn keys stay stable, so the
                                 // fold is not a reflow event).
+                                // [T-zcode-tool-collapse-segments] The toggle
+                                // key is PER-SEGMENT (message + the run's
+                                // first block): a multi-round turn has
+                                // several independent folds between its
+                                // texts — expanding one must not expand the
+                                // others.
                                 val groupMessageId = originalMessageId(item.messageId)
-                                val userExpanded = expandedToolGroups[groupMessageId] == true
+                                val segmentFirstId = item.allToolBlocks.firstOrNull()?.id ?: item.block.id
+                                val groupKey = "$groupMessageId:$segmentFirstId"
+                                val userExpanded = expandedToolGroups[groupKey] == true
                                 val showPills = item.messageIsStreaming || userExpanded
                                 if (showPills) {
                                     if (!item.messageIsStreaming && item.allToolBlocks.firstOrNull()?.id == item.block.id) {
@@ -3980,7 +3988,7 @@ fun ChatScreen(
                                         ToolGroupSummaryRow(
                                             blocks = item.allToolBlocks,
                                             expanded = true,
-                                            onToggle = { expandedToolGroups[groupMessageId] = false },
+                                            onToggle = { expandedToolGroups[groupKey] = false },
                                         )
                                     }
                                     ToolCallPill(
@@ -4037,7 +4045,7 @@ fun ChatScreen(
                                     ToolGroupSummaryRow(
                                         blocks = item.allToolBlocks,
                                         expanded = false,
-                                        onToggle = { expandedToolGroups[groupMessageId] = true },
+                                        onToggle = { expandedToolGroups[groupKey] = true },
                                     )
                                 }
                             }
