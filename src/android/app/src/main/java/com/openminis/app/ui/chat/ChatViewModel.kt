@@ -4286,7 +4286,7 @@ class ChatViewModel(
             // tool_use with no matching tool_result).
             //
             // [T-compact-preanchor-prune, port iOS 8b76cd74]
-            val preAnchorCap = 100
+            val preAnchorCap = 300
             val walkBack = walkBackUserTurnsBounded(
                 anchorIdx = anchorIdx,
                 maxUserTextTurns = keepN,
@@ -4625,6 +4625,19 @@ class ChatViewModel(
         var acceptedPriorIdx: Int? = null
         var acceptedUserTextTurns = 0
         var acceptedMessageCount = 0
+        // [T-user-text-not-capped] Pure user-text messages are byte-negligible
+        // (a few hundred chars) yet used to consume cap slots one-for-one
+        // with 15KB tool results — in tool-heavy agent sessions the cap hit
+        // after ~3 user turns and everything older was summarized away,
+        // leaving the model blind to the conversation it was having (the
+        // 07.10 "ты не видишь мои сообщения" forensics: userTextTurnsFound=3,
+        // summary=1587 chars vs 827KB of agent tool noise). The cap exists to
+        // bound the EXPENSIVE part of the slice; user text is not it. The
+        // tokenBudget remains the honest byte-level bound.
+        fun isPureUserText(m: LLMMessage): Boolean =
+            m.role == LLMMessage.Role.USER && m.contentParts.none {
+                it is AgentContentPart.ToolResult || it is AgentContentPart.ToolUse
+            }
         // [T-tail-token-budget] Tokens of the currently accepted verbatim
         // slice [acceptedPriorIdx .. anchorIdx]. The budget is checked BEFORE
         // accepting a further user turn: once one turn is protected and the
@@ -4641,7 +4654,10 @@ class ChatViewModel(
                 i -= 1
                 continue
             }
-            val candidateMessageCount = anchorIdx - i + 1
+            val candidateMessageCount = anchorIdx - i + 1 -
+                // [T-user-text-not-capped] pure user text between here and the
+                // anchor rides free (see the block comment above).
+                ((i + 1)..anchorIdx).count { isPureUserText(agentHistory[it]) }
             if (candidateMessageCount > maxMessages) {
                 return WalkBackResult(
                     priorIdx = acceptedPriorIdx,
