@@ -11174,17 +11174,33 @@ class ChatViewModel(
                     "(size=${engineHistory.size})"
             )
         }
+        // [T-engine-maxtokens-parity] Same production budget the legacy loop
+        // asks for (11615 site): 128K ceiling, model-cap clamp, context
+        // pressure, session policy. The legacy runAgentLoop computes this at
+        // turn START with a fresh EMPTY attribution (its lastContextUsage
+        // local initializes to EMPTY and captures only mid-turn) — so 0
+        // usage here is exact parity, not a simplification. A thinking model
+        // carving its reasoning budget out of max_tokens no longer hits a
+        // hardcoded 8192 wall.
+        val engineMaxTokens = dynamicMaxTokens(
+            provider,
+            0,
+            systemPrompt = systemPrompt,
+            tools = agentTools,
+        )
         val input = com.openminis.app.engine.TurnInput(
             sessionId = sessionId,
             userText = "",
             history = engineHistory,
             mode = _permissionMode.value,
+            maxTokens = engineMaxTokens,
         )
         AppLogger.info(TAG_STREAM, "[Engine] setup aid=${assistantId.take(14)} " +
             "preRow=${placeholderAssistantId != null} " +
             "tools=$schemaCount " +
             "history=${engineHistory.size} userMsg=$userMsgCount " +
             "images=${imageParts.size} " +
+            "maxTok=$engineMaxTokens " +
             "prompt=${systemPrompt?.length ?: 0} " +
             "in ${msSinceSetup()}ms")
 

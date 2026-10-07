@@ -19,11 +19,14 @@ class EngineAgentLoopTest {
     private class ScriptedGateway(private val script: List<List<StreamEvent>>) : ModelGateway {
         override val modelId = "fake"
         private var index = 0
+        var seenMaxTokens: Int = -1
+            private set
         override fun stream(
             messages: List<EngineMessage>,
             tools: List<AgentToolDefinition>,
             maxTokens: Int,
         ) = flow {
+            seenMaxTokens = maxTokens
             val events = script[index]
             index++
             for (e in events) emit(e)
@@ -53,6 +56,22 @@ class EngineAgentLoopTest {
         history = history,
         mode = PermissionMode.AUTO,
     )
+
+    @Test
+    fun `driver max_tokens budget reaches the gateway not the 8192 default`() = runTest {
+        // [T-engine-maxtokens-parity] The loop used to hardcode 8192:
+        // thinking models carve their reasoning budget out of max_tokens
+        // and truncated mid-thought. The production driver computes the
+        // budget (dynamicMaxTokens: ceiling/clamp/context pressure) — the
+        // loop must forward it untouched.
+        val gw = ScriptedGateway(
+            listOf(listOf(StreamEvent.TextDelta("ok"), StreamEvent.Done)),
+        )
+        EngineAgentLoop(gw, registry()).runTurn(
+            turnInput().copy(maxTokens = 32768),
+        ).toList()
+        assertEquals(32768, gw.seenMaxTokens)
+    }
 
     @Test
     fun `text-only turn stops after one round`() = runTest {

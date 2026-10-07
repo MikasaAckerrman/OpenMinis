@@ -87,7 +87,9 @@ class EngineAgentLoop(
             val pendingCalls = mutableListOf<EngineToolCall>()
             var failure: AgentEvent.Error? = null
 
-            gateway.stream(workingHistory.toList(), schema, maxTokens = 8192)
+            // [T-engine-maxtokens-parity] production budget from the driver
+            // (default 8192 for headless callers) — see TurnInput.maxTokens.
+            gateway.stream(workingHistory.toList(), schema, maxTokens = input.maxTokens)
                 .collect { event ->
                     when (event) {
                         is StreamEvent.TextDelta -> {

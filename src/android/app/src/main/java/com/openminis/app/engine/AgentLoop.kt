@@ -24,6 +24,14 @@ data class TurnInput(
     val userText: String,
     val history: List<EngineMessage>,
     val mode: PermissionMode,
+    // [T-engine-maxtokens-parity] Legacy computes max_tokens per turn
+    // (dynamicMaxTokens: 128K ceiling, model-cap clamp, context-pressure
+    // fallback, thinking-budget tiers). The engine loop previously
+    // hardcoded 8192: thinking models (Qwen/DashScope) carve the reasoning
+    // budget OUT OF max_tokens, so 8192 truncated mid-thought with a silent
+    // "stop". The driver passes the production-computed budget; 8192 stays
+    // the default for headless/graph callers.
+    val maxTokens: Int = 8192,
     val limits: LoopLimits = LoopLimits(),
 )
 
