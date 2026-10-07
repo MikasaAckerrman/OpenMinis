@@ -7955,6 +7955,29 @@ class ChatViewModel(
                 return true
             }
         }
+        // [T-retry-orphan-rescue] A user bubble with NO DB row that is NOT
+        // (anymore) in the queue is a DRAIN-DEATH ZOMBIE: a Stop killed the
+        // drain after the flip cleared isQueued but before appendMessage
+        // wrote the row (07.10 live log: "[Retry] отказ: пузырь queued_m не
+        // сопоставлен ни с одной строкой БД" → refusal's reload wiped the
+        // memory-only bubble — the message annihilated by the retry tap).
+        // The zombie is now structurally unreachable in the drain, but
+        // states created by older binaries and other paths must not be
+        // destroyable either: retry on an orphan means SEND IT.
+        if (message.role == "user" &&
+            !message.isQueued &&
+            message.sourceDbIds.isEmpty() &&
+            message.content.isNotBlank()
+        ) {
+            AppLogger.info(
+                TAG,
+                "[Retry] orphan-пузырь (нет строки БД, нет очереди) → rescue resend " +
+                    "«${message.content.take(40)}…» вместо отказа-с-перезагрузкой",
+            )
+            _messages.value = _messages.value.filterNot { it.id == message.id }
+            sendMessage(message.content)
+            return true
+        }
 
         val initialProvider = currentProvider
         if (initialProvider == null) {
@@ -8829,8 +8852,12 @@ class ChatViewModel(
         finishedAllToolBlocks: List<AssistantBlock>,
     ): InjectedTurn? {
         if (_promptQueue.value.isEmpty()) return null
-        val queued = _promptQueue.value
-        _promptQueue.value = emptyList()
+        // [T-queue-zombie-window] Same load-bearing order as the drain:
+        // snapshot WITHOUT taking. The take happens only AFTER the
+        // appendMessage below made the message durable — a Stop landing
+        // in between leaves the queue intact (restorable) instead of a
+        // zombie bubble that exists nowhere.
+        val queued = _promptQueue.value.toList()
 
         // [T-android-queued-message-duplicated-on-inject] REMOVE the queued
         // placeholder bubbles (the ones enqueuePrompt added with
@@ -8900,6 +8927,11 @@ class ChatViewModel(
         val userText = combinedText.toString()
         val userPartsJson = buildUserPartsJson(userText, prepared.mediaRefPartsJson, prepared.attachedFilesXml)
         val userEntity = chatRepository.appendMessage(sid, "user", userPartsJson)
+        // [T-queue-zombie-window] Durable now — take the injected entries
+        // and persist the remainder state.
+        val injectedIds = queued.map { it.id }.toSet()
+        _promptQueue.value = _promptQueue.value.filterNot { it.id in injectedIds }
+        persistPromptQueue()
         agentHistory.add(
             LLMMessage(
                 role = LLMMessage.Role.USER,
@@ -8976,8 +9008,24 @@ class ChatViewModel(
         fallbackStrategy: com.openminis.app.data.model.FallbackStrategy,
     ) {
         while (_promptQueue.value.isNotEmpty()) {
-            val queued = _promptQueue.value
-            _promptQueue.value = emptyList()
+            // [T-queue-zombie-window] ORDER IS LOAD-BEARING (07.10, proven
+            // by the live log): the previous sequence — take the queue,
+            // flip the bubbles, THEN appendMessage — left a window where a
+            // user Stop (or any cancellation) killed the drain between the
+            // flip and the DB write. The bubble became a ZOMBIE: rendered
+            // as sent (isQueued=false), present in NO database row, absent
+            // from the queue. The retry path then hit the DB-cutoff refusal
+            // ("пузырь queued_m не сопоставлен ни с одной строкой БД") whose
+            // reloadSessionFromDb() wiped the memory-only bubble — the
+            // user's message annihilated by a retry tap.
+            //
+            // New order: snapshot the queue WITHOUT taking it, write the DB
+            // row first, and only then take the entries + flip the bubbles.
+            // A death at any point now leaves either (a) the queue intact
+            // (memory + persisted) — restorable by the T189 stop-resume, or
+            // (b) a durable DB row — the message is real. The zombie state
+            // is structurally unreachable.
+            val queued = _promptQueue.value.toList()
             // [T-auto-mode] The parked continuation is now the active turn —
             // allow the NEXT turn-end to park the one after it.
             autoModeParked = false
@@ -8989,17 +9037,6 @@ class ChatViewModel(
                 "[Queue] draining ${queued.size} queued prompt(s): " +
                     queued.joinToString(", ") { "${it.id}=\"${it.text.take(20)}...\"" },
             )
-
-            // Flip isQueued=false on corresponding chat messages so they render as sent.
-            // T189: also clear queuedPromptId so a later retry of this bubble
-            // doesn't try to drop a phantom queue entry (and so the field state
-            // matches what retryFromMessage's truncate path now produces).
-            val queuedIds = queued.map { it.id }.toSet()
-            _messages.value = _messages.value.map { m ->
-                if (m.queuedPromptId != null && queuedIds.contains(m.queuedPromptId)) {
-                    m.copy(isQueued = false, queuedPromptId = null)
-                } else m
-            }
 
             // Build a combined user message (text + images from all queued prompts).
             // Persist as a single row.
@@ -9030,13 +9067,30 @@ class ChatViewModel(
             val userText = combinedText.toString()
             val userPartsJson = buildUserPartsJson(userText, prepared.mediaRefPartsJson, prepared.attachedFilesXml)
             chatRepository.appendMessage(sid, "user", userPartsJson)
+            // [T-queue-zombie-window] The message is now durable in the DB —
+            // take the drained entries and flip the bubbles ONLY from here
+            // on. A cancellation before this point leaves the queue intact
+            // (restorable); after it, the DB row is the truth.
+            val drainedIds = queued.map { it.id }.toSet()
+            _promptQueue.value = _promptQueue.value.filterNot { it.id in drainedIds }
             // [T-queue-persist-fix] The drained message is now durable in
-            // the DB — persist the (now empty) queue so a process death in
-            // this window doesn't resurrect an already-sent prompt as a
-            // queued duplicate on the next reload. A death BEFORE the
-            // appendMessage above is covered by the enqueue-time persist:
-            // the entry restores and re-drains — never silently lost.
+            // the DB — persist the (now empty-of-drained) queue so a
+            // process death in this window doesn't resurrect an
+            // already-sent prompt as a queued duplicate on the next
+            // reload. A death BEFORE the appendMessage above is covered by
+            // the enqueue-time persist: the entry restores and re-drains —
+            // never silently lost.
             persistPromptQueue()
+            // Flip isQueued=false on corresponding chat messages so they
+            // render as sent. T189: also clear queuedPromptId so a later
+            // retry of this bubble doesn't try to drop a phantom queue
+            // entry (and so the field state matches what
+            // retryFromMessage's truncate path now produces).
+            _messages.value = _messages.value.map { m ->
+                if (m.queuedPromptId != null && m.queuedPromptId in drainedIds) {
+                    m.copy(isQueued = false, queuedPromptId = null)
+                } else m
+            }
 
             agentHistory.add(LLMMessage(
                 role = LLMMessage.Role.USER,
