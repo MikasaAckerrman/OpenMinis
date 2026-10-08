@@ -8334,6 +8334,21 @@ class ChatViewModel(
                     )
                     AppLogger.info(TAG_STREAM, "$label runAgentLoop RETURN normal")
                     }
+                    // [T-queue-rerun-drain] 08.10 live incident (vc111):
+                    // «queue still doesn't work in the new engine» — the
+                    // user queued a message during a retryFromMessage turn
+                    // and it NEVER drained: this rerun path (and the engine
+                    // branch above) complete their turns without touching
+                    // the prompt queue — only sendMessage's tail drained.
+                    // The queue sat stuck until the next manual send. A
+                    // rerun turn IS a turn: drain here, mirroring the send
+                    // and retryLast tails (incl. the auto-mode pending
+                    // guard — compaction owns the next turn then).
+                    maybeAutoContinue()
+                    if (!autoModeCompactPending) {
+                        drainQueuedPrompts(launchedProvider, systemPrompt, fallbackProviders, activeFallbackStrategy)
+                        AppLogger.info(TAG_STREAM, "$label drainQueuedPrompts RETURN")
+                    }
                 } catch (e: CancellationException) {
                     AppLogger.info(TAG_STREAM, "$label runAgentLoop CANCELLED")
                     Log.d(TAG, "Agent loop cancelled")
