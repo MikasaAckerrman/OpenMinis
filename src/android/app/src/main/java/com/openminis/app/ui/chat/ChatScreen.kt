@@ -3928,7 +3928,7 @@ fun ChatScreen(
                                             onToggle = {
                                                 expandedTextBlocks[foldKey] = true
                                                 AppLogger.info(
-                                                    "ChatUI",
+                                                    "ChatScreen",
                                                     "[Fold] text expand $foldKey",
                                                 )
                                             },
@@ -3948,7 +3948,7 @@ fun ChatScreen(
                                             onToggle = {
                                                 expandedTextBlocks[foldKey] = false
                                                 AppLogger.info(
-                                                    "ChatUI",
+                                                    "ChatScreen",
                                                     "[Fold] text collapse $foldKey",
                                                 )
                                             },
@@ -4050,7 +4050,7 @@ fun ChatScreen(
                                             onToggle = {
                                                 expandedToolGroups[groupKey] = false
                                                 AppLogger.info(
-                                                    "ChatUI",
+                                                    "ChatScreen",
                                                     "[Fold] tools collapse $groupKey",
                                                 )
                                             },
@@ -4113,7 +4113,7 @@ fun ChatScreen(
                                         onToggle = {
                                             expandedToolGroups[groupKey] = true
                                             AppLogger.info(
-                                                "ChatUI",
+                                                "ChatScreen",
                                                 "[Fold] tools expand $groupKey",
                                             )
                                         },

@@ -890,6 +890,11 @@ internal fun TextGroupSummaryRow(
     ) {
         Row(
             modifier = Modifier
+                // [T-zcode-text-fold] Long previews must never push the
+                // capsule past the chat column edge: bound it to the
+                // available width (fill=false keeps short previews
+                // intrinsic) and let the label ellipsize.
+                .weight(1f, fill = false)
                 .background(ChatColors.toolCapsuleBg, CircleShape)
                 .border(0.5.dp, ChatColors.toolBorder, CircleShape)
                 .clip(CircleShape)
