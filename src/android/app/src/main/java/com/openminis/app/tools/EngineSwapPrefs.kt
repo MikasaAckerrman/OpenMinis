@@ -37,6 +37,14 @@ object EngineSwapPrefs {
     private const val PREFS = "minis_debug_engine_swap"
     private const val KEY = "enabled"
     private const val KEY_ARMED_AT_VERSION = "armedAtVersionCode"
+    // [T-engine-shadow-sessions] Per-session routing set for shadow
+    // testing (user's spec, 08.10: "пустая сессия на новом движке, я
+    // старым мониторю её ошибки"). A session in this set routes through
+    // the engine chain even while the GLOBAL flag stays OFF — one
+    // conversation on the new engine, everything else on the proven
+    // legacy loop. Same cross-build hygiene as the flag: the set is
+    // cleared on version change.
+    private const val KEY_SESSION_OVERRIDES = "engine_session_overrides"
 
     @Volatile
     private var prefs: SharedPreferences? = null
@@ -51,9 +59,12 @@ object EngineSwapPrefs {
         if (mustResetOnUpgrade(stored, current)) {
             // Cross-build (or first run): the experiment is not armed for
             // THIS build. Reset to the default (OFF) and stamp the build.
+            // Shadow sessions die with the build too — they are armed
+            // per-experiment, never inherited across installs.
             prefs?.edit()
                 ?.putBoolean(KEY, false)
                 ?.putInt(KEY_ARMED_AT_VERSION, current)
+                ?.putStringSet(KEY_SESSION_OVERRIDES, null)
                 ?.apply()
         }
     }
@@ -66,6 +77,35 @@ object EngineSwapPrefs {
     fun setEnabled(value: Boolean) {
         prefs?.edit()?.putBoolean(KEY, value)?.apply()
     }
+
+    /**
+     * [T-engine-shadow-sessions] Engine routing for ONE session: the
+     * per-session override wins when set, otherwise the global flag.
+     * Called from the send / resume / queue-drain swap sites with the
+     * live session id.
+     */
+    fun isEnabledFor(sessionId: String?): Boolean {
+        if (sessionId != null && isSessionOverridden(sessionId)) return true
+        return isEnabled()
+    }
+
+    fun isSessionOverridden(sessionId: String): Boolean {
+        val p = prefs ?: return false
+        if (sessionId.isBlank()) return false
+        return p.getStringSet(KEY_SESSION_OVERRIDES, emptySet())
+            ?.contains(sessionId) == true
+    }
+
+    fun setSessionOverride(sessionId: String, enabled: Boolean) {
+        if (sessionId.isBlank()) return
+        val current = prefs?.getStringSet(KEY_SESSION_OVERRIDES, emptySet()) ?: emptySet()
+        val next = if (enabled) current + sessionId else current - sessionId
+        prefs?.edit()?.putStringSet(KEY_SESSION_OVERRIDES, next)?.apply()
+    }
+
+    /** For diagnostics: the armed shadow-session set (read-only copy). */
+    fun sessionOverrides(): Set<String> =
+        prefs?.getStringSet(KEY_SESSION_OVERRIDES, emptySet())?.toSet() ?: emptySet()
 
     /**
      * Pure decision for unit tests: reset unless the flag was armed on

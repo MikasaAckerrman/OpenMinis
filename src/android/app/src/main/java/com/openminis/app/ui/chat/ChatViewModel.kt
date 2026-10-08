@@ -8267,7 +8267,10 @@ class ChatViewModel(
                     // runs the turn when the debug flag is on. The legacy
                     // loop keeps every other path; the flag is flipped by
                     // debug.engineSwap RPC for live verification.
-                    if (com.openminis.app.tools.EngineSwapPrefs.isEnabled()) {
+                    // [T-engine-shadow-sessions] Per-session shadow routing:
+                    // a session in the override set runs the engine while
+                    // the global flag stays OFF (see EngineSwapPrefs).
+                    if (com.openminis.app.tools.EngineSwapPrefs.isEnabledFor(realSessionId)) {
                         AppLogger.info(TAG_STREAM, "$label runEngineTurn CALL (swap flag ON)")
                         try {
                             runEngineTurn(
@@ -9103,7 +9106,8 @@ class ChatViewModel(
                 // [T-m12-engine-swap] Queue-drain turn: engine chain under
                 // the flag, legacy (with fallback) otherwise. No placeholder
                 // here — the queued bubble already rendered.
-                if (com.openminis.app.tools.EngineSwapPrefs.isEnabled()) {
+                // [T-engine-shadow-sessions] per-session shadow routing.
+                if (com.openminis.app.tools.EngineSwapPrefs.isEnabledFor(realSessionId)) {
                     try {
                         runEngineTurn(
                             placeholderAssistantId = null,
@@ -9576,7 +9580,8 @@ class ChatViewModel(
                         // chain when the debug flag is on, legacy (with its
                         // fallback machinery) otherwise AND on fatal engine
                         // failure. Cancellation rethrows (STOP semantics).
-                        if (com.openminis.app.tools.EngineSwapPrefs.isEnabled()) {
+                        // [T-engine-shadow-sessions] per-session shadow routing.
+                        if (com.openminis.app.tools.EngineSwapPrefs.isEnabledFor(realSessionId)) {
                             AppLogger.info(TAG_STREAM, "send runEngineTurn CALL (swap flag ON)")
                             try {
                                 runEngineTurn(

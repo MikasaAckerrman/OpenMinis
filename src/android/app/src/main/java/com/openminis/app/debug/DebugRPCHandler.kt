@@ -108,11 +108,28 @@ class DebugRPCHandler(private val context: Context) {
                     .put("hint", "selfTest reports the live engine; enabled:N reverts to the server")
             }
             "debug.engineSwap" -> {
+                // [T-engine-shadow-sessions] Two modes: global flag (no
+                // sessionId) or ONE shadow session (sessionId + enabled).
+                // Shadow mode routes exactly that session through the
+                // engine chain while the global flag stays untouched —
+                // the user's live test protocol: one conversation on the
+                // new engine, monitored from a legacy conversation.
+                val sessionId = params.optString("sessionId", "").trim()
                 val enable = params.optBoolean("enabled", false)
-                com.openminis.app.tools.EngineSwapPrefs.setEnabled(enable)
-                JSONObject()
-                    .put("enabled", com.openminis.app.tools.EngineSwapPrefs.isEnabled())
-                    .put("hint", "resume-path engine chain; takes effect next stream turn")
+                if (sessionId.isNotEmpty()) {
+                    com.openminis.app.tools.EngineSwapPrefs.setSessionOverride(sessionId, enable)
+                    JSONObject()
+                        .put("mode", "session")
+                        .put("sessionId", sessionId)
+                        .put("overridden", com.openminis.app.tools.EngineSwapPrefs.isSessionOverridden(sessionId))
+                        .put("globalEnabled", com.openminis.app.tools.EngineSwapPrefs.isEnabled())
+                        .put("hint", "per-session shadow routing; takes effect next turn in that session")
+                } else {
+                    com.openminis.app.tools.EngineSwapPrefs.setEnabled(enable)
+                    JSONObject()
+                        .put("enabled", com.openminis.app.tools.EngineSwapPrefs.isEnabled())
+                        .put("hint", "resume-path engine chain; takes effect next stream turn")
+                }
             }
             // [T-device-load-awareness] force-refresh: an RPC caller wants
             // the CURRENT zones, not the 30s TTL cache.
