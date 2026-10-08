@@ -963,6 +963,23 @@ class ChatViewModel(
     private val _fallbackTrigger = MutableStateFlow(0)
     val fallbackTrigger: StateFlow<Int> = _fallbackTrigger.asStateFlow()
 
+    /**
+     * [T-engine-default-flip] The engine (new agent loop) leads by default
+     * since 08.10; legacy is the backup. This exposes the live mode for the
+     * chat top-bar engine button (green bolt = engine, amber shield =
+     * legacy) and [toggleEngineMode] is the one-tap manual switch. Takes
+     * effect from the NEXT turn (the swap points read the flag per turn).
+     */
+    private val _engineMode = MutableStateFlow(com.openminis.app.tools.EngineSwapPrefs.isEnabled())
+    val engineMode: StateFlow<Boolean> = _engineMode.asStateFlow()
+
+    fun toggleEngineMode() {
+        val next = !com.openminis.app.tools.EngineSwapPrefs.isEnabled()
+        com.openminis.app.tools.EngineSwapPrefs.setEnabled(next)
+        _engineMode.value = next
+        AppLogger.info(TAG, "[EngineMode] user toggle -> ${if (next) "engine" else "legacy"} (effective next turn)")
+    }
+
     private val _activeEntryId = MutableStateFlow<String?>(null)
     val activeEntryId: StateFlow<String?> = _activeEntryId.asStateFlow()
 

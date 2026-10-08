@@ -34,6 +34,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Schedule
@@ -2352,6 +2353,31 @@ fun ChatScreen(
                                 maxLines = 1,
                             )
                         }
+                    }
+                    // [T-engine-default-flip] One-tap engine switch: the new
+                    // agent loop leads by default (green bolt); a tap falls
+                    // back to the legacy loop (amber shield) — the backup.
+                    // Effective from the NEXT turn (swap points read the
+                    // flag per turn). No restart, no reinstall.
+                    val engineMode by viewModel.engineMode.collectAsState()
+                    Box(
+                        modifier =
+                            Modifier
+                                .size(36.dp)
+                                .clip(androidx.compose.foundation.shape.CircleShape)
+                                .clickable(
+                                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                                    indication = null,
+                                ) { viewModel.toggleEngineMode() },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = if (engineMode) Icons.Default.Bolt else Icons.Default.Shield,
+                            contentDescription =
+                                if (engineMode) "Новый движок (нажмите для старого)" else "Старый движок (нажмите для нового)",
+                            tint = if (engineMode) androidx.compose.ui.graphics.Color(0xFF34C759) else androidx.compose.ui.graphics.Color(0xFFFFB340),
+                            modifier = Modifier.size(20.dp),
+                        )
                     }
                     // iOS: "..." circle button → dropdown menu
                     Box {

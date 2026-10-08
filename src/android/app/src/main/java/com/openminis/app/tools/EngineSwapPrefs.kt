@@ -11,17 +11,16 @@ import android.content.pm.PackageManager
  * (ProviderModelGateway, ChatTurnReducer) instead of the legacy
  * in-ViewModel loop.
  *
- * OFF by default. The flip is deliberate: the engine chain is
- * unit-verified headlessly, but the legacy loop carries eight production
- * behaviours (T94 throttling, queued-message interrupts, partial-turn
- * durability, fallback chain, auto-resume, compaction triggers) that only
- * a live device run can prove end-to-end. This flag turns the swap into
- * an observable, reversible experiment:
+ * ON by default (flipped 08.10 by the user's decision after the shadow
+ * campaign: the engine chain proved itself live — tool turns, multi-round
+ * turns, memory recall, multimodal, dead-turn degradation, 55-minute
+ * 107-tool stress — while every failure found was in the routing AROUND
+ * it, all fixed). The legacy in-ViewModel loop stays compiled as the
+ * BACKUP: per-turn degradation (engine failure → legacy automatically)
+ * plus a manual escape hatch — the engine button in the chat top bar
+ * (green bolt = new engine leads, amber shield = legacy leads).
  *
- *   debug.engineSwap {"enabled":true}   — RPC, immediate
- *
- * Once a live week passes on the engine path, the default flips here and
- * the legacy loop retires in the same series.
+ *   debug.engineSwap {"enabled":false}  — RPC, immediate (legacy)
  *
  * [T-swap-flag-cross-build] A debug-RPC experiment must NOT survive an app
  * update. SharedPreferences persist across reinstalls of the same package
@@ -30,8 +29,9 @@ import android.content.pm.PackageManager
  * through the broken chain with nobody asking for it, and looked exactly
  * like "the new build regressed". The flag is now stamped with the
  * versionCode it was armed on; init() resets it whenever the app version
- * changed. Re-arming on a new build is one RPC — deliberate, visible in
- * the audit log, never inherited.
+ * changed — to the DEFAULT (engine ON). The user's manual legacy choice
+ * is per-build too: an update re-arms the default, the button re-applies
+ * the choice in one tap.
  */
 object EngineSwapPrefs {
     private const val PREFS = "minis_debug_engine_swap"
@@ -57,12 +57,11 @@ object EngineSwapPrefs {
         val current = currentVersionCode(context)
         val stored = prefs?.getInt(KEY_ARMED_AT_VERSION, Int.MIN_VALUE) ?: Int.MIN_VALUE
         if (mustResetOnUpgrade(stored, current)) {
-            // Cross-build (or first run): the experiment is not armed for
-            // THIS build. Reset to the default (OFF) and stamp the build.
-            // Shadow sessions die with the build too — they are armed
-            // per-experiment, never inherited across installs.
+            // Cross-build (or first run): reset to the default (ENGINE ON —
+            // the new engine leads since 08.10) and stamp the build. The
+            // user's legacy choice is one button tap away, never inherited.
             prefs?.edit()
-                ?.putBoolean(KEY, false)
+                ?.putBoolean(KEY, true)
                 ?.putInt(KEY_ARMED_AT_VERSION, current)
                 ?.putStringSet(KEY_SESSION_OVERRIDES, null)
                 ?.apply()
@@ -70,8 +69,8 @@ object EngineSwapPrefs {
     }
 
     fun isEnabled(): Boolean {
-        val p = prefs ?: return false
-        return p.getBoolean(KEY, false)
+        val p = prefs ?: return true
+        return p.getBoolean(KEY, true)
     }
 
     fun setEnabled(value: Boolean) {
