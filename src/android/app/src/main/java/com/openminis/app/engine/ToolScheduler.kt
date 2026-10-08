@@ -143,7 +143,7 @@ class ToolScheduler(
                 }
             }
         }
-        return waves.filter { it.calls.isNotEmpty() }.map { Wave(it.calls) }
+        return waves.filter { it.isNotEmpty() }.map { Wave(it) }
     }
 
     /** Concurrency cap for wave execution (>= 1). */
