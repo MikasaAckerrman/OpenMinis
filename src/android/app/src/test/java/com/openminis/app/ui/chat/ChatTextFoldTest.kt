@@ -133,11 +133,11 @@ class ChatTextFoldTest {
             textBlock("t2", "Ответ."),
         )
         val items = flat(msg("m1", *blocks.toTypedArray()))
-        // All internal at rest: internals + row + answer are present in the
-        // flat list; the filter must keep ONLY the row and the answer.
+        // All internal at rest: only the header, the fold row and the
+        // answer survive the filter.
         val visible = filterTurnInternalItems(items, emptyMap())
         assertEquals(
-            listOf("turnfold", "mdblock"),
+            listOf("header", "turnfold", "mdblock"),
             visible.map { it.contentType },
         )
         // Expanded: everything visible again.
