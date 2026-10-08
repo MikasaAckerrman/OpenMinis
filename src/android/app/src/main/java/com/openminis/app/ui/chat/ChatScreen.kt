@@ -473,14 +473,13 @@ fun ChatScreen(
     // expanded that message's group to inspect the pills again. Render-time
     // state ONLY — the flatItems list, its LazyColumn keys and the frozen
     // prefix cache are untouched by a toggle (no rebuild, no reflow).
-    val expandedToolGroups = remember { mutableStateMapOf<String, Boolean>() }
-    // [T-zcode-text-fold] Same pattern for the INTERMEDIATE text of finished
-    // turns: every text block that stood before/between tool/thinking blocks
-    // folds into a TextGroupSummaryRow capsule at rest (tap to reopen the
-    // full markdown). Keyed "messageId:parentBlockId" — one fold state per
-    // text block, so multiple intermediate blocks fold independently.
-    // Render-time state ONLY — same no-reflow guarantee as above.
-    val expandedTextBlocks = remember { mutableStateMapOf<String, Boolean>() }
+    // [T-zcode-turn-fold] ONE fold per finished turn (user's ZCode spec,
+    // 08.10): at rest the user sees only the final answer + a single
+    // ⚙ row; tools, thinking and intermediate text all hide together
+    // under it. Tap = the whole turn reopens in place, tap = folds back.
+    // Keyed by message id (dedupe-suffix-proof); render-time state ONLY —
+    // flatItems, keys and the frozen prefix are untouched (v18 no-reflow).
+    val expandedTurns = remember { mutableStateMapOf<String, Boolean>() }
     val error by viewModel.error.collectAsState()
     val modelName by viewModel.modelName.collectAsState()
     val sessionTitle by viewModel.sessionTitle.collectAsState()
@@ -3905,55 +3904,17 @@ fun ChatScreen(
                                 }
                             }
                             is FlatChatItem.AssistantMarkdownBlock -> {
-                                // [T-zcode-text-fold] ZCode final view: only
-                                // the FINAL answer text stays visible at rest.
-                                // Intermediate text (before/between tool and
-                                // thinking blocks) folds into a slim capsule
-                                // with a one-line preview — tap reopens the
-                                // full markdown, tap again folds. LIVE turns
-                                // never fold: the work is always visible as
-                                // it happens, and NO counters of any kind are
-                                // shown live — numbers only appear on
-                                // finished turns (user's standing rule).
-                                val foldKey = "${originalMessageId(item.messageId)}:${item.parentBlockId}"
-                                val textExpanded = expandedTextBlocks[foldKey] == true
-                                val mustFold = item.isIntermediateText &&
-                                    !item.parentMessageIsStreaming && !textExpanded
-                                if (mustFold) {
-                                    if (item.blockIndex == 0) {
-                                        TextGroupSummaryRow(
-                                            preview = item.rawText,
-                                            charCount = item.rawText.length,
-                                            expanded = false,
-                                            onToggle = {
-                                                expandedTextBlocks[foldKey] = true
-                                                AppLogger.info(
-                                                    "ChatScreen",
-                                                    "[Fold] text expand $foldKey",
-                                                )
-                                            },
-                                        )
-                                    }
-                                    // Non-first fragments of a folded block
-                                    // compose nothing — zero-height slots,
-                                    // LazyColumn keys stay stable (no reflow).
-                                } else {
-                                    if (item.isIntermediateText && item.blockIndex == 0) {
-                                        // Expanded header — the fold control
-                                        // sits above the reopened text.
-                                        TextGroupSummaryRow(
-                                            preview = item.rawText,
-                                            charCount = item.rawText.length,
-                                            expanded = true,
-                                            onToggle = {
-                                                expandedTextBlocks[foldKey] = false
-                                                AppLogger.info(
-                                                    "ChatScreen",
-                                                    "[Fold] text collapse $foldKey",
-                                                )
-                                            },
-                                        )
-                                    }
+                                // [T-zcode-turn-fold] Internal text (turn
+                                // work) hides at rest under the message's
+                                // single fold row; the trailing text run
+                                // (the final answer) and tool-less turns
+                                // always render. Live turns never fold —
+                                // the work is always visible as it happens.
+                                val turnId = originalMessageId(item.messageId)
+                                val turnExpanded = expandedTurns[turnId] == true
+                                val hidden = item.isTurnInternal &&
+                                    !item.parentMessageIsStreaming && !turnExpanded
+                                if (!hidden) {
                                     BoundsTrackedBlock(
                                         messageId = item.messageId,
                                         slotKey = "mdblock:${item.parentBlockId}:${item.blockIndex}",
@@ -4001,7 +3962,14 @@ fun ChatScreen(
                                 // explicit OFF snapshot (the T300 forced-stream
                                 // case) keeps the block hidden.
                                 val showThinking = item.messageThinkingLevel?.isEnabled ?: true
-                                if (showThinking) {
+                                // [T-zcode-turn-fold] Internal thinking (inside
+                                // a folding turn) hides at rest under the
+                                // message's single fold row until expanded.
+                                val turnId = originalMessageId(item.messageId)
+                                val turnExpanded = expandedTurns[turnId] == true
+                                val thinkingHidden = item.isTurnInternal &&
+                                    !item.messageIsStreaming && !turnExpanded
+                                if (showThinking && !thinkingHidden) {
                                     // [T-android-thinking-auto-collapse] Use
                                     // `isLastBlockOverall` (not `isLast` =
                                     // last-thinking-only) so the block flips
@@ -4029,33 +3997,14 @@ fun ChatScreen(
                                 // group render nothing (zero-height item
                                 // slots; LazyColumn keys stay stable, so the
                                 // fold is not a reflow event).
-                                // [T-zcode-tool-collapse-segments] The toggle
-                                // key is PER-SEGMENT (message + the run's
-                                // first block): a multi-round turn has
-                                // several independent folds between its
-                                // texts — expanding one must not expand the
-                                // others.
-                                val groupMessageId = originalMessageId(item.messageId)
-                                val segmentFirstId = item.allToolBlocks.firstOrNull()?.id ?: item.block.id
-                                val groupKey = "$groupMessageId:$segmentFirstId"
-                                val userExpanded = expandedToolGroups[groupKey] == true
-                                val showPills = item.messageIsStreaming || userExpanded
-                                if (showPills) {
-                                    if (!item.messageIsStreaming && item.allToolBlocks.firstOrNull()?.id == item.block.id) {
-                                        // Expanded header — the collapse control
-                                        // sits above the reopened pills.
-                                        ToolGroupSummaryRow(
-                                            blocks = item.allToolBlocks,
-                                            expanded = true,
-                                            onToggle = {
-                                                expandedToolGroups[groupKey] = false
-                                                AppLogger.info(
-                                                    "ChatScreen",
-                                                    "[Fold] tools collapse $groupKey",
-                                                )
-                                            },
-                                        )
-                                    }
+                                // [T-zcode-turn-fold] ONE fold per turn: pills
+                                // render live while the turn runs; at rest they
+                                // hide under the message's single
+                                // AssistantTurnFold row (rendered by its own
+                                // branch below) until the turn is expanded.
+                                val turnId = originalMessageId(item.messageId)
+                                val turnExpanded = expandedTurns[turnId] == true
+                                if (item.messageIsStreaming || turnExpanded) {
                                     ToolCallPill(
                                         block = item.block,
                                         allToolBlocks = item.allToolBlocks,
@@ -4104,17 +4053,29 @@ fun ChatScreen(
                                             ).show()
                                         },
                                     )
-                                } else if (item.allToolBlocks.firstOrNull()?.id == item.block.id) {
-                                    // Collapsed: exactly ONE summary row for
-                                    // the whole group — the first member.
+                                }
+                                // Folded at rest: compose nothing — the
+                                // AssistantTurnFold item renders the row.
+                            }
+                            is FlatChatItem.AssistantTurnFold -> {
+                                // [T-zcode-turn-fold] The ONE fold row of a
+                                // finished turn: everything internal (tools,
+                                // thinking, intermediate text) hides under
+                                // it at rest. Tap = expand the whole turn
+                                // in place, tap = fold back. Composes
+                                // nothing while the turn streams — the work
+                                // itself is on screen.
+                                if (!item.messageIsStreaming) {
+                                    val turnId = originalMessageId(item.messageId)
+                                    val expanded = expandedTurns[turnId] == true
                                     ToolGroupSummaryRow(
-                                        blocks = item.allToolBlocks,
-                                        expanded = false,
+                                        blocks = item.toolBlocks,
+                                        expanded = expanded,
                                         onToggle = {
-                                            expandedToolGroups[groupKey] = true
+                                            expandedTurns[turnId] = !expanded
                                             AppLogger.info(
                                                 "ChatScreen",
-                                                "[Fold] tools expand $groupKey",
+                                                if (expanded) "[Fold] turn collapse $turnId" else "[Fold] turn expand $turnId",
                                             )
                                         },
                                     )

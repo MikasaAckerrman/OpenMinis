@@ -388,13 +388,12 @@ internal sealed class FlatChatItem {
         val messageIsStreaming: Boolean,
         /** Joined raw markdown of the parent message, used by Copy Markdown. */
         val messageMarkdown: String,
-        // [T-zcode-text-fold] True when the parent text block is NOT part of
-        // the trailing text run of the message — a tool_use / thinking block
-        // stands at or after it. ZCode final view: the user sees only the
-        // FINAL answer; intermediate text folds into a slim capsule row
-        // exactly where it stood (tap to reopen). Live turns never fold —
-        // the work is always visible while it happens.
-        val isIntermediateText: Boolean = false,
+        // [T-zcode-turn-fold] True when the parent text block is INTERNAL
+        // turn material (stands before/between tool or thinking blocks of a
+        // message that HAS tools) — it folds under the message's single
+        // AssistantTurnFold row at rest. The trailing text run (the final
+        // answer) and tool-less messages never fold. Live turns never fold.
+        val isTurnInternal: Boolean = false,
         // [T-zcode-text-fold] Raw parent-message streaming flag — NOT the
         // streaming-tail flag above (true only for the trailing block while
         // tokens arrive). The fold gate needs the message-level state: every
@@ -414,7 +413,7 @@ internal sealed class FlatChatItem {
                 blockIndex == other.blockIndex &&
                 isLastBlockOfMessage == other.isLastBlockOfMessage &&
                 messageIsStreaming == other.messageIsStreaming &&
-                isIntermediateText == other.isIntermediateText &&
+                isTurnInternal == other.isTurnInternal &&
                 parentMessageIsStreaming == other.parentMessageIsStreaming &&
                 rawText.length == other.rawText.length &&
                 messageMarkdown.length == other.messageMarkdown.length
@@ -425,7 +424,7 @@ internal sealed class FlatChatItem {
             h = h * 31 + blockIndex
             h = h * 31 + isLastBlockOfMessage.hashCode()
             h = h * 31 + messageIsStreaming.hashCode()
-            h = h * 31 + isIntermediateText.hashCode()
+            h = h * 31 + isTurnInternal.hashCode()
             h = h * 31 + parentMessageIsStreaming.hashCode()
             h = h * 31 + rawText.length
             h = h * 31 + messageMarkdown.length
@@ -435,8 +434,7 @@ internal sealed class FlatChatItem {
 
     data class AssistantThinking(
         val messageId: String,
-        val block: AssistantBlock,
-        val isLast: Boolean,
+        val block: AssistantBlock,        val isLast: Boolean,
         val messageIsStreaming: Boolean,
         // T300: thinking level captured at the message's creation. Null
         // for assistant messages restored from DB (legacy / pre-T300) —
@@ -452,6 +450,10 @@ internal sealed class FlatChatItem {
         // restored / legacy items render collapsed (the pre-change
         // behaviour for non-trailing thinking).
         val isLastBlockOverall: Boolean = false,
+        // [T-zcode-turn-fold] True for thinking inside a folding turn (has
+        // tools, block before the trailing text run): hides at rest under
+        // the message's single AssistantTurnFold row until expanded.
+        val isTurnInternal: Boolean = false,
     ) : FlatChatItem() {
         override val key = "thinking:$messageId:${block.id}"
         override val contentType = "thinking"
@@ -466,13 +468,37 @@ internal sealed class FlatChatItem {
         // [T-zcode-tool-collapse] Per-message streaming flag — the exact
         // pattern AssistantThinking already uses. Drives the ZCode-style
         // collapse-at-rest: tool pills render live while the turn runs and
-        // fold into ONE summary row the moment the turn finishes (see the
-        // render branch in ChatScreen). Default false so DB-restored /
-        // legacy items render collapsed — the correct rest state.
+        // fold under the message's single AssistantTurnFold row the moment
+        // the turn finishes (see the render branch in ChatScreen).
+        // Default false so DB-restored / legacy items render collapsed —
+        // the correct rest state.
         val messageIsStreaming: Boolean = false,
+        // [T-zcode-turn-fold] True for every tool of a folding turn: the pill
+        // hides at rest until the turn is expanded (see AssistantTurnFold).
+        val isTurnInternal: Boolean = false,
     ) : FlatChatItem() {
         override val key = "tool:$messageId:${block.id}"
         override val contentType = "tool"
+    }
+
+    /**
+     * [T-zcode-turn-fold] ZCode final view — ONE fold row per finished turn.
+     * Emitted at the position of the FIRST internal block; carries the
+     * message-wide tool stats for the row. At rest everything internal to
+     * the turn (tools, thinking, intermediate text) hides under this single
+     * row; tap expands the whole turn in place (row stays as the header),
+     * tap again collapses. Live turns never fold — the row itself composes
+     * nothing while the turn streams. Only messages WITH tool_use fold:
+     * tool-less turns keep their shape (thinking auto-collapse, plain
+     * text) — the row is about the tool session.
+     */
+    data class AssistantTurnFold(
+        val messageId: String,
+        val toolBlocks: List<AssistantBlock>,
+        val messageIsStreaming: Boolean = false,
+    ) : FlatChatItem() {
+        override val key = "turnfold:$messageId"
+        override val contentType = "turnfold"
     }
 
     data class AssistantInfo(
@@ -761,11 +787,12 @@ internal fun buildFlatChatItems(
                 isLastBlockOfMessage = item.isLastBlockOfMessage,
                 messageIsStreaming = item.messageIsStreaming,
                 messageMarkdown = item.messageMarkdown,
-                isIntermediateText = item.isIntermediateText,
+                isTurnInternal = item.isTurnInternal,
                 parentMessageIsStreaming = item.parentMessageIsStreaming,
             )
             is FlatChatItem.AssistantThinking -> item.copy(messageId = "${item.messageId}#$n")
             is FlatChatItem.AssistantToolUse -> item.copy(messageId = "${item.messageId}#$n")
+            is FlatChatItem.AssistantTurnFold -> item.copy(messageId = "${item.messageId}#$n")
             is FlatChatItem.AssistantInfo -> item.copy(messageId = "${item.messageId}#$n")
             is FlatChatItem.AssistantTyping -> item.copy(messageId = "${item.messageId}#$n")
             is FlatChatItem.AgentRunCard -> item.copy(messageId = "${item.messageId}#$n")
@@ -865,20 +892,38 @@ internal fun buildFlatChatItems(
         // AssistantThinking.isLastBlockOverall KDoc.
         val lastBlockId = blocks.lastOrNull()?.id
         val lastTextIdx = blocks.indexOfLast { it.kind == "text" }
-        // [T-zcode-text-fold] Last non-text/non-info block index. Text blocks
-        // at or before it are INTERMEDIATE work (folded into capsule rows at
-        // rest — the ZCode final view: only the final answer stays visible);
-        // the trailing text run after it is the final answer (always shown).
-        // Pure-text messages (-1) fold nothing — the whole message IS the
-        // answer. "info" rows are exempt: they are one-line system notices,
-        // not part of the answer's narrative.
+        // [T-zcode-turn-fold] Last non-text/non-info block index = the fold
+        // boundary: everything at or before it is INTERNAL turn material
+        // (work), everything after is the trailing text run (the answer).
+        // "info" rows are exempt: one-line system notices, not narrative.
         val lastNonTextIdx = blocks.indexOfLast { it.kind != "text" && it.kind != "info" }
         val hasAnyTextBlock = lastTextIdx >= 0
+        // [T-zcode-turn-fold] THE fold rule (user's spec, 08.10): a turn
+        // WITH tools folds as ONE unit — at rest the user sees only the
+        // final answer + a single AssistantTurnFold row; tools, thinking
+        // and intermediate text all hide under that row together (expand =
+        // the whole turn reopens in place, collapse = folds back). Turns
+        // WITHOUT tools keep their existing shape: the row is about the
+        // tool session, and thinking already auto-collapses on its own.
+        val turnFolds = blocks.any { it.kind == "tool_use" }
+        val turnToolBlocks = if (turnFolds) blocks.filter { it.kind == "tool_use" } else emptyList()
+        var turnFoldEmitted = false
         // Only the last cancelled tool_use in the message gets the Retry button —
         // retryLast() re-runs the whole turn, so one button is enough.
         val lastCancelledToolId = blocks.lastOrNull { it.kind == "tool_use" && it.toolStatus == ToolBlockStatus.CANCELLED }?.id
 
         blocks.forEachIndexed { index, block ->
+            // [T-zcode-turn-fold] The single fold row rides at the position
+            // of the FIRST internal block — the user reads [⚙ row][final
+            // answer] for a finished turn. Emitted once per message.
+            if (turnFolds && !turnFoldEmitted && index <= lastNonTextIdx && block.kind != "info") {
+                out.add(dedupe(FlatChatItem.AssistantTurnFold(
+                    messageId = message.id,
+                    toolBlocks = turnToolBlocks,
+                    messageIsStreaming = message.isStreaming,
+                )))
+                turnFoldEmitted = true
+            }
             when (block.kind) {
                 "text" -> {
                     if (block.content.isNotEmpty()) {
@@ -956,7 +1001,7 @@ internal fun buildFlatChatItems(
                                 isLastBlockOfMessage = isLastText && message.isStreaming,
                                 messageIsStreaming = message.isStreaming && isLastText,
                                 messageMarkdown = joinedMarkdown,
-                                isIntermediateText = index <= lastNonTextIdx,
+                                isTurnInternal = turnFolds && index <= lastNonTextIdx,
                                 parentMessageIsStreaming = message.isStreaming,
                             )))
                         } else {
@@ -970,7 +1015,7 @@ internal fun buildFlatChatItems(
                                     isLastBlockOfMessage = isLastText && isLastFragOfText,
                                     messageIsStreaming = message.isStreaming && isLastText,
                                     messageMarkdown = joinedMarkdown,
-                                    isIntermediateText = index <= lastNonTextIdx,
+                                    isTurnInternal = turnFolds && index <= lastNonTextIdx,
                                     parentMessageIsStreaming = message.isStreaming,
                                 )))
                             }
@@ -984,6 +1029,7 @@ internal fun buildFlatChatItems(
                     messageIsStreaming = message.isStreaming,
                     messageThinkingLevel = message.thinkingLevel,
                     isLastBlockOverall = block.id == lastBlockId,
+                    isTurnInternal = turnFolds && index <= lastNonTextIdx,
                 )))
                 "info" -> out.add(dedupe(FlatChatItem.AssistantInfo(
                     messageId = message.id,
@@ -1001,6 +1047,10 @@ internal fun buildFlatChatItems(
                     // [T-zcode-tool-collapse] Per-message streaming flag for
                     // the collapse-at-rest rule (see AssistantToolUse).
                     messageIsStreaming = message.isStreaming,
+                    // [T-zcode-turn-fold] Every tool of a folding turn hides
+                    // at rest under the message's single AssistantTurnFold
+                    // row (see AssistantTurnFold).
+                    isTurnInternal = turnFolds,
                 )))
             }
         }

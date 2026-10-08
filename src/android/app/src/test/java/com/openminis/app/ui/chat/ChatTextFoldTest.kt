@@ -1,15 +1,19 @@
 package com.openminis.app.ui.chat
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * [T-zcode-text-fold] The fold rule for a finished turn's text: the user
- * sees ONLY the final answer at rest — every text block that stands before
- * or between tool/thinking blocks folds into a capsule row; the trailing
- * text run (everything after the last tool/thinking block) stays visible.
- * Live turns never fold (the work is always shown as it happens).
+ * [T-zcode-turn-fold] THE fold rule (user's ZCode spec, 08.10): a finished
+ * turn WITH tools folds as ONE unit — the flattener emits a single
+ * AssistantTurnFold row at the first internal block; tools, thinking and
+ * intermediate text all carry isTurnInternal and hide under that row at
+ * rest. The trailing text run (the answer) and tool-less turns never fold.
+ * Live turns never fold. Info rows are exempt.
  *
  * NOTE: this suite must execute on CI — see the [T-test-only-ci] marker in
  * .github/workflows/tests.yml; empty commits do not trigger workflows.
@@ -17,83 +21,110 @@ import org.junit.Test
 class ChatTextFoldTest {
 
     private fun textBlock(id: String, content: String) = AssistantBlock(
-        id = id,
-        kind = "text",
-        content = content,
+        id = id, kind = "text", content = content,
     )
 
     private fun toolBlock(id: String) = AssistantBlock(
-        id = id,
-        kind = "tool_use",
-        content = "",
-        toolName = "shell_execute",
-        toolStatus = ToolBlockStatus.SUCCESS,
+        id = id, kind = "tool_use", content = "", toolName = "shell_execute",
+        toolStatus = ToolBlockStatus.SUCCESS, durationMs = 1000L,
     )
 
-    private fun flatFor(vararg blocks: AssistantBlock, streaming: Boolean = false): List<FlatChatItem> =
-        buildFlatChatItems(
-            listOf(
-                ChatMessage(
-                    id = "m1",
-                    role = "assistant",
-                    content = "",
-                    toolBlocks = blocks.toList(),
-                    isStreaming = streaming,
-                ),
+    private fun thinkingBlock(id: String, content: String) = AssistantBlock(
+        id = id, kind = "thinking", content = content,
+    )
+
+    private fun infoBlock(id: String) = AssistantBlock(
+        id = id, kind = "info", content = "⟳ system notice",
+    )
+
+    private fun msg(
+        id: String,
+        vararg blocks: AssistantBlock,
+        streaming: Boolean = false,
+    ) = ChatMessage(
+        id = id, role = "assistant", content = blocks.joinToString("") { it.content },
+        toolBlocks = blocks.toList(), isStreaming = streaming,
+    )
+
+    private fun flat(vararg messages: ChatMessage) =
+        buildFlatChatItems(messages = messages.toList(), sessionId = "s")
+
+    @Test
+    fun `turn with tools folds as one unit - row first, internals flagged, answer free`() {
+        val items = flat(
+            msg(
+                "m1",
+                textBlock("t1", "Проверяю лог."),
+                toolBlock("u1"),
+                textBlock("t2", "Финальный ответ."),
             ),
         )
+        // ONE fold row, at the position of the first internal block.
+        val fold = items.filterIsInstance<FlatChatItem.AssistantTurnFold>().single()
+        assertEquals("m1", fold.messageId)
+        assertEquals(1, fold.toolBlocks.size)
+        val kinds = items.map { it.contentType }
+        assertEquals(listOf("header", "turnfold", "mdblock", "tool", "mdblock"), kinds)
+        // Intermediate text + tool are internal; the answer is not.
+        assertTrue(items.filterIsInstance<FlatChatItem.AssistantMarkdownBlock>()[0].isTurnInternal)
+        assertTrue(items.filterIsInstance<FlatChatItem.AssistantToolUse>().single().isTurnInternal)
+        assertFalse(items.filterIsInstance<FlatChatItem.AssistantMarkdownBlock>()[1].isTurnInternal)
+    }
 
     @Test
-    fun `text before tools folds, trailing text is the answer`() {
-        val items = flatFor(
-            textBlock("t1", "Проверяю лог устройства."),
-            toolBlock("u1"),
-            textBlock("t2", "Итог анализа."),
+    fun `pure text turn never folds - whole message is the answer`() {
+        val items = flat(msg("m1", textBlock("t1", "Просто ответ.")))
+        assertNull(items.firstOrNull { it is FlatChatItem.AssistantTurnFold })
+        assertFalse(items.filterIsInstance<FlatChatItem.AssistantMarkdownBlock>().single().isTurnInternal)
+    }
+
+    @Test
+    fun `thinking inside a tool turn folds too`() {
+        val items = flat(
+            msg(
+                "m1",
+                thinkingBlock("th1", "Размышляю."),
+                toolBlock("u1"),
+                textBlock("t1", "Ответ."),
+            ),
         )
-        val md = items.filterIsInstance<FlatChatItem.AssistantMarkdownBlock>()
-        val t1 = md.first { it.parentBlockId == "t1" }
-        val t2 = md.first { it.parentBlockId == "t2" }
-        assertTrue("text before a tool must be marked intermediate (foldable)", t1.isIntermediateText)
-        assertFalse("trailing text is the final answer — never folded", t2.isIntermediateText)
-        assertFalse("finished message reports the raw streaming flag false", t1.parentMessageIsStreaming)
+        assertTrue(items.filterIsInstance<FlatChatItem.AssistantThinking>().single().isTurnInternal)
+        assertEquals(1, items.filterIsInstance<FlatChatItem.AssistantTurnFold>().size)
     }
 
     @Test
-    fun `pure text message is the answer - nothing folds`() {
-        val items = flatFor(textBlock("t1", "Просто ответ."))
-        val t1 = items.filterIsInstance<FlatChatItem.AssistantMarkdownBlock>().single()
-        assertFalse("no tools in the message — the whole text is the answer", t1.isIntermediateText)
-    }
-
-    @Test
-    fun `message ending on tools folds its text`() {
-        // No final text after the tool: everything textual is intermediate work.
-        val items = flatFor(textBlock("t1", "Запускаю проверку."), toolBlock("u1"))
-        val t1 = items.filterIsInstance<FlatChatItem.AssistantMarkdownBlock>().single()
-        assertTrue("text preceding the trailing tool run folds", t1.isIntermediateText)
-    }
-
-    @Test
-    fun `live turn keeps the fold gate closed`() {
-        val items = flatFor(
-            textBlock("t1", "Промежуточный текст."),
-            toolBlock("u1"),
-            streaming = true,
+    fun `info rows are exempt - fold row rides at the first real internal block`() {
+        val items = flat(
+            msg(
+                "m1",
+                infoBlock("i1"),
+                textBlock("t1", "Работа."),
+                toolBlock("u1"),
+                textBlock("t2", "Ответ."),
+            ),
         )
-        val t1 = items.filterIsInstance<FlatChatItem.AssistantMarkdownBlock>()
-            .first { it.parentBlockId == "t1" }
-        assertTrue("marking is present even mid-stream (the renderer decides)", t1.isIntermediateText)
-        assertTrue("but the raw streaming flag keeps the block visible while the turn runs",
-            t1.parentMessageIsStreaming)
+        val kinds = items.map { it.contentType }
+        assertEquals(listOf("header", "info", "turnfold", "mdblock", "tool", "mdblock"), kinds)
+        // The order assertion above IS the proof: the fold row skipped the
+        // info block and rode at the first real internal (text) block.
     }
 
     @Test
-    fun `info rows do not make text intermediate`() {
-        // "info" blocks are one-line system notices, not part of the answer's
-        // narrative — a trailing text after an info row is still the answer.
-        val info = AssistantBlock(id = "i1", kind = "info", content = "⟳ продолжение")
-        val items = flatFor(info, textBlock("t1", "Финальный текст."))
-        val t1 = items.filterIsInstance<FlatChatItem.AssistantMarkdownBlock>().single()
-        assertFalse("info rows are exempt from the trailing-run rule", t1.isIntermediateText)
+    fun `live turn carries the streaming flag - the render gate stays closed`() {
+        val items = flat(
+            msg(
+                "m1",
+                textBlock("t1", "Работаю."),
+                toolBlock("u1"),
+                streaming = true,
+            ),
+        )
+        // The fold row exists but is marked streaming — the renderer must
+        // compose nothing from it while the turn runs (work is visible).
+        val fold = items.filterIsInstance<FlatChatItem.AssistantTurnFold>().single()
+        assertTrue(fold.messageIsStreaming)
+        // Internals are flagged too — but the render gate checks the same
+        // streaming flag before hiding anything.
+        assertTrue(items.filterIsInstance<FlatChatItem.AssistantToolUse>().single().isTurnInternal)
     }
 }
