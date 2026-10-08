@@ -82,6 +82,19 @@ internal object ChatMutationMethods {
         val modelEntryId = if (params.has("modelEntryId") && !params.isNull("modelEntryId")) params.optString("modelEntryId").ifEmpty { null } else null
         val modelGroupId = if (params.has("modelGroupId") && !params.isNull("modelGroupId")) params.optString("modelGroupId").ifEmpty { null } else null
         val overrideName = HeadlessChatRunner.applyModelOverride(context, sessionId, modelEntryId, modelGroupId)
+        // [T-override-vm-invalidation] An explicit model override must take
+        // effect on THIS prompt, not the next app restart: drop the stale VM
+        // so the turn routes through the freshly written binding. A busy
+        // (streaming) session refuses — honest error instead of silent
+        // wrong-provider routing.
+        if (modelEntryId != null || modelGroupId != null) {
+            if (!HeadlessChatRunner.invalidateViewModel(sessionId)) {
+                throw RPCException(
+                    -32000,
+                    "session is streaming; model override deferred — retry after the turn completes",
+                )
+            }
+        }
 
         // Decode attachments — RPC carries base64; we materialize them as
         // FileProvider-backed Uris so InputAttachment + the existing image

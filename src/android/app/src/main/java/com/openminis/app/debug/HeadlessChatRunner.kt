@@ -69,6 +69,32 @@ internal object HeadlessChatRunner {
         providerFor(context, sessionId)[ChatViewModel::class.java]
 
     /**
+     * [T-override-vm-invalidation] Drop the cached VM for this session so the
+     * NEXT prompt rebuilds it from SQLite — loading the freshly written model
+     * binding. Without this, chat.prompt with modelEntryId updated the DB but
+     * the LIVE VM kept its in-memory binding and routed the turn through the
+     * OLD provider (the 08.10 shadow-test: prompt re-bound the session to
+     * glm-5.3, the stale VM still routed agentrouter -> 401 -> dead turn).
+     * Refuses while a stream is in flight (release cancels viewModelScope =
+     * kills the live turn; a busy session must not lose its work to a model
+     * switch) — the caller surfaces the refusal.
+     */
+    @Synchronized
+    fun invalidateViewModel(sessionId: String): Boolean {
+        val cachedProvider = providers[sessionId]
+        if (cachedProvider != null) {
+            val vm = runCatching { cachedProvider[ChatViewModel::class.java] }.getOrNull()
+            if (vm?.isStreaming?.value == true) return false
+            providers.remove(sessionId)
+        }
+        // No headless-cached VM, or idle: drop the process-wide store too —
+        // a UI-opened VM for this session is equally stale after a binding
+        // change and will be rebuilt from SQLite on the next attach.
+        ChatViewModelStore.release(sessionId)
+        return true
+    }
+
+    /**
      * Ensure a session exists in the DB before binding a ViewModel. Mirrors
      * the in-app flow that creates a draft session lazily; for RPC-driven
      * automation we materialize it eagerly so subsequent reads can resolve
