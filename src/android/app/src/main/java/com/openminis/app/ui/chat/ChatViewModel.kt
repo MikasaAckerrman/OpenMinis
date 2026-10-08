@@ -1715,6 +1715,22 @@ class ChatViewModel(
             }
         }
         if (!_autoModeArmed.value || autoModeParked) return
+        // [T-queue-user-priority] 09.10 vc112 incident («установил» hung 29
+        // min as a queued bubble): the auto-mode continuation and the
+        // compaction chain DEFER the prompt drain (guard: !autoModeCompact-
+        // Pending) — but when compaction itself failed (Phase2.5 heal
+        // unresolved, logged twice in the incident window), the deferred
+        // pump never fired and the USER'S message was hostage to the next
+        // manual action. INVARIANT: a queued user message outranks the
+        // autonomous continuation — never park a continuation over a
+        // waiting user; let the turn tail drain their words immediately.
+        if (_promptQueue.value.isNotEmpty()) {
+            AppLogger.info(
+                TAG_STREAM,
+                "[AutoMode] ${_promptQueue.value.size} user prompt(s) queued — continuation deferred, queue wins",
+            )
+            return
+        }
         val last = _messages.value.lastOrNull { it.role == "assistant" } ?: return
 
         // [T-auto-mode-verify] The manager checks, doesn't ask: a VERIFY
@@ -6478,6 +6494,16 @@ class ChatViewModel(
                                     queuedPromptId = p.id,
                                 )
                             }
+                            // [T-stop-churn] Chat open IS a user action: a
+                            // restored queue is the user coming back to work.
+                            // Kick the drain here — the only automatic kick
+                            // left after cancelStream stopped force-restarting
+                            // (a stop must mean stop). Guards inside
+                            // resumeQueueAfterCancel handle streaming/compact.
+                            if (!_isStreaming.value && !_isCompacting.value) {
+                                AppLogger.info(TAG_STREAM, "[Queue] reload kick: draining ${restored.size} restored prompt(s)")
+                                resumeQueueAfterCancel()
+                            }
                         }
                         persistPromptQueue()
                     }
@@ -9212,9 +9238,12 @@ class ChatViewModel(
                 if (autoModeCompactPending) break
             } catch (e: CancellationException) {
                 Log.d(TAG, "Agent loop (queued-drain) cancelled")
-                // Cancel mid-drain: cancelStream() will check _promptQueue
-                // and call resumeQueueAfterCancel() if anything's still pending,
-                // so just propagate.
+                // Cancel mid-drain: the taken prompt is already durable (the
+                // appendMessage-before-take order) — the turn shows its own
+                // cancelled state with a Retry affordance. cancelStream no
+                // longer force-restarts the queue (a stop must mean stop):
+                // preserved prompts wait for the next user action or a
+                // turn-end drain.
                 throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Agent loop (queued-drain) error", e)
@@ -17415,10 +17444,23 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         // enqueued prompts during the cancelled stream, auto-resume the drain
         // instead of leaving them stuck as dashed bubbles waiting for a manual
         // long-press retry.
+        // T189 legacy: iOS auto-restarted the drain here. That auto-restart
+        // is the "stop churn" root (23:xx + 01:41 live forensics): the user
+        // taps Stop (button/notification) — the in-flight drain turn ALREADY
+        // serving their newest queued message dies — the 200ms re-arm
+        // relaunches a full fresh turn — which the user reads as "lag, then
+        // it started working anew" and taps Stop again. A stop must mean
+        // stop. The queue stays durable (persist below); delivery resumes on
+        // the user's next real action: loadSession restore kick (chat open),
+        // send-path tail drain, or a direct idle send. Nothing is lost —
+        // nothing is force-fed either.
         val pending = _promptQueue.value
         if (pending.isNotEmpty()) {
-            AppLogger.info(TAG_STREAM, "cancel — ${pending.size} queued prompt(s) remain, restarting drain")
-            resumeQueueAfterCancel()
+            persistPromptQueue()
+            AppLogger.info(
+                TAG_STREAM,
+                "cancel — ${pending.size} queued prompt(s) PRESERVED (explicit stop: drain deferred to next user action)",
+            )
         }
     }
 
