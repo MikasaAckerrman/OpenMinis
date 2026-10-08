@@ -104,6 +104,18 @@ internal object HeadlessChatRunner {
         }
         val app = app(context)
         val cfg = app.providerRepository.config.value
+        // [T-binding-persistence] A session that ALREADY carries an explicit
+        // model binding KEEPS it when the prompt specifies no model: silently
+        // rebinding to the default group destroyed the session's chosen model
+        // on every modelless prompt (the 08.10 shadow test: a session bound
+        // to glm-5.3 routed turn 3 to the default group's dead agentrouter
+        // endpoint and survived only through the engine->legacy degradation).
+        // The default-group seeding is for sessions with NO binding yet
+        // ("new chat, no model picked").
+        if (modelEntryId == null && modelGroupId == null) {
+            val existing = app.chatRepository.dao.getSession(sessionId)
+            if (existing?.modelBinding != null) return@withContext null
+        }
         // No explicit model → bind to the user's default primary group (the
         // `isDefault: true` group in provider.groups.list), matching the in-app
         // "new chat, no model picked" path (ChatViewModel priority-3 fallback on

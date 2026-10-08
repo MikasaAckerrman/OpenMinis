@@ -9663,6 +9663,28 @@ class ChatViewModel(
                         AppLogger.error(TAG_STREAM, "send runAgentLoop EXCEPTION ${e.javaClass.simpleName}: ${e.message}")
                         Log.e(TAG, "Agent loop error (all fallbacks exhausted)", e)
                         setInlineError(withRescueHint(e.message ?: "Unknown error"))
+                        // [T-dead-turn-error-persist] The terminal send failure
+                        // used to leave NO durable trace: the inline error is
+                        // memory-only, so after a process death or a session
+                        // reload the dead turn was invisible — an orphan user
+                        // message with no answer, no sticker, no Retry (the
+                        // 08.10 shadow-test repro: engine 401 → degrade →
+                        // legacy 401 → silent death). Mirror the retry path's
+                        // persist: stamp the error onto the last assistant row
+                        // so the sticker + Retry survive the reload. No-op when
+                        // the failing turn never persisted a row.
+                        runCatching {
+                            val sid = realSessionId.ifEmpty { sessionId }
+                            val safeError = (e.message ?: e.javaClass.simpleName).take(200)
+                            if (sid.isNotEmpty()) {
+                                viewModelScope.launch(Dispatchers.IO) {
+                                    try { chatRepository.updateLastAssistantError(sid, safeError) }
+                                    catch (er: Exception) {
+                                        AppLogger.warning(TAG_STREAM, "[ErrorPersist] stamp failed: ${er.message}")
+                                    }
+                                }
+                            }
+                        }
                         // [crash-safe-draft] The turn failed AND the composer
                         // is empty (cleared on send). Restore the text the user
                         // sent so it isn't silently lost — they can edit/resend
