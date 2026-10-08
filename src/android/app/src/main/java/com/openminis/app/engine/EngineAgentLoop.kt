@@ -52,6 +52,11 @@ class EngineAgentLoop(
      * write race, engine edition).
      */
     private val toolScheduler: ToolScheduler = ToolScheduler(),
+    /**
+     * JVM-pure seam for engine observability: the app injects an AppLogger
+     * adapter, tests inject STDERR/NONE. The [Scheduler] wave plan rides it.
+     */
+    private val onEngineEvent: (message: String) -> Unit = {},
     /** Tool execution seam: name + args → output/success. Default: refuse. */
     private val toolExecutor: suspend (toolName: String, argsJson: String) -> ToolOutcome =
         { name, _ ->
@@ -221,6 +226,17 @@ class EngineAgentLoop(
         // exactly once; results land in the map by call id.
         val sched = toRun.map { ToolScheduler.SchedCall(it.id, it.name, it.argsJson) }
         val waves = toolScheduler.plan(sched)
+        // [T-scheduler-observability] The parallelism contract, visible:
+        // N proposed calls -> M waves; a wave with >1 call RUNS those calls
+        // concurrently (verify: overlapping [Engine] tool timestamps).
+        // Serial waves are the conflict matrix doing its job.
+        onEngineEvent(
+            "[Scheduler] ${toRun.size} call(s) -> ${waves.size} wave(s): " +
+                waves.mapIndexed { i, w ->
+                    "w${i + 1}=[${w.calls.joinToString(",") { it.name }}]" +
+                        if (w.calls.size > 1) "(parallel)" else ""
+                }.joinToString(" "),
+        )
         val ran: Map<String, ToolOutcome> = if (toRun.size > 1) {
             val results = mutableMapOf<String, ToolOutcome>()
             for (wave in waves) {

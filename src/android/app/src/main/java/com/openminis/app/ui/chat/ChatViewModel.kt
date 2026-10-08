@@ -6445,35 +6445,41 @@ class ChatViewModel(
                     // crash). restorePromptQueue() was DEAD CODE since its
                     // introduction — nothing ever called it — so a persisted
                     // queue never came back and the user watched their pending
-                    // message evaporate. Dedupe against the DB tail: a drain
-                    // that died between appendMessage and its persist-empty
-                    // leaves a stale entry; the DB copy (already sent) wins.
+                    // message evaporate.
+                    // [T-queue-dedup-killer] 08.10: the old text-dedup against
+                    // the DB's last user row was a SILENT MESSAGE KILLER. The
+                    // user's stuck "sending" message got drained (durable DB
+                    // row), the turn died in the cancel cascade, the user
+                    // RETYPED the same text — and on the next session reload
+                    // the dedup matched the retype against the last user row
+                    // and annihilated it (live empty -> queue cleared, no log,
+                    // no bubble). The zombie the dedup guarded (drain died
+                    // between appendMessage and persist-empty) is already
+                    // structurally closed by the durable-first order in
+                    // drainQueuedPrompts (DB row BEFORE take; persist right
+                    // after the take) — a microsecond window inside one
+                    // function. A legit re-typed message must NEVER be eaten:
+                    // restore verbatim, log everything.
                     runCatching {
                         restorePromptQueue()
                         val restored = _promptQueue.value
                         if (restored.isNotEmpty()) {
-                            val lastUserText = chatUi.lastOrNull { it.role == "user" }?.content?.trim()
-                            val live = restored.filter { p -> p.text.trim() != lastUserText }
-                            if (live.isNotEmpty()) {
-                                _messages.value = _messages.value + live.map { p ->
-                                    ChatMessage(
-                                        id = "queued_msg_${p.id}",
-                                        role = "user",
-                                        content = p.text,
-                                        isQueued = true,
-                                        queuedPromptId = p.id,
-                                    )
-                                }
-                                _promptQueue.value = live
-                            } else {
-                                _promptQueue.value = emptyList()
-                            }
-                            persistPromptQueue()
                             AppLogger.info(
                                 TAG_STREAM,
-                                "[Queue] restored ${live.size}/${restored.size} queued prompt(s) after reload",
+                                "[Queue] session reload restored ${restored.size} prompt(s): " +
+                                    restored.joinToString(", ") { "${it.id}=\"${it.text.take(20)}...\"" },
                             )
+                            _messages.value = _messages.value + restored.map { p ->
+                                ChatMessage(
+                                    id = "queued_msg_${p.id}",
+                                    role = "user",
+                                    content = p.text,
+                                    isQueued = true,
+                                    queuedPromptId = p.id,
+                                )
+                            }
                         }
+                        persistPromptQueue()
                     }
                 }
                 val tIoAfterTransform = System.currentTimeMillis()
@@ -11430,6 +11436,11 @@ class ChatViewModel(
                 resourceKeysOf = ::jsonObjectResourceKeys,
                 maxConcurrent = 4,
             ),
+            onEngineEvent = { msg ->
+                // [T-scheduler-observability] app-side adapter: the wave
+                // plan lands in the file log for live verification.
+                AppLogger.info(TAG_STREAM, "[Engine] $msg")
+            },
         ) { name, argsJson ->
             // Production executor, all policies intact. The block list is a
             // throwaway: the reducer's event-driven blocks are the single UI
@@ -17496,6 +17507,41 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                         )
                         AppLogger.info(TAG_STREAM, "resumeQueueAfterCancel drainQueuedPrompts RETURN")
                     } catch (e: CancellationException) {
+                        // [T-drain-cancel-resilience] 08.10 live forensics:
+                        // a takeover cancelled the drain mid-flight and the
+                        // entries taken by this drain's current iteration
+                        // died with it — the user saw "messages stuck on
+                        // sending, never sent" (messages vanished from the
+                        // queue without a drain line). The take itself is
+                        // durable-first (DB row written before the queue is
+                        // touched), so surviving queue entries are the ones
+                        // enqueued after the last take. Preserve them, log
+                        // the state, and RE-ARM the drain: the next idle
+                        // stream (or turn end) picks them up instead of
+                        // waiting for a user action that may never come.
+                        val preserved = _promptQueue.value
+                        AppLogger.info(
+                            TAG_STREAM,
+                            "[Queue] drain cancelled — ${preserved.size} prompt(s) preserved: " +
+                                preserved.joinToString(", ") { "${it.id}=\"${it.text.take(20)}...\"" },
+                        )
+                        if (preserved.isNotEmpty() && streamJob === coroutineContext[Job]) {
+                            AppLogger.info(TAG_STREAM, "[Queue] drain cancelled — re-arming drain")
+                            _canResume.value = false
+                            // Launch detached: the current job is dying.
+                            viewModelScope.launch(Dispatchers.IO) {
+                                kotlinx.coroutines.delay(250)
+                                if (!_isStreaming.value && _promptQueue.value.isNotEmpty()) {
+                                    AppLogger.info(TAG_STREAM, "[Queue] re-armed drain firing (sid=$activeSessionId)")
+                                    resumeQueueAfterCancel()
+                                } else {
+                                    AppLogger.info(
+                                        TAG_STREAM,
+                                        "[Queue] re-armed drain skipped (streaming=${_isStreaming.value}, queue=${_promptQueue.value.size})",
+                                    )
+                                }
+                            }
+                        }
                         AppLogger.info(TAG_STREAM, "resumeQueueAfterCancel drain CANCELLED")
                     } catch (e: Exception) {
                         AppLogger.error(TAG_STREAM, "resumeQueueAfterCancel drain EXCEPTION ${e.javaClass.simpleName}: ${e.message}")
