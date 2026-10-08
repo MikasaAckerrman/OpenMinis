@@ -82,28 +82,35 @@ class ToolScheduler(
         if (calls.isEmpty()) return emptyList()
         val waves = mutableListOf<MutableList<SchedCall>>()
         // Per open wave: keys currently held by reads, keys held by writes,
-        // whether a META sits in it.
+        // whether a META sits in it, and whether it is SEALED (a GLOBAL
+        // call's wave accepts no further members: an undeclared write may
+        // touch any resource, so nothing may ride alongside it).
         val waveReadKeys = mutableListOf<MutableSet<String>>()
         val waveWriteKeys = mutableListOf<MutableSet<String>>()
         val waveHasMeta = mutableListOf<Boolean>()
+        val waveSealed = mutableListOf<Boolean>()
 
-        fun openWave() {
+        fun openWave(): Int {
             waves.add(mutableListOf())
             waveReadKeys.add(mutableSetOf())
             waveWriteKeys.add(mutableSetOf())
             waveHasMeta.add(false)
+            waveSealed.add(false)
+            return waves.size - 1
         }
 
         for (call in calls) {
             val effect = effectOf(call.name)
             val keys = resourceKeysOf(call.name, call.argsJson) ?: run {
-                // Undeclared resource: GLOBAL — always a fresh wave alone.
-                openWave()
-                waves.last().add(call)
+                // Undeclared resource: GLOBAL — a fresh, SEALED wave alone.
+                val w = openWave()
+                waves[w].add(call)
+                waveSealed[w] = true
                 continue
             }
             var placed = false
             for (w in waves.indices) {
+                if (waveSealed[w]) continue
                 if (waveHasMeta[w] && effect == Effect.META) continue
                 val wRead = waveReadKeys[w]
                 val wWrite = waveWriteKeys[w]
@@ -125,13 +132,13 @@ class ToolScheduler(
                 break
             }
             if (!placed) {
-                openWave()
-                waves.last().add(call)
+                val w = openWave()
+                waves[w].add(call)
                 when (effect) {
-                    Effect.READ -> waveReadKeys.last().addAll(keys)
-                    Effect.WRITE -> waveWriteKeys.last().addAll(keys)
-                    Effect.META -> waveHasMeta[waveHasMeta.size - 1] = true
-                    Effect.GLOBAL -> Unit
+                    Effect.READ -> waveReadKeys[w].addAll(keys)
+                    Effect.WRITE -> waveWriteKeys[w].addAll(keys)
+                    Effect.META -> waveHasMeta[w] = true
+                    Effect.GLOBAL -> waveSealed[w] = true
                 }
             }
         }

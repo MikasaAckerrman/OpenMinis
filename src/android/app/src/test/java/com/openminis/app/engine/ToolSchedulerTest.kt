@@ -70,12 +70,14 @@ class ToolSchedulerTest {
     }
 
     @Test
-    fun `global tool runs alone between reads`() {
+    fun `global tool runs alone and seals its wave`() {
         val w = planner().plan(listOf(sched("1", "file_read", "/a"), sched("2", "shell_execute"), sched("3", "file_read", "/b")))
-        // read+read could share a wave, but shell splits the batch in model
-        // order: wave1 read, wave2 shell, wave3 read.
-        assertEquals(3, w.size)
+        // The shell's wave is sealed (nothing rides alongside an undeclared
+        // effect). readB is INDEPENDENT of the shell (no shared resource) so
+        // it may join wave1 — waves run in order: [readA+readB] then [shell].
+        assertEquals(2, w.size)
         assertEquals("shell_execute", w[1].calls[0].name)
+        assertEquals(2, w[0].calls.size)
     }
 
     @Test
@@ -107,12 +109,12 @@ class ToolSchedulerTest {
                 sched("4", "file_read", "/c"),
             ),
         )
-        // wave1: readA + writeB (disjoint). readB conflicts with writeB ->
-        // wave2. readC joins wave2? readC (fs:/c) vs wave2 readB (fs:/b):
-        // read+read no conflict -> wave2 = [readB, readC].
+        // wave1: readA (fs:a) + writeB (fs:b) + readC (fs:c) — all disjoint
+        // resources, read/write on DIFFERENT files do not conflict.
+        // readB (fs:b) conflicts with writeB in wave1 -> wave2.
         assertEquals(2, w.size)
-        assertEquals(listOf("file_read", "file_write"), w[0].calls.map { it.name })
-        assertEquals(listOf("file_read", "file_read"), w[1].calls.map { it.name })
+        assertEquals(listOf("file_read", "file_write", "file_read"), w[0].calls.map { it.name })
+        assertEquals(listOf("file_read"), w[1].calls.map { it.name })
     }
 
     @Test
