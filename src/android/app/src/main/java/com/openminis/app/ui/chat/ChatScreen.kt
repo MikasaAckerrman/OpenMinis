@@ -3276,6 +3276,9 @@ fun ChatScreen(
                     is FlatChatItem.AssistantMarkdownBlock -> grayedMap[originalMessageId(messageId)] == true
                     is FlatChatItem.AssistantThinking -> grayedMap[originalMessageId(messageId)] == true
                     is FlatChatItem.AssistantToolUse -> grayedMap[originalMessageId(messageId)] == true
+                    // [T-zcode-turn-fold] Fold row follows its message's
+                    // compacted state — it IS part of that turn's cluster.
+                    is FlatChatItem.AssistantTurnFold -> grayedMap[originalMessageId(messageId)] == true
                     is FlatChatItem.AssistantInfo -> false  // system rows never grayed
                     is FlatChatItem.AssistantTyping -> false
                     // Live progress card is never part of persisted history, so
