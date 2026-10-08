@@ -752,9 +752,8 @@ class ChatViewModel(
     // queue is considered parked. 10 minutes: generous for real long turns
     // (the 55-min stress turn streamed continuously - its AGE alone never
     // triggers this; only age + a NEW user message waiting does).
-    private companion object {
-        const val STALE_STREAM_FORCE_DRAIN_MS = 10L * 60_000L
-    }
+    // (Instance-level: the class already has its one companion object.)
+    private val STALE_STREAM_FORCE_DRAIN_MS = 10L * 60_000L
     val canResume: StateFlow<Boolean> = _canResume.asStateFlow()
 
     /**
