@@ -29,6 +29,7 @@ import com.openminis.app.data.BPETokenizer
 import com.openminis.app.data.ContextOffload
 import com.openminis.app.data.ContextPolicy
 import com.openminis.app.tools.jsonObjectPathExtractor
+import com.openminis.app.tools.jsonObjectResourceKeys
 import com.openminis.app.logging.AppLogger
 import com.openminis.app.data.FileMentionIndex
 import com.openminis.app.data.db.CompactMarkerEntity
@@ -11426,7 +11427,7 @@ class ChatViewModel(
             gateway,
             registry,
             toolScheduler = com.openminis.app.engine.ToolScheduler(
-                resourceKeysOf = ::com.openminis.app.tools.jsonObjectResourceKeys,
+                resourceKeysOf = ::jsonObjectResourceKeys,
                 maxConcurrent = 4,
             ),
         ) { name, argsJson ->

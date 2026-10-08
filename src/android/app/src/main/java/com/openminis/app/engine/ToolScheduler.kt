@@ -101,7 +101,8 @@ class ToolScheduler(
 
         for (call in calls) {
             val effect = effectOf(call.name)
-            val keys = resourceKeysOf(call.name, call.argsJson) ?: run {
+            val keys = resourceKeysOf(call.name, call.argsJson)
+            if (keys == null) {
                 // Undeclared resource: GLOBAL — a fresh, SEALED wave alone.
                 val w = openWave()
                 waves[w].add(call)
