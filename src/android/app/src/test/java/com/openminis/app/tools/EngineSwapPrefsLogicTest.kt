@@ -1,30 +1,31 @@
 package com.openminis.app.tools
 
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * [T-m12-engine-swap] The strangler switch contract: the engine chain is
- * an EXPERIMENT until live-verified — a fresh install must never route the
- * production send path through it by accident. The unsafe default is the
- * one mistake this class exists to make impossible.
+ * [T-engine-default-flip] The engine (new agent loop) is the DEFAULT since
+ * the 08.10 user decision: unset prefs route the production send path
+ * through the engine. Legacy stays as the backup (per-turn degradation +
+ * the top-bar button). The unsafe default direction is now the opposite:
+ * a null-prefs environment must still lead with the ENGINE, not silently
+ * fall to legacy.
  */
 class EngineSwapPrefsLogicTest {
 
     @Test
-    fun `unset prefs default to disabled`() {
-        // prefs==null (no context wired, JVM test env): disabled — the
-        // fail-safe direction
-        assertFalse(EngineSwapPrefs.isEnabled())
+    fun `unset prefs default to engine enabled`() {
+        // prefs==null (no context wired, JVM test env): the default is the
+        // ENGINE — the new fail-safe direction (legacy is one button away).
+        assertTrue(EngineSwapPrefs.isEnabled())
     }
 
     @Test
     fun `setEnabled without init is a no-op not a crash`() {
         // JVM: init never ran; toggle must not throw and must not flip the
-        // effective state to enabled
-        EngineSwapPrefs.setEnabled(true)
-        assertFalse(EngineSwapPrefs.isEnabled())
+        // effective state (still the default: engine).
+        EngineSwapPrefs.setEnabled(false)
+        assertTrue(EngineSwapPrefs.isEnabled())
     }
 
     @Test
