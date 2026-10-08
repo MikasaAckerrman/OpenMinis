@@ -788,8 +788,6 @@ internal fun toolGroupDurationLabel(blocks: List<AssistantBlock>): String? {
  * Visual DNA matches ToolCallPill (capsule shape, border, 14dp icon) but
  * slimmer (28dp) — it must read as a quiet footnote, not a tool.
  */
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
 /**
  * [T-zcode-turn-fold] Render-list filter: at rest, a folded turn's INTERNAL
  * items (tools, thinking, intermediate text) leave the rendered list
@@ -827,6 +825,8 @@ internal fun filterTurnInternalItems(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
 internal fun ToolGroupSummaryRow(
     blocks: List<AssistantBlock>,
     expanded: Boolean,

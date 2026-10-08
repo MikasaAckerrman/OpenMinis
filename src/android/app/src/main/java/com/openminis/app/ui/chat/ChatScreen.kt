@@ -480,14 +480,6 @@ fun ChatScreen(
     // Keyed by message id (dedupe-suffix-proof); render-time state ONLY —
     // flatItems, keys and the frozen prefix are untouched (v18 no-reflow).
     val expandedTurns = remember { mutableStateMapOf<String, Boolean>() }
-    // [T-zcode-turn-fold] The RENDER list: folded internals removed at rest
-    // (see filterTurnInternalItems). derivedStateOf: one O(n) pass per
-    // actual change (list or toggle), zero cost per recomposition; the
-    // .value read lives inside the LazyColumn scope, so toggles only
-    // invalidate the list scope, not the whole screen.
-    val renderFlatItems = remember {
-        derivedStateOf { filterTurnInternalItems(flatItems, expandedTurns) }
-    }
     val error by viewModel.error.collectAsState()
     val modelName by viewModel.modelName.collectAsState()
     val sessionTitle by viewModel.sessionTitle.collectAsState()
@@ -2879,6 +2871,14 @@ fun ChatScreen(
                 var flatItems by remember(sessionId) {
                     mutableStateOf<List<FlatChatItem>>(emptyList())
                 }
+                // [T-zcode-turn-fold] The RENDER list: folded internals are
+                // REMOVED at rest (see filterTurnInternalItems — the
+                // spacedBy(2dp) gap report). derivedStateOf: one O(n) pass
+                // per actual change (list or toggle), zero per recomposition;
+                // the .value read lives in the LazyColumn scope only.
+                val renderFlatItems by remember(sessionId) {
+                    derivedStateOf { filterTurnInternalItems(flatItems, expandedTurns) }
+                }
                 // [T-android-coldload-offmain-parse] Composition-snapshot
                 // prewarmer (captures the markdown palette) used by the
                 // flatten effect below to warm the parse caches for the
@@ -3561,7 +3561,7 @@ fun ChatScreen(
                         }
                     }
                     items(
-                        items = renderFlatItems.value.asReversed(),
+                        items = renderFlatItems.asReversed(),
                         key = { it.key },
                         contentType = { it.contentType },
                     ) { item ->
@@ -3571,7 +3571,7 @@ fun ChatScreen(
                         // onPlaced is the moment the user actually sees
                         // content. SideEffect fires on first composition
                         // (before measure); onPlaced fires after layout.
-                        if (item == renderFlatItems.value.lastOrNull()) {
+                        if (item == renderFlatItems.lastOrNull()) {
                             androidx.compose.runtime.SideEffect {
                                 com.openminis.app.diagnostics.PerfLongCtx.step(
                                     sessionId,
@@ -3630,7 +3630,7 @@ fun ChatScreen(
                                 }
                             }
                         }
-                        val isNewestItem = item == renderFlatItems.value.lastOrNull()
+                        val isNewestItem = item == renderFlatItems.lastOrNull()
                         Box(
                             modifier = Modifier
                                 .alpha(rowAlpha)
