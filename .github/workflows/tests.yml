@@ -80,33 +80,6 @@ jobs:
           cd src/android
           ./gradlew :app:testCloneUnitTest --no-daemon -Dorg.gradle.jvmargs="-Xmx4g"
 
-      # [T-diag-annotations] TEMPORARY: the sandbox lost access to the logs
-      # API, so surface the ACTUAL compile/test failure lines as workflow
-      # annotations (readable via the annotations API without the zip).
-      # Remove once the CI saga is green.
-      - name: "Diag: surface failure lines as annotations"
-        if: failure()
-        run: |
-          cd src/android
-          OUT=$(./gradlew :app:compileCloneUnitTestKotlin --no-daemon 2>&1 | grep -E "^e: |error: " | head -15 || true)
-          {
-            echo "## CI failure diagnosis (auto)"
-            if [ -n "$OUT" ]; then
-              echo "### COMPILE ERRORS"
-              echo '```'
-              echo "$OUT"
-              echo '```'
-            else
-              echo "### COMPILE CLEAN — test failures:"
-              for f in app/build/test-results/testCloneUnitTest/*.xml; do
-                FAILS=$(grep -o 'failures="[0-9]*"' "$f" 2>/dev/null | head -1 | grep -o '[0-9]*' || echo 0)
-                if [ "$FAILS" -gt 0 ]; then
-                  echo "- **$(basename "$f" .xml)** — $(grep -o 'message="[^"]*"' "$f" | head -1 | cut -c1-400)"
-                fi
-              done
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-
       - name: Upload unit test report on failure
         if: failure()
         uses: actions/upload-artifact@v4
