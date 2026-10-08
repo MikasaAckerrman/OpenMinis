@@ -8879,7 +8879,8 @@ class ChatViewModel(
         AppLogger.info(
             TAG_STREAM,
             "[Queue] enqueued id=${prompt.id} len=${trimmed.length} " +
-                "atts=${pendingAttachments.size} queue=${_promptQueue.value.size}",
+                "atts=${pendingAttachments.size} queue=${_promptQueue.value.size} " +
+                "sid=${activeSessionId.take(8)}",
         )
 
         val attachmentNames = pendingAttachments.map { it.fileName }
@@ -8895,7 +8896,17 @@ class ChatViewModel(
             isQueued = true,
             queuedPromptId = prompt.id,
         )
+        // [T-send-trace] Bubble lifecycle: the queued row is NOW in the
+        // message list — the UI contract of "message accepted, waiting".
+        // If this line exists but the user never SAW the bubble, the render
+        // side is the failure (frozen list / stream-sheet split), not the
+        // queue.
         _messages.value = _messages.value + chatMsg
+        AppLogger.info(
+            TAG_STREAM,
+            "[Send] bubble queued id=queued_msg_${prompt.id} row=${_messages.value.size} " +
+                "visible=queued",
+        )
         clearAttachments()
         Log.i(TAG, "Enqueued prompt (${trimmed.length}ch, ${pendingAttachments.size} attachments), queue=${_promptQueue.value.size}")    }
 
@@ -9188,6 +9199,15 @@ class ChatViewModel(
                     m.copy(isQueued = false, queuedPromptId = null)
                 } else m
             }
+            // [T-send-trace] Drain release: the queued bubbles just flipped
+            // to normal user rows ("sending" state ENDS here). Pair with
+            // "[Send] bubble queued" — the gap between those two stamps is
+            // the queue's real wait time, measurable per message.
+            AppLogger.info(
+                TAG_STREAM,
+                "[Send] bubble released ids=${drainedIds.joinToString(",") { it.takeLast(12) }} " +
+                    "rows→normal (turn starting)",
+            )
 
             agentHistory.add(LLMMessage(
                 role = LLMMessage.Role.USER,
@@ -9255,20 +9275,40 @@ class ChatViewModel(
 
     fun sendMessage(text: String) {
         val trimmed = text.trim()
+        // [T-send-trace] Forensic demand (09.10, the queue campaign): every
+        // user send states its dispatch context at ENTRY — one line, before
+        // any branch decides its fate. Downstream lines ([Queue] enqueued /
+        // [Send] branch / [Engine] setup / [Queue] draining) join by sid +
+        // timestamp; the UI freeze correlation comes free (if this line is
+        // ABSENT after a tap, the tap never reached the VM — main thread
+        // starved; if present but no bubble rendered, the render side froze).
+        AppLogger.info(
+            TAG_STREAM,
+            "[Send] enter sid=${activeSessionId.take(8)} len=${trimmed.length} " +
+                "text=\"${trimmed.take(40).replace('\n', ' ')}\" " +
+                "ats=${_attachments.value.size} streaming=${_isStreaming.value} " +
+                "compact=${_isCompacting.value} queue=${_promptQueue.value.size} " +
+                "msgs=${_messages.value.size}",
+        )
         // [T-output-limit-auto-extend] Fresh user message → fresh extension
         // budget: a long reasoning chain that needed 3 continuations last
         // time must not start this one already capped.
         outputLimitExtensions = 0
         // While streaming, enqueue instead of silently dropping (iOS: send vs enqueuePrompt).
         if (_isStreaming.value) {
+            AppLogger.info(TAG_STREAM, "[Send] branch=ENQUEUE (streaming turn active)")
             enqueuePrompt(text)
             return
         }
         // T180: allow attachments-only sends (no caption). Mirrors iOS, where
         // an empty text + non-empty attachments still produces a valid user
         // message. Without this an image-only "look at this" send dropped.
-        if (trimmed.isBlank() && _attachments.value.isEmpty()) return
+        if (trimmed.isBlank() && _attachments.value.isEmpty()) {
+            AppLogger.info(TAG_STREAM, "[Send] branch=DROP (blank, no attachments)")
+            return
+        }
         if (!requireFullSessionHistory()) {
+            AppLogger.info(TAG_STREAM, "[Send] branch=DEFER (full history not loaded) → composer")
             if (trimmed.isNotEmpty() && _inputText.value.isEmpty()) {
                 _inputText.value = trimmed
             }
@@ -9279,9 +9319,11 @@ class ChatViewModel(
             // compact is running — queue it exactly like the streaming case.
             // It will auto-send when the compact finishes (the queue pump
             // runs in compactAll's finally block).
+            AppLogger.info(TAG_STREAM, "[Send] branch=ENQUEUE (compact running)")
             enqueuePrompt(text)
             return
         }
+        AppLogger.info(TAG_STREAM, "[Send] branch=DIRECT TURN (idle — sending now)")
         // Non-blocking context pressure check — emits a system notice at the
         // needsCompact / exhausted thresholds but still lets the send proceed.
         // The user invokes /compact explicitly to fold history when warned.
@@ -9428,6 +9470,15 @@ class ChatViewModel(
                 isStreaming = true,
                 isAwaitingModelResponse = true,
                 thinkingLevel = _thinkingLevel.value,
+            )
+            // [T-send-trace] Direct path contract: both rows landed on the
+            // SAME frame — the user bubble and the pre-created thinking row.
+            // If the user saw their bubble but no response EVER appeared,
+            // check what [Send] followed with (turn start / error / silence).
+            AppLogger.info(
+                TAG_STREAM,
+                "[Send] bubble direct id=${pendingUserId} assistant=$preAssistantId " +
+                    "row=${_messages.value.size} visible=streaming",
             )
         }
 
