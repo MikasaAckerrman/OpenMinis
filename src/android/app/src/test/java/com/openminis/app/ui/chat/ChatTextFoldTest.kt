@@ -16,7 +16,8 @@ import org.junit.Test
  * Live turns never fold. Info rows are exempt.
  *
  * NOTE: this suite must execute on CI — see the [T-test-only-ci] marker in
- * .github/workflows/tests.yml; empty commits do not trigger workflows.
+ * .github/workflows/tests.yml; empty commits do not trigger workflows,
+ * so this file's doc comment doubles as the run trigger.
  */
 class ChatTextFoldTest {
 
