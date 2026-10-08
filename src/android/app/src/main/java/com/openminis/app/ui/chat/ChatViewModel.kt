@@ -8748,6 +8748,35 @@ class ChatViewModel(
      * current agent loop finishes, drainQueuedPrompts() consumes the queue.
      * Mirrors iOS AIChatViewModel.enqueuePrompt().
      */
+    /**
+     * [T-subagent-wake-bridge] Inject a system continuation prompt (a
+     * background subagent's result) into the queue and drain it. Unlike
+     * [enqueuePrompt] this NEVER direct-sends: the direct-send branch
+     * launches on viewModelScope, which is a SILENT no-op on an evicted
+     * VM — the text would be lost. The queue write here is durable
+     * ([persistPromptQueue] is a plain repository call that works on a
+     * dead VM object), so the wake survives eviction/process death and
+     * the reload drain delivers it. On a live idle session
+     * [resumeQueueAfterCancel] drains it into a real turn within its
+     * 200ms grace; a streaming session delivers at turn end.
+     */
+    private fun injectWakePrompt(text: String) {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return
+        val prompt = QueuedPrompt(
+            id = com.openminis.app.offload.SubagentWake.promptId(),
+            text = trimmed,
+            attachments = emptyList(),
+        )
+        _promptQueue.value = _promptQueue.value + prompt
+        persistPromptQueue()
+        AppLogger.info(
+            TAG_STREAM,
+            "[SubagentWake] queued wake prompt len=${trimmed.length} (queue=${_promptQueue.value.size})",
+        )
+        resumeQueueAfterCancel()
+    }
+
     fun enqueuePrompt(text: String) {
         val trimmed = text.trim()
         val pendingAttachments = _attachments.value
@@ -14628,6 +14657,17 @@ class ChatViewModel(
                         iconKind = "compact",
                         payload = subResult,
                     )
+                    // [T-subagent-wake-bridge] ZCode semantics: the parent
+                    // agent WAKES UP with the worker's result — a real
+                    // continuation turn, not just a sticker the model only
+                    // sees when the human writes next. Injected as a queued
+                    // prompt: durable (queue persists at enqueue — survives
+                    // VM eviction and process death, delivered by the reload
+                    // drain) and live (idle session drains into a real turn
+                    // within the 200ms grace; a streaming session rides the
+                    // normal turn-end drain).
+                    val wake = com.openminis.app.offload.SubagentWake.buildWakeText(subRole, subResult)
+                    injectWakePrompt(wake)
                 }
             } } else null,
         )
