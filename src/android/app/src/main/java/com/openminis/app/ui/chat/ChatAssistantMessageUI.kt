@@ -790,6 +790,43 @@ internal fun toolGroupDurationLabel(blocks: List<AssistantBlock>): String? {
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
+/**
+ * [T-zcode-turn-fold] Render-list filter: at rest, a folded turn's INTERNAL
+ * items (tools, thinking, intermediate text) leave the rendered list
+ * ENTIRELY — not "zero height". Reason: LazyColumn `spacedBy(2.dp)` bills
+ * 2dp between EVERY pair of items, zero-height ones included — a 50-tool
+ * turn left a 100dp+ air gap between the fold row and the final answer
+ * (user report 08.10: "огромное расстояние"). Removal is a discrete
+ * rest-state diff: LazyColumn anchors by key, the answer's key never
+ * moves, no scroll churn; live turns keep every item visible.
+ * The render branches keep their hide-gates as a second line of defense.
+ */
+internal fun filterTurnInternalItems(
+    items: List<FlatChatItem>,
+    expandedTurns: Map<String, Boolean>,
+): List<FlatChatItem> {
+    if (items.isEmpty()) return items
+    // Fast path: nothing folded in the whole list — the map is only ever
+    // non-empty after a user toggle, and folds only exist for finished
+    // turns with tools. Live streaming (the hot path) always takes this.
+    val anyInternal = items.any { it is FlatChatItem.AssistantToolUse && it.isTurnInternal }
+    if (!anyInternal) return items
+    return items.filter { item ->
+        when (item) {
+            is FlatChatItem.AssistantToolUse -> !item.isTurnInternal ||
+                item.messageIsStreaming ||
+                expandedTurns[item.messageId.substringBefore('#')] == true
+            is FlatChatItem.AssistantThinking -> !item.isTurnInternal ||
+                item.messageIsStreaming ||
+                expandedTurns[item.messageId.substringBefore('#')] == true
+            is FlatChatItem.AssistantMarkdownBlock -> !item.isTurnInternal ||
+                item.parentMessageIsStreaming ||
+                expandedTurns[item.messageId.substringBefore('#')] == true
+            else -> true
+        }
+    }
+}
+
 internal fun ToolGroupSummaryRow(
     blocks: List<AssistantBlock>,
     expanded: Boolean,
@@ -807,52 +844,31 @@ internal fun ToolGroupSummaryRow(
         else -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
     }
     val duration = toolGroupDurationLabel(blocks)
+    // [T-zcode-turn-fold] ZCode-quiet row (user: "вроде даже это и не
+    // кнопка"): a thin inline text line, not a filled capsule — small
+    // chevron, muted label, quiet 6dp-radius shape that only hints at
+    // tappability. Sits directly before the final answer with zero air.
     Row(
         modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 3.dp),
+            .clip(RoundedCornerShape(6.dp))
+            .combinedClickable(onClick = onToggle)
+            .padding(start = 2.dp, top = 2.dp, bottom = 2.dp, end = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
     ) {
-        Row(
-            modifier = Modifier
-                .background(ChatColors.toolCapsuleBg, CircleShape)
-                .border(0.5.dp, ChatColors.toolBorder, CircleShape)
-                .clip(CircleShape)
-                .combinedClickable(onClick = onToggle)
-                .padding(horizontal = 12.dp)
-                .height(28.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                Icons.Default.Construction,
-                contentDescription = null,
-                tint = tint,
-                modifier = Modifier.size(14.dp),
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = toolCountLabel(blocks.size),
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
-                maxLines = 1,
-            )
-            if (duration != null) {
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "· $duration",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-                    maxLines = 1,
-                )
-            }
-            Spacer(modifier = Modifier.width(4.dp))
-            Icon(
-                imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                contentDescription = if (expanded) "Свернуть" else "Показать",
-                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f),
-                modifier = Modifier.size(16.dp),
-            )
-        }
+        Icon(
+            imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+            contentDescription = if (expanded) "Свернуть" else "Показать",
+            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f),
+            modifier = Modifier.size(15.dp),
+        )
+        Text(
+            text = toolCountLabel(blocks.size) + (duration?.let { " · $it" } ?: ""),
+            style = MaterialTheme.typography.labelSmall,
+            color = tint.copy(alpha = 0.85f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 

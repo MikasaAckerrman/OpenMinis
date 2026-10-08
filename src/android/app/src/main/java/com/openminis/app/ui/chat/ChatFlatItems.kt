@@ -913,10 +913,13 @@ internal fun buildFlatChatItems(
         val lastCancelledToolId = blocks.lastOrNull { it.kind == "tool_use" && it.toolStatus == ToolBlockStatus.CANCELLED }?.id
 
         blocks.forEachIndexed { index, block ->
-            // [T-zcode-turn-fold] The single fold row rides at the position
-            // of the FIRST internal block — the user reads [⚙ row][final
-            // answer] for a finished turn. Emitted once per message.
-            if (turnFolds && !turnFoldEmitted && index <= lastNonTextIdx && block.kind != "info") {
+            // [T-zcode-turn-fold] THE row rides DIRECTLY BEFORE the final
+            // answer (user's spec, 08.10): collapsed view reads [row][final
+            // text] with no gap; expanded keeps the row as the turn's
+            // header right above the answer — it never moves. Emitted
+            // before the FIRST TRAILING text block; turns that end on
+            // tools get the row after the loop (tail of the cluster).
+            if (turnFolds && !turnFoldEmitted && index > lastNonTextIdx && block.kind == "text") {
                 out.add(dedupe(FlatChatItem.AssistantTurnFold(
                     messageId = message.id,
                     toolBlocks = turnToolBlocks,
@@ -1053,6 +1056,15 @@ internal fun buildFlatChatItems(
                     isTurnInternal = turnFolds,
                 )))
             }
+        }
+        // [T-zcode-turn-fold] Fallback: a turn that ends on tools (no
+        // trailing text) still gets its row — at the tail of the cluster.
+        if (turnFolds && !turnFoldEmitted) {
+            out.add(dedupe(FlatChatItem.AssistantTurnFold(
+                messageId = message.id,
+                toolBlocks = turnToolBlocks,
+                messageIsStreaming = message.isStreaming,
+            )))
         }
 
         // Typing indicator: show while streaming and either (a) no visible

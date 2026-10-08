@@ -65,7 +65,9 @@ class ChatTextFoldTest {
         assertEquals("m1", fold.messageId)
         assertEquals(1, fold.toolBlocks.size)
         val kinds = items.map { it.contentType }
-        assertEquals(listOf("header", "turnfold", "mdblock", "tool", "mdblock"), kinds)
+        // [text, tool, text]: row rides DIRECTLY BEFORE the trailing
+        // (answer) text — ZCode: collapsed view = [row][answer].
+        assertEquals(listOf("header", "mdblock", "tool", "turnfold", "mdblock"), kinds)
         // Intermediate text + tool are internal; the answer is not.
         assertTrue(items.filterIsInstance<FlatChatItem.AssistantMarkdownBlock>()[0].isTurnInternal)
         assertTrue(items.filterIsInstance<FlatChatItem.AssistantToolUse>().single().isTurnInternal)
@@ -105,9 +107,45 @@ class ChatTextFoldTest {
             ),
         )
         val kinds = items.map { it.contentType }
-        assertEquals(listOf("header", "info", "turnfold", "mdblock", "tool", "mdblock"), kinds)
-        // The order assertion above IS the proof: the fold row skipped the
-        // info block and rode at the first real internal (text) block.
+        // info exempt; row still directly before the answer.
+        assertEquals(listOf("header", "info", "mdblock", "tool", "turnfold", "mdblock"), kinds)
+    }
+
+    @Test
+    fun `turn ending on tools gets the row at the cluster tail`() {
+        val items = flat(
+            msg(
+                "m1",
+                textBlock("t1", "Работаю."),
+                toolBlock("u1"),
+            ),
+        )
+        val kinds = items.map { it.contentType }
+        // No trailing text: fallback emits the row after the loop.
+        assertEquals(listOf("header", "mdblock", "tool", "turnfold"), kinds)
+    }
+
+    @Test
+    fun `render filter drops folded internals and keeps the rest`() {
+        val blocks = listOf(
+            textBlock("t1", "Работа."),
+            toolBlock("u1"),
+            textBlock("t2", "Ответ."),
+        )
+        val items = flat(msg("m1", *blocks))
+        // All internal at rest: internals + row + answer are present in the
+        // flat list; the filter must keep ONLY the row and the answer.
+        val visible = filterTurnInternalItems(items, emptyMap())
+        assertEquals(
+            listOf("turnfold", "mdblock"),
+            visible.map { it.contentType },
+        )
+        // Expanded: everything visible again.
+        val expanded = filterTurnInternalItems(items, mapOf("m1" to true))
+        assertEquals(items, expanded)
+        // Live streaming: fast path — the list is returned as-is.
+        val live = flat(msg("m1", *blocks, streaming = true))
+        assertEquals(live, filterTurnInternalItems(live, emptyMap()))
     }
 
     @Test
