@@ -11425,6 +11425,10 @@ class ChatViewModel(
         val loop = com.openminis.app.engine.EngineAgentLoop(
             gateway,
             registry,
+            toolScheduler = com.openminis.app.engine.ToolScheduler(
+                resourceKeysOf = ::com.openminis.app.tools.jsonObjectResourceKeys,
+                maxConcurrent = 4,
+            ),
         ) { name, argsJson ->
             // Production executor, all policies intact. The block list is a
             // throwaway: the reducer's event-driven blocks are the single UI

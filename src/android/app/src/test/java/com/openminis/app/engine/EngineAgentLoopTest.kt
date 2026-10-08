@@ -158,7 +158,13 @@ class EngineAgentLoopTest {
             ),
         )
         val start = java.util.concurrent.atomic.AtomicInteger(0)
-        val loop = EngineAgentLoop(gw, registry()) { _, _ ->
+        // [T-tool-scheduler] Production-shaped scheduler: disjoint fs read
+        // keys -> one wave -> the two executors MUST overlap.
+        val sched = ToolScheduler(resourceKeysOf = { _, args ->
+            val p = runCatching { org.json.JSONObject(args).optString("path", "") }.getOrDefault("")
+            if (p.isBlank()) null else setOf("fs:$p")
+        })
+        val loop = EngineAgentLoop(gw, registry(), toolScheduler = sched) { _, _ ->
             // both must overlap: signal entry, wait for the partner.
             // Generous barrier: on a slow CI runner the second async may
             // take seconds to reach the pool — the test asserts OVERLAP,
@@ -443,7 +449,13 @@ class EngineAgentLoopTest {
                 listOf(StreamEvent.Done),
             ),
         )
-        val loop = EngineAgentLoop(gw, registry()) { _, argsJson ->
+        // [T-tool-scheduler] disjoint fs read keys -> one wave -> the failing
+        // sibling must not take the good result down with it.
+        val sched = ToolScheduler(resourceKeysOf = { _, args ->
+            val p = runCatching { org.json.JSONObject(args).optString("path", "") }.getOrDefault("")
+            if (p.isBlank()) null else setOf("fs:$p")
+        })
+        val loop = EngineAgentLoop(gw, registry(), toolScheduler = sched) { _, argsJson ->
             if (argsJson.contains("/a.kt")) EngineAgentLoop.ToolOutcome("good", true)
             else EngineAgentLoop.ToolOutcome("boom: disk full", false)
         }

@@ -18,10 +18,12 @@ import kotlinx.coroutines.Dispatchers
  *  1. stream one completion through [ModelGateway] (TextDelta/ToolCall);
  *  2. for the finished tool_calls: preflight ([ToolPreflight] via the
  *     registry's definitions), then execute through [ToolContext.dispatch]
- *     — batches that pass [ToolBatchPlanner] run concurrently, everything
- *     else sequentially in model order; a blocked preflight becomes a
- *     FAILED tool result carrying the model-facing message (the one-round
- *     self-correction contract);
+ *     — the [ToolScheduler] plans execution waves (conflict-aware:
+ *     disjoint reads parallelize under a maxConcurrent semaphore;
+ *     same-resource read/write and write/write serialize in model
+ *     order; GLOBAL tools run alone); a blocked preflight becomes a
+ *     FAILED tool result carrying the model-facing message (the
+ *     one-round self-correction contract);
  *  3. append the assistant round + tool results to the WORKING history
  *     (TurnInput.history stays an immutable snapshot — the loop owns its
  *     working copy) and loop.
@@ -37,7 +39,17 @@ import kotlinx.coroutines.Dispatchers
 class EngineAgentLoop(
     private val gateway: ModelGateway,
     private val registry: ToolRegistry,
-    private val batchPlanner: ToolBatchPlanner = ToolBatchPlanner(),
+    /**
+     * [T-tool-scheduler] Resource-keyed wave planner. The DEFAULT is the
+     * conservative no-declaration mode (undeclared -> GLOBAL lock, every
+     * batch serializes) — the production wiring injects the real key
+     * extractor so disjoint reads/writes actually parallelize while
+     * same-resource writes serialize. Replaces the all-or-nothing
+     * batchPlanner gate (which also ran on empty keys in this loop: two
+     * file_edit calls on the SAME file could run concurrently — the P2C
+     * write race, engine edition).
+     */
+    private val toolScheduler: ToolScheduler = ToolScheduler(),
     /** Tool execution seam: name + args → output/success. Default: refuse. */
     private val toolExecutor: suspend (toolName: String, argsJson: String) -> ToolOutcome =
         { name, _ ->
@@ -199,18 +211,36 @@ class EngineAgentLoop(
         val toRun = preflighted.mapNotNull { (call, outcome) ->
             if (outcome == null) call else null
         }
-        val canParallel = batchPlanner.canParallelize(
-            calls.map { ToolBatchPlanner.PendingToolCall(it.id, it.name, it.argsJson) },
-        )
-        val ran: Map<String, ToolOutcome> = if (canParallel && toRun.size > 1) {
-            coroutineScope {
-                val deferred = toRun.associate { call ->
-                    call.id to async(Dispatchers.Default) {
-                        runExecutor(call)
+        // [T-tool-scheduler] Wave execution: conflict-aware parallelism.
+        // Reads on disjoint resources run concurrently; same-resource
+        // read/write and write/write serialize in model order; GLOBAL
+        // tools run alone. Waves execute sequentially; inside a wave a
+        // maxConcurrent semaphore caps the fan-out. Each call executes
+        // exactly once; results land in the map by call id.
+        val sched = toRun.map { ToolScheduler.SchedCall(it.id, it.name, it.argsJson) }
+        val waves = toolScheduler.plan(sched)
+        val ran: Map<String, ToolOutcome> = if (toRun.size > 1) {
+            val results = mutableMapOf<String, ToolOutcome>()
+            for (wave in waves) {
+                if (wave.calls.size == 1) {
+                    val call = toRun.first { it.id == wave.calls.first().id }
+                    results[call.id] = runExecutor(call)
+                } else {
+                    val semaphore = kotlinx.coroutines.sync.Semaphore(toolScheduler.cap())
+                    coroutineScope {
+                        wave.calls.map { schedCall ->
+                            val call = toRun.first { it.id == schedCall.id }
+                            async(Dispatchers.Default) {
+                                semaphore.withPermit { runExecutor(call) to schedCall.id }
+                            }
+                        }.forEach { deferred ->
+                            val (outcome, id) = deferred.await()
+                            results[id] = outcome
+                        }
                     }
                 }
-                deferred.mapValues { it.value.await() }
             }
+            results
         } else {
             toRun.associate { call -> call.id to runExecutor(call) }
         }
