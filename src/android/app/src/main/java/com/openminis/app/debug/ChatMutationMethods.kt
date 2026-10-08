@@ -247,6 +247,13 @@ internal object ChatMutationMethods {
             put("sessionId", sessionId)
             put("title", s.title ?: JSONObject.NULL)
             put("modelName", resolveDisplay(context, s.modelId))
+            put("modelEntryId", s.modelId ?: JSONObject.NULL)
+            // [T-session-provider-visibility] which provider this session
+            // actually routes through — label + baseURL.
+            resolveProvider(context, s.modelId)?.let { (label, url) ->
+                put("providerLabel", label ?: JSONObject.NULL)
+                put("providerBaseUrl", url ?: JSONObject.NULL)
+            }
             put("isRunning", com.openminis.app.service.SessionActivityTracker.isActive(sessionId))
             put("messageCount", msgs.size)
             put("lastMessageRole", lastMsg?.role ?: JSONObject.NULL)
@@ -573,5 +580,24 @@ internal object ChatMutationMethods {
         val cfg = app(context).providerRepository.config.value
         val entry = cfg.modelEntries.firstOrNull { it.baseModel.id == modelId } ?: return modelId
         return entry.model.displayName
+    }
+
+    /**
+     * [T-session-provider-visibility] Resolve the PROVIDER a session's model
+     * actually routes through (user: "чтобы ты видел название провайдера,
+     * который я использую в определённой сессии"). The session stores the
+     * entry id "<instanceUuid>/<modelId>" — split it, look the instance up,
+     * return (label, baseURL). Null when the entry is missing or the id is
+     * not instance-qualified (e.g. a bare legacy modelId).
+     */
+    internal fun resolveProvider(
+        context: Context,
+        modelId: String?,
+    ): Pair<String?, String?>? {
+        if (modelId.isNullOrBlank()) return null
+        val uuid = modelId.substringBefore('/').ifEmpty { return null }
+        val cfg = app(context).providerRepository.config.value
+        val inst = cfg.instances.firstOrNull { it.id == uuid } ?: return null
+        return inst.label to (inst.effectiveBaseURL ?: inst.customBaseURL)
     }
 }
