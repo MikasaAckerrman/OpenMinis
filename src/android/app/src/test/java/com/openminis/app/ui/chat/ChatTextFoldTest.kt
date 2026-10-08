@@ -132,7 +132,7 @@ class ChatTextFoldTest {
             toolBlock("u1"),
             textBlock("t2", "Ответ."),
         )
-        val items = flat(msg("m1", *blocks))
+        val items = flat(msg("m1", *blocks.toTypedArray()))
         // All internal at rest: internals + row + answer are present in the
         // flat list; the filter must keep ONLY the row and the answer.
         val visible = filterTurnInternalItems(items, emptyMap())
@@ -144,7 +144,7 @@ class ChatTextFoldTest {
         val expanded = filterTurnInternalItems(items, mapOf("m1" to true))
         assertEquals(items, expanded)
         // Live streaming: fast path — the list is returned as-is.
-        val live = flat(msg("m1", *blocks, streaming = true))
+        val live = flat(msg("m1", *blocks.toTypedArray(), streaming = true))
         assertEquals(live, filterTurnInternalItems(live, emptyMap()))
     }
 
