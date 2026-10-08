@@ -289,7 +289,14 @@ data class RetryPolicy(
 @Serializable
 data class Handoff(
     val from: AgentRole,
-    val to: AgentRole,
+    // [T-handoff-multi-to] Fan-out graphs (Parallel Research: research-entry
+    // routes to researcher-a AND researcher-b) make the model address MULTIPLE
+    // targets — node ids the AgentRole enum cannot express, or a comma/and
+    // list of roles. Nothing consumes `to` (routing is edge-driven in
+    // AgentGraphRunner), so it is informational and OPTIONAL: parseHandoff
+    // keeps the first resolvable role when it can, null otherwise, and a
+    // handoff without a resolvable TO is still VALID.
+    val to: AgentRole?,
     val taskId: String,
     val status: HandoffStatus,
     val deliverables: List<String> = emptyList(),

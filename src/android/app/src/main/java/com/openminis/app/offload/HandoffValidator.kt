@@ -64,7 +64,19 @@ object HandoffValidator {
             if (line.startsWith("FROM:")) {
                 from = roleOf(line.substring(5))
             } else if (line.startsWith("TO:")) {
-                to = roleOf(line.substring(3))
+                // [T-handoff-multi-to] Fan-out graphs address multiple targets
+                // ("researcher-a, researcher-b" / "researcher-a and researcher-b")
+                // and node ids that are not AgentRole values. Nothing consumes
+                // `to` (routing is edge-driven), so resolve what we can: the
+                // FIRST item of the list that maps to a role, else null — a
+                // handoff with an unresolvable TO stays VALID.
+                val rawTo = line.substring(3)
+                to = roleOf(rawTo)
+                    ?: rawTo.replace(" and ", ",")
+                        .split(',', ';', '/')
+                        .asSequence()
+                        .mapNotNull { roleOf(it) }
+                        .firstOrNull()
             } else if (line.startsWith("TASK_ID:")) {
                 taskId = line.substring(8).trim()
             } else if (line.startsWith("STATUS:")) {
@@ -91,7 +103,10 @@ object HandoffValidator {
             }
         }
 
-        if (from == null || to == null || taskId.isEmpty() || status == null) {
+        // [T-handoff-multi-to] `to` is informational (no consumers; routing
+        // is edge-driven) — a fan-out handoff addressed to node ids is VALID
+        // with to=null. Required: from, taskId, status.
+        if (from == null || taskId.isEmpty() || status == null) {
             return null
         }
 
@@ -112,7 +127,7 @@ object HandoffValidator {
         val sb = StringBuilder()
         sb.appendLine(START_MARKER)
         sb.appendLine("FROM: ${handoff.from.name}")
-        sb.appendLine("TO: ${handoff.to.name}")
+        sb.appendLine("TO: ${handoff.to?.name ?: "unspecified"}")
         sb.appendLine("TASK_ID: ${handoff.taskId}")
         sb.appendLine("STATUS: ${handoff.status.name}")
         sb.appendLine("DELIVERABLES:")
