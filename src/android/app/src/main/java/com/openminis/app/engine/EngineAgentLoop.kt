@@ -5,6 +5,8 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.Dispatchers
 
@@ -226,7 +228,7 @@ class EngineAgentLoop(
                     val call = toRun.first { it.id == wave.calls.first().id }
                     results[call.id] = runExecutor(call)
                 } else {
-                    val semaphore = kotlinx.coroutines.sync.Semaphore(toolScheduler.cap())
+                    val semaphore = Semaphore(toolScheduler.cap())
                     coroutineScope {
                         wave.calls.map { schedCall ->
                             val call = toRun.first { it.id == schedCall.id }
