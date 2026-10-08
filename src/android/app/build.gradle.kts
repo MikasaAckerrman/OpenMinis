@@ -39,12 +39,12 @@ android {
         // [T-vc56] Jump (not increment) over the installed base: the user's
         // device runs the vc55 clone APK (built before f71cac0 reverted the
         // bump), and Android refuses to install vc54 over vc55. 56 clears it.
-        versionCode = 107
+        versionCode = 108
         // vc69: 97 commits — kotlincheck infra + strict preflight (types/enums,
         // parallel-batch gate) + atomic tool budget + budget footer + symmetric
         // supermemory lifecycle (FPS guard) + thermal telemetry + review fixes
         // (graph_id enum regression, B1 completion-stop, parallel holes).
-        versionName = "0.80-preview"
+        versionName = "0.81-preview"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
