@@ -30,7 +30,8 @@ class ToolSchedulerTest {
         else -> null
     }
 
-    private fun planner() = ToolScheduler(resourceKeysOf = ::keys, maxConcurrent = 4)
+    private fun planner() =
+        ToolScheduler(resourceKeysOf = { name, args -> keys(name, args) }, maxConcurrent = 4)
 
     private fun names(waves: List<ToolScheduler.Wave>) = waves.map { w -> w.calls.joinToString(",") { it.name } }
 
