@@ -17582,22 +17582,20 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                             "[Queue] drain cancelled — ${preserved.size} prompt(s) preserved: " +
                                 preserved.joinToString(", ") { "${it.id}=\"${it.text.take(20)}...\"" },
                         )
-                        if (preserved.isNotEmpty() && streamJob === coroutineContext[Job]) {
-                            AppLogger.info(TAG_STREAM, "[Queue] drain cancelled — re-arming drain")
-                            _canResume.value = false
-                            // Launch detached: the current job is dying.
-                            viewModelScope.launch(Dispatchers.IO) {
-                                kotlinx.coroutines.delay(250)
-                                if (!_isStreaming.value && _promptQueue.value.isNotEmpty()) {
-                                    AppLogger.info(TAG_STREAM, "[Queue] re-armed drain firing (sid=$activeSessionId)")
-                                    resumeQueueAfterCancel()
-                                } else {
-                                    AppLogger.info(
-                                        TAG_STREAM,
-                                        "[Queue] re-armed drain skipped (streaming=${_isStreaming.value}, queue=${_promptQueue.value.size})",
-                                    )
-                                }
-                            }
+                        if (preserved.isNotEmpty()) {
+                            persistPromptQueue()
+                            // [T-stop-churn] NO auto re-arm here. This catch
+                            // fires when the user's Stop killed the drain
+                            // itself — re-arming would restart the work right
+                            // under the stop (the 23:xx churn pattern). The
+                            // preserved queue is durable; delivery is owned
+                            // by the action matrix: reload kick (chat open),
+                            // turn-end tail drains, compact-finish and
+                            // subagent-wake kicks. A stop must mean stop.
+                            AppLogger.info(
+                                TAG_STREAM,
+                                "[Queue] drain cancelled — preserved, drain deferred to next user action",
+                            )
                         }
                         AppLogger.info(TAG_STREAM, "resumeQueueAfterCancel drain CANCELLED")
                     } catch (e: Exception) {
