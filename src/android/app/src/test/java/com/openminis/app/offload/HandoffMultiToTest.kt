@@ -52,7 +52,7 @@ class HandoffMultiToTest {
     fun `node-id target keeps the handoff valid`() {
         val h = HandoffValidator.parseHandoff(block("researcher-b"))
         assertNotNull(h)
-        assertNull(h.to)
+        assertNull(h!!.to)
         assertTrue(h.deliverables.isNotEmpty())
     }
 
