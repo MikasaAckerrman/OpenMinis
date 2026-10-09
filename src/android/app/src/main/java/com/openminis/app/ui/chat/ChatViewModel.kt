@@ -11473,9 +11473,13 @@ class ChatViewModel(
         // leaves a [Engine] line: grep "[Engine]" for the whole story.
         val tSetupNs = System.nanoTime()
         fun msSinceSetup() = (System.nanoTime() - tSetupNs) / 1_000_000
-        val assistantId = placeholderAssistantId
+        // [T-inject-attach] var: a mid-turn user-message injection SPLITS
+        // the turn row (see onPendingUserMessage) — the closure capturing
+        // this var retargets all subsequent writes to the continuation row.
+        var assistantId = placeholderAssistantId
             ?: "assistant_${System.currentTimeMillis()}"
-        val reducer = ChatTurnReducer(assistantId, 0)
+        var reducer = ChatTurnReducer(assistantId, 0)
+        var splitCount = 0
 
         val registry = com.openminis.app.tools.ToolSurfaceAdapter.buildRegistry(
             memoryEnabled = _memoryEnabled.value,
@@ -11589,11 +11593,6 @@ class ChatViewModel(
                 val sid = ensureSession()
                 val partsJson = buildUserPartsJson(text, emptyList(), null)
                 chatRepository.appendMessage(sid, "user", partsJson)
-                agentHistory.add(LLMMessage(
-                    role = LLMMessage.Role.USER,
-                    content = text,
-                    contentParts = listOf(AgentContentPart.Text(text)),
-                ))
                 _promptQueue.value = _promptQueue.value.drop(1)
                 persistPromptQueue()
                 _messages.value = _messages.value.map { m ->
@@ -11601,6 +11600,98 @@ class ChatViewModel(
                         m.copy(isQueued = false, queuedPromptId = null)
                     } else m
                 }
+                // [T-inject-attach] Split the turn AT the injection point so
+                // the user's message renders ATTACHED between the pre-inject
+                // work and the response that answers it (ZCode semantics) —
+                // not displaced while the whole turn keeps growing above it.
+                // Before this, one turn = ONE row: every post-inject tool
+                // pill and the answer itself rendered INSIDE the row ABOVE
+                // the user's message — "оно прям впереди, будто бы ты его
+                // видишь" (09.10 report). Row A closes with the work so far
+                // (UI finalize + DB persist + canonical history mirror —
+                // exactly the finally-block protocol), the user row sits
+                // next, row B (fresh reducer) carries the continuation.
+                if (reducer.text.isNotEmpty() || reducer.currentBlocks().isNotEmpty()) {
+                    val snapBlocks = reducer.currentBlocks().toList()
+                    val snapText = reducer.text.toString()
+                    val snapInputs = mutableMapOf<String, String>()
+                    for (b in snapBlocks) {
+                        if (b.kind == "tool_use" && b.id.isNotEmpty()) snapInputs[b.id] = b.toolArgs
+                    }
+                    val partsA = buildTurnParts(snapBlocks, 0, snapInputs)
+                    // History mirror for row A — the finally-block protocol
+                    // (07.10): pull this row's per-result mirrors, append the
+                    // assistant round, re-append the results as ONE batch
+                    // user message. Indices are consumed and cleared so the
+                    // finally processes only row B's results against fresh
+                    // positions.
+                    val mirroredParts = mutableListOf<AgentContentPart>()
+                    val mirroredDbIds = mutableListOf<String?>()
+                    for (idx in engineResultMsgIndices.sortedDescending()) {
+                        if (idx < agentHistory.size) {
+                            val removed = agentHistory.removeAt(idx)
+                            mirroredDbIds += removed.dbMessageId
+                            mirroredParts += removed.contentParts
+                                .filterIsInstance<AgentContentPart.ToolResult>()
+                        }
+                    }
+                    engineResultMsgIndices.clear()
+                    if (partsA.isNotEmpty()) {
+                        val reasoningA = snapBlocks
+                            .firstOrNull { it.kind == "thinking" && it.content.isNotEmpty() }
+                            ?.content
+                        val dbIdA = persistAssistantTurn(
+                            partsA,
+                            usage = null,
+                            reasoningContent = reasoningA,
+                            toolBlockMeta = snapBlocks
+                                .filter { it.kind == "tool_use" }
+                                .associateBy { it.id },
+                        )
+                        agentHistory.add(
+                            LLMMessage(
+                                role = LLMMessage.Role.ASSISTANT,
+                                content = snapText,
+                                contentParts = partsA,
+                                reasoningContent = reasoningA,
+                                dbMessageId = dbIdA,
+                            ),
+                        )
+                    }
+                    if (mirroredParts.isNotEmpty()) {
+                        agentHistory.add(
+                            LLMMessage(
+                                role = LLMMessage.Role.USER,
+                                content = "",
+                                contentParts = mirroredParts,
+                                dbMessageId = mirroredDbIds.lastOrNull(),
+                            ),
+                        )
+                    }
+                    updateAssistantMessage(assistantId, snapText, false, snapBlocks)
+                    splitCount++
+                    assistantId = "assistant_split_${System.currentTimeMillis()}"
+                    _messages.value = _messages.value + ChatMessage(
+                        id = assistantId,
+                        role = "assistant",
+                        content = "",
+                        isStreaming = true,
+                        isAwaitingModelResponse = true,
+                        thinkingLevel = _thinkingLevel.value,
+                    )
+                    reducer = ChatTurnReducer(assistantId, 0)
+                    AppLogger.info(TAG_STREAM, "[Engine] turn split at inject: " +
+                        "rowA blocks=${snapBlocks.size} text=${snapText.length}ch " +
+                        "→ rowB=${assistantId.takeLast(10)}")
+                }
+                // [T-inject-attach] AFTER row A's mirror: the user message
+                // follows the assistant round it interrupts — canonical
+                // order [assistantA, resultsA-batch, USER, assistantB].
+                agentHistory.add(LLMMessage(
+                    role = LLMMessage.Role.USER,
+                    content = text,
+                    contentParts = listOf(AgentContentPart.Text(text)),
+                ))
                 AppLogger.info(
                     TAG_STREAM,
                     "[Send] bubble released ids=${next.id.takeLast(12)} rows→normal (mid-turn inject) " +
@@ -11832,12 +11923,23 @@ class ChatViewModel(
                     AppLogger.warning(TAG_STREAM, "[Engine] EMPTY TURN " +
                         "finished=$finished first=${firstEventMs}ms — events lost?")
                 }
+                // [T-inject-attach] The last row after a split can be empty
+                // (turn ended right after an inject, before any post-split
+                // content): finalize-with-empty would leave a dead bubble —
+                // sweep the placeholder instead, exactly like the send-path
+                // sweep of an aborted pre-row.
+                if (splitCount > 0 && reducer.text.isEmpty() && reducer.currentBlocks().isEmpty()) {
+                    _messages.value = _messages.value.filterNot { it.id == assistantId }
+                    AppLogger.info(TAG_STREAM, "[Engine] empty rowB swept after split " +
+                        "(turn ended at inject boundary)")
+                } else {
                 updateAssistantMessage(
                     assistantId,
                     reducer.text.toString(),
                     false,
                     reducer.currentBlocks(),
                 )
+                }
             }
         }
     }
