@@ -11670,19 +11670,31 @@ class ChatViewModel(
                     }
                     updateAssistantMessage(assistantId, snapText, false, snapBlocks)
                     splitCount++
+                    val rowAId = assistantId
                     assistantId = "assistant_split_${System.currentTimeMillis()}"
-                    _messages.value = _messages.value + ChatMessage(
-                        id = assistantId,
-                        role = "assistant",
-                        content = "",
-                        isStreaming = true,
-                        isAwaitingModelResponse = true,
-                        thinkingLevel = _thinkingLevel.value,
-                    )
+                    // [T-inject-attach-group] ONE fold row for the WHOLE
+                    // split turn: A flags itself as the leader (suppresses
+                    // its own row — its tools join the group row), B links
+                    // to A and renders THE row with combined totals. Both
+                    // marks are set in a single _messages emission: the
+                    // frozen-prefix rebuild that follows (boundary jumps
+                    // two messages, prefixValid fails) sees a CONSISTENT
+                    // list — no window where A shows its own row.
+                    _messages.value = _messages.value
+                        .map { m -> if (m.id == rowAId) m.copy(hasSplitContinuation = true) else m } +
+                        ChatMessage(
+                            id = assistantId,
+                            role = "assistant",
+                            content = "",
+                            isStreaming = true,
+                            isAwaitingModelResponse = true,
+                            thinkingLevel = _thinkingLevel.value,
+                            continuationOf = rowAId,
+                        )
                     reducer = ChatTurnReducer(assistantId, 0)
                     AppLogger.info(TAG_STREAM, "[Engine] turn split at inject: " +
                         "rowA blocks=${snapBlocks.size} text=${snapText.length}ch " +
-                        "→ rowB=${assistantId.takeLast(10)}")
+                        "→ rowB=${assistantId.takeLast(10)} (fold group)")
                 }
                 // [T-inject-attach] AFTER row A's mirror: the user message
                 // follows the assistant round it interrupts — canonical

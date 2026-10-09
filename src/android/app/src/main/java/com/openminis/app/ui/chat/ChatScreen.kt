@@ -4102,6 +4102,12 @@ fun ChatScreen(
                                 // in place, tap = fold back. Composes
                                 // nothing while the turn streams — the work
                                 // itself is on screen.
+                                // [T-inject-attach-group] A SPLIT turn's row
+                                // carries memberIds (leader A + continuation
+                                // B): every member's internal items key
+                                // their fold state by their OWN message id,
+                                // so one tap writes all member keys at once
+                                // — both segments' pills flip together.
                                 if (!item.messageIsStreaming) {
                                     val turnId = originalMessageId(item.messageId)
                                     val expanded = expandedTurns[turnId] == true
@@ -4109,10 +4115,18 @@ fun ChatScreen(
                                         blocks = item.toolBlocks,
                                         expanded = expanded,
                                         onToggle = {
-                                            expandedTurns[turnId] = !expanded
+                                            val newState = !expanded
+                                            if (item.memberIds.isEmpty()) {
+                                                expandedTurns[turnId] = newState
+                                            } else {
+                                                item.memberIds.forEach {
+                                                    expandedTurns[it.substringBefore('#')] = newState
+                                                }
+                                            }
                                             AppLogger.info(
                                                 "ChatScreen",
-                                                if (expanded) "[Fold] turn collapse $turnId" else "[Fold] turn expand $turnId",
+                                                if (expanded) "[Fold] turn collapse $turnId" else "[Fold] turn expand $turnId" +
+                                                    if (item.memberIds.size > 1) " group(${item.memberIds.size})" else "",
                                             )
                                         },
                                     )

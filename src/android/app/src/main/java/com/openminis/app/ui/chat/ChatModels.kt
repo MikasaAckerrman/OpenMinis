@@ -147,6 +147,18 @@ data class ChatMessage(
     // ChatMessage.sourceSortOrder, which serves the same UI↔raw mapping
     // role (AIChatViewModel.swift:3411, 3421).
     val sourceDbIds: List<String> = emptyList(),
+    // [T-inject-attach-group] Split-turn fold GROUP (user report 09.10:
+    // "две кнопки" — after an inject split each segment rendered its own
+    // fold row). Set together, atomically, by the inject split:
+    //   leader row A: hasSplitContinuation = true
+    //   continuation row B: continuationOf = A.id
+    // A suppresses its own fold row (its tools join B's group row);
+    // B renders THE row for the whole turn with combined tool totals and
+    // memberIds = [A, B] so one toggle drives both segments' pills.
+    // In-memory only (never serialized): after a reload each segment folds
+    // independently — two DB rows, two honest rows.
+    val hasSplitContinuation: Boolean = false,
+    val continuationOf: String? = null,
     // [T-msg-timestamps] Wall-clock timestamps shown in the UI, IDE-agent
     // style. `createdAtMs` = when this message came into being: for a user
     // turn that's the send instant; for an assistant turn it's when the

@@ -166,4 +166,44 @@ class ChatTextFoldTest {
         // streaming flag before hiding anything.
         assertTrue(items.filterIsInstance<FlatChatItem.AssistantToolUse>().single().isTurnInternal)
     }
+
+    @Test
+    fun `split turn folds as ONE group - leader row suppressed, continuation carries combined totals`() {
+        // [T-inject-attach-group] User report 09.10 ("две кнопки — мусор"):
+        // after an inject split the turn is two DB rows; each used to
+        // render its OWN fold row. The group: leader A (hasSplitContinuation)
+        // suppresses its own row; continuation B (continuationOf=A) renders
+        // THE row with combined totals and memberIds for a single toggle.
+        val a = msg("mA", toolBlock("ua1"), toolBlock("ua2"))
+            .copy(hasSplitContinuation = true)
+        val b = msg("mB", toolBlock("ub1"), textBlock("tb", "Ответ."))
+            .copy(continuationOf = "mA")
+        val items = flat(a, b)
+        // ONE fold row for the WHOLE group — and it lives on B.
+        val folds = items.filterIsInstance<FlatChatItem.AssistantTurnFold>()
+        assertEquals(1, folds.size)
+        val fold = folds.single()
+        assertEquals("mB", fold.messageId)
+        // Combined totals: A's 2 tools + B's 1 tool.
+        assertEquals(3, fold.toolBlocks.size)
+        // One toggle drives both segments' pills.
+        assertEquals(listOf("mA", "mB"), fold.memberIds)
+        // A's pills are internal — they hide under the group row at rest.
+        assertTrue(items.filterIsInstance<FlatChatItem.AssistantToolUse>().all { it.isTurnInternal })
+        // The single row rides directly before B's trailing answer; A
+        // contributes pills only (no row of its own).
+        val kinds = items.map { it.contentType }
+        assertEquals(
+            listOf("header", "tool", "tool", "header", "tool", "turnfold", "mdblock"),
+            kinds,
+        )
+        // The group filter: folded at rest, both keys flip together.
+        val visible = filterTurnInternalItems(items, emptyMap())
+        assertEquals(
+            listOf("header", "header", "turnfold", "mdblock"),
+            visible.map { it.contentType },
+        )
+        val expanded = filterTurnInternalItems(items, mapOf("mA" to true, "mB" to true))
+        assertEquals(items.size, expanded.size)
+    }
 }

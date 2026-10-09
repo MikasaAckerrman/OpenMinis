@@ -496,6 +496,13 @@ internal sealed class FlatChatItem {
         val messageId: String,
         val toolBlocks: List<AssistantBlock>,
         val messageIsStreaming: Boolean = false,
+        // [T-inject-attach-group] Split-turn group: the row's toggle drives
+        // the fold state of EVERY member segment (leader A + continuation
+        // B) — each member's internal items key their state by their OWN
+        // message id, so one tap writes all keys at once. Empty for normal
+        // (single-segment) turns: the toggle then writes its own id, as
+        // before.
+        val memberIds: List<String> = emptyList(),
     ) : FlatChatItem() {
         override val key = "turnfold:$messageId"
         override val contentType = "turnfold"
@@ -907,6 +914,34 @@ internal fun buildFlatChatItems(
         // tool session, and thinking already auto-collapses on its own.
         val turnFolds = blocks.any { it.kind == "tool_use" }
         val turnToolBlocks = if (turnFolds) blocks.filter { it.kind == "tool_use" } else emptyList()
+        // [T-inject-attach-group] Split-turn fold GROUP (user report 09.10
+        // "две кнопки — мусор"): after an inject split the turn is two DB
+        // rows, and each used to render its OWN fold row. Now the leader
+        // row A suppresses its own row entirely (its tools join the group
+        // row's totals) and the continuation row B renders THE single row
+        // for the whole turn, right before the final answer:
+        //   [pills A hidden] [USER msg] [pills B hidden] [⚙ row A+B] [answer]
+        // One toggle (memberIds) flips both segments' pills in place.
+        // Suffix-build safety: the leader is NOT re-walked here (frozen
+        // prefix) — its tool blocks are looked up in the FULL messages
+        // list this function always receives.
+        val isSplitLeader = message.hasSplitContinuation
+        val continuationLeaderId = message.continuationOf?.substringBefore('#')
+        val groupFoldEligible = turnFolds || continuationLeaderId != null
+        val groupToolBlocks = if (continuationLeaderId != null) {
+            val leaderTools = messages
+                .firstOrNull { it.id.substringBefore('#') == continuationLeaderId }
+                ?.blocks?.filter { it.kind == "tool_use" }
+                .orEmpty()
+            leaderTools + turnToolBlocks
+        } else {
+            turnToolBlocks
+        }
+        val groupMemberIds = if (continuationLeaderId != null) {
+            listOf(continuationLeaderId, message.id.substringBefore('#'))
+        } else {
+            emptyList()
+        }
         var turnFoldEmitted = false
         // Only the last cancelled tool_use in the message gets the Retry button —
         // retryLast() re-runs the whole turn, so one button is enough.
@@ -919,11 +954,12 @@ internal fun buildFlatChatItems(
             // header right above the answer — it never moves. Emitted
             // before the FIRST TRAILING text block; turns that end on
             // tools get the row after the loop (tail of the cluster).
-            if (turnFolds && !turnFoldEmitted && index > lastNonTextIdx && block.kind == "text") {
+            if (groupFoldEligible && !isSplitLeader && !turnFoldEmitted && index > lastNonTextIdx && block.kind == "text") {
                 out.add(dedupe(FlatChatItem.AssistantTurnFold(
                     messageId = message.id,
-                    toolBlocks = turnToolBlocks,
+                    toolBlocks = groupToolBlocks,
                     messageIsStreaming = message.isStreaming,
+                    memberIds = groupMemberIds,
                 )))
                 turnFoldEmitted = true
             }
@@ -1059,11 +1095,12 @@ internal fun buildFlatChatItems(
         }
         // [T-zcode-turn-fold] Fallback: a turn that ends on tools (no
         // trailing text) still gets its row — at the tail of the cluster.
-        if (turnFolds && !turnFoldEmitted) {
+        if (groupFoldEligible && !isSplitLeader && !turnFoldEmitted) {
             out.add(dedupe(FlatChatItem.AssistantTurnFold(
                 messageId = message.id,
-                toolBlocks = turnToolBlocks,
+                toolBlocks = groupToolBlocks,
                 messageIsStreaming = message.isStreaming,
+                memberIds = groupMemberIds,
             )))
         }
 
