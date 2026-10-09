@@ -191,16 +191,20 @@ class ChatTextFoldTest {
         // A's pills are internal — they hide under the group row at rest.
         assertTrue(items.filterIsInstance<FlatChatItem.AssistantToolUse>().all { it.isTurnInternal })
         // The single row rides directly before B's trailing answer; A
-        // contributes pills only (no row of its own).
+        // contributes pills only (no row of its own). Note: two CONSECUTIVE
+        // assistant messages merge their header (neighbor lookback
+        // precedededByUser=false) — in a real split a user message sits
+        // between A and B and B does get its header; the group logic is
+        // header-independent, so the fixture keeps them adjacent.
         val kinds = items.map { it.contentType }
         assertEquals(
-            listOf("header", "tool", "tool", "header", "tool", "turnfold", "mdblock"),
+            listOf("header", "tool", "tool", "tool", "turnfold", "mdblock"),
             kinds,
         )
         // The group filter: folded at rest, both keys flip together.
         val visible = filterTurnInternalItems(items, emptyMap())
         assertEquals(
-            listOf("header", "header", "turnfold", "mdblock"),
+            listOf("header", "turnfold", "mdblock"),
             visible.map { it.contentType },
         )
         val expanded = filterTurnInternalItems(items, mapOf("mA" to true, "mB" to true))
