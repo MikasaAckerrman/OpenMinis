@@ -11584,22 +11584,6 @@ class ChatViewModel(
                     null
                 } else {
                 val text = next.text
-                // [T-queue-zombie-window] Durable-first, same order as
-                // drainQueuedPrompts: the DB row is written BEFORE the
-                // entry leaves the queue. A death after injection but
-                // before the model's answer leaves a real user row (never
-                // a zombie bubble), and the queue no longer holds it — no
-                // duplicate re-drain.
-                val sid = ensureSession()
-                val partsJson = buildUserPartsJson(text, emptyList(), null)
-                chatRepository.appendMessage(sid, "user", partsJson)
-                _promptQueue.value = _promptQueue.value.drop(1)
-                persistPromptQueue()
-                _messages.value = _messages.value.map { m ->
-                    if (m.queuedPromptId == next.id) {
-                        m.copy(isQueued = false, queuedPromptId = null)
-                    } else m
-                }
                 // [T-inject-attach] Split the turn AT the injection point so
                 // the user's message renders ATTACHED between the pre-inject
                 // work and the response that answers it (ZCode semantics) —
@@ -11695,6 +11679,27 @@ class ChatViewModel(
                     AppLogger.info(TAG_STREAM, "[Engine] turn split at inject: " +
                         "rowA blocks=${snapBlocks.size} text=${snapText.length}ch " +
                         "→ rowB=${assistantId.takeLast(10)} (fold group)")
+                }
+                // [T-inject-attach-order] The split runs BEFORE the user row
+                // is written: row A (pre-inject work) lands in the DB first,
+                // so a reload renders [A work][USER][B answer] — the attached
+                // ZCode order, same as the live overlay. The zombie-window
+                // contract is unchanged: the user row is STILL written before
+                // the entry leaves the queue; a death between row A's persist
+                // and the user row leaves the text in the QUEUE (reload
+                // re-drains it) — no loss, no zombie, no duplicate.
+                // [T-queue-zombie-window] Durable-first, same order as
+                // drainQueuedPrompts: the DB row is written BEFORE the
+                // entry leaves the queue.
+                val sid = ensureSession()
+                val partsJson = buildUserPartsJson(text, emptyList(), null)
+                chatRepository.appendMessage(sid, "user", partsJson)
+                _promptQueue.value = _promptQueue.value.drop(1)
+                persistPromptQueue()
+                _messages.value = _messages.value.map { m ->
+                    if (m.queuedPromptId == next.id) {
+                        m.copy(isQueued = false, queuedPromptId = null)
+                    } else m
                 }
                 // [T-inject-attach] AFTER row A's mirror: the user message
                 // follows the assistant round it interrupts — canonical
