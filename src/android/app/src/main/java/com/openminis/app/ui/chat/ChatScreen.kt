@@ -4108,7 +4108,16 @@ fun ChatScreen(
                                 // their fold state by their OWN message id,
                                 // so one tap writes all member keys at once
                                 // — both segments' pills flip together.
-                                if (!item.messageIsStreaming) {
+                                // [T-group-row-while-streaming] A GROUP row
+                                // renders EVEN while B streams: the leader's
+                                // pills are already hidden at the split, and
+                                // without the row there is a no-affordance
+                                // gap — the pre-split work is invisible in
+                                // ANY form (user report 09.10: "тул
+                                // пропал, исчез"). The row rides between B's
+                                // live pills and the streaming answer; its
+                                // totals grow live as B's tools complete.
+                                if (!item.messageIsStreaming || item.memberIds.isNotEmpty()) {
                                     val turnId = originalMessageId(item.messageId)
                                     val expanded = expandedTurns[turnId] == true
                                     ToolGroupSummaryRow(
