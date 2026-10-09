@@ -33,6 +33,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Autorenew
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -2360,6 +2361,32 @@ fun ChatScreen(
                     // Effective from the NEXT turn (swap points read the
                     // flag per turn). No restart, no reinstall.
                     val engineMode by viewModel.engineMode.collectAsState()
+                    // [T-auto-mode-visible] ⟳ chip: the ONLY always-on
+                    // indicator that the session is in an autonomous run.
+                    // Reports "session doesn't finish" = armed + silent
+                    // continuations. Tap = disarm (persisted via the armed
+                    // observer; the run ends with the current turn).
+                    val autoArmed by viewModel.autoModeArmed.collectAsState()
+                    if (autoArmed) {
+                        Box(
+                            modifier =
+                                Modifier
+                                    .size(36.dp)
+                                    .clip(androidx.compose.foundation.shape.CircleShape)
+                                    .clickable(
+                                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                                        indication = null,
+                                    ) { viewModel.disarmAutoMode() },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Autorenew,
+                                contentDescription = "Авто-режим работает (нажмите для остановки)",
+                                tint = androidx.compose.ui.graphics.Color(0xFFFFB340),
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                    }
                     Box(
                         modifier =
                             Modifier

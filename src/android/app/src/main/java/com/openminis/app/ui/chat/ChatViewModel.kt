@@ -1694,6 +1694,25 @@ class ChatViewModel(
 
     private val _autoModeArmed = MutableStateFlow(false)
     val autoModeArmed: StateFlow<Boolean> = _autoModeArmed.asStateFlow()
+
+    /**
+     * [T-auto-mode-visible] UI affordance for the ⟳ chip: disarms the
+     * autonomous run in one tap. The StateFlow observer (single
+     * chokepoint) persists the flip; a queued continuation prompt may
+     * still drain (it is a normal queued message), but no NEW
+     * continuation parks after it.
+     */
+    fun disarmAutoMode() {
+        if (!_autoModeArmed.value) return
+        _autoModeArmed.value = false
+        autoModeParked = false
+        autoModeCompactPending = false
+        AppLogger.info(TAG_STREAM, "[AutoMode] disarmed via UI chip")
+        appendSystemInfo(
+            text = "⟳ Авто-режим выключен — сессия завершится с текущим ходом.",
+            iconKind = "compact",
+        )
+    }
     private var autoModeTurns = 0
 
     /** [T-auto-mode-verify] Consecutive failed verifications of the current approach. */
@@ -1897,6 +1916,17 @@ class ChatViewModel(
         }
         autoModeTurns++
         autoModeParked = true
+        // [T-auto-mode-visible] The continuation parks SILENTLY today: the
+        // user watches a finished answer, then a new turn starts with no
+        // explanation — reported as "сессия не завершается когда ты
+        // закончил". Every continuation now lands a thin visible row:
+        // the WHY is on screen at the exact moment it happens, and the
+        // disarm affordance (any plain message) is stated right there.
+        appendSystemInfo(
+            text = "⟳ Авто-режим · продолжение #$autoModeTurns — " +
+                "работаю дальше по плану. Остановить: любое обычное сообщение.",
+            iconKind = "compact",
+        )
         if (autoModePressureNeedsCompact()) {
             // 100% fullness: pause → compact → the compact pump continues.
             autoModeCompactPending = true
