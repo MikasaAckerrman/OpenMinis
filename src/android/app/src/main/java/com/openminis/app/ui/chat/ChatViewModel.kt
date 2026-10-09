@@ -9880,6 +9880,7 @@ class ChatViewModel(
                             val safeError = (e.message ?: e.javaClass.simpleName).take(200)
                             if (sid.isNotEmpty()) {
                                 viewModelScope.launch(Dispatchers.IO) {
+                                    ensureDeadTurnOwnsErrorRow(sid)
                                     try { chatRepository.updateLastAssistantError(sid, safeError) }
                                     catch (er: Exception) {
                                         AppLogger.warning(TAG_STREAM, "[ErrorPersist] stamp failed: ${er.message}")
@@ -10451,6 +10452,33 @@ class ChatViewModel(
         )
     }
 
+    /**
+     * [T-dead-turn-row-guard] A terminal turn failure stamps its error via
+     * updateLastAssistantError, which targets the LAST assistant row of the
+     * session. When the failing turn died before its first content persist
+     * (no row of its own — the live 09.10 repro: engine 401 -> legacy 401 ->
+     * the sticker landed on the PREVIOUS turn's answer), that "last row"
+     * belongs to a DIFFERENT turn — a misattributed error banner the user
+     * reads as "this answer failed" plus a Retry that retries the wrong
+     * thing. Guard: if the session's last row is not an assistant row (the
+     * failing turn never wrote one), append a minimal assistant row FIRST —
+     * the dead turn then owns the row the stamp targets. Called on the IO
+     * dispatcher, before the stamp, from the send-path catch and
+     * setInlineError's persist.
+     */
+    private suspend fun ensureDeadTurnOwnsErrorRow(sid: String) {
+        try {
+            val all = chatRepository.dao.loadMessages(sid)
+            val last = all.lastOrNull()
+            if (last != null && last.role != "assistant") {
+                chatRepository.appendMessage(sid, "assistant", "[]")
+                AppLogger.info(TAG_STREAM, "[ErrorPersist] dead-turn row appended (turn had no row)")
+            }
+        } catch (e: Exception) {
+            AppLogger.warning(TAG_STREAM, "[ErrorPersist] row guard failed: ${e.message}")
+        }
+    }
+
     private fun setInlineError(errorText: String) {
         // [T-error-persist-android] Never let an empty/blank error string reach
         // the banner. The UI gate is `message.error?.let { … }` — a non-null ""
@@ -10486,6 +10514,9 @@ class ChatViewModel(
             val sid = realSessionId.ifEmpty { sessionId }
             if (sid.isNotEmpty()) {
                 viewModelScope.launch(Dispatchers.IO) {
+                    // [T-dead-turn-row-guard] ensure the failing turn owns the
+                    // row the stamp targets — see the helper's doc.
+                    ensureDeadTurnOwnsErrorRow(sid)
                     try { chatRepository.updateLastAssistantError(sid, safeError) }
                     catch (e: Exception) { Log.w(TAG, "persist error_info failed: ${e.message}") }
                 }
