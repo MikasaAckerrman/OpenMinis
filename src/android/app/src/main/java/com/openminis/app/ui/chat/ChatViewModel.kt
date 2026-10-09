@@ -3617,7 +3617,17 @@ class ChatViewModel(
     }
 
     fun deleteMessage(messageId: String) {
-        if (_isStreaming.value) {
+        // [T-delete-during-stream] Deleting a COMPLETED row during streaming is
+        // safe (same argument as [T-edit-during-stream]: the turn holds its
+        // own history snapshot; the DB change cannot corrupt the in-flight
+        // request). The old blanket refusal produced "сообщения не удаляются"
+        // whenever the user cleaned the chat mid-turn — which is most of the
+        // time. The ONLY unsafe target is the live streaming row itself
+        // (surgery on a row the stream is still writing into) — refuse just
+        // that case, everything else proceeds with an in-place list update.
+        if (_isStreaming.value &&
+            _messages.value.any { it.isStreaming && (it.id == messageId || it.sourceDbIds.contains(messageId)) }
+        ) {
             appendSystemInfo(
                 text = context.getString(R.string.msg_delete_busy_streaming),
                 iconKind = "compact",
@@ -3754,7 +3764,19 @@ class ChatViewModel(
                 }
                 withContext(Dispatchers.Main) {
                     revokeMemoryWritesInDeletedMessages(deletedUi)
-                    reloadSessionFromDb()
+                    if (_isStreaming.value) {
+                        // [T-delete-during-stream] In-place removal — no full
+                        // reload mid-stream (loadSession resets stream-owned
+                        // gates). Mirror the deletion into agentHistory so the
+                        // next turn stops seeing the deleted rows.
+                        val ids = plan.deleteIds.toSet()
+                        _messages.value = _messages.value.filter { m ->
+                            m.id !in ids && m.sourceDbIds.none { it in ids }
+                        }
+                        agentHistory.removeAll { it.dbMessageId in ids }
+                    } else {
+                        reloadSessionFromDb()
+                    }
                     // [T-delete-verify] A plan that said it would drop rows
                     // but removed none means every archiveAndDelete failed
                     // silently (runCatching.getOrDefault(0)) — reporting
@@ -3818,23 +3840,16 @@ class ChatViewModel(
      * preserved untouched — only prose changes.
      */
     fun rewriteMessageText(messageId: String, newText: String) {
-        if (_isStreaming.value) {
-            // [T-rewrite-not-lost] PROVEN USER BUG: the dialog closes FIRST
-            // and then this refusal fired — the edited text evaporated
-            // ("гасится и не работает"). Keep it: park the text in the
-            // composer draft so one more tap recovers it, and say why.
-            _inputText.value = newText
-            runCatching {
-                com.openminis.app.data.DraftStore.saveDraft(
-                    context, realSessionId.ifEmpty { sessionId }, newText,
-                )
-            }
-            appendSystemInfo(
-                text = context.getString(R.string.chat_rewrite_saved_draft),
-                iconKind = "info",
-            )
-            return
-        }
+        // [T-edit-during-stream] Editing a COMPLETED message during streaming
+        // is safe and expected: the active turn already holds its history
+        // snapshot (the DB edit cannot corrupt the in-flight request), and the
+        // next turn must see the fresh text. The old refusal parked the text
+        // as a composer draft — the user saw "правка не применяется,
+        // изменилось только после повторить" (the retry's reload was the only
+        // path flushing the edit into view). Now the edit always applies; the
+        // only streaming adjustment is in-place UI instead of a full reload
+        // (loadSession mid-stream resets stream-owned gates), plus an
+        // agentHistory mirror so the NEXT turn answers the NEW text.
         val sid = realSessionId.ifEmpty { sessionId }
         if (sid.isEmpty()) return
 
@@ -3996,7 +4011,29 @@ class ChatViewModel(
                     // surface AND to the LLM — parts_json was rewritten, the
                     // model simply reads the new text next turn.
                     com.openminis.app.service.MessageEditStore.markEdited(sid, messageId)
-                    reloadSessionFromDb()
+                    // [T-edit-during-stream] Mirror the edit into the live
+                    // agentHistory — the next turn reads agentHistory (NOT the
+                    // DB), so without this the bubble shows new text while the
+                    // model still answers the old one ("изменилось только
+                    // после повторить" — the retry's reload was the only sync).
+                    val histIdx = agentHistory.indexOfLast { it.dbMessageId == row.id }
+                    if (histIdx >= 0) {
+                        agentHistory[histIdx] = agentHistory[histIdx].copy(content = newText)
+                    }
+                    if (_isStreaming.value) {
+                        // In-place list update — a full reloadSessionFromDb
+                        // mid-stream resets stream-owned gates (loadSession
+                        // tears down the whole session state).
+                        _messages.value = _messages.value.map { m ->
+                            if (m.id == messageId || m.sourceDbIds.contains(row.id)) {
+                                m.copy(content = newText)
+                            } else {
+                                m
+                            }
+                        }
+                    } else {
+                        reloadSessionFromDb()
+                    }
                 }
             } catch (e: CancellationException) {
                 throw e
