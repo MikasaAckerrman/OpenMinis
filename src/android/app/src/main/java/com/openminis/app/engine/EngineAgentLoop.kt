@@ -194,6 +194,27 @@ class EngineAgentLoop(
                     ),
                 )
             }
+            // [T-engine-queue-interrupt] iOS d14174d3 parity — the engine
+            // edition. User report (vc114/115): on the legacy path a queued
+            // message starts working the MOMENT a tool closes (the loop
+            // injects it at the post-tool boundary), while the engine path
+            // ran its whole plan to convergence and only then drained the
+            // queue — "ты их видишь но игнорируешь" (they see it but ignore
+            // it). Semantics here: at this same boundary (tool results
+            // appended, next model round not yet requested) poll the
+            // driver; if the user queued a message, append it to the
+            // working history so the NEXT model call sees it and responds
+            // to it — same stream slot, no new turn ceremony. The assistant
+            // round above closes the tool protocol, so appending a USER
+            // message here is canonical order (no consecutive-user fold:
+            // the tail is TOOL, not USER).
+            input.onPendingUserMessage?.let { poll ->
+                val queuedText = poll()
+                if (queuedText != null && queuedText.isNotEmpty()) {
+                    workingHistory.add(EngineMessage(EngineRole.USER, text = queuedText))
+                    onEngineEvent("[QueueInterrupt] round=$round user message injected mid-turn (${queuedText.length}ch)")
+                }
+            }
         }
     }
 

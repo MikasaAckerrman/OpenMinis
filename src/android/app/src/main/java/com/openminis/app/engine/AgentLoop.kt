@@ -33,6 +33,14 @@ data class TurnInput(
     // the default for headless/graph callers.
     val maxTokens: Int = 8192,
     val limits: LoopLimits = LoopLimits(),
+    // [T-engine-queue-interrupt] Mid-turn queue injection seam: polled at
+    // the post-tool-result boundary of each round. Non-null + non-empty
+    // return → the text is appended as a USER message to the working
+    // history and the next model call responds to it inside the SAME turn
+    // (iOS d14174d3 parity — queued messages start working the moment a
+    // tool closes, not when the whole plan converges). The poller owns
+    // taking the message off the queue (dequeue + bubble bookkeeping).
+    val onPendingUserMessage: (suspend () -> String?)? = null,
 )
 
 /**

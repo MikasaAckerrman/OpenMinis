@@ -11569,6 +11569,43 @@ class ChatViewModel(
             history = engineHistory,
             mode = _permissionMode.value,
             maxTokens = engineMaxTokens,
+            // [T-engine-queue-interrupt] Dequeue seam: at every post-tool
+            // round boundary the loop polls for a queued user message and
+            // (if any) works it into the SAME turn — legacy QueueInterrupt
+            // parity. Dequeue owns the side effects (queue removal + the
+            // [Send] bubble bookkeeping + persist of the emptied queue).
+            onPendingUserMessage = {
+                val next = _promptQueue.value.firstOrNull()
+                    ?: return@onPendingUserMessage null
+                val text = next.text
+                // [T-queue-zombie-window] Durable-first, same order as
+                // drainQueuedPrompts: the DB row is written BEFORE the
+                // entry leaves the queue. A death after injection but
+                // before the model's answer leaves a real user row (never
+                // a zombie bubble), and the queue no longer holds it — no
+                // duplicate re-drain.
+                val sid = ensureSession()
+                val partsJson = buildUserPartsJson(text, null, null)
+                chatRepository.appendMessage(sid, "user", partsJson)
+                agentHistory.add(LLMMessage(
+                    role = LLMMessage.Role.USER,
+                    content = text,
+                    contentParts = listOf(AgentContentPart.Text(text)),
+                ))
+                _promptQueue.value = _promptQueue.value.drop(1)
+                persistPromptQueue()
+                _messages.value = _messages.value.map { m ->
+                    if (m.queuedPromptId == next.id) {
+                        m.copy(isQueued = false, queuedPromptId = null)
+                    } else m
+                }
+                AppLogger.info(
+                    TAG_STREAM,
+                    "[Send] bubble released ids=${next.id.takeLast(12)} rows→normal (mid-turn inject) " +
+                        "[QueueInterrupt] remaining=${_promptQueue.value.size}",
+                )
+                text
+            },
         )
         AppLogger.info(TAG_STREAM, "[Engine] setup aid=${assistantId.take(14)} " +
             "preRow=${placeholderAssistantId != null} " +
