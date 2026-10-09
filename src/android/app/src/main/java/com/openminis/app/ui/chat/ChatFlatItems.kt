@@ -929,9 +929,12 @@ internal fun buildFlatChatItems(
         val continuationLeaderId = message.continuationOf?.substringBefore('#')
         val groupFoldEligible = turnFolds || continuationLeaderId != null
         val groupToolBlocks = if (continuationLeaderId != null) {
+            // NB: ChatMessage exposes toolBlocks (the walk-local `blocks`
+            // comes from message.toolBlocks — do not confuse the two).
             val leaderTools = messages
                 .firstOrNull { it.id.substringBefore('#') == continuationLeaderId }
-                ?.blocks?.filter { it.kind == "tool_use" }
+                ?.toolBlocks
+                ?.filter { it.kind == "tool_use" }
                 .orEmpty()
             leaderTools + turnToolBlocks
         } else {
