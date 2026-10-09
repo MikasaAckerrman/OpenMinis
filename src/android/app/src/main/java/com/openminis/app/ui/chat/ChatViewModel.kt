@@ -747,6 +747,11 @@ class ChatViewModel(
     // ENQUEUE branch to detect a PARKED turn (hung preamble, phantom
     // resume) that would otherwise swallow queued messages forever.
     private var streamStartedAtMs = 0L
+    // [T-stale-idle-not-age] Activity clock: the stale guard must measure
+    // INACTIVITY, not turn age — a live 51-minute turn (106 tool rounds,
+    // events seconds before the user's message) was force-killed as
+    // "stale" on 09.10 22:38. Ticks on every stream event + tool result.
+    private var lastStreamActivityMs = 0L
 
     // [T-stale-stream-watch] A turn older than this with a pending user
     // queue is considered parked. 10 minutes: generous for real long turns
@@ -7842,6 +7847,7 @@ class ChatViewModel(
         AppLogger.info(TAG_STREAM, "rerunFromToolBlock _isStreaming=true (sync, sid=$activeSessionId)")
         _isStreaming.value = true
         streamStartedAtMs = System.currentTimeMillis()
+        lastStreamActivityMs = streamStartedAtMs
 
         viewModelScope.launch {
             var streamLaunched = false
@@ -8191,6 +8197,7 @@ class ChatViewModel(
         AppLogger.info(TAG_STREAM, "retry _isStreaming=true (sync, sid=$activeSessionId)")
         _isStreaming.value = true
         streamStartedAtMs = System.currentTimeMillis()
+        lastStreamActivityMs = streamStartedAtMs
 
         // [T-retry-instant-thinking] User report (2026-10-06): «нажимаю
         // повторить — ты не работаешь». The tap DID work — but between the
@@ -9406,15 +9413,20 @@ class ChatViewModel(
             // turn that owns the stream slot: a parked/stale turn (phantom
             // resume, hung preamble) is the #1 way a queue parks forever —
             // the age makes it visible in the very line that enqueues.
-            val ageMs = System.currentTimeMillis() - streamStartedAtMs
+            val nowMs = System.currentTimeMillis()
+            val ageMs = nowMs - streamStartedAtMs
+            val idleMs = nowMs - lastStreamActivityMs
             AppLogger.info(
                 TAG_STREAM,
-                "[Send] branch=ENQUEUE (streaming turn active, ageMs=$ageMs)",
+                "[Send] branch=ENQUEUE (streaming turn active, ageMs=$ageMs idleMs=$idleMs)",
             )
-            if (ageMs > STALE_STREAM_FORCE_DRAIN_MS) {
+            // [T-stale-idle-not-age] Kill only a TRULY parked turn: activity
+            // (tokens, tool results) keeps the clock alive. Age alone killed
+            // a live 51-minute AdAway investigation (09.10 22:38).
+            if (idleMs > STALE_STREAM_FORCE_DRAIN_MS) {
                 AppLogger.warning(
                     TAG_STREAM,
-                    "[Send] STALE STREAM detected (ageMs=$ageMs > $STALE_STREAM_FORCE_DRAIN_MS) — " +
+                    "[Send] STALE STREAM detected (idleMs=$idleMs > $STALE_STREAM_FORCE_DRAIN_MS, ageMs=$ageMs) — " +
                         "force-cancelling the parked turn and draining the queue",
                 )
                 forceCancelStaleStream()
@@ -9520,6 +9532,7 @@ class ChatViewModel(
         AppLogger.info(TAG_STREAM, "send _isStreaming=true (sync, sid=$activeSessionId)")
         _isStreaming.value = true
         streamStartedAtMs = System.currentTimeMillis()
+        lastStreamActivityMs = streamStartedAtMs
         // Pin synchronously before any suspension. The StateFlow observer
         // below also mirrors this flag, but it can run after navigation has
         // already opened another chat and ChatViewModelStore has evicted an
@@ -10748,6 +10761,7 @@ class ChatViewModel(
         AppLogger.info(TAG_STREAM, "retryLast _isStreaming=true (sync, sid=$activeSessionId)")
         _isStreaming.value = true
         streamStartedAtMs = System.currentTimeMillis()
+        lastStreamActivityMs = streamStartedAtMs
 
         viewModelScope.launch {
             var streamLaunched = false
@@ -11879,6 +11893,7 @@ class ChatViewModel(
                 when (event) {
                     is com.openminis.app.engine.AgentEvent.TurnFinished -> {
                         reducer.reduce(event)
+                            lastStreamActivityMs = System.currentTimeMillis()
                         finished = true
                         AppLogger.info(TAG_STREAM, "[Engine] finished reason=${event.reason} " +
                             "text=${reducer.text.length}ch blocks=${reducer.currentBlocks().size} " +
@@ -11908,6 +11923,7 @@ class ChatViewModel(
                         // every executed tool row. Drain it through the
                         // production writer (off-main inside, same protocol).
                         val effects = reducer.reduce(event)
+                        lastStreamActivityMs = System.currentTimeMillis()
                         toolCalls++
                         effects.filterIsInstance<ChatTurnReducer.PersistToolResult>().forEach { eff ->
                             persistEffects++
@@ -11962,6 +11978,7 @@ class ChatViewModel(
                             textChars += event.text.length
                         }
                         reducer.reduce(event)
+                            lastStreamActivityMs = System.currentTimeMillis()
                         updateAssistantMessage(
                             assistantId,
                             reducer.text.toString(),
@@ -17875,10 +17892,27 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
     }
 
     fun resumeQueueAfterCancel() {
+        resumeQueueAfterCancel(0)
+    }
+
+    private fun resumeQueueAfterCancel(attempt: Int) {
         viewModelScope.launch {
-            kotlinx.coroutines.delay(200)
+            kotlinx.coroutines.delay(if (attempt == 0) 200 else 400)
             if (_promptQueue.value.isEmpty()) return@launch
-            if (_isStreaming.value) return@launch
+            // [T-stale-kick-retry] A force-cancelled turn dies asynchronously:
+            // its finally (106 tool rounds worth of cleanup on the 09.10
+            // incident) can still hold the slot when the 200ms kick lands.
+            // Returning here lost the queued message forever ("persisted for
+            // resume" with no resume). Retry while the old job is dying —
+            // bounded (5 attempts ≈ 2s total), each attempt re-checks.
+            if (_isStreaming.value) {
+                if (attempt < 5) {
+                    resumeQueueAfterCancel(attempt + 1)
+                } else {
+                    AppLogger.warning(TAG, "resumeQueueAfterCancel: stream slot still held after 5 attempts — queue persisted, reload kick will deliver")
+                }
+                return@launch
+            }
             // [T-android-compact-queued-drain] Defer while a compact is in
             // flight — draining would mutate agentHistory mid-marker-write.
             // Safe to just return: every SUCCESSFUL compact re-kicks this
@@ -17936,6 +17970,7 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
             AppLogger.info(TAG_STREAM, "resumeQueueAfterCancel _isStreaming=true (sync, sid=$activeSessionId)")
             _isStreaming.value = true
             streamStartedAtMs = System.currentTimeMillis()
+        lastStreamActivityMs = streamStartedAtMs
             _canResume.value = false
             _error.value = null
 
@@ -18313,6 +18348,7 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
             AppLogger.info(TAG_STREAM, "resume _isStreaming=true (sid=$activeSessionId)")
             _isStreaming.value = true
             streamStartedAtMs = System.currentTimeMillis()
+        lastStreamActivityMs = streamStartedAtMs
             streamJob = launch(Dispatchers.IO) {
                 AppLogger.info(TAG_STREAM, "resume streamJob ENTER sid=$activeSessionId")
                 try {

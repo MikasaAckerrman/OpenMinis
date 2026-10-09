@@ -2211,7 +2211,15 @@ class OpenAIProvider private constructor(
             lid.startsWith("o") || lid.startsWith("gpt-5") -> {
                 body.put("reasoning_effort", effortStr)
             }
-            lid.contains("qwen") || isDashScope -> {
+            // [T-dashscope-nonqwen-thinking-budget-400] Qwen3's
+            // enable_thinking/thinking_budget pair is a QWEN-family contract —
+            // DashScope re-hosts other families (glm-5.3 via OpenAI 36
+            // proved it live: 400 "Parameter thinking_budget is not
+            // supported"). Gate on the model id, not the endpoint: qwen
+            // anywhere gets the budget path; non-qwen models on DashScope
+            // (glm/kimi/deepseek) fall through to their native no-param
+            // branch below — DashScope rejects their thinking params too.
+            lid.contains("qwen") -> {
                 var budget = when (level) {
                     ThinkingLevel.LOW -> 4096
                     ThinkingLevel.MEDIUM -> 16384
