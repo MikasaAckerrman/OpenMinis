@@ -4018,7 +4018,14 @@ class ChatViewModel(
                     // после повторить" — the retry's reload was the only sync).
                     val histIdx = agentHistory.indexOfLast { it.dbMessageId == row.id }
                     if (histIdx >= 0) {
-                        agentHistory[histIdx] = agentHistory[histIdx].copy(content = newText)
+                        // contentParts carry the text the request builders
+                        // actually read (user messages always ship as parts) —
+                        // mirroring only `content` would leave the model
+                        // answering the OLD text via the parts channel.
+                        agentHistory[histIdx] = agentHistory[histIdx].copy(
+                            content = newText,
+                            contentParts = listOf(com.openminis.app.data.model.AgentContentPart.Text(newText)),
+                        )
                     }
                     if (_isStreaming.value) {
                         // In-place list update — a full reloadSessionFromDb
@@ -4040,6 +4047,13 @@ class ChatViewModel(
             } catch (e: Exception) {
                 AppLogger.warning(TAG, "[Surgery] rewrite failed: ${e.message}")
                 withContext(Dispatchers.Main) {
+                    // [T-rewrite-not-lost] The dialog closed with the edited
+                    // text — on failure park it in the composer draft so one
+                    // tap recovers it (text loss is the worse defect).
+                    _inputText.value = newText
+                    runCatching {
+                        com.openminis.app.data.DraftStore.saveDraft(context, sid, newText)
+                    }
                     appendSystemInfo(
                         text = context.getString(
                             R.string.msg_delete_failed,
