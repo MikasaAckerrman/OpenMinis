@@ -57,11 +57,14 @@ object EngineSwapPrefs {
         val current = currentVersionCode(context)
         val stored = prefs?.getInt(KEY_ARMED_AT_VERSION, Int.MIN_VALUE) ?: Int.MIN_VALUE
         if (mustResetOnUpgrade(stored, current)) {
-            // Cross-build (or first run): reset to the default (ENGINE ON —
-            // the new engine leads since 08.10) and stamp the build. The
-            // user's legacy choice is one button tap away, never inherited.
+            // Cross-build (or first run): reset to the default — LEGACY
+            // leads (the 09.10 agreement: the engine earns its default on
+            // the stand, the toggle is one tap away). My earlier flip
+            // changed only isEnabled()'s default and left this reset
+            // writing TRUE — vc120 silently re-armed the engine on
+            // install. The reset now honors the same default.
             prefs?.edit()
-                ?.putBoolean(KEY, true)
+                ?.putBoolean(KEY, false)
                 ?.putInt(KEY_ARMED_AT_VERSION, current)
                 ?.putStringSet(KEY_SESSION_OVERRIDES, null)
                 ?.apply()
