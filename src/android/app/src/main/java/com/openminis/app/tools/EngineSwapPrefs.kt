@@ -69,8 +69,15 @@ object EngineSwapPrefs {
     }
 
     fun isEnabled(): Boolean {
-        val p = prefs ?: return true
-        return p.getBoolean(KEY, true)
+        // [T-engine-earns-default] Default OFF: the legacy loop leads
+        // production turns. The engine stays one tap away (the ⚡/shield
+        // top-bar toggle) and earns its default through the autonomous
+        // stand battery, not through the user's sessions (the 09.10
+        // agreement after the second-system mirror seams). The pref
+        // default below follows suit — a missing key or a wiped store
+        // lands the user on the proven loop, never silently on the engine.
+        val p = prefs ?: return false
+        return p.getBoolean(KEY, false)
     }
 
     fun setEnabled(value: Boolean) {
