@@ -1207,6 +1207,25 @@ class ChatViewModel(
             arr.put(org.json.JSONObject().apply {
                 put("id", p.id)
                 put("text", p.text)
+                // [T-queue-attachments-survive] Attachments queued behind a
+                // live turn were dropped by the persist/restore round-trip
+                // (id+text only): a process death in the queue window (vivo
+                // freezer) delivered the message WITHOUT its image/file —
+                // silent data loss. Serialize them; URIs are stable across
+                // process death (FileProvider/cache paths persist on disk).
+                if (p.attachments.isNotEmpty()) {
+                    put("attachments", org.json.JSONArray().apply {
+                        for (a in p.attachments) {
+                            put(org.json.JSONObject().apply {
+                                put("id", a.id)
+                                put("fileName", a.fileName)
+                                put("uri", a.uri.toString())
+                                put("mimeType", a.mimeType)
+                                put("kind", a.kind.name)
+                            })
+                        }
+                    })
+                }
             })
         }
         com.openminis.app.data.DraftStore.saveQueue(context, sid, arr.toString())
@@ -1237,8 +1256,28 @@ class ChatViewModel(
                 val obj = arr.optJSONObject(i) ?: continue
                 val id = obj.optString("id")
                 val text = obj.optString("text")
+                // [T-queue-attachments-survive] mirror of persistPromptQueue:
+                // rebuild InputAttachment entries (URI strings are stable
+                // across process death). A malformed entry degrades to
+                // text-only — never drops the whole prompt.
+                val attachments = obj.optJSONArray("attachments")?.let { a ->
+                    (0 until a.length()).mapNotNull { j ->
+                        val ao = a.optJSONObject(j) ?: return@mapNotNull null
+                        runCatching {
+                            InputAttachment(
+                                id = ao.optString("id"),
+                                fileName = ao.optString("fileName"),
+                                uri = android.net.Uri.parse(ao.optString("uri")),
+                                mimeType = ao.optString("mimeType", "application/octet-stream"),
+                                kind = runCatching {
+                                    InputAttachment.Kind.valueOf(ao.optString("kind"))
+                                }.getOrDefault(InputAttachment.Kind.DOCUMENT),
+                            )
+                        }.getOrNull()
+                    }
+                } ?: emptyList()
                 if (id.isNotEmpty() && text.isNotEmpty()) {
-                    prompts.add(QueuedPrompt(id = id, text = text))
+                    prompts.add(QueuedPrompt(id = id, text = text, attachments = attachments))
                 }
             }
             if (prompts.isEmpty()) return
@@ -11613,6 +11652,19 @@ class ChatViewModel(
                 val next = _promptQueue.value.firstOrNull()
                 if (next == null) {
                     null
+                } else if (next.attachments.isNotEmpty()) {
+                // [T-queue-attachments-survive] The mid-turn inject carries
+                // TEXT only — a queued attachment (image/file) would be
+                // silently dropped here while its text rides. Leave the
+                // entry in the queue: the post-turn drain (drainQueuedPrompts)
+                // delivers text AND attachments through the full image
+                // pipeline. Deferring by one round boundary beats losing the
+                // photo the user attached.
+                AppLogger.info(
+                    TAG_STREAM,
+                    "[QueueInterrupt] holding queued prompt with ${next.attachments.size} attachment(s) for the post-turn drain",
+                )
+                null
                 } else {
                 val text = next.text
                 // [T-inject-attach] Split the turn AT the injection point so
