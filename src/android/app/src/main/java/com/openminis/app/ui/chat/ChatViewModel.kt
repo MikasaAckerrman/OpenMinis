@@ -11576,7 +11576,9 @@ class ChatViewModel(
             // [Send] bubble bookkeeping + persist of the emptied queue).
             onPendingUserMessage = {
                 val next = _promptQueue.value.firstOrNull()
-                    ?: return@onPendingUserMessage null
+                if (next == null) {
+                    null
+                } else {
                 val text = next.text
                 // [T-queue-zombie-window] Durable-first, same order as
                 // drainQueuedPrompts: the DB row is written BEFORE the
@@ -11585,7 +11587,7 @@ class ChatViewModel(
                 // a zombie bubble), and the queue no longer holds it — no
                 // duplicate re-drain.
                 val sid = ensureSession()
-                val partsJson = buildUserPartsJson(text, null, null)
+                val partsJson = buildUserPartsJson(text, emptyList(), null)
                 chatRepository.appendMessage(sid, "user", partsJson)
                 agentHistory.add(LLMMessage(
                     role = LLMMessage.Role.USER,
@@ -11605,6 +11607,7 @@ class ChatViewModel(
                         "[QueueInterrupt] remaining=${_promptQueue.value.size}",
                 )
                 text
+                }
             },
         )
         AppLogger.info(TAG_STREAM, "[Engine] setup aid=${assistantId.take(14)} " +
