@@ -17903,10 +17903,27 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         val pending = _promptQueue.value
         if (pending.isNotEmpty()) {
             persistPromptQueue()
-            AppLogger.info(
-                TAG_STREAM,
-                "cancel — ${pending.size} queued prompt(s) PRESERVED (explicit stop: drain deferred to next user action)",
-            )
+            // [T-stop-fresh-drain] A user Stop kills the agent's work — never
+            // the user's own queued words. Drain ONLY when every queued prompt
+            // was enqueued during the cancelled turn (fresh user intent — the
+            // 04:05 incident: stop mid-turn with a queued message left it
+            // parked forever, forcing a manual "повторить"). Older leftovers
+            // (parked across turns) stay parked — auto-running those is the
+            // stop-churn (T189 legacy) the user rejected. Mixed queues park
+            // too (the drain sends everything — conservatively defer).
+            val freshCount = pending.count { it.enqueuedAtMs > streamStartedAtMs }
+            if (freshCount == pending.size) {
+                AppLogger.info(
+                    TAG_STREAM,
+                    "cancel — $freshCount fresh queued prompt(s); draining (user words outlive the stopped turn)",
+                )
+                resumeQueueAfterCancel()
+            } else {
+                AppLogger.info(
+                    TAG_STREAM,
+                    "cancel — ${pending.size} queued prompt(s) PRESERVED (stop=stop: $freshCount fresh; drain on next user action)",
+                )
+            }
         }
     }
 

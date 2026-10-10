@@ -231,6 +231,12 @@ data class QueuedPrompt(
     val id: String,
     val text: String,
     val attachments: List<InputAttachment> = emptyList(),
+    // When the prompt entered the queue — the stop-drain signature
+    // (T-stop-fresh-drain): after a user Stop the queue drains ONLY prompts
+    // enqueued during the cancelled turn (enqueuedAtMs > turn start). Leftover
+    // parked prompts stay parked — the user stopped the agent, they didn't ask
+    // old work to resume.
+    val enqueuedAtMs: Long = System.currentTimeMillis(),
 )
 
 /**
