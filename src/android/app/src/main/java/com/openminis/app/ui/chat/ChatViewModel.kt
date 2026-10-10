@@ -11938,6 +11938,47 @@ class ChatViewModel(
         var textChars = 0
         var toolCalls = 0
         var persistEffects = 0
+        // [T-engine-incremental-persist] The assistant turn row is created
+        // at the FIRST tool event and grows via updateMessageParts on every
+        // tool completion — the DB is source of truth MID-turn (ZCode
+        // principle: the row exists the moment work exists). Before this,
+        // the entire turn persisted as ONE append in the finally: a crash,
+        // user "повторить" or session reload mid-turn saw an empty DB and
+        // "all tools disappeared". Lazily created (text-only turns need no
+        // early row); the finally UPDATES this row when present instead of
+        // appending a second one. Failures only log — persistence must never
+        // kill the turn.
+        var engineRowId: String? = null
+        suspend fun upsertEngineRow() {
+            try {
+                val blocks = reducer.currentBlocks()
+                if (blocks.isEmpty()) return
+                val inputs = mutableMapOf<String, String>()
+                for (b in blocks) {
+                    if (b.kind == "tool_use" && b.id.isNotEmpty()) inputs[b.id] = b.toolArgs
+                }
+                val parts = buildTurnParts(blocks, 0, inputs)
+                if (parts.isEmpty()) return
+                val meta = blocks.filter { it.kind == "tool_use" }.associateBy { it.id }
+                val json = withContext(Dispatchers.Default) {
+                    buildAssistantPartsJson(parts, meta)
+                }
+                val sid = realSessionId.ifEmpty { sessionId }
+                val existing = engineRowId
+                if (existing == null) {
+                    engineRowId = chatRepository.appendMessage(
+                        sid, "assistant", json, null, reasoningContent = null,
+                    ).id
+                } else {
+                    chatRepository.dao.updateMessageParts(existing, json)
+                }
+            } catch (e: Exception) {
+                AppLogger.warning(
+                    TAG_STREAM,
+                    "[Engine] incremental persist failed: ${e.message}",
+                )
+            }
+        }
         try {
             loop.runTurn(input).collect { event ->
                 if (firstEventMs < 0) firstEventMs = msSinceSetup()
@@ -12023,6 +12064,10 @@ class ChatViewModel(
                             true,
                             reducer.currentBlocks(),
                         )
+                        // [T-engine-incremental-persist] The tool row is in
+                        // the DB — now grow the assistant row to match: the
+                        // turn's work is durable the moment it exists.
+                        upsertEngineRow()
                     }
                     else -> {
                         if (event is com.openminis.app.engine.AgentEvent.TextDelta) {
@@ -12054,7 +12099,10 @@ class ChatViewModel(
                     val reasoning = reducer.currentBlocks()
                         .firstOrNull { it.kind == "thinking" && it.content.isNotEmpty() }
                         ?.content
-                    val assistantDbId = persistAssistantTurn(
+                    // [T-engine-incremental-persist] when the incremental row
+                    // exists the finish is an UPDATE of that very row — never
+                    // a duplicate append.
+                    val assistantDbId = engineRowId ?: persistAssistantTurn(
                         parts,
                         usage = null,
                         reasoningContent = reasoning,
@@ -12062,6 +12110,21 @@ class ChatViewModel(
                             .filter { it.kind == "tool_use" }
                             .associateBy { it.id },
                     )
+                    if (engineRowId != null) {
+                        try {
+                            val meta = reducer.currentBlocks()
+                                .filter { it.kind == "tool_use" }.associateBy { it.id }
+                            val finalJson = withContext(Dispatchers.Default) {
+                                buildAssistantPartsJson(parts, meta)
+                            }
+                            chatRepository.dao.updateMessageParts(engineRowId!!, finalJson)
+                        } catch (e: Exception) {
+                            AppLogger.warning(
+                                TAG_STREAM,
+                                "[Engine] final incremental update failed: ${e.message}",
+                            )
+                        }
+                    }
                     // [T-engine-history-mirror] Legacy appends the finished
                     // assistant message to agentHistory at turn end (9807
                     // protocol). Without this the NEXT turn's model context
