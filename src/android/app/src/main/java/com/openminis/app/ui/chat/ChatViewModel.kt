@@ -12131,6 +12131,11 @@ class ChatViewModel(
                     AppLogger.info(TAG_STREAM, "[Engine] empty rowB swept after split " +
                         "(turn ended at inject boundary)")
                 } else {
+                // [T-cancel-stamp] before persist: on a stopped turn, tools
+                // that never finished become CANCELLED (no forever-spinners,
+                // and the fold exemption sees the cancellation). No-op on a
+                // clean finish (all tools already terminal).
+                reducer.stampUnfinishedToolsCancelled()
                 updateAssistantMessage(
                     assistantId,
                     reducer.text.toString(),

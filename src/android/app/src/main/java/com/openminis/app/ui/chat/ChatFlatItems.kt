@@ -912,7 +912,16 @@ internal fun buildFlatChatItems(
         // the whole turn reopens in place, collapse = folds back). Turns
         // WITHOUT tools keep their existing shape: the row is about the
         // tool session, and thinking already auto-collapses on its own.
-        val turnFolds = blocks.any { it.kind == "tool_use" }
+        // [T-cancel-no-fold] EXCEPT a user-stopped turn (user report 10.10:
+        // after stopping mid-tools the turn collapsed into a quiet row and
+        // the chat tail showed only their own request — "не остановленная
+        // работа агента"). Cancellation state lives on the tool blocks
+        // (ToolBlockStatus.CANCELLED); a turn with any cancelled tool
+        // renders fully expanded — the stopped work must stay visible.
+        val hasCancelledTool = blocks.any {
+            it.kind == "tool_use" && it.toolStatus == ToolBlockStatus.CANCELLED
+        }
+        val turnFolds = !hasCancelledTool && blocks.any { it.kind == "tool_use" }
         val turnToolBlocks = if (turnFolds) blocks.filter { it.kind == "tool_use" } else emptyList()
         // [T-inject-attach-group] Split-turn fold GROUP (user report 09.10
         // "две кнопки — мусор"): after an inject split the turn is two DB

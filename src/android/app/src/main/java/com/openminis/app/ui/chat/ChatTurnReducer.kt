@@ -61,6 +61,27 @@ class ChatTurnReducer(
 
     fun currentBlocks(): List<AssistantBlock> = blocks.toList()
 
+    /** [T-cancel-stamp] User stop / cancellation: tools that never finished
+     *  (anything not SUCCESS/FAILED/CANCELLED/TIMEOUT) transition to
+     *  CANCELLED — they will never complete. Without this a stopped turn
+     *  persists forever-RUNNING spinners, and the no-fold exemption for
+     *  cancelled turns (ChatFlatItems) can't see the cancellation.
+     *  Idempotent: on a normal finish every tool is already terminal, so
+     *  calling this unconditionally at turn end is a safe no-op. */
+    fun stampUnfinishedToolsCancelled() {
+        for (i in blocks.indices) {
+            val b = blocks[i]
+            if (b.kind == "tool_use" &&
+                b.toolStatus != ToolBlockStatus.SUCCESS &&
+                b.toolStatus != ToolBlockStatus.FAILED &&
+                b.toolStatus != ToolBlockStatus.CANCELLED &&
+                b.toolStatus != ToolBlockStatus.TIMEOUT
+            ) {
+                blocks[i] = b.copy(toolStatus = ToolBlockStatus.CANCELLED)
+            }
+        }
+    }
+
     fun reduce(event: AgentEvent): List<Effect> {
         when (event) {
             is AgentEvent.ThinkingDelta -> {
