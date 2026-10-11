@@ -10126,6 +10126,10 @@ class ChatViewModel(
                 if (streamJob === coroutineContext[Job]) {
                     AppLogger.info(TAG_STREAM, "send _isStreaming=false (about to set)")
                     _isStreaming.value = false
+                    // [T-stale-typing-sweep] Owner-verified point (takeover
+                    // jobs skip here): the turn is definitively over — no
+                    // message may keep per-message streaming flags.
+                    sweepStaleStreamingPlaceholders("send")
                     // [T-queue-last-breath] Race closer: an enqueue that
                     // landed between the send-tail drain's `while` check
                     // (queue was empty then) and THIS flag flip saw streaming=
@@ -10451,7 +10455,48 @@ class ChatViewModel(
      *  on screen even though streaming is over. The flag is per-message and
      *  is not implicitly cleared by isStreaming=false. */
     /**
+     * [T-stale-typing-sweep] Invariant: after a turn's FINALLY runs, NO
+     * message may still carry per-message streaming flags. PROVEN USER BUG
+     * (12.10, session stopped mid-turn): the turn's streamJob ended (send
+     * streamJob FINALLY enter/exit) but the pre-created placeholder row kept
+     * isAwaitingModelResponse=true — the chat showed the "Minis is thinking"
+     * indicator forever over a stopped session, and the frozen-looking state
+     * read as "can't retry my message". The flag is per-message and is NOT
+     * implicitly cleared by _isStreaming=false (documented at the old
+     * 10448 note); only specific paths cleared it. This sweep is the
+     * single-point class-killer: every terminal path calls it.
+     *
+     * Empty placeholder (no content, no blocks — turn died before first
+     * token) is REMOVED (dead bubble). A real row with content just gets
+     * its flags cleared.
+     */
+    private fun sweepStaleStreamingPlaceholders(origin: String) {
+        val msgs = _messages.value
+        val stale = msgs.filter { it.isStreaming || it.isAwaitingModelResponse }
+        if (stale.isEmpty()) return
+        val swept = mutableListOf<String>()
+        val next = msgs.mapNotNull { m ->
+            if (!(m.isStreaming || m.isAwaitingModelResponse)) return@mapNotNull m
+            val hasContent = m.content.isNotBlank() || m.contentParts.any { p -> p !is com.openminis.app.data.model.AgentContentPart.Text || p.text.isNotBlank() }
+            val hasBlocks = m.toolBlocks.isNotEmpty()
+            if (!hasContent && !hasBlocks) {
+                swept += "${m.id.take(20)}(removed: empty placeholder)"
+                null // dead placeholder bubble — gone
+            } else {
+                swept += "${m.id.take(20)}(flags cleared)"
+                m.copy(isStreaming = false, isAwaitingModelResponse = false)
+            }
+        }
+        if (next.size != msgs.size || next.any { it.isStreaming || it.isAwaitingModelResponse } ) {
+            // only publish when something actually changed
+            _messages.value = next
+        }
+        AppLogger.warning(TAG_STREAM, "[Sweep] stale streaming rows cleaned ($origin): ${sweeped.joinToString()}")
+    }
+
+    /**
      * Append a "/compact" pointer when the failure looks size-related. Without
+
      * this the user sees "no response from server" on a session that is
      * actually just too big, concludes the network or provider is broken, and
      * has no way to know that compacting the session would fix it.
@@ -10995,6 +11040,8 @@ class ChatViewModel(
                 if (streamJob === coroutineContext[Job]) {
                     AppLogger.info(TAG_STREAM, "retryLast _isStreaming=false (about to set)")
                     _isStreaming.value = false
+                    // [T-stale-typing-sweep] Owner-verified point.
+                    sweepStaleStreamingPlaceholders("retryLast")
                     // [T-auto-mode] Symmetric with the send tail: a pending
                     // compact fires once the stream is closed.
                     autoModeCompactAndResume()
@@ -18585,6 +18632,8 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                 if (streamJob === coroutineContext[Job]) {
                     AppLogger.info(TAG_STREAM, "resume _isStreaming=false (about to set)")
                     _isStreaming.value = false
+                    // [T-stale-typing-sweep] Owner-verified point.
+                    sweepStaleStreamingPlaceholders("resume")
                 } else {
                     AppLogger.info(TAG_STREAM, "resume _isStreaming SKIPPED (stale job)")
                 }
