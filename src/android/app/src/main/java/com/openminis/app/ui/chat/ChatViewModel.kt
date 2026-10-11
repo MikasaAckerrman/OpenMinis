@@ -10599,13 +10599,22 @@ class ChatViewModel(
      * dispatcher, before the stamp, from the send-path catch and
      * setInlineError's persist.
      */
+    private val deadTurnRowMutex = kotlinx.coroutines.sync.Mutex()
     private suspend fun ensureDeadTurnOwnsErrorRow(sid: String) {
         try {
-            val all = chatRepository.dao.loadMessages(sid)
-            val last = all.lastOrNull()
-            if (last != null && last.role != "assistant") {
-                chatRepository.appendMessage(sid, "assistant", "[]")
-                AppLogger.info(TAG_STREAM, "[ErrorPersist] dead-turn row appended (turn had no row)")
+            // Serialize check-then-append: the send-path catch and the
+            // setInlineError persist BOTH call this for the same dead turn
+            // (concurrent IO coroutines) — without the lock both read
+            // "last row = user" before either appends and the session gets
+            // DUPLICATE empty assistant rows (the 11.10 stand repro: two
+            // [ErrorPersist] appends 9ms apart).
+            deadTurnRowMutex.withLock {
+                val all = chatRepository.dao.loadMessages(sid)
+                val last = all.lastOrNull()
+                if (last != null && last.role != "assistant") {
+                    chatRepository.appendMessage(sid, "assistant", "[]")
+                    AppLogger.info(TAG_STREAM, "[ErrorPersist] dead-turn row appended (turn had no row)")
+                }
             }
         } catch (e: Exception) {
             AppLogger.warning(TAG_STREAM, "[ErrorPersist] row guard failed: ${e.message}")
@@ -11834,6 +11843,14 @@ class ChatViewModel(
                     splitCount++
                     val rowAId = assistantId
                     assistantId = "assistant_split_${System.currentTimeMillis()}"
+                    // [T-engine-incremental-persist] The split finalized row
+                    // A and opens row B: the incremental upsert must follow
+                    // row B now — without the reset, ToolCallFinished after
+                    // the split would keep UPDATING row A (the finished
+                    // half) while the result rows land under B, splitting
+                    // the turn across two rows in the DB.
+                    engineRowId = null
+                    reducer = ChatTurnReducer(assistantId, 0)
                     // [T-inject-attach-group] ONE fold row for the WHOLE
                     // split turn: A flags itself as the leader (suppresses
                     // its own row — its tools join the group row), B links
@@ -12015,6 +12032,13 @@ class ChatViewModel(
                         // every executed tool row. Drain it through the
                         // production writer (off-main inside, same protocol).
                         val effects = reducer.reduce(event)
+                        // [T-engine-incremental-persist] Upsert the assistant
+                        // row right after reduce (blocks now carry the
+                        // finished status) and BEFORE the result row lands:
+                        // in kill-test2's post-mortem the raw DB order read
+                        // [result₁, ASSISTANT(uses), result₂…] — the row must
+                        // EXIST before its first result.
+                        upsertEngineRow()
                         lastStreamActivityMs = System.currentTimeMillis()
                         toolCalls++
                         effects.filterIsInstance<ChatTurnReducer.PersistToolResult>().forEach { eff ->
@@ -12064,10 +12088,6 @@ class ChatViewModel(
                             true,
                             reducer.currentBlocks(),
                         )
-                        // [T-engine-incremental-persist] The tool row is in
-                        // the DB — now grow the assistant row to match: the
-                        // turn's work is durable the moment it exists.
-                        upsertEngineRow()
                     }
                     else -> {
                         if (event is com.openminis.app.engine.AgentEvent.TextDelta) {
