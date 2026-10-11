@@ -5104,6 +5104,7 @@ class ChatViewModel(
                         targetChars = (levelFractionForWindows * w.length).toInt(),
                     )
                 } catch (e: Exception) {
+                    if (e is kotlinx.coroutines.CancellationException) throw e
                     if (com.openminis.app.data.TransportErrorClassifier.isDefinitelyNotSizeRelated(e.message ?: "")) {
                         throw e
                     }
@@ -5116,6 +5117,7 @@ class ChatViewModel(
                             targetChars = (levelFractionForWindows * w.length).toInt(),
                         )
                     } catch (e2: Exception) {
+                        if (e2 is kotlinx.coroutines.CancellationException) throw e2
                         AppLogger.warning(TAG, "[Compact] window ${i + 1}/${windows.size} failed twice — skipped")
                         ""
                     }
