@@ -3206,7 +3206,7 @@ class ChatViewModel(
                     throw ce
                 } catch (e: Exception) {
                     if (e is CompactRouteFailure) routeFailure = e
-                    Log.w(TAG, "[Compact] model summary failed; using mechanical digest", e)
+                    Log.w(TAG, "[Compact] model summary failed — no fallback, will fail loudly", e)
                     null
                 }
                 // [T-no-mechanical-compact] Removed per user decision (12.10):
