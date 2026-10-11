@@ -5063,11 +5063,10 @@ class ChatViewModel(
                 "of ≤$capChars chars (window=$windowTokens tok)${if (!previousSummary.isNullOrBlank()) ", seeded with previous summary" else ""}",
         )
 
-        // [T-compact-parallel] Map-Reduce: when there are ≥2 windows, run
-        // all window summaries IN PARALLEL (each is an independent LLM call
-        // with its own budgeted cap), then merge the partial summaries with
-        // one final call. 6 windows: sequential = 6×TTFB, parallel = 1×TTFB
-        // + 1 merge. 3-6x faster on real relays.
+        // [T-compact-sequential] Map-Reduce: when there are ≥2 windows, run
+        // window summaries ONE AFTER ANOTHER (sequential + 500ms pacing) —
+        // user decision (12.10): relays rate-limit parallel bursts (429) and
+        // the whole compact fails. A failed window gets one paced retry.
         // [T-compact-level-proportional] Per-window budget = the LEVEL
         // fraction of that window's own size (LIGHT 40% / MEDIUM 20% /
         // ULTRA 5%), floor 768 tokens. The old fixed 1536 cap compressed a
@@ -5085,58 +5084,53 @@ class ChatViewModel(
             return (levelFractionForWindows * est).toInt().coerceAtLeast(768)
         }
         if (windows.size >= 2) {
-            AppLogger.info(TAG, "[Compact] parallel map: ${windows.size} windows, level=${compactLevel.value} fraction=$levelFractionForWindows")
-            reporter?.note("Сжимаю ${windows.size} частей параллельно (${compactLevel.value.displayName})")
-            val parallelT0 = System.nanoTime()
-            val parallelSummaries: List<String?> = kotlinx.coroutines.coroutineScope {
-                windows.mapIndexed { i, w ->
-                    async(Dispatchers.IO) {
-                        try {
-                            generateWindowSummaryWithFloor(
-                                if (i == 0 && !previousSummary.isNullOrBlank()) {
-                                    "Previous context summary:\n$previousSummary\n\nNext portion:\n$w"
-                                } else w,
-                                reporter, i + 1, windows.size,
-                                budgetTokens = perWindowBudget(w.length),
-                                targetChars = (levelFractionForWindows * w.length).toInt(),
-                            )
-                        } catch (e: Exception) {
-                            if (com.openminis.app.data.TransportErrorClassifier.isDefinitelyNotSizeRelated(e.message ?: "")) {
-                                throw e
-                            }
-                            AppLogger.warning(TAG, "[Compact] window ${i+1}/${windows.size} failed in parallel: ${(e.message ?: "").take(80)} — sequential retry")
-                            null
-                        }
+            // [T-compact-sequential] User decision (12.10): windows run ONE
+            // AFTER ANOTHER, never in parallel — the relay rate-limits burst
+            // parallel calls (429) and the whole compact fails. Sequential +
+            // 500ms pacing between calls keeps every request inside the rate
+            // budget; a failed window gets ONE paced retry (1.5s gap).
+            AppLogger.info(TAG, "[Compact] sequential map: ${windows.size} windows, level=${compactLevel.value} fraction=$levelFractionForWindows")
+            reporter?.note("Сжимаю ${windows.size} частей последовательно (${compactLevel.value.displayName})")
+            val seqT0 = System.nanoTime()
+            val fixed: List<String> = windows.mapIndexed { i, w ->
+                val input =
+                    if (i == 0 && !previousSummary.isNullOrBlank()) {
+                        "Previous context summary:\n$previousSummary\n\nNext portion:\n$w"
+                    } else w
+                val s = try {
+                    generateWindowSummaryWithFloor(
+                        input, reporter, i + 1, windows.size,
+                        budgetTokens = perWindowBudget(w.length),
+                        targetChars = (levelFractionForWindows * w.length).toInt(),
+                    )
+                } catch (e: Exception) {
+                    if (com.openminis.app.data.TransportErrorClassifier.isDefinitelyNotSizeRelated(e.message ?: "")) {
+                        throw e
                     }
-                }.map { it.await() }
-            }
-
-            // Any window that failed in parallel gets a sequential retry
-            // with the adaptive-cap logic (single-window call, full retry).
-            val fixed = parallelSummaries.mapIndexed { i, s ->
-                if (s != null && s.isNotEmpty()) s
-                else {
-                    AppLogger.info(TAG, "[Compact] sequential retry for window ${i+1}")
+                    AppLogger.warning(TAG, "[Compact] window ${i + 1}/${windows.size} failed: ${(e.message ?: "").take(80)} — paced retry in 1.5s")
+                    delay(1_500)
                     try {
                         generateWindowSummaryWithFloor(
-                            windows[i], reporter, i + 1, windows.size,
-                            budgetTokens = perWindowBudget(windows[i].length),
-                            targetChars = (levelFractionForWindows * windows[i].length).toInt(),
+                            input, reporter, i + 1, windows.size,
+                            budgetTokens = perWindowBudget(w.length),
+                            targetChars = (levelFractionForWindows * w.length).toInt(),
                         )
-                    } catch (e: Exception) { "" }
+                    } catch (e2: Exception) {
+                        AppLogger.warning(TAG, "[Compact] window ${i + 1}/${windows.size} failed twice — skipped")
+                        ""
+                    }
                 }
+                // [T-compact-sequential] pacing: quiet gap between window
+                // calls so the relay never sees a burst.
+                if (i < windows.size - 1) delay(500)
+                s
             }.filter { it.isNotEmpty() }
 
-            if (fixed.isEmpty()) throw java.io.IOException("all parallel windows failed")
-            // [T-compact-timing] TRUE parallelism proof: wall-clock of the
-            // batch vs the SUM of per-window durations. If wall ≈ sum, the
-            // relay serialized the calls; if wall ≈ max, it's real parallel
-            // speedup. Logged per compact — the user asked for measured
-            // speedup, not assumed.
-            val parallelWallMs = (System.nanoTime() - parallelT0) / 1_000_000
+            if (fixed.isEmpty()) throw java.io.IOException("all windows failed")
+            val seqWallMs = (System.nanoTime() - seqT0) / 1_000_000
             AppLogger.info(
                 TAG,
-                "[Compact] timing: ${windows.size} windows | wall(incl. failed-retries)=${parallelWallMs}ms | level=${compactLevel.value}",
+                "[Compact] timing: ${windows.size} windows | sequential wall=${seqWallMs}ms | level=${compactLevel.value}",
             )
             val sidNow = realSessionId.ifEmpty { sessionId }
             if (fixed.size == 1) {
