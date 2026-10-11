@@ -3209,50 +3209,30 @@ class ChatViewModel(
                     Log.w(TAG, "[Compact] model summary failed; using mechanical digest", e)
                     null
                 }
-                val summary: String = modelSummary ?: run {
-                    val digest = com.openminis.app.data.MechanicalCompact.buildDigest(
-                        turns = toCompact.map { m ->
-                            com.openminis.app.data.MechanicalCompact.Turn(
-                                isUser = m.role == LLMMessage.Role.USER,
-                                text = m.content,
-                            )
-                        },
-                        // [T-tail-token-budget] Scale the mechanical digest to
-                        // the ACTIVE window — a flat 6000-char digest can
-                        // overflow the small-context model it rescues.
-                        charBudget = com.openminis.app.data.MechanicalCompact.digestCharBudget(
-                            effectiveContextWindowTokens() ?: 128_000,
+                // [T-no-mechanical-compact] Removed per user decision (12.10):
+                // compaction goes through the MODEL only — correct and fast.
+                // When every model route refuses, fail LOUDLY with the
+                // specific reasons; the session stays untouched and the user
+                // retries when providers are back. No local digest rescue.
+                if (modelSummary == null) {
+                    val _cp = reporter.snapshot().copy(
+                        failure = com.openminis.app.data.CompactFailure(
+                            attempts = routeFailure?.attempts.orEmpty(),
+                            terminal = routeFailure?.message
+                                ?: "модели сжатия недоступны — сжатие не выполнено",
                         ),
                     )
-                    if (digest.isBlank()) {
-                        // [T-compact-progress] Total failure — keep the card up
-                        // with the SPECIFIC reason every model route refused.
-                        val _cp = reporter.snapshot().copy(
-                            failure = com.openminis.app.data.CompactFailure(
-                                attempts = routeFailure?.attempts.orEmpty(),
-                                terminal = routeFailure?.message
-                                    ?: "локальный дайджест пуст — сжатие не выполнено",
-                            ),
-                        )
-                        publishCompactProgress(_cp)
-                        withContext(Dispatchers.Main) {
-                            appendSystemInfo(
-                                "Compaction failed and nothing was preserved mechanically.",
-                                "compact",
-                            )
-                        }
-                        return@launch
-                    }
+                    publishCompactProgress(_cp)
                     withContext(Dispatchers.Main) {
                         appendSystemInfo(
-                            text = "Сжато без ИИ (механически): ${routeFailure?.shortSummary ?: "модель недоступна"}. " +
-                                "Ваши сообщения сохранены дословно, детальный пересказ пропущен. " +
-                                "Откат — кнопкой отмены последнего сжатия.",
+                            text = "Сжатие не выполнено: ${routeFailure?.shortSummary ?: "все модели недоступны"}. " +
+                                "Сообщения не тронуты — повтори позже.",
                             iconKind = "compact",
                         )
                     }
-                    digest
+                    return@launch
                 }
+                val summary: String = modelSummary
 
                 val sid = realSessionId.ifEmpty { sessionId }
                 // v2 marker: lastCompactedMessageId IS the anchor — single
