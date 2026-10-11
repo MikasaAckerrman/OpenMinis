@@ -52,6 +52,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.sample
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -1545,7 +1547,7 @@ fun ChatScreen(
             // already hanging ~1000ms (T-HANG-DIAG). flowOn moves the combine
             // body (merge + hash) to Default; the collector (scrollTo) stays
             // on Main by contract. snapshotFlow reads are snapshot-safe.
-            .flowOn(kotlinx.coroutines.Dispatchers.Default)
+            .flowOn(Dispatchers.Default)
             .conflate()
             // [T-android-stream-grow-anim] Follow the bottom often enough that
             // the viewport never falls more than a fraction of one item behind.
