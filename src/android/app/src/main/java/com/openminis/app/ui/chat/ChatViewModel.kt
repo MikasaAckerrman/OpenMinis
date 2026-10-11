@@ -10477,7 +10477,7 @@ class ChatViewModel(
         val swept = mutableListOf<String>()
         val next = msgs.mapNotNull { m ->
             if (!(m.isStreaming || m.isAwaitingModelResponse)) return@mapNotNull m
-            val hasContent = m.content.isNotBlank() || m.contentParts.any { p -> p !is com.openminis.app.data.model.AgentContentPart.Text || p.text.isNotBlank() }
+            val hasContent = m.content.isNotBlank() || m.imageUris.isNotEmpty() || m.attachmentUris.isNotEmpty()
             val hasBlocks = m.toolBlocks.isNotEmpty()
             if (!hasContent && !hasBlocks) {
                 swept += "${m.id.take(20)}(removed: empty placeholder)"
@@ -10487,11 +10487,11 @@ class ChatViewModel(
                 m.copy(isStreaming = false, isAwaitingModelResponse = false)
             }
         }
-        if (next.size != msgs.size || next.any { it.isStreaming || it.isAwaitingModelResponse } ) {
+        if (next.size != msgs.size || next.any { it.isStreaming || it.isAwaitingModelResponse }) {
             // only publish when something actually changed
             _messages.value = next
         }
-        AppLogger.warning(TAG_STREAM, "[Sweep] stale streaming rows cleaned ($origin): ${sweeped.joinToString()}")
+        AppLogger.warning(TAG_STREAM, "[Sweep] stale streaming rows cleaned ($origin): ${swept.joinToString()}")
     }
 
     /**
