@@ -10126,6 +10126,17 @@ class ChatViewModel(
                 if (streamJob === coroutineContext[Job]) {
                     AppLogger.info(TAG_STREAM, "send _isStreaming=false (about to set)")
                     _isStreaming.value = false
+                    // [T-queue-last-breath] Race closer: an enqueue that
+                    // landed between the send-tail drain's `while` check
+                    // (queue was empty then) and THIS flag flip saw streaming=
+                    // true, parked in the queue — and every other drain
+                    // trigger had already passed. The flag flip is the last
+                    // moment the turn machinery is alive to notice. Hand the
+                    // queue to the resume pump (it re-checks everything).
+                    if (_promptQueue.value.isNotEmpty()) {
+                        AppLogger.info(TAG_STREAM, "[Queue] last-breath kick: ${_promptQueue.value.size} prompt(s) landed during turn teardown")
+                        resumeQueueAfterCancel()
+                    }
                     // [T-auto-mode] Stream closed with a compact pending:
                     // fold history now (safe — no live turn), then the
                     // compact's queue pump sends the parked continuation.
@@ -18058,13 +18069,18 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
             // its finally (106 tool rounds worth of cleanup on the 09.10
             // incident) can still hold the slot when the 200ms kick lands.
             // Returning here lost the queued message forever ("persisted for
-            // resume" with no resume). Retry while the old job is dying —
-            // bounded (5 attempts ≈ 2s total), each attempt re-checks.
+            // resume" with no resume). Keep polling while the old job dies:
+            // the 11.10 14:53 incident had the zombie turn take 3s to die
+            // while the retry window was 2s — the user's message sat
+            // "in delivery" for 77 seconds until a manual re-send. Bounded
+            // by TIME not attempt count: ~30s of polling (400ms cadence for
+            // the first 2s, then 750ms), each attempt re-checks.
             if (_isStreaming.value) {
-                if (attempt < 5) {
+                val elapsedMs = attempt * 400L
+                if (elapsedMs < 30_000L) {
                     resumeQueueAfterCancel(attempt + 1)
                 } else {
-                    AppLogger.warning(TAG, "resumeQueueAfterCancel: stream slot still held after 5 attempts — queue persisted, reload kick will deliver")
+                    AppLogger.warning(TAG, "resumeQueueAfterCancel: stream slot still held after 30s — queue persisted, reload kick will deliver")
                 }
                 return@launch
             }
