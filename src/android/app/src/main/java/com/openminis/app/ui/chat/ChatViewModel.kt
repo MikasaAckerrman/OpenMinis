@@ -18073,8 +18073,8 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
             // the 11.10 14:53 incident had the zombie turn take 3s to die
             // while the retry window was 2s — the user's message sat
             // "in delivery" for 77 seconds until a manual re-send. Bounded
-            // by TIME not attempt count: ~30s of polling (400ms cadence for
-            // the first 2s, then 750ms), each attempt re-checks.
+            // by TIME not attempt count: ~30s at a flat 400ms cadence
+            // (each level is a one-shot coroutine; no stack growth).
             if (_isStreaming.value) {
                 val elapsedMs = attempt * 400L
                 if (elapsedMs < 30_000L) {
@@ -18086,9 +18086,10 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
             }
             // [T-android-compact-queued-drain] Defer while a compact is in
             // flight — draining would mutate agentHistory mid-marker-write.
-            // Safe to just return: every SUCCESSFUL compact re-kicks this
-            // function from its own tail, so a deferred drain is never lost
-            // (and a failed compact leaves the queue pending by design).
+            // Safe to just return: the compact tail re-kicks this function
+            // after BOTH outcomes (success AND error/cancel — see the
+            // [T-android-compact-queued-drain] kick in runCompact), so a
+            // deferred drain is never lost.
             if (_isCompacting.value) {
                 AppLogger.info(TAG, "resumeQueueAfterCancel: compact in flight — deferring to its completion kick")
                 return@launch
