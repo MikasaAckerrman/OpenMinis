@@ -1539,6 +1539,13 @@ fun ChatScreen(
         }
             .filterNotNull()
             .distinctUntilChanged()
+            // [T-scaffold-stream-churn] The merge + FNV block-signature above
+            // walk the ENTIRE merged list per emission; on the Main dispatcher
+            // that added tens of ms per flush to the same thread that was
+            // already hanging ~1000ms (T-HANG-DIAG). flowOn moves the combine
+            // body (merge + hash) to Default; the collector (scrollTo) stays
+            // on Main by contract. snapshotFlow reads are snapshot-safe.
+            .flowOn(kotlinx.coroutines.Dispatchers.Default)
             .conflate()
             // [T-android-stream-grow-anim] Follow the bottom often enough that
             // the viewport never falls more than a fraction of one item behind.
@@ -2832,13 +2839,37 @@ fun ChatScreen(
                 // mount uses `lastToolBlocks.isNotEmpty()` over the merged
                 // view; we mirror that semantically by checking the same
                 // filter on both sources.
-                val streamingById by viewModel.streamingById.collectAsState()
-                val hasFloatingTools = remember(messages, streamingById) {
-                    val merged = if (streamingById.isEmpty()) messages
-                                 else mergeStreamingOverlay(messages, streamingById)
-                    merged.any { msg ->
-                        msg.role == "assistant" && msg.toolBlocks.any { tb ->
-                            tb.toolStatus != null && tb.kind != "thinking" && tb.kind != "info"
+                // [T-scaffold-stream-churn] The old version ran
+                // mergeStreamingOverlay (a full COPY of the entire message
+                // list — 1500+ ChatMessage copies) inside remember(messages,
+                // streamingById) at the scaffold level, on EVERY streaming
+                // flush (~80-200ms): every text delta recomposed the whole
+                // screen scaffold and produced the ~1000ms main-thread
+                // hangs (T-HANG-DIAG) the user saw as "the screen freezes
+                // while the agent works".
+                // Fix: derivedStateOf with a BOOLEAN output — the merge is
+                // gone (predicate reads the small overlay map directly) and
+                // the scaffold only recomposes when the boolean actually
+                // flips (tool bar appears/disappears), not on every flush.
+                // Semantics preserved: merged.any{assistant with live tool
+                // blocks} == overlay-any ∪ non-streaming-messages-any,
+                // because the overlay only rewrites streaming messages.
+                val streamingByIdState = viewModel.streamingById.collectAsState()
+                val hasFloatingTools by remember(messages) {
+                    derivedStateOf {
+                        val overlay = streamingByIdState.value
+                        if (overlay.isNotEmpty()) {
+                            overlay.values.any { st ->
+                                st.toolBlocks.any { tb ->
+                                    tb.toolStatus != null && tb.kind != "thinking" && tb.kind != "info"
+                                }
+                            }
+                        } else {
+                            messages.any { msg ->
+                                msg.role == "assistant" && msg.toolBlocks.any { tb ->
+                                    tb.toolStatus != null && tb.kind != "thinking" && tb.kind != "info"
+                                }
+                            }
                         }
                     }
                 }
