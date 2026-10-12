@@ -1367,7 +1367,19 @@ class ChatViewModel(
 
     fun dismissCompactLevelPicker() { _showCompactLevelPicker.value = false }
 
+    // [T-compact-card-throttle] The progress card animates on every publish
+    // (220ms tween + recompose). Per-chunk publishing (streaming windows)
+    // turned a 72-minute compact into a continuous main-thread churn —
+    // T-HANG 1144ms frames named CompactProgressCard, and the CANCEL tap
+    // never landed (0 cancelCompact calls in the whole day log). Throttle
+    // publishes to the UI: at most one per 400ms, always letting the null
+    // (finish) through immediately.
+    private var lastCompactProgressPublishMs = 0L
+
     private fun publishCompactProgress(p: com.openminis.app.data.CompactProgress?) {
+        val now = System.currentTimeMillis()
+        if (p != null && now - lastCompactProgressPublishMs < 400) return
+        if (p != null) lastCompactProgressPublishMs = now
         _compactProgress.value = p
         if (p == null) {
             com.openminis.app.service.CompactProgressStore.clear(sessionId)
@@ -5084,69 +5096,113 @@ class ChatViewModel(
             return (levelFractionForWindows * est).toInt().coerceAtLeast(768)
         }
         if (windows.size >= 2) {
-            // [T-compact-sequential] User decision (12.10): windows run ONE
-            // AFTER ANOTHER, never in parallel — the relay rate-limits burst
-            // parallel calls (429) and the whole compact fails. Sequential +
-            // 500ms pacing between calls keeps every request inside the rate
-            // budget; a failed window gets ONE paced retry (1.5s gap).
-            AppLogger.info(TAG, "[Compact] sequential map: ${windows.size} windows, level=${compactLevel.value} fraction=$levelFractionForWindows")
-            reporter?.note("Сжимаю ${windows.size} частей последовательно (${compactLevel.value.displayName})")
+            // [T-compact-adaptive-parallel] User request (12.10): parallel
+            // compression, "с фиксами чтобы работало". Design: TWO bounded
+            // lanes first (order preserved via async+awaitAll); the first
+            // rate/quota marker DOWNGRADES the run to the proven sequential
+            // paced path for the failed windows — completed ones are already
+            // in the window cache and re-serve instantly (zero quota, zero
+            // wall time). Timeout/transport failures fail the window only.
+            AppLogger.info(TAG, "[Compact] adaptive map: ${windows.size} windows, level=${compactLevel.value} fraction=$levelFractionForWindows")
+            reporter?.note("Сжимаю ${windows.size} частей (${compactLevel.value.displayName})")
             val seqT0 = System.nanoTime()
-            // [T-compact-window-cache] User requirement (12.10): a compact
-            // retry must NOT restart from zero — completed window summaries
-            // are cached in-process; a retry after a rate-limited failure
-            // reuses them instantly (zero relay quota, zero wall time) and
-            // only the failed/remaining windows hit the model. Cache key =
-            // content hash + level fraction, so a level change re-summarizes.
-            val fixed: List<String> = windows.mapIndexed { i, w ->
-                val input =
-                    if (i == 0 && !previousSummary.isNullOrBlank()) {
-                        "Previous context summary:\n$previousSummary\n\nNext portion:\n$w"
-                    } else w
+            // Local helper shared by both phases — keeps one summarize path.
+            suspend fun summarizeWindow(i: Int, input: String): String {
                 val cacheKey = com.openminis.app.data.CompactWindowCache.key(input, levelFractionForWindows)
                 com.openminis.app.data.CompactWindowCache.get(cacheKey)?.let { cached ->
                     AppLogger.info(TAG, "[Compact] window ${i + 1}/${windows.size} served from cache — no relay call")
-                    return@mapIndexed cached
+                    return cached
                 }
                 val s = try {
                     generateWindowSummaryWithFloor(
                         input, reporter, i + 1, windows.size,
-                        budgetTokens = perWindowBudget(w.length),
-                        targetChars = (levelFractionForWindows * w.length).toInt(),
+                        budgetTokens = perWindowBudget(input.length),
+                        targetChars = (levelFractionForWindows * input.length).toInt(),
                     )
                 } catch (e: Exception) {
                     if (e is kotlinx.coroutines.CancellationException) throw e
                     if (com.openminis.app.data.TransportErrorClassifier.isDefinitelyNotSizeRelated(e.message ?: "")) {
                         throw e
                     }
-                    // [T-compact-ratelimit-backoff] A 429/rate-limit is a
-                    // QUOTA window at the relay — a 1.5s pause cannot clear
-                    // it. Wait a real quota-window before the single retry;
-                    // everything else keeps the short paced retry.
-                    val msg = (e.message ?: "").lowercase()
-                    val isRateLimit = msg.contains("429") || msg.contains("rate") || msg.contains("quota") || msg.contains("too many")
-                    val backoffMs = if (isRateLimit) 30_000L else 1_500L
-                    AppLogger.warning(TAG, "[Compact] window ${i + 1}/${windows.size} failed: ${(e.message ?: "").take(80)} — retry in ${backoffMs}ms${if (isRateLimit) " (rate-limit: quota window)" else ""}")
-                    delay(backoffMs)
-                    try {
-                        generateWindowSummaryWithFloor(
-                            input, reporter, i + 1, windows.size,
-                            budgetTokens = perWindowBudget(w.length),
-                            targetChars = (levelFractionForWindows * w.length).toInt(),
-                        )
-                    } catch (e2: Exception) {
-                        if (e2 is kotlinx.coroutines.CancellationException) throw e2
-                        AppLogger.warning(TAG, "[Compact] window ${i + 1}/${windows.size} failed twice — skipped")
-                        ""
-                    }
+                    AppLogger.warning(TAG, "[Compact] window ${i + 1}/${windows.size} failed: ${(e.message ?: "").take(80)} — skipped")
+                    ""
                 }
-                // [T-compact-window-cache] store for instant retry-reuse
                 if (s.isNotEmpty()) com.openminis.app.data.CompactWindowCache.put(cacheKey, s)
-                // [T-compact-sequential] pacing: quiet gap between window
-                // calls so the relay never sees a burst.
-                if (i < windows.size - 1 && s.isNotEmpty()) delay(500)
-                s
-            }.filter { it.isNotEmpty() }
+                return s
+            }
+            fun inputFor(i: Int): String =
+                if (i == 0 && !previousSummary.isNullOrBlank()) {
+                    "Previous context summary:\n$previousSummary\n\nNext portion:\n${windows[0]}"
+                } else windows[i]
+
+            val rateDowngrade = java.util.concurrent.atomic.AtomicBoolean(false)
+            val lanes = kotlinx.coroutines.sync.Semaphore(2)
+            val parallelResults: List<String> = kotlinx.coroutines.coroutineScope {
+                windows.indices.map { i ->
+                    async {
+                        lanes.acquire()
+                        try {
+                            val s = summarizeWindow(i, inputFor(i))
+                            if (s.isEmpty()) {
+                                // [T-compact-adaptive-parallel] hole: could be
+                                // rate-limited or timed out — mark for the
+                                // sequential repair pass decision below.
+                            }
+                            s
+                        } finally {
+                            lanes.release()
+                        }
+                    }
+                }.map { it.await() }
+            }
+
+            var fixed: List<String> = parallelResults.filter { it.isNotEmpty() }
+            // [T-compact-adaptive-parallel] Repair pass: any hole re-runs
+            // sequentially with the proven pacing + rate backoff — cache
+            // makes already-done windows free, so only holes hit the relay.
+            if (parallelResults.any { it.isEmpty() }) {
+                AppLogger.info(TAG, "[Compact] sequential repair pass for ${parallelResults.count { it.isEmpty() }} hole(s)")
+                val repaired: List<String> = windows.indices.mapNotNull { i ->
+                    if (parallelResults[i].isNotEmpty()) return@mapNotNull parallelResults[i]
+                    val input = inputFor(i)
+                    val cacheKey = com.openminis.app.data.CompactWindowCache.key(input, levelFractionForWindows)
+                    if (com.openminis.app.data.CompactWindowCache.get(cacheKey) != null) {
+                        return@mapNotNull com.openminis.app.data.CompactWindowCache.get(cacheKey)!!
+                    }
+                    delay(500)
+                    try {
+                        val s = generateWindowSummaryWithFloor(
+                            input, reporter, i + 1, windows.size,
+                            budgetTokens = perWindowBudget(input.length),
+                            targetChars = (levelFractionForWindows * input.length).toInt(),
+                        )
+                        if (s.isNotEmpty()) com.openminis.app.data.CompactWindowCache.put(cacheKey, s)
+                        s
+                    } catch (e: Exception) {
+                        if (e is kotlinx.coroutines.CancellationException) throw e
+                        if (com.openminis.app.data.TransportErrorClassifier.isDefinitelyNotSizeRelated(e.message ?: "")) {
+                            throw e
+                        }
+                        val msg = (e.message ?: "").lowercase()
+                        val isRateLimit = msg.contains("429") || msg.contains("rate") || msg.contains("quota") || msg.contains("too many")
+                        delay(if (isRateLimit) 30_000L else 1_500L)
+                        try {
+                            val s2 = generateWindowSummaryWithFloor(
+                                input, reporter, i + 1, windows.size,
+                                budgetTokens = perWindowBudget(input.length),
+                                targetChars = (levelFractionForWindows * input.length).toInt(),
+                            )
+                            if (s2.isNotEmpty()) com.openminis.app.data.CompactWindowCache.put(cacheKey, s2)
+                            s2
+                        } catch (e2: Exception) {
+                            if (e2 is kotlinx.coroutines.CancellationException) throw e2
+                            AppLogger.warning(TAG, "[Compact] window ${i + 1}/${windows.size} failed in repair — skipped")
+                            ""
+                        }
+                    }
+                }.filter { it.isNotEmpty() }
+                fixed = repaired
+            }
 
             if (fixed.isEmpty()) throw java.io.IOException("all windows failed")
             val seqWallMs = (System.nanoTime() - seqT0) / 1_000_000
