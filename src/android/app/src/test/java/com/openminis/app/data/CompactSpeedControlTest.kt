@@ -36,9 +36,9 @@ class CompactSpeedControlTest {
         // Mostly-failed run must NOT poison the memory.
         val bad = CompactSpeedControl.Run(4)
         bad.finish("provider-B", windowsSucceeded = 1, windowsTotal = 6)
-        assertEquals(CompactSpeedControl.MIN_LANES, CompactSpeedControl.startLanes("provider-B"))
-        assertEquals(CompactSpeedControl.MIN_LANES, CompactSpeedControl.startLanes("unknown"))
-        assertEquals(CompactSpeedControl.MIN_LANES, CompactSpeedControl.startLanes(null))
+        assertEquals(CompactSpeedControl.COLD_START_LANES, CompactSpeedControl.startLanes("provider-B"))
+        assertEquals(CompactSpeedControl.COLD_START_LANES, CompactSpeedControl.startLanes("unknown"))
+        assertEquals(CompactSpeedControl.COLD_START_LANES, CompactSpeedControl.startLanes(null))
     }
 
     @Test

@@ -18,14 +18,19 @@ import java.util.concurrent.atomic.AtomicLong
 object CompactSpeedControl {
 
     const val MIN_LANES = 1
+    // [T-compact-aimd-coldstart] unknown provider starts at 2 lanes, not 1:
+    // the first batch doubles as a parallel-safety probe (a rate marker
+    // halves it back immediately — the cost of one extra 429-able call is
+    // cheaper than a whole run at floor speed when the relay is fine).
+    const val COLD_START_LANES = 2
     const val MAX_LANES = 8
 
     /** Stable-speed memory: providerKey -> last stable lane count. */
     private val lastStable = ConcurrentHashMap<String, Int>()
 
     fun startLanes(providerKey: String?): Int =
-        if (providerKey.isNullOrBlank()) MIN_LANES
-        else (lastStable[providerKey] ?: MIN_LANES).coerceIn(MIN_LANES, MAX_LANES)
+        if (providerKey.isNullOrBlank()) COLD_START_LANES
+        else (lastStable[providerKey] ?: COLD_START_LANES).coerceIn(MIN_LANES, MAX_LANES)
 
     /** Live per-run controller state. */
     class Run(initialLanes: Int) {

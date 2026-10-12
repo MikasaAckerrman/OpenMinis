@@ -5131,6 +5131,30 @@ class ChatViewModel(
                         AppLogger.warning(TAG, "[Compact] rate marker at window ${i + 1}/${windows.size} — AIMD halving lanes (was ${speedRun.current})")
                         speedRun.onRateMarker()
                     }
+                    // [T-compact-bisect] A TTFB timeout on a big window means
+                    // THE PROVIDER CANNOT CHEW IT (56-minute forensics 12.10:
+                    // 25/25 windows timed out at 96K chars — the whole run
+                    // was timeouts, AIMD could never grow). Split the window
+                    // in half at a line boundary and summarize each side
+                    // recursively — the window shrinks until this relay can
+                    // answer. Floor 24K chars, depth bounded by it.
+                    if (msg.contains("exceeded") && input.length > 24_000) {
+                        val mid = input.indexOf('\n', input.length / 2).let {
+                            if (it < 0 || it > input.length / 2 + 50_000) input.length / 2 else it
+                        }
+                        val left = input.substring(0, mid)
+                        val right = input.substring(mid).trimStart()
+                        if (left.length > 1000 && right.length > 1000) {
+                            AppLogger.info(TAG, "[Compact] window ${i + 1}/${windows.size} timeout on ${input.length} chars — bisecting (${left.length}+${right.length})")
+                            val a = summarizeWindow(i, left, speedRun)
+                            val b = summarizeWindow(i, right, speedRun)
+                            val joined = listOf(a, b).filter { it.isNotEmpty() }.joinToString("\n")
+                            if (joined.isNotEmpty()) {
+                                com.openminis.app.data.CompactWindowCache.put(cacheKey, joined)
+                                return joined
+                            }
+                        }
+                    }
                     AppLogger.warning(TAG, "[Compact] window ${i + 1}/${windows.size} failed: ${(e.message ?: "").take(80)} — skipped")
                     ""
                 }
