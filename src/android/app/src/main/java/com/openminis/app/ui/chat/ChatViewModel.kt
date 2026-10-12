@@ -5108,8 +5108,15 @@ class ChatViewModel(
                     if (com.openminis.app.data.TransportErrorClassifier.isDefinitelyNotSizeRelated(e.message ?: "")) {
                         throw e
                     }
-                    AppLogger.warning(TAG, "[Compact] window ${i + 1}/${windows.size} failed: ${(e.message ?: "").take(80)} — paced retry in 1.5s")
-                    delay(1_500)
+                    // [T-compact-ratelimit-backoff] A 429/rate-limit is a
+                    // QUOTA window at the relay — a 1.5s pause cannot clear
+                    // it. Wait a real quota-window before the single retry;
+                    // everything else keeps the short paced retry.
+                    val msg = (e.message ?: "").lowercase()
+                    val isRateLimit = msg.contains("429") || msg.contains("rate") || msg.contains("quota") || msg.contains("too many")
+                    val backoffMs = if (isRateLimit) 30_000L else 1_500L
+                    AppLogger.warning(TAG, "[Compact] window ${i + 1}/${windows.size} failed: ${(e.message ?: "").take(80)} — retry in ${backoffMs}ms${if (isRateLimit) " (rate-limit: quota window)" else ""}")
+                    delay(backoffMs)
                     try {
                         generateWindowSummaryWithFloor(
                             input, reporter, i + 1, windows.size,
