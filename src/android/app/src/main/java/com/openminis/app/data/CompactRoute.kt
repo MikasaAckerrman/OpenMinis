@@ -159,6 +159,12 @@ object CompactRoute {
             m.contains("余额不足") ||
             m.contains("额度不足") ||
             m.contains("预扣费")
+
+        // [T-compact-route-timeout] see next()
+        private fun isTimeout(m: String): Boolean =
+            m.contains("exceeded 120s") ||
+                m.contains("timed out") ||
+                m.contains("timeout")
     }
 
     /**
@@ -191,9 +197,22 @@ object CompactRoute {
         val authRejected = isAuthFailure(errorMessage)
         val modelGone = isModelGone(errorMessage)
         val maxTokensRejected = isMaxTokensValueRejected(errorMessage)
+        // [T-compact-route-timeout] A TTFB/stream timeout is CONGESTION on
+        // this relay — the most transient failure class there is, and the one
+        // where switching relays helps the most. It used to fall through to
+        // Surface immediately (matched no marker), which made the 56-minute
+        // forensics possible: every window timed out on the SAME stalled
+        // relay, gave up, and the caller bisected into more calls on the
+        // same relay. A timeout now walks the provider chain — shrink makes
+        // no sense (size is not the issue), the next relay's queue is.
+        val timeout = isTimeout(errorMessage)
         if (!quota && !rateLimited && !contentFiltered && !authRejected &&
-            !modelGone && !maxTokensRejected
+            !modelGone && !maxTokensRejected && !timeout
         ) return Step.Surface(errorMessage)
+        if (timeout) {
+            return nextProviderIndex?.let { Step.NextProvider(it) }
+                ?: Step.Surface(errorMessage)
+        }
         // [T-compact-route-auth] Auth, content-filter and dead-model
         // rejections share a route: none gets cheaper with a smaller request,
         // so skip the shrink ladder and go straight to the next provider.

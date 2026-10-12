@@ -13,6 +13,30 @@ import org.junit.Test
  * to shrink. These tests pin the escalation ladder that replaced it.
  */
 class CompactRouteTest {
+    // [T-compact-route-timeout] congestion must walk the provider chain,
+    // never Surface directly and never shrink (size is not the issue).
+    @Test
+    fun `timeout walks to the next provider`() {
+        val step = CompactRoute.next(
+            errorMessage = "compact call exceeded 120s (TTFB+stream)",
+            currentMaxTokens = 1536,
+            shrinkStepsUsed = 0,
+            nextProviderIndex = 0,
+        )
+        assertTrue(step is CompactRoute.Step.NextProvider)
+        assertEquals(0, (step as CompactRoute.Step.NextProvider).index)
+    }
+
+    @Test
+    fun `timeout with no providers left surfaces`() {
+        val step = CompactRoute.next(
+            errorMessage = "java.net.SocketTimeoutException: compact call exceeded 120s",
+            currentMaxTokens = 1536,
+            shrinkStepsUsed = 0,
+            nextProviderIndex = null,
+        )
+        assertTrue(step is CompactRoute.Step.Surface)
+    }
 
     // Real gateway strings seen in the wild (new-api / one-api relays).
     private val quotaCn = "Quota exceeded: 预扣费额度失败 token quota is not enough, token remain quota: \$0.219130, need quota: \$1.040466"
