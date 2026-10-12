@@ -5080,8 +5080,9 @@ class ChatViewModel(
         chunkCount: Int,
         budgetTokens: Int,
         targetChars: Int,
+        routeStart: com.openminis.app.provider.LLMProvider? = null,
     ): String {
-        val first = generateCompactSummary(text, reporter, chunkIndex, chunkCount, maxTokensOverride = budgetTokens)
+        val first = generateCompactSummary(text, reporter, chunkIndex, chunkCount, maxTokensOverride = budgetTokens, routeStart = routeStart)
         if (first.isBlank()) return first
         // [T-compact-no-inflate] A summary SHORTER than the target is a
         // SUCCESS, not a defect: the level budget is a CAP, not a floor.
@@ -5102,7 +5103,7 @@ class ChatViewModel(
             "Write a proper summary of the source above: key files, commands, decisions, " +
             "errors and outcomes, concisely."
         val second = try {
-            generateCompactSummary(retryPrompt, reporter, chunkIndex, chunkCount, maxTokensOverride = budgetTokens)
+            generateCompactSummary(retryPrompt, reporter, chunkIndex, chunkCount, maxTokensOverride = budgetTokens, routeStart = routeStart)
         } catch (e: Exception) {
             AppLogger.warning(TAG, "[Compact] floor-retry failed: ${(e.message ?: "").take(80)}")
             ""
@@ -5166,10 +5167,30 @@ class ChatViewModel(
             AppLogger.info(TAG, "[Compact] adaptive map: ${windows.size} windows, level=${compactLevel.value} fraction=$levelFractionForWindows")
             reporter?.note("Сжимаю ${windows.size} частей (${compactLevel.value.displayName})")
             val seqT0 = System.nanoTime()
+            // [T-compact-fanout] User request (13.10): "сделать действительно
+            // параллельно — сжатие происходит на серверах, с одного запроса
+            // параллельность не получится". Correct: squeezing N windows
+            // through ONE upstream relay queues them server-side. The fallback
+            // ladder already yields the group's usable peers — distinct
+            // throttleKeys = distinct relays = independent rate buckets. Build
+            // the route set once here and start every window on a different
+            // host (rotation): parallel lanes then run on parallel RELAYS, not
+            // one queue. A failed window's in-call ladder still walks the
+            // other peers exactly as before — fan-out only changes where each
+            // ladder STARTS. No peers (empty group): the set is the bound
+            // model alone and behavior is byte-identical to pre-fanout.
+            val fanoutPrimary = currentProvider
+            val compactRoutes: List<com.openminis.app.provider.LLMProvider> = runCatching {
+                if (fanoutPrimary == null) emptyList()
+                else listOf(fanoutPrimary) + buildFallbackProviders(fanoutPrimary).map { it.provider }
+            }.getOrDefault(listOfNotNull(fanoutPrimary))
+            if (compactRoutes.isNotEmpty()) {
+                AppLogger.info(TAG, "[Compact] fanout routes=${compactRoutes.size}: ${compactRoutes.joinToString(", ") { it.throttleKey }}")
+            }
             // Local helper shared by both phases — keeps one summarize path.
             // [T-compact-aimd] notifies the speed controller: success grows
             // lanes, rate/quota markers halve them.
-            suspend fun summarizeWindow(i: Int, input: String, speedRun: com.openminis.app.data.CompactSpeedControl.Run): String {
+            suspend fun summarizeWindow(i: Int, input: String, speedRun: com.openminis.app.data.CompactSpeedControl.Run, routeIdx: Int = 0): String {
                 val cacheKey = com.openminis.app.data.CompactWindowCache.key(input, levelFractionForWindows)
                 com.openminis.app.data.CompactWindowCache.get(cacheKey)?.let { cached ->
                     AppLogger.info(TAG, "[Compact] window ${i + 1}/${windows.size} served from cache — no relay call")
@@ -5180,6 +5201,7 @@ class ChatViewModel(
                         input, reporter, i + 1, windows.size,
                         budgetTokens = perWindowBudget(input.length),
                         targetChars = (levelFractionForWindows * input.length).toInt(),
+                        routeStart = compactRoutes.getOrNull(routeIdx),
                     )
                 } catch (e: Exception) {
                     if (e is kotlinx.coroutines.CancellationException) throw e
@@ -5206,8 +5228,12 @@ class ChatViewModel(
                         val right = input.substring(mid).trimStart()
                         if (left.length > 1000 && right.length > 1000) {
                             AppLogger.info(TAG, "[Compact] window ${i + 1}/${windows.size} timeout on ${input.length} chars — bisecting (${left.length}+${right.length})")
-                            val a = summarizeWindow(i, left, speedRun)
-                            val b = summarizeWindow(i, right, speedRun)
+                            // [T-compact-fanout] halves to DIFFERENT hosts when
+                            // more than one route exists — the pricey halves run
+                            // on parallel servers, not side-by-side in one queue.
+                            val nextRoute = if (compactRoutes.size > 1) (routeIdx + 1) % compactRoutes.size else routeIdx
+                            val a = summarizeWindow(i, left, speedRun, routeIdx)
+                            val b = summarizeWindow(i, right, speedRun, nextRoute)
                             val joined = listOf(a, b).filter { it.isNotEmpty() }.joinToString("\n")
                             if (joined.isNotEmpty()) {
                                 com.openminis.app.data.CompactWindowCache.put(cacheKey, joined)
@@ -5234,7 +5260,7 @@ class ChatViewModel(
             // rate markers. In-flight windows of a failing batch may still
             // 429 (cannot recall HTTP calls), but the NEXT batch is already
             // adapted. Holes go to the sequential repair pass below.
-            val providerKey = currentProvider?.name
+            val providerKey = compactRoutes.firstOrNull()?.throttleKey ?: currentProvider?.name
             val speedRun = com.openminis.app.data.CompactSpeedControl.Run(
                 com.openminis.app.data.CompactSpeedControl.startLanes(providerKey)
             )
@@ -5246,7 +5272,10 @@ class ChatViewModel(
                 val batchEnd = minOf(nextIdx + laneCount, windows.size)
                 kotlinx.coroutines.coroutineScope {
                     (nextIdx until batchEnd).map { i ->
-                        async { parallelResults[i] = summarizeWindow(i, inputFor(i), speedRun) }
+                        // [T-compact-fanout] consecutive windows start on
+                        // different hosts (rotation across the group peers) —
+                        // parallel lanes hit parallel relays, not one queue.
+                        async { parallelResults[i] = summarizeWindow(i, inputFor(i), speedRun, routeIdx = i % compactRoutes.size) }
                     }.forEach { it.await() }
                 }
                 nextIdx = batchEnd
@@ -5273,6 +5302,7 @@ class ChatViewModel(
                             input, reporter, i + 1, windows.size,
                             budgetTokens = perWindowBudget(input.length),
                             targetChars = (levelFractionForWindows * input.length).toInt(),
+                            routeStart = compactRoutes.getOrNull(i % compactRoutes.size),
                         )
                         if (s.isNotEmpty()) com.openminis.app.data.CompactWindowCache.put(cacheKey, s)
                         s
@@ -5289,6 +5319,12 @@ class ChatViewModel(
                                 input, reporter, i + 1, windows.size,
                                 budgetTokens = perWindowBudget(input.length),
                                 targetChars = (levelFractionForWindows * input.length).toInt(),
+                                // [T-compact-fanout] retry on the NEXT host —
+                                // a rate-limited relay cools down while a
+                                // different relay answers the retry.
+                                routeStart = compactRoutes.getOrNull(
+                                    if (compactRoutes.size > 1) (i % compactRoutes.size + 1) % compactRoutes.size else i
+                                ),
                             )
                             if (s2.isNotEmpty()) com.openminis.app.data.CompactWindowCache.put(cacheKey, s2)
                             s2
@@ -5644,6 +5680,15 @@ class ChatViewModel(
          * /compact-level budget (the final merge and the single-shot path).
          */
         maxTokensOverride: Int? = null,
+        /**
+         * [T-compact-fanout] Optional starting route for the failure ladder.
+         * null = legacy: start at the session's bound model. The multi-window
+         * map phase passes each window's assigned group peer here so parallel
+         * windows land on DIFFERENT upstream relays — independent rate
+         * buckets = true server-side parallelism instead of one host's queue.
+         * The ladder still walks the remaining group peers on refusal.
+         */
+        routeStart: com.openminis.app.provider.LLMProvider? = null,
     ): String {
         // [T-compact-level-wiring] Compute the level target BEFORE the prompt
         // is assembled — the target size is part of the user message below.
@@ -5738,7 +5783,11 @@ class ChatViewModel(
         // cap is 4096 is a guaranteed HTTP 400 ("max_tokens must be at most
         // 4096") that no ladder could recover from (splitting halves the
         // INPUT, not the budget). Clamp to the model's declared cap up front.
-        val primary = currentProvider
+        // [T-compact-fanout] routeStart (when non-null) replaces the session's
+        // bound model as the ladder start — the map phase assigns each window
+        // a different group peer, so parallel windows land on distinct
+        // upstream relays instead of queueing behind one host.
+        val primary = routeStart ?: currentProvider
             ?: throw IllegalStateException("No LLM provider available for compaction")
         fun clampToModelCap(m: com.openminis.app.data.model.LLMModel?, desired: Int): Int {
             val cap = m?.maxOutputTokens ?: return desired
