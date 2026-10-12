@@ -4900,7 +4900,34 @@ class ChatViewModel(
      * `buildConversationTextForSummary`.
      */
     private fun buildConversationTextForSummary(history: List<LLMMessage>): String = buildString {
+        // [T-compact-dedup-recency] User principle (12.10): "старая ненужная
+        // информация отсеивается, дубликаты и вода отсеиваются". Two pure
+        // pre-model filters that shrink the window count (each window is a
+        // slow relay call — the single biggest compaction cost):
+        //  1. RECENCY: turns older than the last RECENT_TURNS keep only the
+        //     tool NAME and the decision text (user asks + assistant
+        //     conclusions); old tool OUTPUT bodies are water. Recent turns
+        //     stay verbatim for continuity.
+        //  2. DEDUP: a tool result identical (tool + content hash) to the
+        //     previous one collapses to one skipped-line — repeated greps and
+        //     error bursts no longer burn a window each.
+        val totalTurns = history.count { m ->
+            m.role == LLMMessage.Role.USER &&
+                (m.content.isNotBlank() || m.contentParts.any { it !is AgentContentPart.ToolResult })
+        }
+        // [T-compact-recency] recent turns kept verbatim (decisions+context);
+        // older turns keep structure + tool names, bodies are water.
+        val recentTurnsKeptVerbatim = 8
+        val recentTurnFloor = totalTurns - recentTurnsKeptVerbatim
         var turn = 0
+        var lastToolFingerprint: String? = null
+        var dupStreak = 0
+        fun flushDupStreak() {
+            if (dupStreak > 0) {
+                append("  (…+").append(dupStreak).append(" identical result(s) skipped)\n")
+                dupStreak = 0
+            }
+        }
         for (msg in history) {
             val role = msg.role.name.lowercase()
             // A new turn starts only on a GENUINE user message. Tool results
@@ -4914,9 +4941,12 @@ class ChatViewModel(
                 (msg.content.isNotBlank() ||
                     msg.contentParts.any { it !is AgentContentPart.ToolResult })
             if (isRealUserTurn) {
+                flushDupStreak()
+                lastToolFingerprint = null
                 turn += 1
                 append("\n### Turn ").append(turn).append('\n')
             }
+            val oldTier = turn < recentTurnFloor
             val text = msg.content
             if (text.isNotEmpty()) {
                 append(role).append(": ").append(summarizeBody(text, 600)).append('\n')
@@ -4929,7 +4959,7 @@ class ChatViewModel(
                     }
                     is AgentContentPart.ToolUse -> {
                         append("  ").append(role).append(" [tool:").append(part.name).append("]: ")
-                            .append(summarizeBody(part.input.toString(), 300)).append('\n')
+                            .append(summarizeBody(part.input.toString(), if (oldTier) 120 else 300)).append('\n')
                     }
                     is AgentContentPart.ToolResult -> {
                         // Errors are tagged distinctly ("result!") so the
@@ -4937,9 +4967,29 @@ class ChatViewModel(
                         // folding them into a success run — failures are what
                         // stop the agent repeating a mistake.
                         val tag = if (part.isError) "result!" else "result"
-                        append("  ").append(role).append(" [").append(tag).append(':')
-                            .append(part.name).append("]: ")
-                            .append(summarizeBody(part.content, 600)).append('\n')
+                        // [T-compact-dedup] identical consecutive result →
+                        // collapse; the streak flushes as one skip-line.
+                        val fingerprint = part.name + "#" + Integer.toHexString(part.content.hashCode())
+                        if (fingerprint == lastToolFingerprint) {
+                            dupStreak += 1
+                            continue
+                        }
+                        flushDupStreak()
+                        lastToolFingerprint = fingerprint
+                        if (oldTier) {
+                            // [T-compact-recency] ancient tool output is water:
+                            // keep WHAT ran (name, error state, size) so the
+                            // timeline survives, drop the body.
+                            append("  ").append(role).append(" [").append(tag).append(':')
+                                .append(part.name).append("]: (old tool output omitted, ")
+                                .append(part.content.length).append(" chars")
+                            if (part.isError) append(", failed")
+                            append(")\n")
+                        } else {
+                            append("  ").append(role).append(" [").append(tag).append(':')
+                                .append(part.name).append("]: ")
+                                .append(summarizeBody(part.content, 600)).append('\n')
+                        }
                     }
                     is AgentContentPart.ImageData -> {
                         append("  ").append(role).append(" [image: ").append(part.mimeType).append("]\n")
@@ -4947,6 +4997,7 @@ class ChatViewModel(
                 }
             }
         }
+        flushDupStreak()
     }
 
     /**
@@ -5618,16 +5669,23 @@ class ChatViewModel(
                     "Write everything in past tense, framed as \"what was discussed / what " +
                     "was done\", NOT as an ongoing goal or todo list."
             )
-            append("\n\nTARGET SIZE: approximately $targetApproxChars characters " +
+            append("\n\nTARGET SIZE: at most $targetApproxChars characters " +
                 "(≈${levelTargetTokens} tokens, ~${(levelFraction * 100).toInt()}% of the source). " +
-                "A one-line or few-line summary is a FAILURE — completeness beats brevity. " +
-                "Do NOT stop early: cover every file, command, decision, error and outcome.")
+                "COMPRESSION PRINCIPLE — squeeze hard, do not pad:\n" +
+                "- DEDUPLICATE: repeated/similar events, commands, retries → ONE line with a count.\n" +
+                "- NEWEST STATE WINS: when a later message supersedes an earlier one " +
+                "(on→off, plan→replaced plan, error→fixed), keep the FINAL state and its " +
+                "reason; drop the superseded path unless it explains the outcome.\n" +
+                "- CUT WATER: greetings, boilerplate, status chatter, filler phrases — never pay tokens for them.\n" +
+                "- KEEP AS FACTS: file paths, commands, numbers, decisions, errors+their fixes, final outcomes.\n" +
+                "A summary below the target is a SUCCESS (dense beats verbose); a one-line non-summary is a FAILURE.")
             if (maxTokensOverride != null) {
                 append(
                     "\n\nNOTE: this is ONE SEGMENT of a multi-part compaction. " +
                         "Your segment will be stored verbatim alongside the other " +
                         "segments — there is NO later merge pass, so your segment " +
-                        "must itself reach the TARGET SIZE above. " +
+                        "must itself carry all NEEDED facts, but UNDER the TARGET SIZE: " +
+                        "dense beats verbose, padding is a defect. " +
                         "Do NOT add intro/outro headers — write raw compressed facts.",
                 )
             }
