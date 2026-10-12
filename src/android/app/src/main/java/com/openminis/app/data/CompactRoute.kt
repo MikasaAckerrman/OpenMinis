@@ -159,12 +159,13 @@ object CompactRoute {
             m.contains("余额不足") ||
             m.contains("额度不足") ||
             m.contains("预扣费")
+    }
 
-        // [T-compact-route-timeout] see next()
-        private fun isTimeout(m: String): Boolean =
-            m.contains("exceeded 120s") ||
-                m.contains("timed out") ||
-                m.contains("timeout")
+    // [T-compact-route-timeout] see next(): congestion walks the chain.
+    private fun isTimeout(m: String): Boolean =
+        m.contains("exceeded 120s") ||
+            m.contains("timed out") ||
+            m.contains("timeout")
     }
 
     /**
