@@ -166,7 +166,6 @@ object CompactRoute {
         m.contains("exceeded 120s") ||
             m.contains("timed out") ||
             m.contains("timeout")
-    }
 
     /**
      * Halve the budget, floored. Returns null when there is no smaller budget
