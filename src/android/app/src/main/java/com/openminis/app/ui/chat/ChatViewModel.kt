@@ -5107,7 +5107,9 @@ class ChatViewModel(
             reporter?.note("Сжимаю ${windows.size} частей (${compactLevel.value.displayName})")
             val seqT0 = System.nanoTime()
             // Local helper shared by both phases — keeps one summarize path.
-            suspend fun summarizeWindow(i: Int, input: String): String {
+            // [T-compact-aimd] notifies the speed controller: success grows
+            // lanes, rate/quota markers halve them.
+            suspend fun summarizeWindow(i: Int, input: String, speedRun: com.openminis.app.data.CompactSpeedControl.Run): String {
                 val cacheKey = com.openminis.app.data.CompactWindowCache.key(input, levelFractionForWindows)
                 com.openminis.app.data.CompactWindowCache.get(cacheKey)?.let { cached ->
                     AppLogger.info(TAG, "[Compact] window ${i + 1}/${windows.size} served from cache — no relay call")
@@ -5124,10 +5126,18 @@ class ChatViewModel(
                     if (com.openminis.app.data.TransportErrorClassifier.isDefinitelyNotSizeRelated(e.message ?: "")) {
                         throw e
                     }
+                    val msg = (e.message ?: "").lowercase()
+                    if (msg.contains("429") || msg.contains("rate") || msg.contains("quota") || msg.contains("too many")) {
+                        AppLogger.warning(TAG, "[Compact] rate marker at window ${i + 1}/${windows.size} — AIMD halving lanes (was ${speedRun.current})")
+                        speedRun.onRateMarker()
+                    }
                     AppLogger.warning(TAG, "[Compact] window ${i + 1}/${windows.size} failed: ${(e.message ?: "").take(80)} — skipped")
                     ""
                 }
-                if (s.isNotEmpty()) com.openminis.app.data.CompactWindowCache.put(cacheKey, s)
+                if (s.isNotEmpty()) {
+                    com.openminis.app.data.CompactWindowCache.put(cacheKey, s)
+                    speedRun.onSuccess()
+                }
                 return s
             }
             fun inputFor(i: Int): String =
@@ -5135,35 +5145,39 @@ class ChatViewModel(
                     "Previous context summary:\n$previousSummary\n\nNext portion:\n${windows[0]}"
                 } else windows[i]
 
-            val rateDowngrade = java.util.concurrent.atomic.AtomicBoolean(false)
-            val lanes = kotlinx.coroutines.sync.Semaphore(2)
-            val parallelResults: List<String> = kotlinx.coroutines.coroutineScope {
-                windows.indices.map { i ->
-                    async {
-                        lanes.acquire()
-                        try {
-                            val s = summarizeWindow(i, inputFor(i))
-                            if (s.isEmpty()) {
-                                // [T-compact-adaptive-parallel] hole: could be
-                                // rate-limited or timed out — mark for the
-                                // sequential repair pass decision below.
-                            }
-                            s
-                        } finally {
-                            lanes.release()
-                        }
-                    }
-                }.map { it.await() }
+            // [T-compact-aimd] batched parallelism: each batch runs with the
+            // controller's CURRENT lane count — grows on success, halves on
+            // rate markers. In-flight windows of a failing batch may still
+            // 429 (cannot recall HTTP calls), but the NEXT batch is already
+            // adapted. Holes go to the sequential repair pass below.
+            val providerKey = currentProvider?.name
+            val speedRun = com.openminis.app.data.CompactSpeedControl.Run(
+                com.openminis.app.data.CompactSpeedControl.startLanes(providerKey)
+            )
+            AppLogger.info(TAG, "[Compact] AIMD start: lanes=${speedRun.current} provider=$providerKey windows=${windows.size}")
+            val parallelResults = arrayOfNulls<String>(windows.size)
+            var nextIdx = 0
+            while (nextIdx < windows.size) {
+                val laneCount = speedRun.current
+                val batchEnd = minOf(nextIdx + laneCount, windows.size)
+                kotlinx.coroutines.coroutineScope {
+                    (nextIdx until batchEnd).map { i ->
+                        async { parallelResults[i] = summarizeWindow(i, inputFor(i), speedRun) }
+                    }.forEach { it.await() }
+                }
+                nextIdx = batchEnd
             }
+            speedRun.finish(providerKey, parallelResults.count { !it.isNullOrEmpty() }, windows.size)
+            val parallelList: List<String> = parallelResults.map { it ?: "" }
 
-            var fixed: List<String> = parallelResults.filter { it.isNotEmpty() }
+            var fixed: List<String> = parallelList.filter { it.isNotEmpty() }
             // [T-compact-adaptive-parallel] Repair pass: any hole re-runs
             // sequentially with the proven pacing + rate backoff — cache
             // makes already-done windows free, so only holes hit the relay.
-            if (parallelResults.any { it.isEmpty() }) {
-                AppLogger.info(TAG, "[Compact] sequential repair pass for ${parallelResults.count { it.isEmpty() }} hole(s)")
+            if (parallelList.any { it.isEmpty() }) {
+                AppLogger.info(TAG, "[Compact] sequential repair pass for ${parallelList.count { it.isEmpty() }} hole(s)")
                 val repaired: List<String> = windows.indices.mapNotNull { i ->
-                    if (parallelResults[i].isNotEmpty()) return@mapNotNull parallelResults[i]
+                    if (parallelList[i].isNotEmpty()) return@mapNotNull parallelList[i]
                     val input = inputFor(i)
                     val cacheKey = com.openminis.app.data.CompactWindowCache.key(input, levelFractionForWindows)
                     if (com.openminis.app.data.CompactWindowCache.get(cacheKey) != null) {
