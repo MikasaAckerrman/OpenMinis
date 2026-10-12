@@ -5092,11 +5092,22 @@ class ChatViewModel(
             AppLogger.info(TAG, "[Compact] sequential map: ${windows.size} windows, level=${compactLevel.value} fraction=$levelFractionForWindows")
             reporter?.note("Сжимаю ${windows.size} частей последовательно (${compactLevel.value.displayName})")
             val seqT0 = System.nanoTime()
+            // [T-compact-window-cache] User requirement (12.10): a compact
+            // retry must NOT restart from zero — completed window summaries
+            // are cached in-process; a retry after a rate-limited failure
+            // reuses them instantly (zero relay quota, zero wall time) and
+            // only the failed/remaining windows hit the model. Cache key =
+            // content hash + level fraction, so a level change re-summarizes.
             val fixed: List<String> = windows.mapIndexed { i, w ->
                 val input =
                     if (i == 0 && !previousSummary.isNullOrBlank()) {
                         "Previous context summary:\n$previousSummary\n\nNext portion:\n$w"
                     } else w
+                val cacheKey = com.openminis.app.data.CompactWindowCache.key(input, levelFractionForWindows)
+                com.openminis.app.data.CompactWindowCache.get(cacheKey)?.let { cached ->
+                    AppLogger.info(TAG, "[Compact] window ${i + 1}/${windows.size} served from cache — no relay call")
+                    return@mapIndexed cached
+                }
                 val s = try {
                     generateWindowSummaryWithFloor(
                         input, reporter, i + 1, windows.size,
@@ -5129,9 +5140,11 @@ class ChatViewModel(
                         ""
                     }
                 }
+                // [T-compact-window-cache] store for instant retry-reuse
+                if (s.isNotEmpty()) com.openminis.app.data.CompactWindowCache.put(cacheKey, s)
                 // [T-compact-sequential] pacing: quiet gap between window
                 // calls so the relay never sees a burst.
-                if (i < windows.size - 1) delay(500)
+                if (i < windows.size - 1 && s.isNotEmpty()) delay(500)
                 s
             }.filter { it.isNotEmpty() }
 
