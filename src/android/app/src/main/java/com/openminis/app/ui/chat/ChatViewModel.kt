@@ -5144,7 +5144,16 @@ class ChatViewModel(
         }
         fun perWindowBudget(windowChars: Int): Int {
             val est = (windowChars / 4).coerceAtLeast(1)
-            return (levelFractionForWindows * est).toInt().coerceAtLeast(768)
+            // [T-compact-window-budget-cap] Map-phase window digests MUST NOT
+            // inherit the fidelity level. Design rule (T-compact-rolling-append
+            // comment in generateCompactSummary): windows get a SMALL cap — the
+            // merge discards excess anyway; fidelity belongs to the merge's own
+            // budget and the number of windows. Live failure (12.10):
+            // LIGHT fraction=0.4 on a 96K-char window = ~10K tokens of output,
+            // 5+ minutes of streaming at free-relay speed vs the 120s timeout —
+            // every window timed out, 72-minute compact. Cap 1536 tokens
+            // (~6K chars) ≈ 45-60s of stream at 30 tok/s — fits any relay.
+            return (levelFractionForWindows * est).toInt().coerceIn(768, 1536)
         }
         if (windows.size >= 2) {
             // [T-compact-adaptive-parallel] User request (12.10): parallel
