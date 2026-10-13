@@ -5118,7 +5118,18 @@ class ChatViewModel(
     ): String {
         val transcript = buildConversationTextForSummary(messages)
         val windowTokens = currentModel?.contextWindow ?: 128_000
-        val capChars = com.openminis.app.data.CompactChunking.perCallInputCapChars(windowTokens)
+        // [T-compact-ttfb-budget] Measured on the 13.10 run: every 96K-char
+        // window died with "call exceeded 120s (TTFB+stream)". With the 1536-token
+        // output cap the stream alone is ~40s at free-relay speed, so TTFB on a
+        // 24K-token prefill consumed the other ~80s — the INPUT prefill is the
+        // dominant term, not the output. Start the run with windows small
+        // enough that prefill fits comfortably, and let the existing bisect-on-
+        // timeout path grow them back if the relay proves fast. Same total
+        // summarised text, just spread over more, cheaper windows.
+        val capChars = minOf(
+            com.openminis.app.data.CompactChunking.perCallInputCapChars(windowTokens),
+            32_000,
+        )
         var windows = com.openminis.app.data.CompactChunking.packWindows(transcript, capChars)
         if (windows.isEmpty()) return previousSummary.orEmpty().trim()
         AppLogger.info(
@@ -5321,17 +5332,16 @@ class ChatViewModel(
             // 429 (cannot recall HTTP calls), but the NEXT batch is already
             // adapted. Holes go to the sequential repair pass below.
                         val providerKey = compactRoutes.firstOrNull()?.throttleKey ?: currentProvider?.name
-            // [T-compact-lane-seed] Seed the first batch with one lane per
-            // DISTINCT relay host, not a flat 2: relays are separate rate
-            // buckets, so the first batch should already span them — that is
-            // the "server-side parallelism" the user asked for. Capped at 6 to
-            // stay polite to memory and rate limits; AIMD still adapts from
-            // there (halves on a marker, grows on successes).
-            val seededLanes = if (compactRoutes.size > 1) {
-                compactRoutes.distinctBy { it.throttleKey }.size.coerceIn(2, com.openminis.app.data.CompactSpeedControl.MAX_LANES)
-            } else {
-                com.openminis.app.data.CompactSpeedControl.startLanes(providerKey)
-            }
+            // [T-compact-probe-start] Start NARROW and grow on proven success.
+            // Live forensics (13.10, 19:42 run): seeding one lane per relay
+            // (6-12 lanes) opened ~13 simultaneous calls at once — the live
+            // agent session plus the batch — against free relays whose bucket
+            // is 1-2 wide. Result: 14/14 windows died together and the run
+            // degraded straight into the sequential repair pass. AIMD can only
+            // grow a run that is ALREADY succeeding, so it could never rescue a
+            // greedy start. Two lanes is the probe: if it survives, AIMD
+            // widens toward the number of distinct relays on its own.
+            val seededLanes = com.openminis.app.data.CompactSpeedControl.startLanes(providerKey)
             val speedRun = com.openminis.app.data.CompactSpeedControl.Run(seededLanes)
             AppLogger.info(TAG, "[Compact] AIMD start: lanes=${speedRun.current} provider=$providerKey windows=${windows.size}")
             val parallelResults = arrayOfNulls<String>(windows.size)
