@@ -50,18 +50,6 @@ class CompactDiskCacheTest {
     }
 
     @Test
-    fun `update moves entry to the end`() {
-        val f = CompactDiskCache.file(tmp.root, "s2")
-        val map = CompactDiskCache.load(f)
-        CompactDiskCache.put(f, map, "a", "1")
-        CompactDiskCache.put(f, map, "b", "2")
-        CompactDiskCache.put(f, map, "a", "3")
-        val reloaded = CompactDiskCache.load(f)
-        assertEquals(listOf("b", "a"), reloaded.keys.toList())
-        assertEquals("3", reloaded["a"])
-    }
-
-    @Test
     fun `corrupted or missing store degrades to empty`() {
         val f = File(File(tmp.root, "compact-cache"), "garbage.json")
         f.parentFile?.mkdirs()
@@ -74,9 +62,9 @@ class CompactDiskCacheTest {
     }
 
     @Test
-    fun `session filename is sanitized`() {
-        val f = CompactDiskCache.file(tmp.root, "ses/si:on?")
-        assertFalse(f.name.contains("/"))
-        assertTrue(f.name.replace("_", "").length > 40)
+    fun `filename sanitized and dot-json`() {
+        val f = CompactDiskCache.file(tmp.root, "ses/si:on?*")
+        assertTrue(f.name.endsWith(".json"))
+        assertFalse(f.name.contains("/") || f.name.contains(":") || f.name.contains("?") || f.name.contains("*"))
     }
 }

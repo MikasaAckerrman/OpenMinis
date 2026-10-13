@@ -26,14 +26,19 @@ import org.json.JSONObject
 object CompactDiskCache {
 
     private const val TAG = "CompactDiskCache"
-    private const val MAX_ENTRIES = 128
+    const val MAX_ENTRIES = 128
     private const val DIR = "compact-cache"
 
     private val unsafeChars = Regex("[^A-Za-z0-9._-]")
 
     fun cacheFile(context: Context, sessionId: String): File {
+        return file(context.filesDir, sessionId)
+    }
+
+    /** Android-free overload for unit tests: same naming rules, explicit root. */
+    fun file(rootDir: File, sessionId: String): File {
         val safe = sessionId.replace(unsafeChars, "_").ifEmpty { "global" }
-        return File(File(context.filesDir, DIR), "$safe.json")
+        return File(File(rootDir, DIR), "$safe.json")
     }
 
     /** Load the stored window summaries for this session. Empty on any failure. */
