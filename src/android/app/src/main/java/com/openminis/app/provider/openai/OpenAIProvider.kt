@@ -1729,6 +1729,21 @@ class OpenAIProvider private constructor(
                             messagesArray.put(JSONObject().apply {
                                 put("role", "tool")
                                 put("tool_call_id", capChatToolCallId(tr.id))
+                                // [T-kimi-tool-name] litellm Hosted-vLLM
+                                // (Kimi K3 via e-infra) 400s any tool message
+                                // that carries only tool_call_id:
+                                //   "need a resolvable tool name: carry
+                                //   `tool`/`name`, or match a preceding
+                                //   assistant tool_call by order."
+                                // Order-matching is fragile here — a compact
+                                // boundary or cross-model fallback can leave a
+                                // tool result whose assistant tool_call was
+                                // elided upstream. The ToolResult part always
+                                // knows the function name; emit it (OpenAI
+                                // tool-message schema allows `name`, every
+                                // lenient provider ignores it, and the strict
+                                // vLLM adapter now resolves it).
+                                if (tr.name.isNotBlank()) put("name", tr.name)
                                 put("content", tr.content)
                             })
                         }

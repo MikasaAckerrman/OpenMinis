@@ -5184,6 +5184,18 @@ class ChatViewModel(
                 if (fanoutPrimary == null) emptyList()
                 else listOf(fanoutPrimary) + buildFallbackProviders(fanoutPrimary).map { it.provider }
             }.getOrDefault(listOfNotNull(fanoutPrimary))
+                .let { raw ->
+                    // [T-compact-fast-routes] start the map phase on the fast
+                    // tiers (flash/turbo/highspeed) — the merge (session-class
+                    // model, its own ladder) owns fidelity, so routing windows
+                    // through heavyweight thinking models is pure wall-time.
+                    // Too-small-context routes sink to the end instead of being
+                    // wasted-call material (bisection halves still fit them).
+                    com.openminis.app.data.CompactRouteOrder.orderRoutes(
+                        raw,
+                        windows.maxOf { it.length },
+                    )
+                }
             if (compactRoutes.isNotEmpty()) {
                 AppLogger.info(TAG, "[Compact] fanout routes=${compactRoutes.size}: ${compactRoutes.joinToString(", ") { it.throttleKey }}")
             }
@@ -5823,10 +5835,18 @@ class ChatViewModel(
                 // via failOnSilentEmptyCompletion (reasoning-only output is
                 // NOT a usable summary).
                 val sb = StringBuilder()
-                // [T-compact-speed] Hard 120s per-call timeout: a stuck relay
-                // must not hold the whole compact hostage for 13+ minutes.
-                // Timeout counts from call start (covers TTFB + streaming).
-                kotlinx.coroutines.withTimeoutOrNull(120_000L) {
+                // [T-compact-speed] Adaptive per-call timeout, budget-aware:
+                // a stuck relay must not hold the whole compact hostage for
+                // 13+ minutes. Derived from THIS attempt's maxOut:
+                //   1536-token window → ~106s ceiling (45s + 40ms/token);
+                //   shrunk retries die sooner; big merges keep 120s.
+                // A free relay at ~30 tok/s streams 1536 tokens in ~51s, so
+                // a truly stuck call wastes ≤106s instead of the flat 120s
+                // before the walk-d expiration fires the NextProvider step.
+                // Message keeps the "timeout" marker so CompactRoute.isTimeout
+                // keeps classifying it as congestion → alternate relay.
+                val callTimeoutMs = (45_000L + maxOut * 40L).coerceIn(60_000L, 120_000L)
+                kotlinx.coroutines.withTimeoutOrNull(callTimeoutMs) {
                 provider.streamMessage(
                     messages = listOf(
                         LLMMessage(role = LLMMessage.Role.USER, content = userMessage)
@@ -5848,7 +5868,9 @@ class ChatViewModel(
                         reporter?.callChars(chunkIndex, sb.length, targetChars)
                     }
                 }
-                } ?: throw java.net.SocketTimeoutException("compact call exceeded 120s (TTFB+stream)")
+                } ?: throw java.net.SocketTimeoutException(
+                    "compact call exceeded ${callTimeoutMs / 1000}s (TTFB+stream, timeout)",
+                )
                 if (providerIdx >= 0 || maxOut != budgetedStartMaxOut) {
                     AppLogger.info(
                         TAG,
