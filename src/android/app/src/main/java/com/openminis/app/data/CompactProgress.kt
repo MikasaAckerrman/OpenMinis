@@ -54,6 +54,19 @@ data class CompactProgress(
     val percent: Double = 0.0,
     val chunkIndex: Int = 1,
     val chunkCount: Int = 1,
+    /**
+     * [T-compact-window-counter] Authoritative progress for the MAP phase:
+     * windows finished / windows total. Monotonic by construction.
+     *
+     * The per-call counters above (chunkIndex/chunkCount) describe ONE relay
+     * call, and they legitimately reset: batches change width as AIMD widens,
+     * and a timed-out window bisects into halves that renumber the same index
+     * space. That is why the bar used to read "21/41" and then "16/41" — the
+     * user was watching a call counter, not progress. Window count is the only
+     * number that only ever moves forward.
+     */
+    val windowsDone: Int = 0,
+    val windowsTotal: Int = 0,
     val modelLabel: String? = null,
     /** Transient subtitle: "переключаюсь на …", "уменьшаю бюджет …". */
     val routeNote: String? = null,
@@ -106,7 +119,15 @@ class CompactRunReporter(
         val n = chunkCount.coerceAtLeast(1)
         val topologyChanged = n != state.chunkCount
         if (topologyChanged) {
-            fractions = buildMap { for (i in 1..n) put(i, 0f) }
+            // [T-compact-monotonic-bar] Union, not rebuild: the index space
+            // grows WITHOUT dropping what is already recorded — including
+            // indices ABOVE the new width when the topology SHRINKS (a bisect
+            // half-merge narrows 41 -> 16, and the bar must keep fraction 21).
+            // The old code rebuilt at the new size and threw everything away.
+            fractions = buildMap {
+                putAll(fractions)
+                for (i in 1..n) putIfAbsent(i, 0f)
+            }
         }
         publish {
             it.copy(
@@ -120,12 +141,19 @@ class CompactRunReporter(
                 // immediately instead of "Preparing…" at 0% for a minute.
                 // Bump off zero so the bar + percent label visibly tick
                 // over from the very first second of the call.
-                percent = if (topologyChanged) 0.1
-                          else maxOf(it.percent, 0.1),
+                // [T-compact-monotonic-bar] Never force the bar DOWN on a
+                // topology change: the old code hard-set 0.1 and rebuilt the
+                // mini-bars at zero, which is exactly the "0.10% forever" and
+                // "21/41 -> 16/41" the user saw on every batch resize. Grow the
+                // index space from the surviving fraction map instead.
+                percent = maxOf(it.percent, 0.1),
                 phase = com.openminis.app.data.CompactPhase.SUMMARIZING,
-                // [T-compact-parallel-visual] Topology change resets the
-                // mini-bars to a zero-sized list of the new chunk count.
-                windowFractions = List(n) { 0.0 },
+                // [T-compact-monotonic-bar] Mini-bars grow from the surviving
+                // fraction map: every finished window keeps its fraction, and
+                // the list is long enough for every recorded index.
+                windowFractions = List(
+                    maxOf(n, (fractions.keys.maxOrNull() ?: 0)),
+                ) { i -> (fractions[i + 1] ?: 0.0).toDouble() },
             )
         }
     }
@@ -147,8 +175,39 @@ class CompactRunReporter(
         val sum = (1..n).sumOf { (fractions[it] ?: 0f).toDouble() }
         // 4-decimal percent: 0.00 .. 99.99. Cap at 99.99 so DONE (100.00) is
         // the only state where the bar reads "complete".
-        val pct = ((sum / n) * 100.0).coerceIn(0.0, 99.99)
+        val perCall = ((sum / n) * 100.0).coerceIn(0.0, 99.99)
+        // [T-compact-window-counter] While the map phase has an authoritative
+        // window count, the per-call estimate may NOT overwrite it: per-call
+        // describes one relay call whose width changes with AIMD, the window
+        // counter describes the whole run.
+        val st = state
+        // [T-compact-window-counter] While the map phase has an authoritative
+        // window count, the per-call estimate may NOT touch the main bar at
+        // all — not even when zero windows are finished yet: one relay call
+        // at 99% does not mean the RUN is 99% done (0/41 is the truth), and a
+        // bar jumping 0% -> 99% -> back is the exact lie the user reported.
+        val pct = if (st.windowsTotal > 0) {
+            ((st.windowsDone.toDouble() / st.windowsTotal) * 100.0).coerceIn(0.0, 99.99)
+        } else perCall
         publish { it.copy(windowFractions = wf, chunkIndex = idx, percent = pct) }
+    }
+
+    /**
+     * [T-compact-window-counter] Report map-phase progress in WINDOWS.
+     * Monotonic: a repeat never lowers the counter, and the resulting percent
+     * takes precedence over the per-call estimate while the map phase runs.
+     */
+    fun windows(done: Int, total: Int) {
+        val t = total.coerceAtLeast(1)
+        val d = done.coerceIn(0, t)
+        val pct = ((d.toDouble() / t) * 100.0).coerceIn(0.0, 99.99)
+        publish {
+            it.copy(
+                windowsDone = maxOf(it.windowsDone, d),
+                windowsTotal = maxOf(it.windowsTotal, t),
+                percent = if (maxOf(it.windowsDone, d) > 0) pct else it.percent,
+            )
+        }
     }
 
     fun done() = publish { it.copy(phase = CompactPhase.DONE, percent = 100.00) }

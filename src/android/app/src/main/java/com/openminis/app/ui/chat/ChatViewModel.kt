@@ -5256,10 +5256,25 @@ class ChatViewModel(
                 }
                 return idx
             }
+            // [T-compact-window-counter] Announce the map-phase denominator
+            // before any lane runs, so the card shows "0/41" immediately and the
+            // total is never guessed from the first batch's width.
+            reporter?.windows(0, windows.size)
+            // [T-compact-window-counter] Authoritative map-phase progress.
+            // Monotonic and race-safe: summarizeWindow runs from several
+            // concurrent lanes, so the counter is guarded, and a late-finishing
+            // lane can never push the bar backwards.
+            val doneWindows = java.util.concurrent.atomic.AtomicInteger(0)
+            fun reportWindowDone(i: Int) {
+                val done = doneWindows.incrementAndGet().coerceAtMost(windows.size)
+                reporter?.windows(done, windows.size)
+            }
             suspend fun summarizeWindow(i: Int, input: String, speedRun: com.openminis.app.data.CompactSpeedControl.Run, routeIdx: Int = 0): String {
                 val cacheKey = com.openminis.app.data.CompactWindowCache.key(input, levelFractionForWindows)
                 cacheGet(cacheKey)?.let { cached ->
                     AppLogger.info(TAG, "[Compact] window ${i + 1}/${windows.size} served from cache — no relay call")
+                    // [T-compact-window-counter] A cache hit is a finished window.
+                    reportWindowDone(i)
                     return cached
                 }
                 val s = try {
@@ -5308,6 +5323,7 @@ class ChatViewModel(
                             val joined = listOf(a, b).filter { it.isNotEmpty() }.joinToString("\n")
                             if (joined.isNotEmpty()) {
                                 cachePut(cacheKey, joined)
+                                reportWindowDone(i)
                                 return joined
                             }
                         }
@@ -5318,6 +5334,7 @@ class ChatViewModel(
                 if (s.isNotEmpty()) {
                     cachePut(cacheKey, s)
                     speedRun.onSuccess()
+                    reportWindowDone(i)
                 }
                 return s
             }

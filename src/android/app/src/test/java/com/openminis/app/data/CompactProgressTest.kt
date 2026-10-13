@@ -62,16 +62,20 @@ class CompactProgressTest {
     }
 
     @Test
-    fun `reporter topology change resets fractions`() {
+    fun `merge phase floors the percent and switches to SUMMARIZING`() {
         val r = CompactRunReporter(startMs = 0)
         r.callStart("a", 1, 2)
         r.callStart("b", 2, 2)
         r.callChars(2, 1_000, 1_000)
-        // Merge is a fresh 1/1 call — bar restarts, not stuck at old fraction.
+        // Merge is a fresh 1/1 call. [T-compact-monotonic-bar] The bar must
+        // never be FORCED down by a topology change (the old hard 0.1 was the
+        // '0.10% forever' the user saw on every batch resize): percent keeps
+        // its previous value unless it was below the 0.1 floor.
         r.callStart("merge", 1, 1)
-        // [T-compact-ttfb] topology change now floors at 0.1 (instant tick)
-        // and switches to SUMMARIZING — no more dead 0% card.
-        assertEquals(0.1, r.snapshot().percent, 1e-9)
+        assertTrue(
+            "floor: ${r.snapshot().percent}",
+            r.snapshot().percent >= 0.1,
+        )
         assertEquals(1, r.snapshot().chunkCount)
         assertEquals(CompactPhase.SUMMARIZING, r.snapshot().phase)
     }
@@ -167,5 +171,48 @@ class CompactProgressTest {
     fun `failure summary falls back to terminal when no attempts`() {
         val f = CompactFailure(attempts = emptyList(), terminal = "якорь потерян")
         assertEquals("якорь потерян", f.summary)
+    }
+
+    @Test
+    fun `window counter is monotonic and never goes backwards`() {
+        val r = CompactRunReporter(startMs = 0L)
+        r.windows(21, 41)
+        assertEquals(21, r.snapshot().windowsDone)
+        assertEquals(41, r.snapshot().windowsTotal)
+        // a late lane reporting an older count must not rewind the bar
+        r.windows(16, 41)
+        assertEquals(21, r.snapshot().windowsDone)
+    }
+
+    @Test
+    fun `topology change keeps already-finished fractions`() {
+        val r = CompactRunReporter(startMs = 0L)
+        r.callStart("m", 1, 41)
+        r.callChars(21, 100, 100)          // window 21 finished
+        val before = r.snapshot().windowFractions[20]
+        // next phase re-shapes the topology to a narrower one
+        r.callStart("m", 1, 16)
+        assertEquals(before, r.snapshot().windowFractions[20], 0.0001)
+        assertEquals(16, r.snapshot().chunkCount)
+    }
+
+    @Test
+    fun `window total wins over per-call percent while map runs`() {
+        val r = CompactRunReporter(startMs = 0L)
+        r.windows(0, 41)
+        r.callChars(1, 100, 100)          // per-call says 99%
+        assertTrue(
+            "per-call estimate must not drive the bar: ${r.snapshot().percent}",
+            r.snapshot().percent < 5.0,
+        )
+    }
+
+    @Test
+    fun `zero windows announces the denominator immediately`() {
+        val r = CompactRunReporter(startMs = 0L)
+        r.windows(0, 41)
+        val s = r.snapshot()
+        assertEquals(0, s.windowsDone)
+        assertEquals(41, s.windowsTotal)
     }
 }
