@@ -22,7 +22,7 @@ class CompactRouteOrderTest {
             contextWindow = ctx,
         )
 
-        override fun sendMessageClamped(
+        override suspend fun sendMessageClamped(
             messages: List<LLMMessage>,
             systemPrompt: String?,
             maxTokens: Int,
