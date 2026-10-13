@@ -5328,7 +5328,7 @@ class ChatViewModel(
             // stay polite to memory and rate limits; AIMD still adapts from
             // there (halves on a marker, grows on successes).
             val seededLanes = if (compactRoutes.size > 1) {
-                compactRoutes.distinctBy { it.throttleKey }.size.coerceIn(2, 6)
+                compactRoutes.distinctBy { it.throttleKey }.size.coerceIn(2, com.openminis.app.data.CompactSpeedControl.MAX_LANES)
             } else {
                 com.openminis.app.data.CompactSpeedControl.startLanes(providerKey)
             }

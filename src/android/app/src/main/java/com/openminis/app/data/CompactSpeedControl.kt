@@ -23,7 +23,13 @@ object CompactSpeedControl {
     // halves it back immediately — the cost of one extra 429-able call is
     // cheaper than a whole run at floor speed when the relay is fine).
     const val COLD_START_LANES = 2
-    const val MAX_LANES = 8
+    // [T-compact-lanes-ceiling] 12, not 8: the relay's 96K-char body cap
+    // fixes the window size, so the ONLY way to cut total latency is to
+    // shrink wall-clock per run — a 14-window run at 8 lanes is 2 batches,
+    // at 12 lanes it is one. Rate markers still halve this immediately, and
+    // the seed is additionally bounded by the number of DISTINCT relays
+    // available (different throttleKey = different server-side bucket).
+    const val MAX_LANES = 12
 
     /** Stable-speed memory: providerKey -> last stable lane count. */
     private val lastStable = ConcurrentHashMap<String, Int>()
