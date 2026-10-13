@@ -5247,7 +5247,12 @@ class ChatViewModel(
                     }
                     val msg = (e.message ?: "").lowercase()
                     if (msg.contains("429") || msg.contains("rate") || msg.contains("quota") || msg.contains("too many")) {
-                        AppLogger.warning(TAG, "[Compact] rate marker at window ${i + 1}/${windows.size} — AIMD halving lanes (was ${speedRun.current})")
+                        // [T-compact-route-breaker] cool this relay down for the
+                        // rest of the run: pickLiveRoute skips it, so the
+                        // rotation moves to another host instead of retrying the
+                        // same throttled relay window after window.
+                        routeCooldownUntil[routeIdx] = System.currentTimeMillis() + 90_000L
+                        AppLogger.warning(TAG, "[Compact] rate marker at window ${i + 1}/${windows.size} on route ${compactRoutes.getOrNull(routeIdx)?.throttleKey} — AIMD halving lanes (was ${speedRun.current}), route in 90s cooldown")
                         speedRun.onRateMarker()
                     }
                     // [T-compact-bisect] A TTFB timeout on a big window means
@@ -5297,10 +5302,37 @@ class ChatViewModel(
             // rate markers. In-flight windows of a failing batch may still
             // 429 (cannot recall HTTP calls), but the NEXT batch is already
             // adapted. Holes go to the sequential repair pass below.
+            // [T-compact-route-breaker] Per-run circuit breaker: a relay that
+            // just answered "rate limit" is in cooldown and must not be picked
+            // again by the rotation for a while — otherwise N windows keep
+            // marching into the same throttled host (the endless "retry
+            // kimi-k3" the user saw). Cooldown is per-run and in-memory: the
+            // relay's own bucket recovers while other hosts keep working.
+            val routeCooldownUntil = LongArray(compactRoutes.size) { 0L }
+            fun pickLiveRoute(windowIdx: Int): Int {
+                if (compactRoutes.size <= 1) return windowIdx % maxOf(1, compactRoutes.size)
+                val now = System.currentTimeMillis()
+                var idx = windowIdx % compactRoutes.size
+                var tries = 0
+                while (tries < compactRoutes.size && routeCooldownUntil[idx] > now) {
+                    idx = (idx + 1) % compactRoutes.size
+                    tries++
+                }
+                return idx
+            }
             val providerKey = compactRoutes.firstOrNull()?.throttleKey ?: currentProvider?.name
-            val speedRun = com.openminis.app.data.CompactSpeedControl.Run(
+            // [T-compact-lane-seed] Seed the first batch with one lane per
+            // DISTINCT relay host, not a flat 2: relays are separate rate
+            // buckets, so the first batch should already span them — that is
+            // the "server-side parallelism" the user asked for. Capped at 6 to
+            // stay polite to memory and rate limits; AIMD still adapts from
+            // there (halves on a marker, grows on successes).
+            val seededLanes = if (compactRoutes.size > 1) {
+                compactRoutes.distinctBy { it.throttleKey }.size.coerceIn(2, 6)
+            } else {
                 com.openminis.app.data.CompactSpeedControl.startLanes(providerKey)
-            )
+            }
+            val speedRun = com.openminis.app.data.CompactSpeedControl.Run(seededLanes)
             AppLogger.info(TAG, "[Compact] AIMD start: lanes=${speedRun.current} provider=$providerKey windows=${windows.size}")
             val parallelResults = arrayOfNulls<String>(windows.size)
             var nextIdx = 0
@@ -5312,7 +5344,7 @@ class ChatViewModel(
                         // [T-compact-fanout] consecutive windows start on
                         // different hosts (rotation across the group peers) —
                         // parallel lanes hit parallel relays, not one queue.
-                        async { parallelResults[i] = summarizeWindow(i, inputFor(i), speedRun, routeIdx = i % compactRoutes.size) }
+                        async { parallelResults[i] = summarizeWindow(i, inputFor(i), speedRun, routeIdx = pickLiveRoute(i)) }
                     }.forEach { it.await() }
                 }
                 nextIdx = batchEnd
