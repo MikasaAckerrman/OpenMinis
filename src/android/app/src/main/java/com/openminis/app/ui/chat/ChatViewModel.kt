@@ -5200,11 +5200,36 @@ class ChatViewModel(
                 AppLogger.info(TAG, "[Compact] fanout routes=${compactRoutes.size}: ${compactRoutes.joinToString(", ") { it.throttleKey }}")
             }
             // Local helper shared by both phases — keeps one summarize path.
+            // [T-compact-persist-cache] Disk-backed window cache store — the
+            // durability the user asked for on rate-limited relays: a compact
+            // interrupted at window 9/13 (429, timeout, process kill) used to
+            // lose ALL finished summaries and the retry redid the whole map
+            // phase. Now finished summaries persist per session; a retry
+            // minutes later (relay resets) or after an app restart resumes
+            // instantly. Memory (CompactWindowCache) stays the fast path;
+            // disk is a write-through backing store; any disk failure
+            // degrades silently to memory-only — never breaks a compact.
+            val cacheFile = com.openminis.app.data.CompactDiskCache.cacheFile(
+                context, realSessionId.ifEmpty { sessionId },
+            )
+            val diskCache: LinkedHashMap<String, String> =
+                com.openminis.app.data.CompactDiskCache.load(cacheFile)
+            fun cacheGet(key: String): String? =
+                com.openminis.app.data.CompactWindowCache.get(key)
+                    ?: diskCache[key]?.also {
+                        com.openminis.app.data.CompactWindowCache.put(key, it)
+                    }
+            fun cachePut(key: String, value: String) {
+                com.openminis.app.data.CompactWindowCache.put(key, value)
+                com.openminis.app.data.CompactDiskCache.put(
+                    cacheFile, diskCache, key, value,
+                )
+            }
             // [T-compact-aimd] notifies the speed controller: success grows
             // lanes, rate/quota markers halve them.
             suspend fun summarizeWindow(i: Int, input: String, speedRun: com.openminis.app.data.CompactSpeedControl.Run, routeIdx: Int = 0): String {
                 val cacheKey = com.openminis.app.data.CompactWindowCache.key(input, levelFractionForWindows)
-                com.openminis.app.data.CompactWindowCache.get(cacheKey)?.let { cached ->
+                cacheGet(cacheKey)?.let { cached ->
                     AppLogger.info(TAG, "[Compact] window ${i + 1}/${windows.size} served from cache — no relay call")
                     return cached
                 }
@@ -5248,7 +5273,7 @@ class ChatViewModel(
                             val b = summarizeWindow(i, right, speedRun, nextRoute)
                             val joined = listOf(a, b).filter { it.isNotEmpty() }.joinToString("\n")
                             if (joined.isNotEmpty()) {
-                                com.openminis.app.data.CompactWindowCache.put(cacheKey, joined)
+                                cachePut(cacheKey, joined)
                                 return joined
                             }
                         }
@@ -5257,7 +5282,7 @@ class ChatViewModel(
                     ""
                 }
                 if (s.isNotEmpty()) {
-                    com.openminis.app.data.CompactWindowCache.put(cacheKey, s)
+                    cachePut(cacheKey, s)
                     speedRun.onSuccess()
                 }
                 return s
@@ -5305,9 +5330,7 @@ class ChatViewModel(
                     if (parallelList[i].isNotEmpty()) return@mapNotNull parallelList[i]
                     val input = inputFor(i)
                     val cacheKey = com.openminis.app.data.CompactWindowCache.key(input, levelFractionForWindows)
-                    if (com.openminis.app.data.CompactWindowCache.get(cacheKey) != null) {
-                        return@mapNotNull com.openminis.app.data.CompactWindowCache.get(cacheKey)!!
-                    }
+                    cacheGet(cacheKey)?.let { return@mapNotNull it }
                     delay(500)
                     try {
                         val s = generateWindowSummaryWithFloor(
@@ -5316,7 +5339,7 @@ class ChatViewModel(
                             targetChars = (levelFractionForWindows * input.length).toInt(),
                             routeStart = compactRoutes.getOrNull(i % compactRoutes.size),
                         )
-                        if (s.isNotEmpty()) com.openminis.app.data.CompactWindowCache.put(cacheKey, s)
+                        if (s.isNotEmpty()) cachePut(cacheKey, s)
                         s
                     } catch (e: Exception) {
                         if (e is kotlinx.coroutines.CancellationException) throw e
@@ -5338,7 +5361,7 @@ class ChatViewModel(
                                     if (compactRoutes.size > 1) (i % compactRoutes.size + 1) % compactRoutes.size else i
                                 ),
                             )
-                            if (s2.isNotEmpty()) com.openminis.app.data.CompactWindowCache.put(cacheKey, s2)
+                            if (s2.isNotEmpty()) cachePut(cacheKey, s2)
                             s2
                         } catch (e2: Exception) {
                             if (e2 is kotlinx.coroutines.CancellationException) throw e2
