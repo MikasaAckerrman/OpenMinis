@@ -5227,6 +5227,24 @@ class ChatViewModel(
             }
             // [T-compact-aimd] notifies the speed controller: success grows
             // lanes, rate/quota markers halve them.
+// [T-compact-route-breaker] Per-run circuit breaker: a relay that
+            // just answered "rate limit" is in cooldown and must not be picked
+            // again by the rotation for a while — otherwise N windows keep
+            // marching into the same throttled host (the endless "retry
+            // kimi-k3" the user saw). Cooldown is per-run and in-memory: the
+            // relay's own bucket recovers while other hosts keep working.
+            val routeCooldownUntil = LongArray(compactRoutes.size) { 0L }
+            fun pickLiveRoute(windowIdx: Int): Int {
+                if (compactRoutes.size <= 1) return windowIdx % maxOf(1, compactRoutes.size)
+                val now = System.currentTimeMillis()
+                var idx = windowIdx % compactRoutes.size
+                var tries = 0
+                while (tries < compactRoutes.size && routeCooldownUntil[idx] > now) {
+                    idx = (idx + 1) % compactRoutes.size
+                    tries++
+                }
+                return idx
+            }
             suspend fun summarizeWindow(i: Int, input: String, speedRun: com.openminis.app.data.CompactSpeedControl.Run, routeIdx: Int = 0): String {
                 val cacheKey = com.openminis.app.data.CompactWindowCache.key(input, levelFractionForWindows)
                 cacheGet(cacheKey)?.let { cached ->
@@ -5302,25 +5320,7 @@ class ChatViewModel(
             // rate markers. In-flight windows of a failing batch may still
             // 429 (cannot recall HTTP calls), but the NEXT batch is already
             // adapted. Holes go to the sequential repair pass below.
-            // [T-compact-route-breaker] Per-run circuit breaker: a relay that
-            // just answered "rate limit" is in cooldown and must not be picked
-            // again by the rotation for a while — otherwise N windows keep
-            // marching into the same throttled host (the endless "retry
-            // kimi-k3" the user saw). Cooldown is per-run and in-memory: the
-            // relay's own bucket recovers while other hosts keep working.
-            val routeCooldownUntil = LongArray(compactRoutes.size) { 0L }
-            fun pickLiveRoute(windowIdx: Int): Int {
-                if (compactRoutes.size <= 1) return windowIdx % maxOf(1, compactRoutes.size)
-                val now = System.currentTimeMillis()
-                var idx = windowIdx % compactRoutes.size
-                var tries = 0
-                while (tries < compactRoutes.size && routeCooldownUntil[idx] > now) {
-                    idx = (idx + 1) % compactRoutes.size
-                    tries++
-                }
-                return idx
-            }
-            val providerKey = compactRoutes.firstOrNull()?.throttleKey ?: currentProvider?.name
+                        val providerKey = compactRoutes.firstOrNull()?.throttleKey ?: currentProvider?.name
             // [T-compact-lane-seed] Seed the first batch with one lane per
             // DISTINCT relay host, not a flat 2: relays are separate rate
             // buckets, so the first batch should already span them — that is
