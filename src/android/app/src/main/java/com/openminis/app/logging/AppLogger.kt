@@ -292,11 +292,27 @@ object AppLogger {
         try {
             val w = getWriter(today)
             w.println("[$timestamp] [$level] [$category] $message")
-            w.flush()
+            // [T-logging-hot-path] println() is buffered by the Writer; a
+            // flush() per entry turned every log call into a synchronous I/O
+            // round-trip ON THE CALLING THREAD — dozens per second while a
+            // response streams with logging enabled, which is the constant
+            // lag floor the user felt on long sessions. Flush is bounded by
+            // count AND age instead: worst case loses the last second of
+            // entries on a crash — acceptable for diagnostics.
+            pendingWrites++
+            val now = System.currentTimeMillis()
+            if (pendingWrites >= 32 || now - lastFlushMs >= 1000) {
+                w.flush()
+                pendingWrites = 0
+                lastFlushMs = now
+            }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to write log: ${e.message}")
         }
     }
+
+    private var pendingWrites: Int = 0
+    private var lastFlushMs: Long = 0
 
     @Synchronized
     private fun getWriter(date: String): PrintWriter {

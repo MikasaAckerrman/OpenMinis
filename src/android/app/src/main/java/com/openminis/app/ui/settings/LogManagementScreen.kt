@@ -551,7 +551,22 @@ private fun shareLogFile(context: Context, file: File) {
             "LogShare",
             "FileProvider share failed for ${file.name}: ${e.message} — falling back to EXTRA_TEXT",
         )
-        val text = try { file.readText().take(100_000) } catch (_: Exception) { return }
+        // [T-logging-hot-path] Stream the FIRST 100K bytes through a bounded
+        // InputStream instead of readText(): a 30MB log read whole as one
+        // String allocates the entire file in memory (the exact regression the
+        // preview path was fixed for) — just to show a text excerpt.
+        val text = try {
+            file.inputStream().use { ins ->
+                val buf = ByteArray(100_000)
+                var off = 0
+                while (off < buf.size) {
+                    val r = ins.read(buf, off, buf.size - off)
+                    if (r < 0) break
+                    off += r
+                }
+                String(buf, 0, off)
+            }
+        } catch (_: Exception) { return }
         val intent = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
             putExtra(Intent.EXTRA_TEXT, text)
