@@ -2911,7 +2911,8 @@ class ChatViewModel(
 
     /** Called by ChatScreen's file picker result. */
     fun importExternalCompactionFromUri(uri: android.net.Uri) {
-        _requestImportCompaction.value = false        viewModelScope.launch(Dispatchers.IO) {
+        _requestImportCompaction.value = false
+        viewModelScope.launch(Dispatchers.IO) {
             val text = try {
                 context.contentResolver.openInputStream(uri)?.use { input ->
                     val bytes = input.readBytes()
