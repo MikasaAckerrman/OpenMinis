@@ -3255,6 +3255,7 @@ class ChatViewModel(
                         messages = toCompact,
                         previousSummary = existing,
                         reporter = reporter,
+                        inheritedWindows = sharedRun?.windowsBefore() ?: 0,
                     )
                     // [T-compact-integrity] Never commit a lossy summary: if a
                     // window produced no text even after the sequential repair
@@ -5280,6 +5281,9 @@ class ChatViewModel(
         messages: List<LLMMessage>,
         previousSummary: String? = null,
         reporter: com.openminis.app.data.CompactRunReporter? = null,
+        // [T-compact-run-shared] Windows already finished by earlier rounds of
+        // THIS run (0 for a fresh run) — the bar re-bases onto them.
+        inheritedWindows: Int = 0,
     ): com.openminis.app.data.CompactOutcome {
         val transcript = buildConversationTextForSummary(messages)
         val windowTokens = currentModel?.contextWindow ?: 128_000
@@ -5430,7 +5434,7 @@ class ChatViewModel(
             // re-based onto the accumulated run total: done starts at the
             // windows earlier rounds already finished, total grows by this
             // round's window count — the bar describes the WHOLE run.
-            val inheritedWindows = sharedRun?.windowsBefore() ?: 0
+            // (inheritedWindows is the function parameter.)
             reporter?.windows(inheritedWindows, inheritedWindows + windows.size)
             // [T-compact-window-counter] Authoritative map-phase progress.
             // Monotonic and race-safe: summarizeWindow runs from several
