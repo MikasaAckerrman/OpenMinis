@@ -38,14 +38,14 @@ class CompactDiskCacheTest {
         val f = CompactDiskCache.file(tmp.root, "s1")
         val map = CompactDiskCache.load(f)
         repeat(CompactDiskCache.MAX_ENTRIES + 40) { i ->
-            CompactDiskCache.put(f, map, "key${'$'}{i}", "v${'$'}{i}")
+            CompactDiskCache.put(f, map, "key$i", "v$i")
         }
         val reloaded = CompactDiskCache.load(f)
         assertEquals(CompactDiskCache.MAX_ENTRIES, reloaded.size)
         assertFalse("oldest evicted", reloaded.containsKey("key0"))
         assertTrue(
             "newest kept",
-            reloaded.containsKey("key${'$'}{CompactDiskCache.MAX_ENTRIES + 39}"),
+            reloaded.containsKey("key${CompactDiskCache.MAX_ENTRIES + 39}"),
         )
     }
 
