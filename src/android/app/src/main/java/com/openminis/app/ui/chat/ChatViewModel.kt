@@ -3159,10 +3159,11 @@ class ChatViewModel(
                 anchor = anchorIdx,
                 tokens = span.map { estimateMessageTokens(it) },
                 isSafeBoundary = { idx ->
-                    val m = history[idx]
-                    m.role == LLMMessage.Role.USER && m.contentParts.none {
-                        it is AgentContentPart.ToolResult || it is AgentContentPart.ToolUse
-                    }
+                    // [T-compact-incremental] Policy lives in the data layer
+                    // (CompactionCutPolicy) and is unit-tested there: primary
+                    // boundary = plain user text, secondary = a COMPLETED
+                    // tool-result run (nothing dangling after the cut).
+                    com.openminis.app.data.CompactionCutPolicy.isSafeBoundary(history, idx)
                 },
             )
             if (bounded != anchorIdx) {
