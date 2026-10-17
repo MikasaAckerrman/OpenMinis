@@ -91,6 +91,36 @@ class CompactProgressTest {
     }
 
     @Test
+    fun `run shared rebases the window bar across auto-continue rounds`() {
+        // [T-compact-run-shared] A continuation round must not inherit the
+        // previous round's near-100% as a lie: after commitRound() the bar
+        // restarts from done=before on a grown total.
+        val r = CompactRunReporter(startMs = 0)
+        val shared = CompactRunShared(r)
+        assertEquals(0, shared.windowsBefore())
+
+        // Round 1: three windows, all complete.
+        r.windows(0, 3)
+        r.windows(3, 3)
+        assertEquals(99.99, r.snapshot().percent, 0.01)
+        shared.commitRound()
+        assertEquals(3, shared.windowsBefore())
+
+        // Round 2 opens with the re-based denominator (3 done, 5 total).
+        r.windows(shared.windowsBefore(), shared.windowsBefore() + 2)
+        assertEquals(3, r.snapshot().windowsDone)
+        assertEquals(5, r.snapshot().windowsTotal)
+        assertTrue(
+            "round-2 bar must not start near 100 (was ${r.snapshot().percent})",
+            r.snapshot().percent < 80.0,
+        )
+
+        // Round 2 without a commit leaves the baseline untouched — a failed
+        // round contributes nothing to the next one.
+        assertEquals(3, shared.windowsBefore())
+    }
+
+    @Test
     fun `reporter emits immutable snapshots through onUpdate`() {
         val seen = mutableListOf<CompactProgress>()
         val r = CompactRunReporter(startMs = 42) { seen.add(it) }

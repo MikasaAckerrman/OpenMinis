@@ -214,6 +214,36 @@ class CompactRunReporter(
 }
 
 /**
+ * [T-compact-run-shared] State carried across the auto-continue rounds of
+ * ONE user-initiated compact: the reporter (so the elapsed timer, the card
+ * and the StateFlow stay continuous) plus the window count already finished
+ * by earlier rounds.
+ *
+ * The reporter's `windows()` is monotonic (maxOf) — good within a round, but
+ * a fresh round announcing `windows(0, N)` would show the run as complete
+ * the moment round 2 starts (old done == old total). The shared counter
+ * re-bases each round to `done = before, total = before + thisRound`, so the
+ * bar describes the WHOLE run, never resetting and never lying at 100%.
+ * Never survives a cancel/failure: there the card is terminal already.
+ */
+class CompactRunShared(
+    val reporter: CompactRunReporter,
+) {
+    private val doneBefore = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /** Windows finished by all committed (successful) rounds so far. */
+    fun windowsBefore(): Int = doneBefore.get()
+
+    /**
+     * Commit a successful round: its reporter state (already accumulated by
+     * the monotonic counter) becomes the baseline for the next round.
+     */
+    fun commitRound() {
+        doneBefore.set(reporter.snapshot().windowsDone)
+    }
+}
+
+/**
  * Pure helpers for the progress card (percent text, elapsed clock, token
  * counts). Kept here so the UI stays dumb and the math is testable.
  */

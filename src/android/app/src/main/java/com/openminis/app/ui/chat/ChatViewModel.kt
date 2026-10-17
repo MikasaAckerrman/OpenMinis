@@ -2918,6 +2918,9 @@ class ChatViewModel(
         // so a large backlog is drained by successive passes instead of
         // requiring the user to hit /compact a dozen times.
         autoRound: Int = 0,
+        // [T-compact-run-shared] Reporter + accumulated window count carried
+        // across auto-continue rounds of one run (continuous timer + bar).
+        sharedRun: com.openminis.app.data.CompactRunShared? = null,
     ) {
         if (!com.openminis.app.data.CompactionLaunchPolicy.mayRewrite(origin)) {
             AppLogger.warning(TAG, "[Compact] blocked non-explicit launch origin=$origin")
@@ -3181,19 +3184,28 @@ class ChatViewModel(
             return
         }
         _isCompacting.value = true
-        // [T-compact-progress] Live card state for the whole run.
-        val compactStartedMs = System.currentTimeMillis()
-        val reporter = com.openminis.app.data.CompactRunReporter(compactStartedMs) { p ->
-            publishCompactProgress(p)
+        // [T-compact-progress] Live card state for the whole run. An
+        // auto-continue round REUSES the previous round's reporter: the
+        // elapsed clock, the card and the publish funnel stay continuous —
+        // the user sees one run, not N restarts.
+        val compactStartedMs = sharedRun?.reporter?.snapshot()?.startMs
+            ?: System.currentTimeMillis()
+        val reporter = sharedRun?.reporter
+            ?: com.openminis.app.data.CompactRunReporter(compactStartedMs) { p ->
+                publishCompactProgress(p)
+            }
+        if (sharedRun == null) {
+            // Fresh user-initiated run only — a continuation must not flash
+            // the card back to PREPARING 0.01%.
+            val initialProgress = com.openminis.app.data.CompactProgress(
+                startMs = compactStartedMs,
+                phase = com.openminis.app.data.CompactPhase.PREPARING,
+                // [T-compact-ttfb] Start at a non-zero tick so the bar + label
+                // show life from second one instead of a flat 0.00% dead card.
+                percent = 0.01,
+            )
+            publishCompactProgress(initialProgress)
         }
-        val initialProgress = com.openminis.app.data.CompactProgress(
-            startMs = compactStartedMs,
-            phase = com.openminis.app.data.CompactPhase.PREPARING,
-            // [T-compact-ttfb] Start at a non-zero tick so the bar + label
-            // show life from second one instead of a flat 0.00% dead card.
-            percent = 0.01,
-        )
-        publishCompactProgress(initialProgress)
         maintenanceJob = viewModelScope.launch(Dispatchers.IO) {
             // [T-canon-persistence] Pre-compact flush. The LLM summary below
             // is lossy: an unpinned "запомни X" spoken inside the compacted
@@ -3586,14 +3598,21 @@ class ChatViewModel(
                 origin == com.openminis.app.data.CompactionLaunchPolicy.Origin.EXPLICIT_USER &&
                 _promptQueue.value.isEmpty()
             ) {
+                // [T-compact-run-shared] Carry the reporter + the accumulated
+                // window count into the next round: one continuous card, one
+                // timer, a bar that never resets. Commit only on success —
+                // a failed/cancelled round leaves nothing to inherit.
+                val shared = sharedRun ?: com.openminis.app.data.CompactRunShared(reporter)
+                shared.commitRound()
                 AppLogger.info(
                     TAG,
-                    "[Compact] autodrain: round ${autoRound + 1} finished, backlog remains — next round queued",
+                    "[Compact] autodrain: round ${autoRound + 1} finished " +
+                        "(windows done: ${shared.windowsBefore()}), backlog remains — next round queued",
                 )
                 withContext(Dispatchers.Main) {
                     appendSystemInfo(
-                        text = "Сжато часть старого контекста — продолжаю со следующей " +
-                            "(раунд ${autoRound + 2}). Можно отменить.",
+                        text = "Сжато ${shared.windowsBefore()} частей старого контекста — " +
+                            "продолжаю со следующей (раунд ${autoRound + 2}). Можно отменить.",
                         iconKind = "compact",
                     )
                 }
@@ -3604,6 +3623,7 @@ class ChatViewModel(
                             origin = origin,
                             anchorIdxOverride = null,
                             autoRound = autoRound + 1,
+                            sharedRun = shared,
                         )
                     }
                 }
@@ -5406,7 +5426,12 @@ class ChatViewModel(
             // [T-compact-window-counter] Announce the map-phase denominator
             // before any lane runs, so the card shows "0/41" immediately and the
             // total is never guessed from the first batch's width.
-            reporter?.windows(0, windows.size)
+            // [T-compact-run-shared] In an auto-continue round the counter is
+            // re-based onto the accumulated run total: done starts at the
+            // windows earlier rounds already finished, total grows by this
+            // round's window count — the bar describes the WHOLE run.
+            val inheritedWindows = sharedRun?.windowsBefore() ?: 0
+            reporter?.windows(inheritedWindows, inheritedWindows + windows.size)
             // [T-compact-window-counter] Authoritative map-phase progress.
             // Monotonic and race-safe: summarizeWindow runs from several
             // concurrent lanes, so the counter is guarded, and a late-finishing
@@ -5414,7 +5439,7 @@ class ChatViewModel(
             val doneWindows = java.util.concurrent.atomic.AtomicInteger(0)
             fun reportWindowDone(i: Int) {
                 val done = doneWindows.incrementAndGet().coerceAtMost(windows.size)
-                reporter?.windows(done, windows.size)
+                reporter?.windows(inheritedWindows + done, inheritedWindows + windows.size)
             }
             suspend fun summarizeWindow(i: Int, input: String, speedRun: com.openminis.app.data.CompactSpeedControl.Run, routeIdx: Int = 0): String {
                 val cacheKey = com.openminis.app.data.CompactWindowCache.key(input, levelFractionForWindows)
