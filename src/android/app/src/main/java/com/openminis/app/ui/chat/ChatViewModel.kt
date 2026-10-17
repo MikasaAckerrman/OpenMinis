@@ -3223,13 +3223,29 @@ class ChatViewModel(
                 val existing = _compactSummary.value
                 // [T-compact-progress] Route failure detail for the card/notice.
                 var routeFailure: CompactRouteFailure? = null
+                // [T-compact-integrity] Set when a pass ends with holes; the
+                // card below is already truthful, so the generic "no models"
+                // path must not overwrite it.
+                var partialFailure: com.openminis.app.data.CompactPartialFailure? = null
                 val modelSummary: String? = try {
                     reporter.phase(com.openminis.app.data.CompactPhase.SUMMARIZING)
-                    val rawSummary = generateCompactSummaryWithSplitting(
+                    val compactOutcome = generateCompactSummaryWithSplitting(
                         messages = toCompact,
                         previousSummary = existing,
                         reporter = reporter,
-                    ).trim()
+                    )
+                    // [T-compact-integrity] Never commit a lossy summary: if a
+                    // window produced no text even after the sequential repair
+                    // pass, writing the marker would fold away messages the
+                    // model can no longer see. Refuse; history stays intact and
+                    // a retry is cheap (finished windows come from the cache).
+                    if (!compactOutcome.complete) {
+                        throw com.openminis.app.data.CompactPartialFailure(
+                            holes = compactOutcome.holes,
+                            windows = compactOutcome.windows,
+                        )
+                    }
+                    val rawSummary = compactOutcome.summary.trim()
                     // [T-context-maintenance] Post-process before storing.
                     // (filler stripped, exact refs restored — never worse)
                     reporter.phase(com.openminis.app.data.CompactPhase.POLISHING)
@@ -3247,6 +3263,29 @@ class ChatViewModel(
                     polished.takeIf { it.isNotEmpty() }
                 } catch (ce: CancellationException) {
                     throw ce
+                } catch (pf: com.openminis.app.data.CompactPartialFailure) {
+                    partialFailure = pf
+                    AppLogger.warning(
+                        TAG,
+                        "[Compact] partial result refused: ${pf.windows - pf.holes}/${pf.windows} windows, " +
+                            "history untouched (marker not written)",
+                    )
+                    val _cp = reporter.snapshot().copy(
+                        failure = com.openminis.app.data.CompactFailure(
+                            attempts = emptyList(),
+                            terminal = "удалось ${pf.windows - pf.holes} из ${pf.windows} частей — " +
+                                "частичная выжимка не сохраняется, история не тронута",
+                        ),
+                    )
+                    publishCompactProgress(_cp)
+                    withContext(Dispatchers.Main) {
+                        appendSystemInfo(
+                            text = "Сжатие остановлено: удалось ${pf.windows - pf.holes} из ${pf.windows} частей. " +
+                                "История не тронута — повтори: уже сжатые части берутся из кэша и не тратят лимит.",
+                            iconKind = "compact",
+                        )
+                    }
+                    null
                 } catch (e: Exception) {
                     if (e is CompactRouteFailure) routeFailure = e
                     Log.w(TAG, "[Compact] model summary failed — no fallback, will fail loudly", e)
@@ -3257,6 +3296,11 @@ class ChatViewModel(
                 // When every model route refuses, fail LOUDLY with the
                 // specific reasons; the session stays untouched and the user
                 // retries when providers are back. No local digest rescue.
+                if (partialFailure != null) {
+                    // Already reported with exact numbers — do not replace it
+                    // with the generic "all models unavailable" message.
+                    return@launch
+                }
                 if (modelSummary == null) {
                     val _cp = reporter.snapshot().copy(
                         failure = com.openminis.app.data.CompactFailure(
@@ -3359,10 +3403,30 @@ class ChatViewModel(
                     lastCompactedMessageId = lastCompactedDbId,
                     version = 2,
                 )
-                runCatching { chatRepository.dao.insertCompactMarker(marker) }
-                    .onFailure {
-                        Log.w(TAG, "Failed to persist compact marker: ${it.message}")
+                val markerPersisted = runCatching {
+                    chatRepository.dao.insertCompactMarker(marker)
+                }.onFailure {
+                    AppLogger.warning(TAG, "[Compact] marker persist failed: ${it.message}")
+                }.isSuccess
+                if (!markerPersisted) {
+                    // [T-compact-integrity] Without the marker the summary dies
+                    // on restart while the UI already claimed success — refuse
+                    // instead of splitting memory and DB apart.
+                    val _cp = reporter.snapshot().copy(
+                        failure = com.openminis.app.data.CompactFailure(
+                            attempts = emptyList(),
+                            terminal = "не удалось записать маркер сжатия в БД — сжатие отменено",
+                        ),
+                    )
+                    publishCompactProgress(_cp)
+                    withContext(Dispatchers.Main) {
+                        appendSystemInfo(
+                            text = "Сжатие отменено: маркер не записался в БД. История не тронута — повтори.",
+                            iconKind = "compact",
+                        )
                     }
+                    return@launch
+                }
                 // [T-mutation-journal] Compaction folds context; it must NEVER
                 // remove rows. Journalling it makes that verifiable: a COMPACT
                 // line with no adjacent DELETE line is proof the messages stayed
@@ -3447,6 +3511,14 @@ class ChatViewModel(
                     )
                     // Success: the divider IS the result — hide the progress card.
                     publishCompactProgress(null)
+                }
+                // [T-compact-cache-hygiene] Committed compaction — the window
+                // cache has done its job; drop it so files/compact-cache stays
+                // bounded. Failure/cancel paths never reach here.
+                runCatching {
+                    com.openminis.app.data.CompactDiskCache.clear(
+                        context, realSessionId.ifEmpty { sessionId },
+                    )
                 }
                 compactSucceeded = true
             } catch (e: CancellationException) {
@@ -5146,7 +5218,7 @@ class ChatViewModel(
         messages: List<LLMMessage>,
         previousSummary: String? = null,
         reporter: com.openminis.app.data.CompactRunReporter? = null,
-    ): String {
+    ): com.openminis.app.data.CompactOutcome {
         val transcript = buildConversationTextForSummary(messages)
         val windowTokens = currentModel?.contextWindow ?: 128_000
         // [T-compact-ttfb-budget] Measured on the 13.10 run: every 96K-char
@@ -5162,7 +5234,9 @@ class ChatViewModel(
             32_000,
         )
         var windows = com.openminis.app.data.CompactChunking.packWindows(transcript, capChars)
-        if (windows.isEmpty()) return previousSummary.orEmpty().trim()
+        if (windows.isEmpty()) {
+            return com.openminis.app.data.CompactOutcome(previousSummary.orEmpty().trim(), 0, 0)
+        }
         AppLogger.info(
             TAG,
             "[Compact] transcript ${transcript.length} chars → ${windows.size} window(s) " +
@@ -5472,7 +5546,11 @@ class ChatViewModel(
             val sidNow = realSessionId.ifEmpty { sessionId }
             if (fixed.size == 1) {
                 writeCompactArtifacts(sidNow, transcript.length, fixed[0].length, windows, fixed, "single-window")
-                return fixed[0]
+                return com.openminis.app.data.CompactOutcome(
+                    summary = fixed[0],
+                    holes = windows.size - fixed.size,
+                    windows = windows.size,
+                )
             }
 
             // [T-compact-level-proportional] LIGHT/MEDIUM/ULTRA: CONCATENATE
@@ -5496,7 +5574,11 @@ class ChatViewModel(
                 )
                 reporter?.note("Готово: ${transcript.length / 1000}к → ${combined.length / 1000}к символов")
                 writeCompactArtifacts(sidNow, transcript.length, combined.length, windows, fixed, "concat-${compactLevel.value}")
-                return combined
+                return com.openminis.app.data.CompactOutcome(
+                    summary = combined,
+                    holes = windows.size - fixed.size,
+                    windows = windows.size,
+                )
             }
 
             // AUTO: semantic merge (one call, full budget) — dedup across parts.
@@ -5520,13 +5602,21 @@ class ChatViewModel(
                 val merged = generateCompactSummary(mergePrompt, reporter, windows.size + 1, windows.size + 1).trim()
                     .ifEmpty { fixed.joinToString("\n\n") }
                 writeCompactArtifacts(sidNow, transcript.length, merged.length, windows, fixed, "merge-auto")
-                merged
+                com.openminis.app.data.CompactOutcome(
+                    summary = merged,
+                    holes = windows.size - fixed.size,
+                    windows = windows.size,
+                )
             } catch (e: Exception) {
                 // Merge failed — concatenated parts are a valid degraded result.
                 AppLogger.warning(TAG, "[Compact] merge failed: ${(e.message ?: "").take(80)} — using concatenated parts")
                 val degraded = fixed.joinToString("\n\n")
                 writeCompactArtifacts(sidNow, transcript.length, degraded.length, windows, fixed, "merge-failed-concat")
-                degraded
+                com.openminis.app.data.CompactOutcome(
+                    summary = degraded,
+                    holes = windows.size - fixed.size,
+                    windows = windows.size,
+                )
             }
         }
 
@@ -5608,7 +5698,9 @@ class ChatViewModel(
             listOf(seqResult).filter { it.isNotBlank() },
             "sequential",
         )
-        return seqResult
+        // Sequential path either summarizes a window or throws — it cannot
+        // produce silent holes, so the outcome is complete by construction.
+        return com.openminis.app.data.CompactOutcome(seqResult, 0, seqWindows.size)
     }
 
     /**

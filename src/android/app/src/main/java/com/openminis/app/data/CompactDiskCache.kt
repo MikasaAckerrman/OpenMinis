@@ -41,6 +41,20 @@ object CompactDiskCache {
         return File(File(rootDir, DIR), "$safe.json")
     }
 
+    /**
+     * [T-compact-cache-hygiene] Drop this session's window cache after a
+     * COMMITTED compaction: every window it held is now folded into the
+     * summary, so the file is dead weight (it used to grow forever). Never
+     * called on cancellation/failure — there the cache is exactly what makes
+     * the retry cheap.
+     */
+    fun clear(context: Context, sessionId: String) {
+        runCatching { file(context.filesDir, sessionId).delete() }
+            .onFailure {
+                Log.w(TAG, "clear failed (${it.javaClass.simpleName}) — entries age out by LRU")
+            }
+    }
+
     /** Load the stored window summaries for this session. Empty on any failure. */
     fun load(file: File): LinkedHashMap<String, String> {
         return runCatching {
