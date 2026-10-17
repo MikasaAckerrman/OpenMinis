@@ -2913,6 +2913,11 @@ class ChatViewModel(
     private fun compactAll(
         origin: com.openminis.app.data.CompactionLaunchPolicy.Origin,
         anchorIdxOverride: Int? = null,
+        // [T-compact-autocontinue] 0 = user-initiated; >0 = continuation of a
+        // previous pass. Each pass covers a bounded slice (see IncrementalSpan),
+        // so a large backlog is drained by successive passes instead of
+        // requiring the user to hit /compact a dozen times.
+        autoRound: Int = 0,
     ) {
         if (!com.openminis.app.data.CompactionLaunchPolicy.mayRewrite(origin)) {
             AppLogger.warning(TAG, "[Compact] blocked non-explicit launch origin=$origin")
@@ -3140,6 +3145,10 @@ class ChatViewModel(
         // user message, so a tool_use/tool_result pair can never be cut in
         // half. Repeated passes converge on the full backlog, and the session
         // stops ballooning in the first place.
+        // True when the bounded pass leaves older material un-compacted.
+        // Declared here (before the pass) because the launch body reads it.
+        var moreBacklog = false
+        val requestedAnchorIdx = anchorIdx
         val boundedAnchorIdx = run {
             val span = history.subList(effectiveStartIdx, anchorIdx + 1)
             val bounded = com.openminis.app.data.IncrementalSpan.bound(
@@ -3164,6 +3173,7 @@ class ChatViewModel(
             bounded
         }
         anchorIdx = boundedAnchorIdx
+        moreBacklog = boundedAnchorIdx < requestedAnchorIdx
         val toCompact = history.subList(effectiveStartIdx, anchorIdx + 1)
         if (toCompact.isEmpty()) {
             setCompactCardTerminal("Диапазон сжатия пуст — сжимать нечего")
@@ -3565,6 +3575,38 @@ class ChatViewModel(
             if (_promptQueue.value.isNotEmpty()) {
                 AppLogger.info(TAG, "[Compact] ${if (compactSucceeded) "success" else "finished (error/cancel)"} with ${_promptQueue.value.size} queued prompt(s) — kicking drain")
                 resumeQueueAfterCancel()
+            }
+            // [T-compact-autocontinue] The pass covered a bounded slice; if
+            // older material remains, run the next pass automatically instead
+            // of asking the user to tap /compact repeatedly. Re-entry goes
+            // through compactAll's own guards (streaming / compacting / history
+            // gates), so a user turn or a cancel cleanly wins; the round cap
+            // keeps a pathological backlog from looping forever.
+            if (compactSucceeded && moreBacklog && autoRound < 25 &&
+                origin == com.openminis.app.data.CompactionLaunchPolicy.Origin.EXPLICIT_USER &&
+                _promptQueue.value.isEmpty()
+            ) {
+                AppLogger.info(
+                    TAG,
+                    "[Compact] autodrain: round ${autoRound + 1} finished, backlog remains — next round queued",
+                )
+                withContext(Dispatchers.Main) {
+                    appendSystemInfo(
+                        text = "Сжато часть старого контекста — продолжаю со следующей " +
+                            "(раунд ${autoRound + 2}). Можно отменить.",
+                        iconKind = "compact",
+                    )
+                }
+                viewModelScope.launch(Dispatchers.IO) {
+                    delay(1_500)
+                    if (!_isStreaming.value && !_isCompacting.value) {
+                        compactAll(
+                            origin = origin,
+                            anchorIdxOverride = null,
+                            autoRound = autoRound + 1,
+                        )
+                    }
+                }
             }
         }
     }
