@@ -793,9 +793,11 @@ fun ChatScreen(
         }
         viewModel.importExternalCompactionFromUri(uri)
     }
-    LaunchedEffect(viewModel.requestImportCompaction) {
-        if (viewModel.requestImportCompaction) {
-            importCompactLauncher.launch("text/*")
+    LaunchedEffect(viewModel) {
+        viewModel.requestImportCompaction.collect { requested ->
+            if (requested) {
+                importCompactLauncher.launch("text/*")
+            }
         }
     }
 
