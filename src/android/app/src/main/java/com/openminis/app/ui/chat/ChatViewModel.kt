@@ -3133,6 +3133,37 @@ class ChatViewModel(
                 return
             }
         }
+        // [T-compact-incremental] Never rewrite the whole accumulated backlog
+        // in one pass: a long session means dozens of windows, each a full
+        // model call, which on a rate-limited relay becomes tens of minutes of
+        // timeouts. A pass now covers at most ~25K tokens and ends on a plain
+        // user message, so a tool_use/tool_result pair can never be cut in
+        // half. Repeated passes converge on the full backlog, and the session
+        // stops ballooning in the first place.
+        val boundedAnchorIdx = run {
+            val span = history.subList(effectiveStartIdx, anchorIdx + 1)
+            val bounded = com.openminis.app.data.IncrementalSpan.bound(
+                start = effectiveStartIdx,
+                anchor = anchorIdx,
+                tokens = span.map { estimateMessageTokens(it) },
+                isSafeBoundary = { idx ->
+                    val m = history[idx]
+                    m.role == LLMMessage.Role.USER && m.contentParts.none {
+                        it is AgentContentPart.ToolResult || it is AgentContentPart.ToolUse
+                    }
+                },
+            )
+            if (bounded != anchorIdx) {
+                AppLogger.info(
+                    TAG,
+                    "[Compact] incremental pass: anchor $anchorIdx -> $bounded " +
+                        "(${span.size} messages in span, budget " +
+                        "${com.openminis.app.data.IncrementalSpan.DEFAULT_BUDGET_TOKENS} tokens)",
+                )
+            }
+            bounded
+        }
+        anchorIdx = boundedAnchorIdx
         val toCompact = history.subList(effectiveStartIdx, anchorIdx + 1)
         if (toCompact.isEmpty()) {
             setCompactCardTerminal("Диапазон сжатия пуст — сжимать нечего")
@@ -6098,9 +6129,10 @@ class ChatViewModel(
             ContextPolicy.CheckResult.OK -> true
             ContextPolicy.CheckResult.NEEDS_COMPACT -> {
                 appendSystemInfo(
-                    text = "Контекст заполняется ($tokens / $window токенов). " +
-                        "Автоматическое сжатие отключено навсегда. Заверши текущую задачу, " +
-                        "затем явно выполни /compact или начни новый чат.",
+                    text = "Контекст заполнен на ${(tokens * 100 / window).coerceIn(0, 100)}% " +
+                        "($tokens / $window токенов). Сожми сессию командой /compact: " +
+                        "сжимается только старая часть (1–3 минуты), последние ходы остаются дословно. " +
+                        "Не жди предела — иначе следующий ход может не уложиться в окно.",
                     iconKind = "compact",
                 )
                 true
@@ -6108,8 +6140,8 @@ class ChatViewModel(
             ContextPolicy.CheckResult.EXHAUSTED -> {
                 appendSystemInfo(
                     text = "Контекст почти у предела модели ($tokens / $window токенов). " +
-                        "Автоматическое сжатие не запускается. Начни новый чат либо явно " +
-                        "выполни /compact.",
+                        "Сожми сейчас командой /compact — сжимается только старая часть, " +
+                        "последние ходы сохраняются дословно. Либо начни новый чат.",
                     iconKind = "compact",
                 )
                 true
