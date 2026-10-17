@@ -780,6 +780,25 @@ fun ChatScreen(
     // (.imagesAndVideos, selectionLimit=50). T129: switched from single to
     // multi-select with a 50-item cap — picks above 50 are truncated and we
     // toast the user so they aren't silently dropped.
+    // [T-compact-external] Text picker for /import-compact: the user picks
+    // the .md/.txt summary file an external model produced; the ViewModel
+    // validates it (range ids, length) and folds it through the shared
+    // compaction commit path.
+    val importCompactLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent(),
+    ) { uri: Uri? ->
+        if (uri == null) {
+            viewModel.importExternalCompactionDismissed()
+            return@rememberLauncherForActivityResult
+        }
+        viewModel.importExternalCompactionFromUri(uri)
+    }
+    LaunchedEffect(viewModel.requestImportCompaction) {
+        if (viewModel.requestImportCompaction) {
+            importCompactLauncher.launch("text/*")
+        }
+    }
+
     val mediaPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickMultipleVisualMedia(
             maxItems = ATTACHMENT_PICK_LIMIT,

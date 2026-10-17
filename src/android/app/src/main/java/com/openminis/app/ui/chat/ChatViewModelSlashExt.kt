@@ -110,6 +110,13 @@ internal fun ChatViewModel.filteredSlashCommands(): List<SlashCommand> {
             "compact" -> cmd.copy(
                 subtitle = context.getString(R.string.slash_compact_subtitle),
             )
+            // [T-compact-external] Backup compaction round trip subtitles.
+            "export-compact" -> cmd.copy(
+                subtitle = "Файл сессии для внешней модели",
+            )
+            "import-compact" -> cmd.copy(
+                subtitle = "Применить внешнюю выжимку",
+            )
             // [T-compact-level] Show current level in the subtitle.
             "compact-level" -> cmd.copy(
                 subtitle = "Level: " + _compactLevel.value.displayName,

@@ -19,6 +19,8 @@ import com.openminis.app.data.db.MessageEntity
 import com.openminis.app.data.SessionHistoryCache
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Compress
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -2595,6 +2597,20 @@ class ChatViewModel(
             title = "Compact",
             subtitle = "",
         ),
+        // [T-compact-external] Backup compaction round trip: export the range
+        // as a .md file for an external model, then apply its summary.
+        SlashCommand(
+            id = "export-compact",
+            icon = Icons.Default.Upload,
+            title = "Export-compact",
+            subtitle = "",
+        ),
+        SlashCommand(
+            id = "import-compact",
+            icon = Icons.Default.Download,
+            title = "Import-compact",
+            subtitle = "",
+        ),
         SlashCommand(
             id = "compact-level",
             icon = Icons.Default.Tune,
@@ -2683,6 +2699,9 @@ class ChatViewModel(
 
         when (cmd.id) {
             "compact" -> runCompactNow()
+            // [T-compact-external] Backup compaction round trip.
+            "export-compact" -> exportExternalCompaction()
+            "import-compact" -> { _requestImportCompaction.value = true }
             "compact-level" -> _showCompactLevelPicker.value = true
             "memory" -> toggleMemoryEnabled()
             "thinking" -> toggleThinking()
@@ -2869,6 +2888,197 @@ class ChatViewModel(
         compactAll(com.openminis.app.data.CompactionLaunchPolicy.Origin.EXPLICIT_USER)
     }
 
+    // ===================== [T-compact-external] round trip =====================
+    // Backup compaction: export the range the internal compactor WOULD fold,
+    // let the user compress it with any external model, then apply the result
+    // through the same commit path. Slash commands: /export-compact, /import-compact.
+
+    /** Session-scoped remember-slot for the last export's range ids. */
+    private val externalCompactionPrefs by lazy {
+        context.getSharedPreferences("external_compaction", android.content.Context.MODE_PRIVATE)
+    }
+
+    /** One-shot signal for ChatScreen: open the text-file picker. */
+    private val _requestImportCompaction = MutableStateFlow(false)
+    val requestImportCompaction: StateFlow<Boolean> = _requestImportCompaction.asStateFlow()
+
+    fun exportExternalCompaction() {
+        compactAll(
+            com.openminis.app.data.CompactionLaunchPolicy.Origin.EXPLICIT_USER,
+            externalPlan = com.openminis.app.data.ExternalCompactionPlan.Export,
+        )
+    }
+
+    /** Called by ChatScreen's file picker result. */
+    fun importExternalCompactionFromUri(uri: android.net.Uri) {
+        _requestImportCompaction.value = false        viewModelScope.launch(Dispatchers.IO) {
+            val text = try {
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    val bytes = input.readBytes()
+                    if (bytes.size > 2_000_000) {
+                        withContext(Dispatchers.Main) {
+                            appendSystemInfo(
+                                text = "Файл выжимки больше 2МБ — это точно не выжимка. Отказ.",
+                                iconKind = "compact",
+                            )
+                        }
+                        return@launch
+                    }
+                    String(bytes, Charsets.UTF_8)
+                } ?: run {
+                    withContext(Dispatchers.Main) {
+                        appendSystemInfo(
+                            text = "Не удалось прочитать файл выжимки.",
+                            iconKind = "compact",
+                        )
+                    }
+                    return@launch
+                }
+            } catch (e: Exception) {
+                AppLogger.warning(TAG, "[Compact] external import read failed: ${e.message}")
+                withContext(Dispatchers.Main) {
+                    appendSystemInfo(
+                        text = "Ошибка чтения файла: ${e.message}",
+                        iconKind = "compact",
+                    )
+                }
+                return@launch
+            }
+            applyExternalCompactionText(text)
+        }
+    }
+
+    /** Reset the picker signal when the user dismisses the picker. */
+    fun importExternalCompactionDismissed() {
+        _requestImportCompaction.value = false
+    }
+
+    fun applyExternalCompactionText(text: String) {
+        val first = externalCompactionPrefs.getString("firstDbId", null)
+        val last = externalCompactionPrefs.getString("lastDbId", null)
+        val exportedSession = externalCompactionPrefs.getString("sessionId", null)
+        if (first == null || last == null || exportedSession != sessionId) {
+            viewModelScope.launch(Dispatchers.Main) {
+                appendSystemInfo(
+                    text = if (exportedSession != null && exportedSession != sessionId) {
+                        "Активный экспорт — из другой сессии. Сделай /export-compact в ЭТОМ чате."
+                    } else {
+                        "Нет активного экспорта — сначала /export-compact, сожми файл внешней моделью, потом /import-compact."
+                    },
+                    iconKind = "compact",
+                )
+            }
+            return
+        }
+        compactAll(
+            com.openminis.app.data.CompactionLaunchPolicy.Origin.EXPLICIT_USER,
+            externalPlan = com.openminis.app.data.ExternalCompactionPlan.Import(
+                summary = text,
+                firstDbId = first,
+                lastDbId = last,
+            ),
+        )
+    }
+
+    /** Builds the file, remembers the range ids, opens the share sheet. */
+    private fun runExternalCompactionExport(
+        toCompact: List<LLMMessage>,
+        previousSummary: String?,
+        firstDbId: String?,
+        lastDbId: String?,
+    ) {
+        val stamp = java.text.SimpleDateFormat(
+            "yyyyMMdd-HHmmss",
+            java.util.Locale.US,
+        ).format(java.util.Date())
+        val transcript = buildConversationTextForSummary(toCompact)
+        val content = buildString {
+            append(EXTERNAL_COMPACT_PROMPT_HEADER)
+            append("\n\n=== ПРЕДЫДУЩАЯ ВЫЖИМКА (учти её, не потеряй из неё ничего полезного) ===\n")
+            append(previousSummary?.takeIf { it.isNotBlank() } ?: "(нет — это первое сжатие сессии)")
+            append("\n\n=== ТРАНСКРИПТ СЕССИИ ДЛЯ СЖАТИЯ ===\n")
+            append(transcript)
+            append("\n\n=== КОНЕЦ ТРАНСКРИПТА ===\n")
+            append(
+                "\n---\n(Служебная строка, не изменяй: RANGE ${firstDbId ?: "?"}..${lastDbId ?: "?"})\n",
+            )
+        }
+        val sharedDir = java.io.File(context.cacheDir, "shared")
+        sharedDir.mkdirs()
+        val outFile = java.io.File(sharedDir, "minis-external-compact-$stamp.md")
+        try {
+            outFile.writeText(content, Charsets.UTF_8)
+            // Remember the range so /import-compact can verify against it.
+            // Session-scoped: an export from ANOTHER chat must never fold here.
+            externalCompactionPrefs.edit()
+                .putString("firstDbId", firstDbId)
+                .putString("lastDbId", lastDbId)
+                .putString("sessionId", sessionId)
+                .putLong("exportedAtMs", System.currentTimeMillis())
+                .apply()
+        } catch (e: Exception) {
+            AppLogger.warning(TAG, "[Compact] external export write failed: ${e.message}")
+            setCompactCardTerminal("Не удалось записать файл экспорта: ${e.message}")
+            return
+        }
+        AppLogger.info(
+            TAG,
+            "[Compact] external export ready: ${outFile.name} (${content.length} chars, " +
+                "range ${firstDbId}..${lastDbId}, ${toCompact.size} msgs)",
+        )
+        setCompactCardTerminal(
+            "Файл для внешнего сжатия готов (${toCompact.size} сообщений). Панель отправки открыта.",
+        )
+        // Share sheet: hand the .md out to any app (DeepSeek, messenger, etc).
+        val uri = androidx.core.content.FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            outFile,
+        )
+        val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+            type = "text/markdown"
+            putExtra(android.content.Intent.EXTRA_SUBJECT, "Minis session for external compaction")
+            putExtra(android.content.Intent.EXTRA_STREAM, uri)
+            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        val chooser = android.content.Intent.createChooser(
+            intent,
+            "Отправить сессию на сжатие",
+        ).apply { addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+        try {
+            context.startActivity(chooser)
+        } catch (e: Exception) {
+            AppLogger.warning(TAG, "[Compact] share sheet failed: ${e.message}")
+            viewModelScope.launch(Dispatchers.Main) {
+                appendSystemInfo(
+                    text = "Файл сохранён: ${outFile.absolutePath}",
+                    iconKind = "compact",
+                )
+            }
+        }
+    }
+
+    /** The compression instruction handed to the external model. */
+    private val EXTERNAL_COMPACT_PROMPT_HEADER: String = """
+# ЗАДАЧА: СЖАТЬ ИСТОРИЮ ДИАЛОГА
+
+Ты сжимаешь историю переписки пользователя с ИИ-ассистентом. Ниже — инструкции, затем транскрипт. Верни ТОЛЬКО итоговую выжимку.
+
+ПРАВИЛА:
+1. Сохрани ПОЛНОСТЬЮ всю полезную информацию: принятые решения и их причины; текущее состояние (что сделано / что осталось); точные пути файлов, команды, версии, хэши, ссылки, числа, имена; договорённости и ограничения; найденные ошибки, их причины и фиксы.
+2. Убери воду: повторы, приветствия, промежуточные рассуждения, устаревшие версии одних и тех же данных (оставь только актуальную), длинные листинги (сохрани сигнатуры и суть изменений, а не весь код).
+3. Выжимка должна позволить продолжить работу без перечитывания исходной переписки.
+4. Формат ответа (строго):
+## Решения и договорённости
+## Текущее состояние
+## Ключевые файлы, команды, артефакты
+## Ошибки и грабли
+## Что осталось сделать
+5. Никаких вопросов, никаких комментариев о своей работе — только документ.
+6. Объём: минимально возможный БЕЗ потери информации из п.1.
+""".trimIndent()
+
+
     /**
      * Public entrypoint for "compact up through this message" (mirrors iOS
      * AIChatViewModel.compactBefore). The chat list's long-press menu and
@@ -2921,6 +3131,12 @@ class ChatViewModel(
         // [T-compact-run-shared] Reporter + accumulated window count carried
         // across auto-continue rounds of one run (continuous timer + bar).
         sharedRun: com.openminis.app.data.CompactRunShared? = null,
+        // [T-compact-external] Backup compaction path: with a plan set, this
+        // pass does NOT call the summarizer — it either exports the range as
+        // a text file (Export) or applies a user-supplied external summary
+        // (Import). Both reuse THIS function's range computation so the file
+        // and the fold always agree.
+        externalPlan: com.openminis.app.data.ExternalCompactionPlan? = null,
     ) {
         if (!com.openminis.app.data.CompactionLaunchPolicy.mayRewrite(origin)) {
             AppLogger.warning(TAG, "[Compact] blocked non-explicit launch origin=$origin")
@@ -3182,6 +3398,68 @@ class ChatViewModel(
         anchorIdx = boundedAnchorIdx
         moreBacklog = boundedAnchorIdx < requestedAnchorIdx
         val toCompact = history.subList(effectiveStartIdx, anchorIdx + 1)
+
+        // [T-compact-external] Backup compaction round trip. The range is now
+        // computed by the SAME code the internal compactor uses — this is the
+        // single source of truth both the export file and the import fold
+        // describe. Both modes are terminal for this pass: Export writes and
+        // shares the file (history untouched, no marker, no summary change),
+        // Import substitutes the external text for the summarizer output and
+        // falls through to the SHARED commit block below (same marker-v2
+        // invariants, same journal, same cache hygiene).
+        if (externalPlan != null) {
+            val firstDbId = toCompact.firstOrNull()?.dbMessageId
+            val lastDbId = toCompact.lastOrNull()?.dbMessageId
+            if (externalPlan is com.openminis.app.data.ExternalCompactionPlan.Export) {
+                if (toCompact.isEmpty()) {
+                    setCompactCardTerminal("Нечего экспортировать — сжимать нечего.")
+                    _isCompacting.value = false
+                    return
+                }
+                runExternalCompactionExport(
+                    toCompact = toCompact,
+                    previousSummary = _compactSummary.value,
+                    firstDbId = firstDbId,
+                    lastDbId = lastDbId,
+                )
+                _isCompacting.value = false
+                return
+            }
+            if (externalPlan is com.openminis.app.data.ExternalCompactionPlan.Import) {
+                if (toCompact.isEmpty()) {
+                    setCompactCardTerminal("Нечего сжимать — сессия уже компактна.")
+                    _isCompacting.value = false
+                    return
+                }
+                // Range guard: the external summary describes exactly the
+                // range exported earlier. If the user sent messages since the
+                // export (or compacted in between), folding now would either
+                // lose messages or duplicate them — refuse, ask to re-export.
+                val drift = firstDbId != externalPlan.firstDbId ||
+                    lastDbId != externalPlan.lastDbId
+                if (drift) {
+                    AppLogger.warning(
+                        TAG,
+                        "[Compact] external import refused: range drifted since export " +
+                            "(exported ${externalPlan.firstDbId}..${externalPlan.lastDbId}, " +
+                            "now $firstDbId..$lastDbId)",
+                    )
+                    setCompactCardTerminal(
+                        "Диапазон сессии изменился после экспорта — экспортируй заново и сожми новый файл.",
+                    )
+                    _isCompacting.value = false
+                    return
+                }
+                val trimmed = externalPlan.summary.trim()
+                if (trimmed.length < 200) {
+                    setCompactCardTerminal(
+                        "Выжимка подозрительно короткая (${trimmed.length} симв.) — отказ, история не тронута.",
+                    )
+                    _isCompacting.value = false
+                    return
+                }
+            }
+        }
         if (toCompact.isEmpty()) {
             setCompactCardTerminal("Диапазон сжатия пуст — сжимать нечего")
             appendSystemInfo("Nothing to compact.", "compact")
@@ -3254,6 +3532,14 @@ class ChatViewModel(
                 // path must not overwrite it.
                 var partialFailure: com.openminis.app.data.CompactPartialFailure? = null
                 val modelSummary: String? = try {
+                    if (externalPlan is com.openminis.app.data.ExternalCompactionPlan.Import) {
+                        // [T-compact-external] The external text IS the final
+                        // summary — no windowing, no polish (it is an authored
+                        // document, not a raw model draft; polish would rewrite
+                        // the user-approved wording).
+                        reporter.phase(com.openminis.app.data.CompactPhase.POLISHING)
+                        externalPlan.summary.trim()
+                    } else {
                     reporter.phase(com.openminis.app.data.CompactPhase.SUMMARIZING)
                     val compactOutcome = generateCompactSummaryWithSplitting(
                         messages = toCompact,
@@ -3288,6 +3574,7 @@ class ChatViewModel(
                         )
                     }
                     polished.takeIf { it.isNotEmpty() }
+                    }
                 } catch (ce: CancellationException) {
                     throw ce
                 } catch (pf: com.openminis.app.data.CompactPartialFailure) {
@@ -3600,6 +3887,9 @@ class ChatViewModel(
             // gates), so a user turn or a cancel cleanly wins; the round cap
             // keeps a pathological backlog from looping forever.
             if (compactSucceeded && moreBacklog && autoRound < 25 &&
+                // [T-compact-external] Never auto-continue an external pass:
+                // it is a deliberate one-shot user round trip.
+                externalPlan == null &&
                 origin == com.openminis.app.data.CompactionLaunchPolicy.Origin.EXPLICIT_USER &&
                 _promptQueue.value.isEmpty()
             ) {
