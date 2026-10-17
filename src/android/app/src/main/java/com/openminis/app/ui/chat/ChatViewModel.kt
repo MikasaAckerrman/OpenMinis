@@ -3144,9 +3144,12 @@ class ChatViewModel(
         // [T-compact-incremental] Never rewrite the whole accumulated backlog
         // in one pass: a long session means dozens of windows, each a full
         // model call, which on a rate-limited relay becomes tens of minutes of
-        // timeouts. A pass now covers at most ~25K tokens and ends on a plain
-        // user message, so a tool_use/tool_result pair can never be cut in
-        // half. Repeated passes converge on the full backlog, and the session
+        // timeouts. A pass now covers at most ~25K tokens and ends on a
+        // policy-safe boundary (plain user text, or a completed tool-result
+        // run — CompactionCutPolicy), so a tool_use/tool_result pair can never
+        // be cut in half, and agent-marathon stretches without user replies
+        // still cut near the budget instead of degrading to the full span.
+        // Repeated passes converge on the full backlog, and the session
         // stops ballooning in the first place.
         // True when the bounded pass leaves older material un-compacted.
         // Declared here (before the pass) because the launch body reads it.
