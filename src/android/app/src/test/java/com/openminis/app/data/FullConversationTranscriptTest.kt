@@ -90,9 +90,24 @@ class FullConversationTranscriptTest {
     }
 
     @Test
-    fun `empty history renders empty, blank user turn still counts`() {
+    fun `empty history renders empty, contentless user row is not a turn`() {
         assertEquals("", FullConversationTranscript.render(emptyList()))
+        // A user message with neither text nor parts carries no content — it
+        // must NOT open a numbered turn (turn numbering is for real user
+        // turns; a blank row is transcript noise).
         val out = FullConversationTranscript.render(listOf(user("")))
-        assertTrue(out.contains("### Turn 1"))
+        assertFalse(out.contains("### Turn 1"))
+        // ...but a user row whose text lives in a PART does count.
+        val withPart = FullConversationTranscript.render(
+            listOf(
+                LLMMessage(
+                    role = LLMMessage.Role.USER,
+                    content = "",
+                    contentParts = listOf(AgentContentPart.Text("вопрос в части")),
+                ),
+            ),
+        )
+        assertTrue(withPart.contains("### Turn 1"))
+        assertTrue(withPart.contains("вопрос в части"))
     }
 }
