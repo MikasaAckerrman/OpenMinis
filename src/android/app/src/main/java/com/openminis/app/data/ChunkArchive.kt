@@ -82,38 +82,43 @@ object ChunkArchive {
     }
 
     fun parseLine(line: String): ArchivedMessage? {
-        val unesc = { s: String ->
-            s.replace("\\r", "\r").replace("\\n", "\n").replace("\\\"", "\"").replace("\\\\", "\\")
-        }
-        // Minimal structured parser for the fixed shape renderLine emits.
-        val id = extract(line, "\"id\":\"") ?: return null
-        val role = extract(line, "\"role\":\"") ?: return null
-        val parts = extract(line, "\"parts\":\"") ?: return null
+        // Field order matches renderLine exactly: id, role, parts, ts, usage.
+        // All inner quotes in escaped fields carry a backslash, so raw
+        // structural keys can never appear inside field payloads.
+        val id = extractRaw(line, "\"id\":\"") ?: return null
+        val role = extractRaw(line, "\"role\":\"") ?: return null
+        val parts = extractRaw(line, "\"parts\":\"") ?: return null
         val tsIdx = line.indexOf("\"ts\":")
         if (tsIdx < 0) return null
         val tsRest = line.substring(tsIdx + 5)
         val tsEnd = tsRest.indexOf(',')
-        val ts = tsRest.substring(0, if (tsEnd < 0) tsRest.length else tsEnd).toLongOrNull() ?: return null
-        val usage = extract(line, "\"usage\":\"")
+        if (tsEnd < 0) return null // renderLine always writes usage after ts
+        val ts = tsRest.substring(0, tsEnd).toLongOrNull() ?: return null
+        val usage = extractRaw(line, "\"usage\":\"")
         return ArchivedMessage(
-            id = unesc(id),
-            role = unesc(role),
-            partsJson = unesc(parts),
+            id = unescape(id),
+            role = unescape(role),
+            partsJson = unescape(parts),
             createdAt = ts,
-            tokenUsage = usage?.let { unesc(it) },
+            tokenUsage = usage?.let { unescape(it) },
         )
     }
 
-    private fun extract(line: String, key: String): String? {
+    /**
+     * Collects the RAW (still escaped) payload of a JSON string field.
+     * Exactly ONE de-escaping pass happens later in [unescape] — doing it
+     * here as well corrupted roundtrips (a real newline in parts decoded
+     * to a literal 'n'; a literal backslash-n decoded to a real newline).
+     */
+    private fun extractRaw(line: String, key: String): String? {
         val i = line.indexOf(key)
         if (i < 0) return null
-        val from = i + key.length
+        var j = i + key.length
         val out = StringBuilder()
-        var j = from
         while (j < line.length) {
             val c = line[j]
             if (c == '\\' && j + 1 < line.length) {
-                out.append(line[j + 1])
+                out.append(c).append(line[j + 1])
                 j += 2
                 continue
             }
@@ -122,6 +127,33 @@ object ChunkArchive {
             j++
         }
         return null
+    }
+
+    /**
+     * The single de-escaping pass — a char scanner, NOT a chain of
+     * replace() calls: chained replaces cannot see escape boundaries, so
+     * `\\r` (a literal backslash + 'r') mis-decodes as a carriage return.
+     */
+    private fun unescape(s: String): String {
+        val out = StringBuilder(s.length)
+        var i = 0
+        while (i < s.length) {
+            val c = s[i]
+            if (c == '\\' && i + 1 < s.length) {
+                when (s[i + 1]) {
+                    'n' -> { out.append('\n'); i += 2 }
+                    'r' -> { out.append('\r'); i += 2 }
+                    't' -> { out.append('\t'); i += 2 }
+                    '"' -> { out.append('"'); i += 2 }
+                    '\\' -> { out.append('\\'); i += 2 }
+                    else -> { out.append(c); i++ } // unknown escape: keep literally
+                }
+            } else {
+                out.append(c)
+                i++
+            }
+        }
+        return out.toString()
     }
 
     /**
@@ -145,6 +177,13 @@ object ChunkArchive {
             existing.status != Status.WRITING
         ) {
             return existing // idempotent re-run: already archived
+        }
+        // Fail-safe: a VERIFIED chunk holds data whose source rows may
+        // already be deleted — rewriting it with a different range would
+        // silently drop that history. Refuse; the caller must investigate
+        // (with correct integration this state is unreachable).
+        if (existing != null && existing.status == Status.VERIFIED) {
+            return null
         }
 
         val body = messages.joinToString("\n") { renderLine(it) }

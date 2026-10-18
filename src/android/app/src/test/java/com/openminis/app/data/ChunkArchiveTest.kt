@@ -75,6 +75,66 @@ class ChunkArchiveTest {
     }
 
     @Test
+    fun `roundtrip survives hostile payloads`() {
+        // Regression for the double-de-escaping defect found in review:
+        // extract() used to eat one escape level and unesc() another —
+        // a real newline decoded to 'n', a literal backslash-n decoded to
+        // a real newline. These payloads would have FAILED that build.
+        val dir = tempDir()
+        val db = ChunkArchive.openTestDb(File(dir, "idx.sqlite"))
+        val hostile = listOf(
+            "a\nb",          // real newline
+            "a\rb",          // real CR
+            "a\\nb",         // literal backslash-n (typical inside JSON)
+            "a\\rb",         // literal backslash-r
+            "a\\\\b",        // literal double backslash
+            "quote \" inside", // real double quote
+            "ключ \"ts\": внутри", // structural key text inside payload
+            "emoji 🚀 и русский",   // multibyte utf-8
+            "tab\there",
+            "",              // empty payload
+        )
+        val msgs = hostile.mapIndexed { i, p ->
+            ArchivedMessage(
+                id = "h-$i",
+                role = "user",
+                partsJson = "[{\"type\":\"text\",\"value\":\"$p\"}]",
+                createdAt = 10L + i,
+                tokenUsage = "{\"in\":1,\"out\":2}",
+            )
+        }
+        val row = ChunkArchive.archiveChunk(db, dir, "hostile", 0, msgs)
+        assertNotNull(row)
+        val back = (ChunkArchive.loadChunk(db, dir, "hostile", 0) as ChunkResult.Ok).messages
+        assertEquals(msgs.size, back.size)
+        msgs.zip(back).forEach { (a, b) ->
+            assertEquals(a.partsJson, b.partsJson)
+            assertEquals(a.id, b.id)
+            assertEquals(a.tokenUsage, b.tokenUsage)
+        }
+        db.close()
+    }
+
+    @Test
+    fun `verified chunk with a foreign range is never rewritten`() {
+        // Fail-safe guard: VERIFIED data may have lost its source rows;
+        // overwriting with a different range would delete history.
+        val dir = tempDir()
+        val db = ChunkArchive.openTestDb(File(dir, "idx.sqlite"))
+        val first = synthetic("g1", 10)
+        ChunkArchive.archiveChunk(db, dir, "g1", 0, first)
+        assertTrue(ChunkArchive.verifyChunk(db, dir, "g1", 0) is ChunkResult.Ok)
+        // Same chunk index, DIFFERENT range:
+        val foreign = synthetic("g1x", 5, seed = 99).map { it.copy(id = it.id + "-x") }
+        val refused = ChunkArchive.archiveChunk(db, dir, "g1", 0, foreign)
+        assertEquals(null, refused)
+        // Original chunk intact:
+        val back = (ChunkArchive.loadChunk(db, dir, "g1", 0) as ChunkResult.Ok).messages
+        assertEquals(first.size, back.size)
+        db.close()
+    }
+
+    @Test
     fun `crash mid-archive leaves no index row and re-run is idempotent`() {
         val dir = tempDir()
         val db = ChunkArchive.openTestDb(File(dir, "idx.sqlite"))
