@@ -2903,6 +2903,26 @@ class ChatViewModel(
     val requestImportCompaction: StateFlow<Boolean> = _requestImportCompaction.asStateFlow()
 
     fun exportExternalCompaction() {
+        // [T-compact-external] Re-share path: if a fresh export file exists
+        // (< 15 minutes, still openable), re-opening the share sheet is what
+        // the user wants when the sheet was missed — no recompute, no drift.
+        val lastUri = externalCompactionPrefs.getString("lastExportUri", null)
+        val lastMs = externalCompactionPrefs.getLong("exportedAtMs", 0L)
+        val fresh = lastUri != null &&
+            System.currentTimeMillis() - lastMs < 15 * 60 * 1000L
+        if (fresh && lastUri != null) {
+            val uri = android.net.Uri.parse(lastUri)
+            val exists = try {
+                context.contentResolver.openInputStream(uri)?.close()
+                true
+            } catch (e: Exception) {
+                false
+            }
+            if (exists) {
+                shareExternalCompactionFile(uri)
+                return
+            }
+        }
         compactAll(
             com.openminis.app.data.CompactionLaunchPolicy.Origin.EXPLICIT_USER,
             externalPlan = com.openminis.app.data.ExternalCompactionPlan.Export,
@@ -2992,6 +3012,7 @@ class ChatViewModel(
             "yyyyMMdd-HHmmss",
             java.util.Locale.US,
         ).format(java.util.Date())
+        val fileName = "minis-external-compact-$stamp.md"
         val transcript = buildConversationTextForSummary(toCompact)
         val content = buildString {
             append(EXTERNAL_COMPACT_PROMPT_HEADER)
@@ -3004,55 +3025,146 @@ class ChatViewModel(
                 "\n---\n(Служебная строка, не изменяй: RANGE ${firstDbId ?: "?"}..${lastDbId ?: "?"})\n",
             )
         }
-        val sharedDir = java.io.File(context.cacheDir, "shared")
-        sharedDir.mkdirs()
-        val outFile = java.io.File(sharedDir, "minis-external-compact-$stamp.md")
-        try {
-            outFile.writeText(content, Charsets.UTF_8)
-            // Remember the range so /import-compact can verify against it.
-            // Session-scoped: an export from ANOTHER chat must never fold here.
-            externalCompactionPrefs.edit()
-                .putString("firstDbId", firstDbId)
-                .putString("lastDbId", lastDbId)
-                .putString("sessionId", sessionId)
-                .putLong("exportedAtMs", System.currentTimeMillis())
-                .apply()
-        } catch (e: Exception) {
-            AppLogger.warning(TAG, "[Compact] external export write failed: ${e.message}")
-            setCompactCardTerminal("Не удалось записать файл экспорта: ${e.message}")
+
+        // [T-compact-external] Write into the user-visible Downloads via
+        // MediaStore.Files (API 29+, no permission needed). The user can
+        // attach this file ANY TIME later from any file manager — a missed
+        // share sheet never strands the export. Pre-29 falls back to the
+        // app cache dir (share still works, file is transient).
+        val uri: android.net.Uri?
+        val whereText: String
+        if (android.os.Build.VERSION.SDK_INT >= 29) {
+            try {
+                val values = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.Downloads.DISPLAY_NAME, fileName)
+                    put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "text/markdown")
+                    put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, "Download/")
+                    put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1)
+                }
+                val resolver = context.contentResolver
+                val inserted = resolver.insert(
+                    android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                    values,
+                )
+                if (inserted != null) {
+                    resolver.openOutputStream(inserted)?.use { out ->
+                        out.write(content.toByteArray(Charsets.UTF_8))
+                    } ?: run {
+                        resolver.delete(inserted, null, null)
+                        throw java.io.IOException("no stream")
+                    }
+                    values.clear()
+                    values.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0)
+                    resolver.update(inserted, values, null, null)
+                    uri = inserted
+                    whereText = "Download/$fileName"
+                } else {
+                    throw java.io.IOException("insert returned null")
+                }
+            } catch (e: Exception) {
+                AppLogger.warning(
+                    TAG,
+                    "[Compact] external export to Downloads failed: ${e.message}",
+                )
+                uri = writeExternalCompactFallback(fileName, content)
+                whereText = uri?.let { cacheFallbackPath(it).toString() } ?: "не записан"
+            }
+        } else {
+            uri = writeExternalCompactFallback(fileName, content)
+            whereText = uri?.let { cacheFallbackPath(it).toString() } ?: "не записан"
+        }
+
+        // Remember the range so /import-compact can verify against it.
+        // Session-scoped: an export from ANOTHER chat must never fold here.
+        externalCompactionPrefs.edit()
+            .putString("firstDbId", firstDbId)
+            .putString("lastDbId", lastDbId)
+            .putString("sessionId", sessionId)
+            .putString("lastExportUri", uri?.toString())
+            .putLong("exportedAtMs", System.currentTimeMillis())
+            .apply()
+
+        if (uri == null) {
+            setCompactCardTerminal("Не удалось записать файл экспорта.")
             return
         }
         AppLogger.info(
             TAG,
-            "[Compact] external export ready: ${outFile.name} (${content.length} chars, " +
+            "[Compact] external export ready: $fileName (${content.length} chars, " +
                 "range ${firstDbId}..${lastDbId}, ${toCompact.size} msgs)",
         )
         setCompactCardTerminal(
-            "Файл для внешнего сжатия готов (${toCompact.size} сообщений). Панель отправки открыта.",
+            "Файл для внешнего сжатия готов: $whereText " +
+                "(${toCompact.size} сообщений). Открыл панель отправки.",
         )
-        // Share sheet: hand the .md out to any app (DeepSeek, messenger, etc).
-        val uri = androidx.core.content.FileProvider.getUriForFile(
+        viewModelScope.launch(Dispatchers.Main) {
+            appendSystemInfo(
+                text = "Пропустил окно отправки — нажми /export-compact ещё раз " +
+                    "(переоткроет панель) или отправь файл из Downloads вручную.",
+                iconKind = "compact",
+            )
+        }
+        shareExternalCompactionFile(uri)
+    }
+
+    /** Pre-29 fallback: the app cache dir behind the FileProvider. */
+    private fun writeExternalCompactFallback(
+        fileName: String,
+        content: String,
+    ): android.net.Uri? = try {
+        val sharedDir = java.io.File(context.cacheDir, "shared")
+        sharedDir.mkdirs()
+        val outFile = java.io.File(sharedDir, fileName)
+        outFile.writeText(content, Charsets.UTF_8)
+        androidx.core.content.FileProvider.getUriForFile(
             context,
             "${context.packageName}.fileprovider",
             outFile,
         )
+    } catch (e: Exception) {
+        AppLogger.warning(TAG, "[Compact] external export write failed: ${e.message}")
+        null
+    }
+
+    private fun cacheFallbackPath(uri: android.net.Uri): java.io.File =
+        java.io.File(context.cacheDir, "shared").resolve(
+            uri.lastPathSegment?.substringAfterLast('/') ?: "export.md",
+        )
+
+    /**
+     * Opens the system share sheet for an exported compaction file.
+     * [T-compact-external] MUST run with FLAG_ACTIVITY_NEW_TASK — the
+     * ViewModel only holds the application context, and startActivity
+     * from a non-Activity context WITHOUT that flag throws (which is why
+     * the first build silently swallowed the failure). Runs on Main.
+     */
+    private fun shareExternalCompactionFile(uri: android.net.Uri) {
         val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
             type = "text/markdown"
             putExtra(android.content.Intent.EXTRA_SUBJECT, "Minis session for external compaction")
             putExtra(android.content.Intent.EXTRA_STREAM, uri)
-            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(
+                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    android.content.Intent.FLAG_ACTIVITY_NEW_TASK,
+            )
         }
         val chooser = android.content.Intent.createChooser(
             intent,
             "Отправить сессию на сжатие",
-        ).apply { addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) }
-        try {
-            context.startActivity(chooser)
-        } catch (e: Exception) {
-            AppLogger.warning(TAG, "[Compact] share sheet failed: ${e.message}")
-            viewModelScope.launch(Dispatchers.Main) {
+        ).apply {
+            addFlags(
+                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    android.content.Intent.FLAG_ACTIVITY_NEW_TASK,
+            )
+        }
+        viewModelScope.launch(Dispatchers.Main) {
+            try {
+                context.startActivity(chooser)
+            } catch (e: Exception) {
+                AppLogger.warning(TAG, "[Compact] share sheet failed: ${e.message}")
                 appendSystemInfo(
-                    text = "Файл сохранён: ${outFile.absolutePath}",
+                    text = "Окно отправки не открылось (${e.message}). " +
+                        "Файл лежит в Downloads — отправь его из любого файлового менеджера.",
                     iconKind = "compact",
                 )
             }
