@@ -2903,9 +2903,11 @@ class ChatViewModel(
     val requestImportCompaction: StateFlow<Boolean> = _requestImportCompaction.asStateFlow()
 
     fun exportExternalCompaction() {
-        // [T-compact-external] Re-share path: if a fresh export file exists
-        // (< 15 minutes, still openable), re-opening the share sheet is what
-        // the user wants when the sheet was missed — no recompute, no drift.
+        // [T-compact-external] Fast re-export path: if a fresh export file
+        // exists (< 15 minutes, still on disk), just re-announce its
+        // location — no recompute, no drift, NO system share sheet (the
+        // user asked to drop it: the file already sits in
+        // Download/Minis/ExportCompact, opening a chooser adds friction).
         val lastUri = externalCompactionPrefs.getString("lastExportUri", null)
         val lastMs = externalCompactionPrefs.getLong("exportedAtMs", 0L)
         val fresh = lastUri != null &&
@@ -2919,7 +2921,16 @@ class ChatViewModel(
                 false
             }
             if (exists) {
-                shareExternalCompactionFile(uri)
+                val where = externalCompactionPrefs.getString(
+                    "lastExportWhere",
+                    "Download/Minis/ExportCompact/",
+                )
+                val ageMin = (System.currentTimeMillis() - lastMs) / 60000L
+                appendSystemInfo(
+                    text = "Свежий экспорт уже готов ($ageMin мин. назад): $where. " +
+                        "Отправь файл внешней модели — окно больше не открываю.",
+                    iconKind = "compact",
+                )
                 return
             }
         }
@@ -3001,7 +3012,7 @@ class ChatViewModel(
         )
     }
 
-    /** Builds the file, remembers the range ids, opens the share sheet. */
+    /** Builds the file on disk and announces its location in chat. */
     private fun runExternalCompactionExport(
         toCompact: List<LLMMessage>,
         previousSummary: String?,
@@ -3083,6 +3094,7 @@ class ChatViewModel(
             .putString("lastDbId", lastDbId)
             .putString("sessionId", sessionId)
             .putString("lastExportUri", uri?.toString())
+            .putString("lastExportWhere", whereText)
             .putLong("exportedAtMs", System.currentTimeMillis())
             .apply()
 
@@ -3095,18 +3107,21 @@ class ChatViewModel(
             "[Compact] external export ready: $fileName (${content.length} chars, " +
                 "range ${firstDbId}..${lastDbId}, ${toCompact.size} msgs)",
         )
+        // [T-compact-external] No share sheet (user request): the file is
+        // safely on disk in Download/Minis/ExportCompact/ — announcing the
+        // path in chat is all the user needs to pick it up from ANY file
+        // manager later. Repeat /export-compact just re-announces the path.
         setCompactCardTerminal(
             "Файл для внешнего сжатия готов: $whereText " +
-                "(${toCompact.size} сообщений). Открыл панель отправки.",
+                "(${toCompact.size} сообщений).",
         )
         viewModelScope.launch(Dispatchers.Main) {
             appendSystemInfo(
-                text = "Пропустил окно отправки — нажми /export-compact ещё раз " +
-                    "(переоткроет панель) или отправь файл из Downloads вручную.",
+                text = "Скачай файл, сожми внешней моделью, выжимку верни сюда " +
+                    "через /import-compact.",
                 iconKind = "compact",
             )
         }
-        shareExternalCompactionFile(uri)
     }
 
     /** Pre-29 fallback: the app cache dir behind the FileProvider. */
@@ -3132,46 +3147,6 @@ class ChatViewModel(
         java.io.File(context.cacheDir, "shared").resolve(
             uri.lastPathSegment?.substringAfterLast('/') ?: "export.md",
         )
-
-    /**
-     * Opens the system share sheet for an exported compaction file.
-     * [T-compact-external] MUST run with FLAG_ACTIVITY_NEW_TASK — the
-     * ViewModel only holds the application context, and startActivity
-     * from a non-Activity context WITHOUT that flag throws (which is why
-     * the first build silently swallowed the failure). Runs on Main.
-     */
-    private fun shareExternalCompactionFile(uri: android.net.Uri) {
-        val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-            type = "text/markdown"
-            putExtra(android.content.Intent.EXTRA_SUBJECT, "Minis session for external compaction")
-            putExtra(android.content.Intent.EXTRA_STREAM, uri)
-            addFlags(
-                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                    android.content.Intent.FLAG_ACTIVITY_NEW_TASK,
-            )
-        }
-        val chooser = android.content.Intent.createChooser(
-            intent,
-            "Отправить сессию на сжатие",
-        ).apply {
-            addFlags(
-                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                    android.content.Intent.FLAG_ACTIVITY_NEW_TASK,
-            )
-        }
-        viewModelScope.launch(Dispatchers.Main) {
-            try {
-                context.startActivity(chooser)
-            } catch (e: Exception) {
-                AppLogger.warning(TAG, "[Compact] share sheet failed: ${e.message}")
-                appendSystemInfo(
-                    text = "Окно отправки не открылось (${e.message}). " +
-                        "Файл лежит в Downloads — отправь его из любого файлового менеджера.",
-                    iconKind = "compact",
-                )
-            }
-        }
-    }
 
     /** The compression instruction handed to the external model. */
     private val EXTERNAL_COMPACT_PROMPT_HEADER: String = """
