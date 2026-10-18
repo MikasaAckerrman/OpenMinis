@@ -428,11 +428,14 @@ object AgentTools {
     /** [T-letta-core-memory] Create/update/delete a core-memory block by id. */
     internal fun memoryBlocksEditDefinition(): AgentToolDefinition = AgentToolDefinition(
         name = "memory_blocks_edit",
-        description = "Create, update, or delete a core-memory block. Core blocks are standing facts in every request — " +
+        description = "Create, update, or delete a core-memory block. Core blocks are standing facts injected into every request — " +
             "keep them few, stable and high-signal (user preferences, project conventions, key constraints). " +
             "To CREATE: pass a NEW id (b1..b16), label, value. To UPDATE: pass an existing id with changed fields. " +
             "To DELETE: action=delete with the id. Caps: 16 blocks, 4000 chars per value — oversized edits are REJECTED " +
-            "with an explicit error (shorten, don't truncate silently).",
+            "with an explicit error (shorten, don't truncate silently). " +
+            "TRIGGERS: a block with triggers=[keywords] is injected ONLY when the user's latest message " +
+            "mentions one of them (case-insensitive) — use this for TOPICAL knowledge (a project, a device, a domain) " +
+            "so it stops taxing unrelated turns. Leave triggers empty for always-on facts; pinned ignores triggers.",
         parameters = mapOf(
             "tool_title" to AgentToolParam("string", "A concise 5-10 word summary of this tool call, shown to the user (e.g. 'Update core memory: user prefers Kotlin'). Use the same language as the user."),
             "action" to AgentToolParam("string", "upsert (create or update) or delete", enumValues = listOf("upsert", "delete")),
@@ -440,9 +443,10 @@ object AgentTools {
             "label" to AgentToolParam("string", "One-line title (max 80 chars), e.g. 'Project conventions'."),
             "value" to AgentToolParam("string", "The fact itself (max 4000 chars). Omit for delete."),
             "pinned" to AgentToolParam("boolean", "Pinned blocks survive injection-budget cuts and lead the header."),
+            "triggers" to AgentToolParam("array", "Optional activation keywords: the block rides only requests whose latest user message contains one (case-insensitive). Empty = always inject."),
         ),
         required = listOf("tool_title", "action", "id"),
-        propertyOrdering = listOf("tool_title", "action", "id", "label", "value", "pinned"),
+        propertyOrdering = listOf("tool_title", "action", "id", "label", "value", "pinned", "triggers"),
     )
 
     /** [T-supermemory-tool] Semantic search over the local supermemory service. */

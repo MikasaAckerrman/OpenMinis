@@ -21,7 +21,13 @@ import java.io.File
  *   on write — the store rejects oversized values with an explicit error so
  *   the model shortens instead of silently truncating.
  * @param pinned pinned blocks survive the injection-budget truncation and
- *   float to the top of the header.
+ *   float to the top of the header. Pinned also means ALWAYS injected
+ *   (triggers, if any, are ignored).
+ * @param triggers optional activation keywords. When non-empty, the block
+ *   is injected ONLY if the user's latest message matches one of them
+ *   (case-insensitive substring) — this is what keeps standing knowledge
+ *   from taxing EVERY request's context ("автоматически присылались когда
+ *   нужно"). An empty list = always inject (legacy default).
  * @param lastEditedTurn who/when last edited this block ("23:15 model"),
  *   surfaced to the model in memory_blocks_view for staleness reasoning.
  */
@@ -30,6 +36,7 @@ data class CoreBlock(
     val label: String,
     val value: String,
     val pinned: Boolean = false,
+    val triggers: List<String> = emptyList(),
     val lastEditedTurn: String = "",
 )
 
@@ -110,9 +117,13 @@ object CoreMemoryStore {
         value: String,
         pinned: Boolean,
         editedTurn: String,
+        triggers: List<String> = emptyList(),
     ): String? {
         val cleanId = id.trim()
         if (cleanId.isEmpty()) return "id must not be empty"
+        // [T-core-memory-triggers] Normalize once at write time: trimmed,
+        // non-empty, deduped. Case-insensitive matching happens at inject.
+        val cleanTriggers = triggers.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
         val current = blocks()
         val existing = current.firstOrNull { it.id == cleanId }
         if (existing == null && current.size >= MAX_BLOCKS) {
@@ -130,11 +141,11 @@ object CoreMemoryStore {
                     label = label,
                     value = value,
                     pinned = pinned,
+                    triggers = cleanTriggers,
                     lastEditedTurn = editedTurn,
                 ) else b
             }
-            .let { if (existing == null) it + CoreBlock(cleanId, label, value, pinned, editedTurn) else it }
-        persist(next)
+            .let { if (existing == null) it + CoreBlock(cleanId, label, value, pinned, cleanTriggers, editedTurn) else it }        persist(next)
         return null
     }
 
@@ -152,9 +163,21 @@ object CoreMemoryStore {
      * (empty store) — the caller treats null as "skip the layer, zero cost".
      * Pinned blocks first; the whole header is bounded by
      * [INJECTION_BUDGET_CHARS] with a visible cut marker.
+     *
+     * [T-core-memory-triggers] [lastUserText] is the user's latest message
+     * (plain text, no parts). A block WITH triggers is injected only when
+     * that text contains one of its keywords (case-insensitive substring) —
+     * topical knowledge stops taxing every request. Pinned blocks and blocks
+     * without triggers are always injected. Null [lastUserText] (estimation
+     * paths with no message yet) degrades to always-inject, never to silence.
      */
-    fun injectHeaderText(): String? {
-        val ordered = blocks().sortedWith(compareByDescending<CoreBlock> { it.pinned }.thenBy { it.id })
+    fun injectHeaderText(lastUserText: String? = null): String? {
+        val ordered = blocks()
+            .filter { b ->
+                b.pinned || b.triggers.isEmpty() || lastUserText == null ||
+                    b.triggers.any { t -> t.isNotBlank() && lastUserText.contains(t, ignoreCase = true) }
+            }
+            .sortedWith(compareByDescending<CoreBlock> { it.pinned }.thenBy { it.id })
         if (ordered.isEmpty()) return null
         val sb = StringBuilder(HEADER_TITLE).append('\n')
         var budget = INJECTION_BUDGET_CHARS - HEADER_TITLE.length - 1
@@ -179,7 +202,10 @@ object CoreMemoryStore {
         val ordered = blocks().sortedWith(compareByDescending<CoreBlock> { it.pinned }.thenBy { it.id })
         if (ordered.isEmpty()) return "core memory is empty (0 blocks)"
         return ordered.joinToString("\n") { b ->
-            "- [${b.id}]${if (b.pinned) " (pinned)" else ""} ${b.label}\n  ${b.value}\n  last edited: ${b.lastEditedTurn}"
+            "- [${b.id}]${if (b.pinned) " (pinned)" else ""} ${b.label}\n" +
+                "  ${b.value}\n" +
+                (if (b.triggers.isEmpty()) "" else "  triggers: ${b.triggers.joinToString(", ")}\n") +
+                "  last edited: ${b.lastEditedTurn}"
         }
     }
 
@@ -219,6 +245,12 @@ object CoreMemoryStore {
                     label = o.optString("label"),
                     value = o.optString("value"),
                     pinned = o.optBoolean("pinned"),
+                    triggers = run {
+                        val t = o.optJSONArray("triggers") ?: return@run emptyList()
+                        (0 until t.length()).mapNotNull { j ->
+                            t.optString(j).trim().takeIf { it.isNotEmpty() }
+                        }
+                    },
                     lastEditedTurn = o.optString("lastEditedTurn"),
                 )
             }.filter { it.id.isNotEmpty() }
@@ -230,6 +262,7 @@ object CoreMemoryStore {
         put("label", b.label)
         put("value", b.value)
         put("pinned", b.pinned)
+        if (b.triggers.isNotEmpty()) put("triggers", JSONArray(b.triggers))
         put("lastEditedTurn", b.lastEditedTurn)
     }
 }

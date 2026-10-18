@@ -4887,9 +4887,24 @@ class ChatViewModel(
     private fun effectiveAgentHistory(verbose: Boolean): List<LLMMessage> {
         val base = effectiveAgentHistoryBase(verbose)
         val withCoreMemory = if (!com.openminis.app.data.CoreMemoryPrefs.isEnabled()) base
-        else com.openminis.app.data.CoreMemoryStore.injectHeaderText()?.let { header ->
-            com.openminis.app.data.CoreMemoryInjector.inject(base, header)
-        } ?: base
+        else {
+            // [T-core-memory-triggers] Matched against the user's latest
+            // real text so topical blocks ride ONLY the requests where they
+            // are relevant — standing knowledge stops taxing every turn.
+            val lastUserText = base.lastOrNull { m ->
+                m.role == LLMMessage.Role.USER &&
+                    (m.content.isNotBlank() ||
+                        m.contentParts.any { it is AgentContentPart.Text })
+            }?.let { m ->
+                m.content.ifBlank {
+                    (m.contentParts.filterIsInstance<AgentContentPart.Text>())
+                        .joinToString("\n") { it.text }
+                }
+            }
+            com.openminis.app.data.CoreMemoryStore.injectHeaderText(lastUserText)?.let { header ->
+                com.openminis.app.data.CoreMemoryInjector.inject(base, header)
+            } ?: base
+        }
         // [T-reasoning-elision] Old assistant reasoning is a transient
         // scratchpad, not conversation state — yet it was echoed back on
         // every request (measured: a 182K-token prompt dominated by ~100
@@ -17114,10 +17129,22 @@ class ChatViewModel(
                 val label = args.optString("label", "").trim()
                 val value = args.optString("value", "").trim()
                 val pinned = args.optBoolean("pinned", false)
+                // [T-core-memory-triggers] Optional activation keywords:
+                // a block with triggers rides ONLY requests whose latest
+                // user message matches — topical knowledge stops taxing
+                // every turn. Pinned ignores triggers (always inject).
+                val triggers = run {
+                    val t = args.optJSONArray("triggers") ?: return@run emptyList()
+                    (0 until t.length()).mapNotNull { j ->
+                        t.optString(j).trim().takeIf { it.isNotEmpty() }
+                    }
+                }
                 if (label.isEmpty() || value.isEmpty()) {
                     "upsert requires non-empty label and value"
                 } else {
-                    com.openminis.app.data.CoreMemoryStore.upsert(id, label, value, pinned, editedTurn)
+                    com.openminis.app.data.CoreMemoryStore.upsert(
+                        id, label, value, pinned, editedTurn, triggers,
+                    )
                 }
             }
             else -> "unknown action '$action' (upsert|delete)"

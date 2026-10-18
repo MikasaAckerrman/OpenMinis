@@ -33,6 +33,69 @@ class CoreMemoryStoreTest {
         assertNull("upsert($id) must succeed, got: $error", error)
     }
 
+    // [T-core-memory-triggers] A block with triggers rides ONLY the requests
+    // whose latest user message matches a keyword — topical knowledge stops
+    // taxing every turn. Pinned/triggerless blocks stay always-on.
+
+    @Test
+    fun `triggered block injects only when the latest user text matches`() {
+        freshStore()
+        val error = CoreMemoryStore.upsert(
+            "b1", "Wormix", "Wormix protocol: authKey = MD5(...), servers wss://…",
+            false, "00:00 model", triggers = listOf("wormix", "рмарт"),
+        )
+        assertNull(error)
+        val matched = CoreMemoryStore.injectHeaderText("как там наш wormix сервер?")
+        assertNotNull(matched)
+        assertTrue(matched!!.contains("Wormix"))
+        val unmatched = CoreMemoryStore.injectHeaderText("почини компакцию в ChatViewModel")
+        assertTrue(
+            "topical block must NOT ride an unrelated request",
+            unmatched == null || !unmatched.contains("Wormix"),
+        )
+    }
+
+    @Test
+    fun `trigger matching is case-insensitive and one keyword suffices`() {
+        freshStore()
+        CoreMemoryStore.upsert(
+            "b1", "Router", "TP-Link wlan2 heal script lives in /root/",
+            false, "00:00 model", triggers = listOf(" роутер "),
+        )
+        val m = CoreMemoryStore.injectHeaderText("Роутер снова теряет маршрут!")
+        assertNotNull(m)
+        assertTrue(m!!.contains("TP-Link"))
+    }
+
+    @Test
+    fun `pinned ignores triggers and always injects`() {
+        freshStore()
+        CoreMemoryStore.upsert(
+            "b1", "Always", "Standing constraint the model must never forget",
+            true, "00:00 model", triggers = listOf("never-matches-this"),
+        )
+        val m = CoreMemoryStore.injectHeaderText("совершенно другой топик")
+        assertNotNull(m)
+        assertTrue(m!!.contains("Standing constraint"))
+    }
+
+    @Test
+    fun `null user text degrades to always-inject and triggers roundtrip`() {
+        freshStore()
+        CoreMemoryStore.upsert(
+            "b1", "Topical", "some fact", false, "00:00 model",
+            triggers = listOf("  a  ", "", "a", "b"),
+        )
+        // No message yet — never silence the whole layer.
+        assertNotNull(CoreMemoryStore.injectHeaderText(null))
+        // Persisted normalized: trimmed, non-empty, deduped.
+        val b = CoreMemoryStore.blocks().first { it.id == "b1" }
+        assertEquals(listOf("a", "b"), b.triggers)
+        // ...and the view surface must expose them (the model re-reads and
+        // re-upserts them verbatim, or they'd be silently dropped on edit).
+        assertTrue(CoreMemoryStore.viewText().contains("triggers: a, b"))
+    }
+
     @Test
     fun `upsert then blocks roundtrips through the file`() {
         freshStore()
