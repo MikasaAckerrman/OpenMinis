@@ -3027,8 +3027,10 @@ class ChatViewModel(
         }
 
         // [T-compact-external] Write into the user-visible Downloads via
-        // MediaStore.Files (API 29+, no permission needed). The user can
-        // attach this file ANY TIME later from any file manager — a missed
+        // MediaStore.Files (API 29+, no permission needed), under the
+        // dedicated Download/Minis/ExportCompact/ folder so every export
+        // accumulates in one predictable place. The user can attach this
+        // file ANY TIME later from any file manager — a missed
         // share sheet never strands the export. Pre-29 falls back to the
         // app cache dir (share still works, file is transient).
         var uri: android.net.Uri?
@@ -3038,7 +3040,7 @@ class ChatViewModel(
                 val values = android.content.ContentValues().apply {
                     put(android.provider.MediaStore.Downloads.DISPLAY_NAME, fileName)
                     put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "text/markdown")
-                    put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, "Download/")
+                    put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, "Download/Minis/ExportCompact/")
                     put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1)
                 }
                 val resolver = context.contentResolver
@@ -3057,7 +3059,7 @@ class ChatViewModel(
                     values.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0)
                     resolver.update(inserted, values, null, null)
                     uri = inserted
-                    whereText = "Download/$fileName"
+                    whereText = "Download/Minis/ExportCompact/$fileName"
                 } else {
                     throw java.io.IOException("insert returned null")
                 }
