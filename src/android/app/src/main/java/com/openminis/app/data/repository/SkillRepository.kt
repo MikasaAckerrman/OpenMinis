@@ -1137,6 +1137,56 @@ class SkillRepository(private val context: Context) {
             )
             Log.i(TAG, "Installed bundled skill: $bundledId (v$bundledVersion)")
         }
+        installExtraBundledSkills()
+    }
+
+    /**
+     * [T-bundled-skills] The discipline set distilled from the prompt
+     * repositories the user curated (dcarrero review prompts, yardobr
+     * architect, verify-first workflows). Shipped as assets/skills/*.md so
+     * the text stays plain markdown — no Kotlin string escaping. Same
+     * version-gated upgrade pattern as skill-creator: an identical or newer
+     * local row is never downgraded, user edits (higher version) win.
+     * Missing/undecodable asset = skip that skill, never crash the init.
+     */
+    private fun installExtraBundledSkills() {
+        for ((id, version) in BUNDLED_DISCIPLINE_SKILLS) {
+            try {
+                val existing = _skills.value.find { it.id == id }
+                if (existing != null && existing.version >= version) continue
+                val content = context.assets.open("skills/$id.md")
+                    .bufferedReader().use { it.readText() }
+                val parsed = parseSkillMd(content) ?: continue
+                if (existing != null) {
+                    val updated = existing.copy(
+                        description = parsed.description,
+                        version = version,
+                        body = parsed.body,
+                        updatedAt = System.currentTimeMillis(),
+                    )
+                    db.execSQL(
+                        "UPDATE skills SET description=?, version=?, updated_at=? WHERE id=?",
+                        arrayOf<Any>(updated.description, version, updated.updatedAt, id)
+                    )
+                    writeSkillMd(updated)
+                    _skills.value = _skills.value.map { if (it.id == id) updated else it }
+                    Log.i(TAG, "Upgraded bundled skill: $id → v$version")
+                } else {
+                    add(
+                        name = parsed.name,
+                        description = parsed.description,
+                        body = parsed.body,
+                        version = version,
+                        source = ImportSource.BUNDLED,
+                    )
+                    Log.i(TAG, "Installed bundled skill: $id (v$version)")
+                }
+            } catch (e: Exception) {
+                // Unit-test/Robolectric environments may have no assets —
+                // the discipline set is an add-on, never a hard dependency.
+                Log.w(TAG, "Bundled skill $id unavailable: ${e.message}")
+            }
+        }
     }
 
     // -- Reload --
@@ -1466,6 +1516,19 @@ class SkillRepository(private val context: Context) {
         }
     }
 }
+
+/**
+ * [T-bundled-skills] The discipline set: (skillId in assets/skills/, version).
+ * Ids match the asset file names 1:1; versions gate upgrades (local newer
+ * versions are never downgraded, matching the skill-creator pattern).
+ */
+private val BUNDLED_DISCIPLINE_SKILLS: List<Pair<String, String>> = listOf(
+    "code-review-master" to "1.0.0",
+    "plan-first-coding" to "1.0.0",
+    "verify-dont-guess" to "1.0.0",
+    "architect-plan" to "1.0.0",
+    "deep-review-board" to "1.0.0",
+)
 
 // Bundled skill-creator content (matches iOS SkillStore.skillCreatorContent)
 private val SKILL_CREATOR_CONTENT = """
