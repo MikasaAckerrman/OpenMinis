@@ -3013,7 +3013,7 @@ class ChatViewModel(
             java.util.Locale.US,
         ).format(java.util.Date())
         val fileName = "minis-external-compact-$stamp.md"
-        val transcript = buildFullConversationText(toCompact)
+        val transcript = com.openminis.app.data.FullConversationTranscript.render(toCompact)
         val content = buildString {
             append(EXTERNAL_COMPACT_PROMPT_HEADER)
             append("\n\n=== ПРЕДЫДУЩАЯ ВЫЖИМКА (учти её, не потеряй из неё ничего полезного) ===\n")
@@ -5480,65 +5480,6 @@ class ChatViewModel(
      * of being silently dropped by a blind `take()`. Mirrors iOS
      * `buildConversationTextForSummary`.
      */
-    /**
-     * [T-compact-external] FULL transcript for the external-compaction export.
-     * Deliberately does NOT reuse [buildConversationTextForSummary]: that
-     * collector exists to shrink the INTERNAL window count (recency tiers,
-     * 600-char body caps, dedup streaks) — feeding it to the export would
-     * hand the external model an ALREADY-COMPROMISED copy exactly where the
-     * user expects the complete session ("ничего не забыто?"). One file, one
-     * shot, full fidelity: every message body, every tool_use input, every
-     * tool_result body verbatim. Size is not a concern here — the file is
-     * shared out, not windowed.
-     */
-    private fun buildFullConversationText(history: List<LLMMessage>): String = buildString {
-        var turn = 0
-        for (msg in history) {
-            val role = msg.role.name.lowercase()
-            val isRealUserTurn = msg.role == LLMMessage.Role.USER &&
-                (msg.content.isNotBlank() ||
-                    msg.contentParts.any { it !is AgentContentPart.ToolResult })
-            if (isRealUserTurn) {
-                turn += 1
-                append("\n### Turn ").append(turn).append('\n')
-            }
-            if (msg.content.isNotEmpty()) {
-                append(role).append(": ").append(msg.content).append('\n')
-            }
-            for (part in msg.contentParts) {
-                when (part) {
-                    is AgentContentPart.Text -> {
-                        append("  ").append(role).append(": ").append(part.text).append('\n')
-                    }
-                    is AgentContentPart.ToolUse -> {
-                        append("  ").append(role).append(" [tool:")
-                            .append(part.name).append("]: ")
-                            .append(part.input.toString())
-                            .append('\n')
-                    }
-                    is AgentContentPart.ToolResult -> {
-                        append("  ").append(role)
-                            .append(" [result:").append(part.name).append("]: ")
-                            .append(part.content)
-                            .append('\n')
-                    }
-                    is AgentContentPart.ImageData -> {
-                        // Images cannot ride a text export; render a stub so
-                        // the external model KNOWS an image was here (and its
-                        // size) instead of silently losing the turn shape.
-                        append("  ").append(role)
-                            .append(" [image: ")
-                            .append(part.mimeType)
-                            .append(", ")
-                            .append(part.data.size)
-                            .append(" bytes — недоступно в текстовом экспорте]")
-                            .append('\n')
-                    }
-                }
-            }
-        }
-    }
-
     private fun buildConversationTextForSummary(history: List<LLMMessage>): String = buildString {
         // [T-compact-dedup-recency] User principle (12.10): "старая ненужная
         // информация отсеивается, дубликаты и вода отсеиваются". Two pure
