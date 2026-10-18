@@ -3031,8 +3031,8 @@ class ChatViewModel(
         // attach this file ANY TIME later from any file manager — a missed
         // share sheet never strands the export. Pre-29 falls back to the
         // app cache dir (share still works, file is transient).
-        val uri: android.net.Uri?
-        val whereText: String
+        var uri: android.net.Uri?
+        var whereText: String
         if (android.os.Build.VERSION.SDK_INT >= 29) {
             try {
                 val values = android.content.ContentValues().apply {
