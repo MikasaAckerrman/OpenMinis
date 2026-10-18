@@ -145,7 +145,8 @@ object CoreMemoryStore {
                     lastEditedTurn = editedTurn,
                 ) else b
             }
-            .let { if (existing == null) it + CoreBlock(cleanId, label, value, pinned, cleanTriggers, editedTurn) else it }        persist(next)
+            .let { if (existing == null) it + CoreBlock(cleanId, label, value, pinned, cleanTriggers, editedTurn) else it }
+        persist(next)
         return null
     }
 
