@@ -24,15 +24,27 @@ class ChunkArchiveTest {
     private fun tempDir(): File = createTempDir(prefix = "chunkarch").apply { deleteOnExit() }
 
     private fun synthetic(sessionId: String, n: Int, seed: Int = 7): List<ArchivedMessage> {
+        // Realistic chat text: words drawn from a small vocabulary with
+        // repetitive sentence structure — mirrors how real conversations
+        // compress (random letters would NOT compress and would fake a
+        // failing ratio; see the metrics test).
+        val vocab = listOf(
+            "проверь", "компакция", "сессия", "модель", "ошибка", "токен",
+            "чанк", "архив", "скилл", "контекст", "выжимка", "маркер",
+            "upstream", "relay", "retry", "готово", "файл", "путь",
+        )
         val rnd = Random(seed)
         return (0 until n).map { i ->
             val filler = buildString {
-                repeat(40 + rnd.nextInt(80)) { append(('a' + rnd.nextInt(26))); if (rnd.nextInt(12) == 0) append(' ') }
+                repeat(30 + rnd.nextInt(50)) {
+                    append(vocab[rnd.nextInt(vocab.size)])
+                    append(' ')
+                }
             }
             ArchivedMessage(
                 id = "$sessionId-m$i",
                 role = if (i % 2 == 0) "user" else "assistant",
-                partsJson = "[{\"type\":\"text\",\"value\":\"$filler — сообщение $i\"}]",
+                partsJson = "[{\"type\":\"text\",\"value\":\"$filler сообщение $i\"}]",
                 createdAt = 1_000_000L + i,
                 tokenUsage = if (i % 2 == 1) """{"in":${rnd.nextInt(900)},"out":${rnd.nextInt(400)}}""" else null,
             )
