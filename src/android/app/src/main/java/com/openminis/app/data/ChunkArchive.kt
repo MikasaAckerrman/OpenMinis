@@ -133,6 +133,9 @@ object ChunkArchive {
      * The single de-escaping pass — a char scanner, NOT a chain of
      * replace() calls: chained replaces cannot see escape boundaries, so
      * `\\r` (a literal backslash + 'r') mis-decodes as a carriage return.
+     * Note: [t] in the escape alphabet is accepted on read for symmetry,
+     * though renderLine never emits it (tabs ride along as raw bytes,
+     * which the line format tolerates).
      */
     private fun unescape(s: String): String {
         val out = StringBuilder(s.length)
