@@ -3013,7 +3013,7 @@ class ChatViewModel(
             java.util.Locale.US,
         ).format(java.util.Date())
         val fileName = "minis-external-compact-$stamp.md"
-        val transcript = buildConversationTextForSummary(toCompact)
+        val transcript = buildFullConversationText(toCompact)
         val content = buildString {
             append(EXTERNAL_COMPACT_PROMPT_HEADER)
             append("\n\n=== ПРЕДЫДУЩАЯ ВЫЖИМКА (учти её, не потеряй из неё ничего полезного) ===\n")
@@ -3470,67 +3470,26 @@ class ChatViewModel(
                 return
             }
         }
-        // [T-compact-incremental] Never rewrite the whole accumulated backlog
-        // in one pass: a long session means dozens of windows, each a full
-        // model call, which on a rate-limited relay becomes tens of minutes of
-        // timeouts. A pass now covers at most ~25K tokens and ends on a
-        // policy-safe boundary (plain user text, or a completed tool-result
-        // run — CompactionCutPolicy), so a tool_use/tool_result pair can never
-        // be cut in half, and agent-marathon stretches without user replies
-        // still cut near the budget instead of degrading to the full span.
-        // Repeated passes converge on the full backlog, and the session
-        // stops ballooning in the first place.
-        // True when the bounded pass leaves older material un-compacted.
-        // Declared here (before the pass) because the launch body reads it.
-        var moreBacklog = false
-        val requestedAnchorIdx = anchorIdx
-        val boundedAnchorIdx = run {
-            val span = history.subList(effectiveStartIdx, anchorIdx + 1)
-            val bounded = com.openminis.app.data.IncrementalSpan.bound(
-                start = effectiveStartIdx,
-                anchor = anchorIdx,
-                tokens = span.map { estimateMessageTokens(it) },
-                isSafeBoundary = { idx ->
-                    // [T-compact-incremental] Policy lives in the data layer
-                    // (CompactionCutPolicy) and is unit-tested there: primary
-                    // boundary = plain user text, secondary = a COMPLETED
-                    // tool-result run (nothing dangling after the cut).
-                    com.openminis.app.data.CompactionCutPolicy.isSafeBoundary(history, idx)
-                },
-            )
-            if (bounded != anchorIdx) {
-                AppLogger.info(
-                    TAG,
-                    "[Compact] incremental pass: anchor $anchorIdx -> $bounded " +
-                        "(${span.size} messages in span, budget " +
-                        "${com.openminis.app.data.IncrementalSpan.DEFAULT_BUDGET_TOKENS} tokens)",
-                )
-            }
-            bounded
-        }
-        anchorIdx = boundedAnchorIdx
-        moreBacklog = boundedAnchorIdx < requestedAnchorIdx
-        val toCompact = history.subList(effectiveStartIdx, anchorIdx + 1)
-
-        // [T-compact-external] Backup compaction round trip. The range is now
-        // computed by the SAME code the internal compactor uses — this is the
-        // single source of truth both the export file and the import fold
-        // describe. Both modes are terminal for this pass: Export writes and
-        // shares the file (history untouched, no marker, no summary change),
-        // Import substitutes the external text for the summarizer output and
-        // falls through to the SHARED commit block below (same marker-v2
-        // invariants, same journal, same cache hygiene).
+        // [T-compact-external] Backup compaction round trip. Runs BEFORE the
+        // incremental-span bounding on purpose: the external path is a single
+        // deliberate round trip (file → external model → fold), so it exports
+        // and folds the FULL un-compacted range [start .. anchor], not the
+        // ~25K first slice the internal path would take. The internal
+        // incrementality exists to survive rate-limited relays; applying it to
+        // the export would hand the external model a sliver and force the user
+        // through a dozen round trips.
         if (externalPlan != null) {
-            val firstDbId = toCompact.firstOrNull()?.dbMessageId
-            val lastDbId = toCompact.lastOrNull()?.dbMessageId
+            val fullToCompact = history.subList(effectiveStartIdx, anchorIdx + 1)
+            val firstDbId = fullToCompact.firstOrNull()?.dbMessageId
+            val lastDbId = fullToCompact.lastOrNull()?.dbMessageId
             if (externalPlan is com.openminis.app.data.ExternalCompactionPlan.Export) {
-                if (toCompact.isEmpty()) {
+                if (fullToCompact.isEmpty()) {
                     setCompactCardTerminal("Нечего экспортировать — сжимать нечего.")
                     _isCompacting.value = false
                     return
                 }
                 runExternalCompactionExport(
-                    toCompact = toCompact,
+                    toCompact = fullToCompact,
                     previousSummary = _compactSummary.value,
                     firstDbId = firstDbId,
                     lastDbId = lastDbId,
@@ -3539,7 +3498,7 @@ class ChatViewModel(
                 return
             }
             if (externalPlan is com.openminis.app.data.ExternalCompactionPlan.Import) {
-                if (toCompact.isEmpty()) {
+                if (fullToCompact.isEmpty()) {
                     setCompactCardTerminal("Нечего сжимать — сессия уже компактна.")
                     _isCompacting.value = false
                     return
@@ -3573,6 +3532,55 @@ class ChatViewModel(
                 }
             }
         }
+
+        // [T-compact-incremental] Never rewrite the whole accumulated backlog
+        // in one pass: a long session means dozens of windows, each a full
+        // model call, which on a rate-limited relay becomes tens of minutes of
+        // timeouts. A pass now covers at most ~25K tokens and ends on a
+        // policy-safe boundary (plain user text, or a completed tool-result
+        // run — CompactionCutPolicy), so a tool_use/tool_result pair can never
+        // be cut in half, and agent-marathon stretches without user replies
+        // still cut near the budget instead of degrading to the full span.
+        // Repeated passes converge on the full backlog, and the session
+        // stops ballooning in the first place.
+        // [T-compact-external] Skipped for external passes: their range was
+        // fixed at export time (the guard above pins it), and the fold must
+        // cover exactly what the file described.
+        // True when the bounded pass leaves older material un-compacted.
+        // Declared here (before the pass) because the launch body reads it.
+        var moreBacklog = false
+        val requestedAnchorIdx = anchorIdx
+        val boundedAnchorIdx = if (externalPlan == null) {
+            run {
+                val span = history.subList(effectiveStartIdx, anchorIdx + 1)
+                val bounded = com.openminis.app.data.IncrementalSpan.bound(
+                    start = effectiveStartIdx,
+                    anchor = anchorIdx,
+                    tokens = span.map { estimateMessageTokens(it) },
+                    isSafeBoundary = { idx ->
+                        // [T-compact-incremental] Policy lives in the data layer
+                        // (CompactionCutPolicy) and is unit-tested there: primary
+                        // boundary = plain user text, secondary = a COMPLETED
+                        // tool-result run (nothing dangling after the cut).
+                        com.openminis.app.data.CompactionCutPolicy.isSafeBoundary(history, idx)
+                    },
+                )
+                if (bounded != anchorIdx) {
+                    AppLogger.info(
+                        TAG,
+                        "[Compact] incremental pass: anchor $anchorIdx -> $bounded " +
+                            "(${span.size} messages in span, budget " +
+                            "${com.openminis.app.data.IncrementalSpan.DEFAULT_BUDGET_TOKENS} tokens)",
+                    )
+                }
+                bounded
+            }
+        } else {
+            anchorIdx
+        }
+        anchorIdx = boundedAnchorIdx
+        moreBacklog = boundedAnchorIdx < requestedAnchorIdx && externalPlan == null
+        val toCompact = history.subList(effectiveStartIdx, anchorIdx + 1)
         if (toCompact.isEmpty()) {
             setCompactCardTerminal("Диапазон сжатия пуст — сжимать нечего")
             appendSystemInfo("Nothing to compact.", "compact")
@@ -5472,6 +5480,65 @@ class ChatViewModel(
      * of being silently dropped by a blind `take()`. Mirrors iOS
      * `buildConversationTextForSummary`.
      */
+    /**
+     * [T-compact-external] FULL transcript for the external-compaction export.
+     * Deliberately does NOT reuse [buildConversationTextForSummary]: that
+     * collector exists to shrink the INTERNAL window count (recency tiers,
+     * 600-char body caps, dedup streaks) — feeding it to the export would
+     * hand the external model an ALREADY-COMPROMISED copy exactly where the
+     * user expects the complete session ("ничего не забыто?"). One file, one
+     * shot, full fidelity: every message body, every tool_use input, every
+     * tool_result body verbatim. Size is not a concern here — the file is
+     * shared out, not windowed.
+     */
+    private fun buildFullConversationText(history: List<LLMMessage>): String = buildString {
+        var turn = 0
+        for (msg in history) {
+            val role = msg.role.name.lowercase()
+            val isRealUserTurn = msg.role == LLMMessage.Role.USER &&
+                (msg.content.isNotBlank() ||
+                    msg.contentParts.any { it !is AgentContentPart.ToolResult })
+            if (isRealUserTurn) {
+                turn += 1
+                append("\n### Turn ").append(turn).append('\n')
+            }
+            if (msg.content.isNotEmpty()) {
+                append(role).append(": ").append(msg.content).append('\n')
+            }
+            for (part in msg.contentParts) {
+                when (part) {
+                    is AgentContentPart.Text -> {
+                        append("  ").append(role).append(": ").append(part.text).append('\n')
+                    }
+                    is AgentContentPart.ToolUse -> {
+                        append("  ").append(role).append(" [tool:")
+                            .append(part.name).append("]: ")
+                            .append(part.input.toString())
+                            .append('\n')
+                    }
+                    is AgentContentPart.ToolResult -> {
+                        append("  ").append(role)
+                            .append(" [result:").append(part.name).append("]: ")
+                            .append(part.content)
+                            .append('\n')
+                    }
+                    is AgentContentPart.ImageData -> {
+                        // Images cannot ride a text export; render a stub so
+                        // the external model KNOWS an image was here (and its
+                        // size) instead of silently losing the turn shape.
+                        append("  ").append(role)
+                            .append(" [image: ")
+                            .append(part.mimeType)
+                            .append(", ")
+                            .append(part.data.size)
+                            .append(" bytes — недоступно в текстовом экспорте]")
+                            .append('\n')
+                    }
+                }
+            }
+        }
+    }
+
     private fun buildConversationTextForSummary(history: List<LLMMessage>): String = buildString {
         // [T-compact-dedup-recency] User principle (12.10): "старая ненужная
         // информация отсеивается, дубликаты и вода отсеиваются". Two pure
