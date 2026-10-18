@@ -1143,11 +1143,12 @@ class SkillRepository(private val context: Context) {
     /**
      * [T-bundled-skills] The discipline set distilled from the prompt
      * repositories the user curated (dcarrero review prompts, yardobr
-     * architect, verify-first workflows). Shipped as assets/skills/*.md so
-     * the text stays plain markdown — no Kotlin string escaping. Same
-     * version-gated upgrade pattern as skill-creator: an identical or newer
-     * local row is never downgraded, user edits (higher version) win.
-     * Missing/undecodable asset = skip that skill, never crash the init.
+     * architect, verify-first workflows). Shipped as markdown files under
+     * the assets skills directory so the text stays plain markdown — no
+     * Kotlin string escaping. Same version-gated upgrade pattern as
+     * skill-creator: an identical or newer local row is never downgraded,
+     * user edits (higher version) win. Missing or undecodable asset skips
+     * that skill, never crashing the init.
      */
     private fun installExtraBundledSkills() {
         for ((id, version) in BUNDLED_DISCIPLINE_SKILLS) {
@@ -1518,9 +1519,10 @@ class SkillRepository(private val context: Context) {
 }
 
 /**
- * [T-bundled-skills] The discipline set: (skillId in assets/skills/, version).
- * Ids match the asset file names 1:1; versions gate upgrades (local newer
- * versions are never downgraded, matching the skill-creator pattern).
+ * [T-bundled-skills] The discipline set: (skillId, version) pairs, where the
+ * id is the asset file name (skills directory, .md extension implied).
+ * Versions gate upgrades (local newer versions are never downgraded,
+ * matching the skill-creator pattern).
  */
 private val BUNDLED_DISCIPLINE_SKILLS: List<Pair<String, String>> = listOf(
     "code-review-master" to "1.0.0",
