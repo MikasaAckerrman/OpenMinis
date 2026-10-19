@@ -40,6 +40,19 @@ class TelegramVaultManagerTest {
     }
 
     @Test
+    fun `journal travels with the session and the old path returns ENOENT`() {
+        val (files, src, _) = makeTree()
+        val session = File(src, "tg_session.session").apply { writeText("SESSION-DATA") }
+        val journal = File(src, "tg_session.session-journal").apply { writeText("WAL-DATA") }
+        TelegramVaultManager.migrateSessionForTest(src, files)
+        val vault = File(files, "tg-vault")
+        assertTrue("session must be in the vault", File(vault, "tg_session.session").exists())
+        assertTrue("journal must travel too", File(vault, "tg_session.session-journal").exists())
+        assertFalse("old session path must be gone (ENOENT)", session.exists())
+        assertFalse("old journal path must be gone", journal.exists())
+    }
+
+    @Test
     fun `stale duplicate on the agent side is removed, vault copy wins`() {
         val (files, src, _) = makeTree()
         val vault = File(files, "tg-vault").apply { mkdirs() }

@@ -39,7 +39,7 @@ android {
         // [T-vc56] Jump (not increment) over the installed base: the user's
         // device runs the vc55 clone APK (built before f71cac0 reverted the
         // bump), and Android refuses to install vc54 over vc55. 56 clears it.
-        versionCode = 143
+        versionCode = 144
         // vc69: 97 commits — kotlincheck infra + strict preflight (types/enums,
         // parallel-batch gate) + atomic tool budget + budget footer + symmetric
         // supermemory lifecycle (FPS guard) + thermal telemetry + review fixes

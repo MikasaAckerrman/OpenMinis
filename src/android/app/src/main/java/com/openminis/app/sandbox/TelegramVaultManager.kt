@@ -34,6 +34,19 @@ object TelegramVaultManager {
     private const val TAG = "TgVault"
     private const val PORT = 7824
 
+    /** SQLite companions of the pyrogram session — they may carry
+     *  auth_key material, so they travel with the session and never
+     *  stay on the agent-visible side. */
+    private val COMPANION_FILES = listOf(
+        "tg_session.session-journal",
+        "tg_session.session-wal",
+        "tg_session.session-shm"
+    )
+
+    /** Everything that must be absent from the agent sandbox after the
+     *  migration (the old path must return ENOENT). */
+    private val AGENT_SESSION_FILES = listOf("tg_session.session") + COMPANION_FILES
+
     private fun vaultDir(context: Context): File = File(context.filesDir, "tg-vault")
     private fun srcSrvDir(context: Context): File =
         File(context.filesDir, "minis-global/mcp-servers/srv")
@@ -154,39 +167,80 @@ object TelegramVaultManager {
     }
 
     /**
-     * One-way session migration into the vault. True when the vault ends
-     * up holding the session. Test seam for the unit test — the pure
-     * file-move part of the security guarantee, free of Android deps.
+     * One-way session migration into the vault.
      *
-     * Semantics: if the vault already has a session, any agent-visible
-     * copy is a stale duplicate and gets DELETED (never leave two copies).
-     * A locked source (live server) fails the rename → false, retried on
-     * the next start.
+     * Failure modes are covered explicitly:
+     *  - COPY FIRST: the vault copy is written and size-verified before a
+     *    single byte is removed from the agent-visible side. A crash
+     *    mid-copy leaves the original intact (retried on the next start).
+     *  - THE WHOLE SQLITE SET MOVES: .session plus its -journal/-wal/-shm
+     *    companions — a leftover WAL can carry auth_key material, so it
+     *    must not stay on the agent side.
+     *  - UNLINK IS ATOMIC per file → the agent-visible path returns
+     *    ENOENT right away; no second working copy is left behind.
+     *  - if the vault already holds a session, any agent-side copy is a
+     *    stale duplicate and gets deleted (vault stays authoritative).
      */
     fun migrateSession(srcDir: File, vaultDir: File): Boolean {
         if (!vaultDir.exists() && !vaultDir.mkdirs()) {
             Log.e(TAG, "vault dir cannot be created")
             return false
         }
-        val srcSession = File(srcDir, "tg_session.session")
         val dstSession = File(vaultDir, "tg_session.session")
         if (dstSession.exists()) {
-            if (srcSession.exists()) {
-                if (srcSession.delete()) {
-                    Log.i(TAG, "stale agent-visible session removed")
-                } else {
-                    Log.e(TAG, "stale agent-visible session could not be deleted")
-                }
-            }
+            purgeAgentCopies(srcDir)
             return true // vault copy is authoritative
         }
+        val srcSession = File(srcDir, "tg_session.session")
         if (!srcSession.exists()) return false
-        if (srcSession.renameTo(dstSession)) {
-            Log.i(TAG, "tg_session.session MOVED to vault — agent no longer has it")
-            return true
+
+        val set = ArrayList<File>()
+        set.add(srcSession)
+        for (n in COMPANION_FILES) {
+            val f = File(srcDir, n)
+            if (f.exists()) set.add(f)
         }
-        Log.w(TAG, "session move failed (locked?) — retry on next start")
-        return false
+        // 1) copy the whole set into the vault
+        for (f in set) {
+            val dst = File(vaultDir, f.name)
+            try {
+                f.copyTo(dst, overwrite = true)
+            } catch (e: Exception) {
+                Log.e(TAG, "copy of ${f.name} failed: ${e.message}")
+                return false // original still intact
+            }
+        }
+        // 2) verify byte counts before touching the original
+        for (f in set) {
+            val dst = File(vaultDir, f.name)
+            if (!dst.exists() || dst.length() != f.length()) {
+                Log.e(TAG, "vault copy of ${f.name} failed verification")
+                return false // original still intact
+            }
+        }
+        // 3) remove the agent-visible originals (atomic unlink each)
+        purgeAgentCopies(srcDir)
+        // 4) the whole point: the old path must be gone
+        if (File(srcDir, "tg_session.session").exists()) {
+            Log.e(TAG, "session STILL visible to the agent after migration")
+            return false
+        }
+        Log.i(TAG, "tg_session.session migrated to vault — agent no longer has it")
+        return true
+    }
+
+    /** Deletes the session and every SQLite companion from the agent side. */
+    private fun purgeAgentCopies(srcDir: File) {
+        for (n in AGENT_SESSION_FILES) {
+            val f = File(srcDir, n)
+            if (f.exists()) {
+                if (f.delete()) {
+                    Log.i(TAG, "agent-visible $n removed")
+                } else {
+                    Log.e(TAG, "FAILED to remove agent-visible $n")
+                }
+            }
+        }
     }
 
     /** Test seam alias so the unit test reads naturally. */
