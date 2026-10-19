@@ -118,7 +118,10 @@ object TelegramVaultManager {
         // 2. Move the session INTO the vault (one-way). If a live agent-side
         //    server holds the SQLite session, rename fails — retry next start.
         if (!migrateSession(src, vault)) return
-        if (!File(vault, "tg_session.session").exists()) return // nothing to serve yet
+        // Even with NO session the server must run: read-only tools work,
+        // the CLI reaches it (instead of ECONNREFUSED), and a faulted/
+        // fresh login has somewhere to happen. Skipping the launch here
+        // would deadlock re-login forever.
 
         // 3. Launch the private proot instance (host-owned, vault-only binds).
         val cmd = mutableListOf<String>()
