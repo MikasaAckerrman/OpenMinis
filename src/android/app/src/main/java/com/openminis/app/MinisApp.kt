@@ -425,6 +425,12 @@ class MinisApp : Application(), ImageLoaderFactory {
         // PRoot has booted or any shell has started.
         PRootKernel.registerGlobalBindMounts(this)
 
+        // [T-tg-vault] Stage-1 mechanical write protection: move the
+        // pyrogram session out of every agent-visible bind into a host-only
+        // vault and serve the read-only Telegram MCP from a private proot
+        // instance on loopback. Idempotent; skips silently if not set up yet.
+        sandbox.TelegramVaultManager.ensureStarted(this)
+
         // T219-1: load user-mounted external folders and seed PRoot's
         // bindMounts before the first proot invocation, so the very first
         // `shell_execute` already has `/var/minis/mounts/<name>/` visible.
