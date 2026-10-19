@@ -38,11 +38,23 @@ object TelegramVaultManager {
     private fun srcSrvDir(context: Context): File =
         File(context.filesDir, "minis-global/mcp-servers/srv")
 
+    /**
+     * Liveness probe that verifies the responder IS our telegram MCP
+     * (a bare port probe would false-positive on any process bound to
+     * 7824 and silently leave the agent without a server).
+     */
     fun isAlive(): Boolean = try {
         Socket("127.0.0.1", PORT).use { s ->
-            s.soTimeout = 1200
-            s.getOutputStream().let { } // connect-only probe
-            true
+            s.soTimeout = 4000
+            val probe = "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\n" +
+                "Content-Type: application/json\r\nConnection: close\r\n" +
+                "Content-Length: 46\r\n\r\n" +
+                "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"initialize\"}"
+            s.getOutputStream().apply {
+                write(probe.toByteArray(Charsets.UTF_8)); flush()
+            }
+            val reply = s.getInputStream().bufferedReader().use { it.readText() }
+            reply.contains("\"telegram\"")
         }
     } catch (e: Exception) {
         false

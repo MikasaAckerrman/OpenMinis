@@ -54,6 +54,7 @@ import com.openminis.app.sandbox.offload.PlayerOffloadHandler
 import com.openminis.app.sandbox.offload.SpeakOffloadHandler
 import com.openminis.app.sandbox.offload.SpeechOffloadHandler
 import com.openminis.app.sandbox.offload.WeatherOffloadHandler
+import com.openminis.app.sandbox.TelegramVaultManager
 import com.openminis.app.service.SessionActivityTracker
 import com.openminis.app.ui.MinisImageFetcher
 import kotlinx.coroutines.launch
@@ -429,7 +430,7 @@ class MinisApp : Application(), ImageLoaderFactory {
         // pyrogram session out of every agent-visible bind into a host-only
         // vault and serve the read-only Telegram MCP from a private proot
         // instance on loopback. Idempotent; skips silently if not set up yet.
-        sandbox.TelegramVaultManager.ensureStarted(this)
+        TelegramVaultManager.ensureStarted(this)
 
         // T219-1: load user-mounted external folders and seed PRoot's
         // bindMounts before the first proot invocation, so the very first
