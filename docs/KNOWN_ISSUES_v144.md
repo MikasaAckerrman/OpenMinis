@@ -4,6 +4,49 @@
 **Статус:** OPEN — зафиксирован по протоколу юзера; исправление НЕ выполняется в рамках smoke
 **Replay:** заблокирован до решения по приёмке (правило юзера)
 
+## Расследование (22:4x-23:0x — только чтение, изменений кода нет)
+
+Разобран ПОЛНЫЙ текст `server.log` (ранее я приводил только первые строки):
+
+```
+proot error: execve("/usr/bin/python3"): Permission denied
+proot info: possible causes:
+  * the program is a script but its interpreter (eg. /bin/sh) was not found;
+  * the program is an ELF but its interpreter (eg. ld-linux.so) was not found;
+  * the program is a foreign binary but qemu was not specified;
+  * qemu does not work correctly (if specified);
+  * the loader was not found or doesn't work.
+fatal error: see `libproot.so --help`.
+proot error: can't chmod '<tmp>/proot-<pid>-XXXXXX': No such file or directory
+```
+
+**Порядок: execve-denied первичен; chmod-fail — вторичный cleanup** (proot
+чистит temp после fatal; файла уже нет). Гипотеза «chmod раньше execve» —
+ОТВЕРГНУТА.
+
+**Гипотеза 1 (SELinux/права) — ОТВЕРГНУТА:** контексты идентичны — app-проот
+и агент-проот оба `u:r:untrusted_app:s0:c89,c257,c512,c768`;
+`cache/proot-tmp` доступен на запись app-uid (write-probe OK);
+`drwx--S---` не мешает владельцу.
+
+**Гипотеза 3 (путь) — ОТВЕРГНУТА:** `/usr/bin/python3` физически существует
+в rootfs; ELF interp (`/lib/ld-musl-aarch64.so.1`) идентичен рабочему
+агентскому rootfs.
+
+**Оставшийся кандидат:** loader-цепочка — proot сам указывает:
+«the loader was not found or doesn't work». `libproot-loader.so` в
+`nativeLibraryDir` существует, exec-бит есть, SELinux `apk_data_file`.
+Разница между рабочим агент-запуском и сбоящим vault-запуском — точечная
+проверка при следующем рестарте app (см. план ниже).
+
+## План сбора данных при СЛЕДУЮЩЕМ рестарте app (только сбор, без правок)
+
+1. До: `su 0 stat .../server.log` (mtime baseline).
+2. Сразу после рестарта: полный `cat server.log`; `ls -la cache/proot-tmp/`
+   (появился ли temp-файл попытки), `ls -la files/proot-tmp 2>/dev/null`,
+   `ps -A | grep libproot`, `nc -z 7824`.
+3. Код-чтение (только diff-анализ): сравнить `cmd`/`env` в Telegram VaultManager с рабочим агент-билдером — найти опущенный флаг/env.
+
 ## Симптом (воспроизводится 2/2 прогона)
 
 При старте app хост вызывает proot для подъёма vault-сервера 7824 → proot умирает,
