@@ -70,6 +70,33 @@ cache-путь дефолтный (согласуется с фактом: cache
 - PRootKernel.wrappedArgs / agent-cmd: `-0 --link2symlink` порядок совпадает с работающим агентским argv (545/11581) — стартовый аргументный путь НЕ является причиной автостарт-FAIL.
 - telegram.py whitelist/диалоги: логика корректна;/problem only в tz и RPC_TIMEOUT.
 
+## Дизайн фикса D-1/D-2/D-3/D-10 (PersistentShell) — подготовлен, НЕ РЕАЛИЗОВАН (сигнала нет)
+
+Уточнение модели синхронизации по запросу юзера («@Volatile недостаточно; mutex на время ожидания может
+умертвить reader»):
+
+- **Kotlin Mutex (coroutine-level), НЕ `synchronized(this)`-монитор** — write-side только. Гарантирует взаимное
+исключение двух перекрывающихся `executeCommand` вызовов без блокировки reader-потока: reader-поток НЕ берёт
+mutex вообще, значит nutта блокировка вывода/exit-маркера невозможна. Deadlock-free by construction.
+- `pendingCallback` остаётся `@Volatile`: читается reader'ом без блокировки, пишется write-side в короткой
+критической дорожке внутри mutex (set-state), очищается по завершении/отмене/таймауту/stop().
+- Single-shot: флаг `completed` в CommandCallback, dispatch после которого игнорирует повторный вызов
+(reader и stop() — double-resume уходит). Завершение идёт только через `cb.onComplete`, который сам resume
+единственный раз (isAlive-guard уже есть в cont — дополняем completed-флагом внутри callback).
+- `feedLines`: переключение на накопление хвоста (partial line persists across chunks): в `pendingOutput`
+докупаем и потом маркер-строку разруливаем — D-3-дубликация уходит. Частичная последняя строка, пришедшая БЕЗ
+`\n` на EOF чанка, НЕ учитывается маркером — сейчас дублируется; фикс: «partial line = last-line-without-\n»
+больше не печатается в вывод и сохраняется на след. чан.
+- `applyEnvironment` (D-2 сопутствующее) — записывается через тот же writer только ВНЕ активной команды:
+mutex.write не обогреваем? пишется сразу после set-state-фазы; если command in-flight — добносится в очередь
+до следующего command (флаг pendingEnv), нет искажения wrappedCommand.
+- Cont timeout: suspendCancellableCoroutine по-прежнему: cancellation branch не теряет pendingCallback
+(invokeOnCancellation уже нулит).
+
+Проверка после реализации: локальный kotlinc-compile + контрактный unit-мок executeCommand×50 параллельно
+(каждый находит свой output и exit от единственного соответствующего Wrapped-маркера, 0 потерянных),
+потом CI green (тоже с [quick] сообщением, отдельный коммит).
+
 ## Ответы на контрольные вопросы юзера (по протоколу)
 1. **Чего хочет юзер от vault-цепочки:** автостарт MCP-сервера Telegram внутри proot при старте приложения, без агент-вмешательства.
 2. **Что должен увидеть:** server.log «vault MCP launched» факт рабочего состояния, порт 7824 OPEN, RPC tools=20.
