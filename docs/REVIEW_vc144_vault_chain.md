@@ -225,6 +225,23 @@ drain-завершения; END_A и B не могут встречаться в
    затем все ожидающие callbacks получают onComplete(смерть, exit=-1) либо ошибку из
    executeCommand (isAlive=false check), очереди не висят.
 
+## РЕАЛИЗАЦИЯ (a) ЗАВЕРШЕНА И ПРИНЯТА CI (коммиты 50911d0 → acccf94; run 39483947146 SUCCESS)
+
+PersistentShell.kt D-1/D-2/D-3/D-10 — реализовано; ShellProtocolEngine — выделенный протокол-движок;
+ShellProtocolEngineTest — 7 сценариев, ВСЕ PASSED в реальном прогоне (Unit Tests workflow job, не skipped):
+s1 последовательность (изол. idle-echo), s2 single-dispatch CAS, s3 split-маркер, s4 same-chunk overshoot,
+s5 смерть с carry, s6 cancel-фрагмент drain, late-END-after-timeout.
+
+**3 бага захвачены живыми тестами** (не структурной проверкой):
+1. 6df48e1 — release-slot после dispatch ( незаконный свойства state machine Engine vs PersistentShell mismatch)
+2. aafa54c — потеряная декларация current в редактировании (merge-авария)
+3. acccf94 — **idle-gap bytes (current==null, вне dispatch-чанка) → orphan-лог, а НЕ byte-carry**;
+   carry-owner правило v2.3-D действует только для same-chunk overshoot после dispatch.
+
+Не завершено (по плану): wiring PersistentShell→Engine отдельным коммитом (граница — только после юзер-оk),
+loader-диагностика (b), D-4/D-5/D-12 (TVM/MinisApp), D-6/D-7/D-8/D-11 (telegram.py). Статусы vc144/автостарт/replay
+не менялись.
+
 ## РЕАЛИЗАЦИЯ: пошаговый финал (20.10 ночной стек)
 
 **PersistentShell.kt патч (852 строк) — в working tree, весь замысел v2.3 укоренён:**
