@@ -132,17 +132,20 @@ internal class ShellProtocolEngine {
     }
 
     private fun feedLive(chunk: String): Dispatch? {
-        var text = (carry ?: "") + chunk
-        carry = null
-
+        // Idle-gap bytes (current==null, no drain): these are not shared-chunk
+        // overshoot of a just-dispatched END — they arrived on their own and
+        // belong to nobody's buffer. They go to the orphan log; the NEXT
+        // command must NOT inherit them (verified by s1: 'NEXT-CMD-BYTES'
+        // must never reach buffer of the next armed command). Only
+        // same-chunk overshoot after a dispatch (stored in carry by the
+        // marker branch below) is foldable by the next owner.
         val cb = current
         if (cb == null) {
-            // No live command and no pending drain (post-normal-END gap):
-            // bytes park as byte-carry — owner is the NEXT command (v2.3 D).
-            // A drainMarker case is already handled in feed() before this.
-            takeIfCarrying(text)
+            orphanAccumulate(chunk)
             return null
         }
+        var text = (carry ?: "") + chunk
+        carry = null
 
         val head = MARKER_PREFIX + cb.marker + MARKER_SUFFIX
         val idx = text.indexOf(head)
