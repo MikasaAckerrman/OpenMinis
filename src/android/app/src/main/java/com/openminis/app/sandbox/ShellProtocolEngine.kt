@@ -42,6 +42,8 @@ internal class ShellProtocolEngine {
      * reader thread, and External callers only swap it to null via
      * [detachCurrent] (single-shot compat with PersistentShell's state slot).
      */
+    private var current: CommandCallbackContract? = null
+
     /**
      * Marker of a DETACHED-but-still-running command (cancel/timeout): until
      * its END line is recognized, every chunk belongs to the drain path —
@@ -51,6 +53,7 @@ internal class ShellProtocolEngine {
      * is fully matched (or on [reset]/hard teardown).
      */
     private var drainMarker: String? = null
+
     /** User-visible leftovers (drain-routed) — diagnostics only. */
     var orphanLog: String? = null
         private set
