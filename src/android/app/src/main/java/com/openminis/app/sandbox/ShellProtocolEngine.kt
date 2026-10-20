@@ -42,7 +42,18 @@ internal class ShellProtocolEngine {
      * reader thread, and External callers only swap it to null via
      * [detachCurrent] (single-shot compat with PersistentShell's state slot).
      */
-    private var current: CommandCallbackContract? = null
+    /**
+     * Marker of a DETACHED-but-still-running command (cancel/timeout): until
+     * its END line is recognized, every chunk belongs to the drain path —
+     * the bytes are consumed silently (orphan log) and may NEVER contaminate
+     * the next command's output (v2.3 invariant C).
+     * Null = no drain pending. Cleared only when the drain marker's END line
+     * is fully matched (or on [reset]/hard teardown).
+     */
+    private var drainMarker: String? = null
+    /** User-visible leftovers (drain-routed) — diagnostics only. */
+    var orphanLog: String? = null
+        private set
 
     /**
      * [D-3] bytes pushed back: post-marker overshoot (belongs to the NEXT
@@ -72,13 +83,60 @@ internal class ShellProtocolEngine {
      *    a cancelled command awaiting its late END marker) [v2.3 Invariant-C].
      */
     fun feed(chunk: String): Dispatch? {
+        // v2.3-C drain: a cancelled command's late END marker and its residual
+        // bytes are consumed HERE (orphan), never handed to a future command.
+        val dm = drainMarker
+        if (current == null && dm != null) {
+            val drained = drainFold(chunk, dm)
+            if (drained) drainMarker = null
+            return null
+        }
+        return feedLive(chunk)
+    }
+
+    /** Drain-path fold: append to buffer, look for END of the drain marker.
+     *  Bytes up to the END line → orphan log; everything after END line-end
+     *  parks as byte-carry for the NEXT (normal) command. Returns true iff
+     *  the drain completed (END recognized in this fold). */
+    private fun drainFold(chunk: String, dm: String): Boolean {
+        val acc = (carry ?: "") + chunk
+        carry = null
+        val head = MARKER_PREFIX + dm + MARKER_SUFFIX
+        val idx = acc.indexOf(head)
+        if (idx < 0) {
+            // Keep only a possible trailing fragment of the drain marker; the
+            // rest is orphaned user output — never contaminates the owner.
+            val sp = splitPoint(acc, dm)
+            if (sp < acc.length) {
+                orphanAccumulate(acc.substring(0, sp))
+                carry = acc.substring(sp)
+            } else {
+                orphanAccumulate(acc)
+            }
+            return false
+        }
+        // END line found: bytes before it → orphan; after its line-end → carry.
+        val lineEnd = acc.indexOf('\n', idx)
+        orphanAccumulate(acc.substring(0, if (lineEnd < 0) acc.length else lineEnd + 1))
+        if (lineEnd >= 0 && lineEnd + 1 < acc.length) {
+            carry = acc.substring(lineEnd + 1)
+        }
+        return true
+    }
+
+    private fun orphanAccumulate(s: String) {
+        orphanLog = ((orphanLog ?: "") + s).takeLast(8192)
+    }
+
+    private fun feedLive(chunk: String): Dispatch? {
         var text = (carry ?: "") + chunk
         carry = null
 
         val cb = current
         if (cb == null) {
-            // Drain mode: no command owns this output. Park it — when the
-            // next command arms, these bytes must NOT leak into it.
+            // No live command and no pending drain (post-normal-END gap):
+            // bytes park as byte-carry — owner is the NEXT command (v2.3 D).
+            // A drainMarker case is already handled in feed() before this.
             takeIfCarrying(text)
             return null
         }
@@ -95,10 +153,6 @@ internal class ShellProtocolEngine {
             if (lineEnd >= 0 && lineEnd + 1 < text.length) {
                 // Overshoot belongs to a FUTURE command.
                 takeIfCarrying(text.substring(lineEnd + 1))
-            } else if (lineEnd < 0 && afterMarker.length > head.length + 2) {
-                // Marker line itself ended this chunk without '\n'. The rest
-                // of the marker line (exit code + "__") may still be missing;
-                // if parse already succeeded there is nothing further to keep.
             }
             return complete(cb, exitCode)
         }
@@ -121,16 +175,22 @@ internal class ShellProtocolEngine {
         check(current == null) { "command already in flight" }
         check(!callback.isDone) { "callback already completed" }
         current = callback
-        // Cancelled command's residual bytes are NOT delivered to the new
-        // command: reset the drain-parked carry for the fresh owner's
-        // protocol (v2.3 invariant: residue never contaminates the winner).
-        carry = null
+        // carry is NOT cleared here: byte-carry (post-normal-END overshoot)
+        // belongs to the NEXT command per v2.3 invariant D — its bytes merge
+        // into the new owner's buffer at the next fold. Drain-carry (leftover
+        // of a cancelled command) is instead consumed by the drainRecognizer
+        // in feed() (drainMarker path), never reaching [callback].
     }
 
-    /** Detach after timeout/cancel (PersistentShell's CAS-detach path). */
+    /** Detach after timeout/cancel (PersistentShell's CAS-detach path).
+     *  Marks a drain: leftover fragments + late output of [callback] must
+     *  be routed to the orphan log, not to the next command (v2.3 C). */
     fun detachCurrent(): CommandCallbackContract? {
-        val old = current
+        val old = current ?: return null
         current = null
+        if (!old.isDone) {
+            drainMarker = old.marker
+        }
         return old
     }
 
