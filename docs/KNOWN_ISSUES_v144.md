@@ -60,6 +60,53 @@ proot error: can't chmod '<tmp>/proot-<pid>-XXXXXX': No such file or directory
    `ps -A | grep libproot`, `nc -z 7824`.
 3. Код-чтение (только diff-анализ): сравнить `cmd`/`env` в Telegram VaultManager с рабочим агент-билдером — найти опущенный флаг/env.
 
+## Сбор при реальном рестарте 20.10 07:07 (план выполнен целиком)
+
+Baseline до: server.log mtime 21:07:59 19.10. Рестарт: app pid **21603**, лог обновлён
+**07:07:19 20.10** (566 б, полный текст 6 строк — идентичен ранее задокументированному:
+execve denied первичен, chmod-fail вторичен, temp id `proot-23682-TH4g6k`).
+Порт 7824 после: CLOSE, `serve-http` нет.
+
+**Живые proot (обе — агентские):** pid 24409 (сессия `57af66c1`, ET 03:28) и
+pid 25158 (сессия `4ef5a778`, ET 00:01). Diff их argv — **только пути сессий**
+(attachments/offloads/browser bind); хвост `/bin/sh` и native-offload
+идентичны. Vault-proot (23682) умирает мгновенно — живьём не пойман;
+его lifecycle подтверждён только логом и mtime каталога.
+
+**proot-tmp состояние:** `cache/proot-tmp` dir-mtime **07:11 20.10** —
+создание temp-файла vault-попыткой СЕГОДНЯ состояло (create→cleanup цикл:
+создан и удалён до факт-чека; потому в ls только сентябрьские сокеты).
+`files/proot-tmp` не существует (fallback не потребовался).
+
+**Разбор chmod-fail (пересмотр):** раз temp-создание УСПЕШНО состоялось,
+сообщение `can't chmod '...proot-23682-TH4g6k': No such file or directory`
+толкуется как chmod уже удалённого при cleanup файла **или** ошибки
+внутреннего пути proot при второй фазе — это НЕ hindrance создания.
+
+**Код exec-хвоста (строки 128-141 TelegramVaultManager):** proot →
+`-0 --link2symlink -r rootfs -b /dev /proc /sys -b vault:/vault -w /vault
+/usr/bin/python3 /vault/telegram.py --serve-http 127.0.0.1:7824`.
+env: PROOT_TMP_DIR, LD_LIBRARY_PATH(nativeLibDir), PROOT_LOADER,
+PROOT_LOADER_32, TG_SESSION_DIR, TG_API_ID/HASH из репозитория envvars.
+Agent-cmd отличается: `-w /root`, хвост `/bin/sh`, bind'ы сессий/mounts.
+
+**Фактическая сверка файлов (обе стороны rootfs одинаковы):**
+`/usr/bin/python3`→symlink→`python3.12` (ELF shared object, 67240 б,
+exec-ok, interp `/lib/ld-musl-aarch64.so.1`); `/bin/sh`→`/bin/busybox`
+(тот же ld-musl interp — и busybox exec через агента РАБОТАТ).
+`ld-musl-aarch64.so.1` в rootfs: exec-ok, 723480 б.
+⇒ Права/interp/ELF-класс НЕ различаются между РАБОЧИМ (/bin/busybox)
+и ОТКАЗНЫМ (/usr/bin/python3) хвостом.
+
+**Вывод по 5 пунктам плана (без выбора причины):** loader-цепочка
+функционально активна (temp создан), файлы exec-ok и interp одинаковы,
+причина execve-denied на хвосте `/usr/bin/python3` остаётся НЕ
+установленной. Сопоставление «живых» cmdline показало: cmd/env различия
+vault-vs-agent сводятся к bind-набору, cwd и хвостовой команде
+(python3 vs sh) — все уже перечислены. Дальнейшее сужение требует
+целевого диагностического запуска (тест exec разных хвостов в
+vault-конфиге), что = изменению поведения — отдельно с юзером.
+
 ## Симптом (воспроизводится 2/2 прогона)
 
 При старте app хост вызывает proot для подъёма vault-сервера 7824 → proot умирает,
