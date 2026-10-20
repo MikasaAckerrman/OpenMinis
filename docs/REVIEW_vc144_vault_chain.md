@@ -155,9 +155,79 @@ Caller Córants cancel happens in `invokeOnCancellation`:
 - Crash-recovery: carry остался, а новой callback нет (writer умер) → carry сбрасывается в stop-лог
   при stop(), не тихо теряется.
 
-**v2.1 статус:** инварианты v2 сохранены, добавлен carry-invariant. Все 5 вопросов (race, double-complete,
-cancellation, pendingEnv, carry) закрыты формально. Коммит: НЕТ кода, только этот док. signal у юзера —
-отдельное явное подтверждение.
+## Дизайн v2.2 (два оставшихся риска юзера, до реализации)
+
+**RED-база (verbatim текущего кода):** маркер `__MINIS_DONE_{marker}_EXIT_{code}__` (regex-парсится);
+readLoop берёт cb per-chunk; if маркер найден в chunk: append before-marker + parse(afterMarker) + onComplete
++ pendingCallback=null; **после маркера текст chunk вообще НЕ обрабатывается** (теряется); END, разрезанный
+между chunk-ами: parseExitCode вернёт -1 (не находит полный `__`), а cb всё равно снимается → exit-code
+теряется при split. Это реальное проявление обоих рисков юзера в текущем коде.
+
+### Инвариант-C (cancel mid-flight → восстановление протокола)
+
+Сценарий: cancel(A) после write, до END_A → callback снят (dead) → команда A продолжает работать в shell →
+поздний END_A THEN arrives, потом запускается B.
+
+- Дискриминант «чей вывод»: **markerId УНИКАЛЕН per-command** (8-hex). Reader ищет только
+`__MINIS_DONE_{A.marker}_EXIT_`: если cb+null → нет потребителя. Поздний END_A попадает в orphan-режим.
+- Где «shell непригоден»: **не переключаемся в непригоден** — shell остаётся валиден: END_A всё ещё корректно
+закрывает команду A (markerId не совпадёт с B). НО проблема: **промежуточный вывод A** до END_A нельзя
+отдать B (это контаминация). Решение: после cancel(A) reader входит в режим **drain-until-marker-A**:
+весь текст до полного `__MINIS_DONE_{A}_EXIT_{code}__` (в т.ч. разрезанный Chunk) потребляется молча
+(в orphan-лог сводно), END_A съедается, состояние протокола: **idle чистый**. Только после этого
+writer-side берёт B (write-side mutex + handshake: writer ждёт `state==null` И `draining==false`).
+- Ресинхронизация: ровно один маркер A (уникален) — после будущего eat города протокол синхронен.
+- Если END_A никогда не придёт (команда A зависла навсегда): drain-режим блокирует B до death-of-process;
+время ограничивается watchdog: drain-timeout = 2× max(command timeout) → если не закрылся — shell
+объявляется **tainted** (последующий executeCommand возвращает immediate-ошибку shell-unusable,
+вместо тихого зависания); stop() полная очистка — единственный выход. Явный отказ, не silent.
+- Late-end race с B (B уже запущен writer'ом? — невозможно: writer под mutex не пропускает B до
+drain-завершения; END_A и B не могут встречаться в одном chunk с точки зрения write-side серийности).
+- if изменения состояния: busy(A) → dead(A)+draining(A) → idle. reader-vs-writer handshake остаётся.
+
+### Инвариант-D (pendingCarry принадлежность + END-split + cleanup)
+
+1. **Отличие carry от мусора/повторного маркера:** carry сохраняется ТОЛЬКО между END_X и концом chunk
+   (мгновение пере-командного зазора). Поскольку команды строго серийны, текст ПОСЛЕ END_X — это либо
+   пустота, либо байты СЛЕДУЮЩЕЙ команды (уже write'нутые? — нет: writer пишет wrappedCommand только
+   ПОСЛЕ set busy; а END_X в этом же chunk физически возможен только для ЕЩЁ РАБОТАЮЩЕЙ X → после неё
+   ничего из X). Значит: post-marker текст НЕ может принадлежать X; он либо empty, либо prepend-хвост
+   будущей команды Y (уже возможен только после set busy(Y)). Ownership: carry обязателен В EMPTY при
+   отсутствии Y; при появлении Y carry склёвается В НАЧАЛО ВЫВОДА Y (перед его маркером).
+   Повторный `END_A` в carry: это глюк самогo shell (не бывает по протоколу) → ruпяется в orphan-лог
+   (дисциплина: не скармливать командам).
+2. **END, разрезанный между chunks (наш RED-факт):** reader ДЕРЖИТ накопленный «хвост» chunk до момента,
+   когда маркер-строка полностью узнаваем: парсинг маркера делается только по завершённым строкам
+   (оканчивающихся `\n`); если последняя строка chunk не содержит `\n`, она НЕ парсится как маркер, а
+   переносится как **partial-tail** в следующий chunk (это то же самое место, где живёт pendingCarry:
+   partial-tail и carry — ОДИН буфер). Условие «END split» перестаёт существовать как отдельный случай:
+   split-маркер лежит в partial-tail → закроется в след. chunk → парс → dispatch. Exit-code не теряется.
+3. **Очистка carry:** (а) dispatch команды съедает carry целиком (склеен в буфер результатов);
+   (б) cancel mid-flight, YA-carry ещё пуст → carry = «» (drain-режим: новый carry рождается только
+   после следующего dispatch); (в) stop()/killAll: carry переносится в orphan-лог (не тихо), затем
+   очищается; (г) смерть процесса (reader EOF): carry → orphan-лог, потом reader выходит из цикла;
+   (д) tainted-shell: carry → orphan-лог.
+4. **AtomicReference<String> не «гарантии протокола»:** гарантии даёт совокупность — 单 (write mutex),
+   (б) маркер-уникальность, (в) парсинг только по полным строкам, (г) handshake busy→END. AtomicRef —
+   только transport без потери значений (атомарность set/get, not visible torn).
+
+### Контракт-тесты (5 сценариев юзера, обязательны после ready)
+
+1. **Cancel-A → late-END_A → запуск B:** B должен получить ТОЛЬКО свой вывод; вывод A до его END
+   уходит в orphan-лог; синхронизация = idle чистый; «Ошибка» не бывает.
+2. **END, разрезанный между chunks:** exit-code Parced корректно (partial-tail механизм), callback
+   снимается ровно один раз, вывод не дублируется.
+3. **END_A + начало B в одном chunk:** before-marker = вывод A, after-marker = carry → результат B
+   начинается с carry-склейки, ничего не теряется и не дублируется.
+4. **stop() одновременно с завершением команды:** гонка «dispatch vs teardown» закрывается
+   completed-CAS: ровно один победитель; carry → orphan-лог; cont.resume не дублируется.
+5. **Смерть shell при непустом carry:** reader EOF → carry → orphan-лог (не тихая потеря),
+   затем все ожидающие callbacks получают onComplete(смерть, exit=-1) либо ошибку из
+   executeCommand (isAlive=false check), очереди не висят.
+
+**v2.2 статус:** инварианты v2+v2.1 сохранены; добавлены C (drain/tainted/watchdog) и D
+(ownership/split/cleanup). Код не менялся; 5 контракт-сценариев определяют приемку реализации.
+Сигнал `ready` юзера — отдельно.
 1. **Чего хочет юзер от vault-цепочки:** автостарт MCP-сервера Telegram внутри proot при старте приложения, без агент-вмешательства.
 2. **Что должен увидеть:** server.log «vault MCP launched» факт рабочего состояния, порт 7824 OPEN, RPC tools=20.
 3. **Соответствует ли реализация:** нет — текущее поведение после рестарта: лог печатается (566 б), порт CLOSED, execve denied первичен.
