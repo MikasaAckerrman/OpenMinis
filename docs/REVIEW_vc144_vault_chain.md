@@ -225,6 +225,34 @@ drain-завершения; END_A и B не могут встречаться в
    затем все ожидающие callbacks получают onComplete(смерть, exit=-1) либо ошибку из
    executeCommand (isAlive=false check), очереди не висят.
 
+## РЕАЛИЗАЦИЯ: пошаговый финал (20.10 ночной стек)
+
+**PersistentShell.kt патч (852 строк) — в working tree, весь замысел v2.3 укоренён:**
+D-1: AtomicReference commandState + writeMutex (executeCommand под writeMutex: re-check alive → flushPendingEnvLocked → install cb → WRITE wrapped → await → finally-unlock; он НЕ держится во время ожидания END маркера; reader не берёт mutex) → параллельные executeCommand вызовы строго серийны по записи; читающий поток свободен.
+D-2/D-10: в CommandCallback добавлен completed + markDone() = synchronized CAS. Все 3 пути завершения (marker dispatch / EOF / stop) проходят через markDone → ровно один resume.
+D-3a: feedLines — только полные строки; partial не излучается (не дублируется на границе chunk'ов).
+D-3b: pendingCarry + fold в head каждого chunk + lastSafeAppendIndex(text, marker) — детектирует РЕЗАНЫЙ маркер в tail → сохраняется в carry до следующего chunk.
+applyEnvironment: writeMutex + если in-flight → очередь (pendingEnv, snapshot overlay by previousKeys) → flush между командами (в executeCommand при входе).
+
+**ShellProtocolEngine.kt — выделенный протокол-движок**: чистый класс (данные: current, carry, done; методы feed/detachCurrent/resetOrphan/logOrphan) + TestCallback для JUnit; PersistentShell остаётся оригинальным (рефакторинг на Engine — следующий коммит, был бы scope creep сейчас).
+
+**ShellProtocolEngineTest.kt — 6 acceptance-сценариев:** parallel-marker, stop-vs-complete, END-split, overshoot-with-dup, EOF-смерть, partial-marker-в-tail. Тест независим от Android.
+
+## Статус РЕАЛИЗАЦИИ (20.10 вечер): код-патч в работе — полный takeaway ревью зафиксирован в REVIEW doc
+
+**Что подтверждено ревью каждой строки (601 строк, прочитаны slice'ами 1-60 дважды, 40-96, 96-131, 131-166, 166-230, 230-300, 300-368, 368-407, 408-434, 425-495, 488-545, 495-545, 570-601):**
+
+- D-1: `pendingCallback` = plain `@Volatile var` (запись в executeCommand line 519 `pendingCallback = cb`, снятие при EOF/stop/timeout/cancel через `= null`). ReadLoop читает per-chunk (line 378). Нет атомарного handoff → перезапись ровно как описано в v2.
+- D-2/D-10: `cb.onComplete = { if (cont.isActive) cont.resume(...) }` — НЕ CAS; три вызыва: readLoop(395-406), EOF(420-434), stop()(585-601).
+- D-3a: feedLines(435-448) — partial-строка (i == last && без \n) вызывается, на след. чанке она же вернётся первой строкой → дубликат.
+- D-3b (ФАТАЛЬНЫЙ): маркёр ищется `text.indexOf("__MINIS_DONE_{marker}_EXIT_")` в chunk(4096B). Если маркёр разрезан между двумя chunk → НЕ найден никогда → output растёт, onComplete не приходит → 600 с зависание. Exit-code regex `(\d+)` не ловит -1 (там literal -1 отдельно — ок).
+- EOF-handler(420-434): `cb.onComplete?.invoke(...,-1); pendingCallback = null` — резюме БЕЗ CAS.
+- stop()(585-601): nullify writer/process → killExecutor; `cb?.let { it.onComplete?.invoke(it.output.toString(), -1) }` — второй резюме гонка.
+- steerInput(470-481) — семантика bg-steer сохранена; writer synchronized(this) — writer-write коллизий с applyEnvironment нет (оба пишут через writer write(), race writer-write vs writer-write между applyEnv и executeCommand уже есть — pendingEnv layout исправит).
+- applyEnvironment(545-585): пишет unset/export в writer БЕЗ проверки, идёт ли команда → перемешивает wrappedCommand (D-2 сопутствующий).
+
+**Callers (не сломать):** ExecutionCoordinator.executeCommand (serializes на per-session Mutex), ExecutionCoordinator.broadcastTimezoneChange/broadcastProxyChange (applyEnvironment ВНЕ лока), TerminalSession (собственный PTY, не через PS), MinisApp→TelegramVaultManager (не PS). steerInput/stop публичные.
+
 ## Дизайн v2.3 (разрешение конфликта «cancel → сброс carry»)
 
 **Блокер юзера (контр-сценарий):** cancel(A) в момент, когда partial-tail уже содержит НАЧАЛО маркера A

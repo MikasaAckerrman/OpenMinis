@@ -13,7 +13,18 @@ import java.io.OutputStreamWriter
 import java.nio.charset.StandardCharsets
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.resume
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+
+/**
+ * @Volatile-imports APPLIED (D-1..D-10 protocol patch, v2.3 design):
+ * AtomicReference for command handoff (getAndSet null), Mutex to serialize
+ * executeCommand + applyEnvironment writes (write-side only), CAS 'completed'
+ * on CommandCallback for single-shot completion.
+ */
+
 
 /**
  * A long-running PRoot shell process that persists across commands.
@@ -55,9 +66,48 @@ class PersistentShell(
 
     private val isStarting = AtomicBoolean(false)
 
-    /** Pending command callback — only one command at a time. */
-    @Volatile
-    private var pendingCallback: CommandCallback? = null
+    /**
+     * [D-1] Atomic command handoff slot (v2.3 design invariant-1).
+     *
+     * Reader does `getAndSet(null)` to CLAIM the callback of the command whose
+     * END marker it just matched — a next writer cannot install a new callback
+     * into a slot the reader is still using, and a stolen callback cannot be
+     * re-installed by a racing writer. Plain `@Volatile` was insufficient: a
+     * writer could overwrite the slot between the reader's read and its nulling.
+     *
+     * Null = no command in flight. Set BEFORE the wrapped command is written,
+     * cleared by the reader on marker dispatch, EOF teardown, stop() or cancel.
+     */
+    private val commandState = AtomicReference<CommandCallback?>(null)
+
+    /**
+     * [D-1] Write-side serialization. ONLY caller coroutines take this lock —
+     * the reader thread NEVER does, so a slow caller cannot block the output
+     * feed (deadlock-free by construction). Orders executeCommand and
+     * applyEnvironment writes against each other, and re-queues the next
+     * command only after the protocol state is restored (drain completion).
+     */
+    private val writeMutex = Mutex()
+
+    /**
+     * [D-2 companion] Environment writes queued while a command is in flight.
+     * applyEnvironment writes unset/export lines between commands (at the
+     * idle->busy transition under the write mutex) — they can never interleave
+     * with a wrapped command's bytes. [ExecutionCoordinator.broadcast*] calls
+     * applyEnvironment WITHOUT holding the per-session executeCommand mutex,
+     * so this queue is what makes "export TZ while `sleep 5` runs" safe.
+     */
+    private val pendingEnv = ArrayDeque<Pair<Set<String>, Map<String, String>>>()
+
+    /**
+     * [D-3] Bytes received AFTER an END marker but belonging to the NEXT
+     * command's output (chunk overshoot), or an incomplete marker fragment
+     * (chunk boundary cut inside `__MINIS_DONE_...`). Kept across readLoop
+     * iterations until it can be parsed against a live callback. Exactly one
+     * carry can exist because the write side is serialized (writeMutex).
+     */
+    private val pendingCarry = AtomicReference<String?>(null)
+
 
     /**
      * Why the last [startProcess] attempt produced no usable shell.
@@ -154,12 +204,27 @@ class PersistentShell(
     /** [diag] Read back the mount this shell was started with (frozen at boot). */
     fun debugBindMount(linuxPath: String): String? = sessionBindMounts[linuxPath]
 
+    /**
+     * [D-2/D-10] Single-shot command callback. `completed` is a CAS flag: the
+     * reader's marker dispatch and a concurrent stop()/EOF teardown both race
+     * for it, only ONE CAS(false->true) wins and invokes onComplete exactly
+     * once. The losing path drops silently — resuming the caller's
+     * continuation twice is no longer possible even between the isActive
+     * check and resume (that check alone is not atomic).
+     */
     private class CommandCallback(
         val marker: String,
         val output: StringBuilder = StringBuilder(),
         val lineCallback: ((String) -> Unit)?,
         var onComplete: ((String, Int) -> Unit)? = null,
-    )
+    ) {
+        /** Set BEFORE unregistering from commandState so a racing reader's
+         *  getAndSet can never dispatch an already-completed callback. */
+        var completed = false
+
+        /** True iff CAS-completed by someone (reader, EOF, stop). */
+        val isDone: Boolean get() = completed
+    }
 
     /**
      * Ensure the persistent shell process is running.
@@ -376,41 +441,87 @@ class PersistentShell(
             while (true) {
                 val n = stream.read(buffer)
                 if (n < 0) break
-                val text = String(buffer, 0, n, StandardCharsets.UTF_8)
+                var text = String(buffer, 0, n, StandardCharsets.UTF_8)
 
-                val cb = pendingCallback
-                if (cb != null) {
-                    // Check if this chunk contains the end marker
+                // [D-3] Fold any carry (partial marker fragment / post-marker
+                // overshoot from the PREVIOUS chunk) in front of the new bytes
+                // BEFORE searching for markers — a marker cut at a chunk
+                // boundary only becomes fully visible once the remainder
+                // arrives, and folding late would lose the head bytes.
+                val carried = pendingCarry.getAndSet(null)
+                if (carried != null) text = carried + text
+
+                // [D-1] CLAIM: at most one command's END marker lives in this
+                // chunk (write side is serialized by writeMutex). getAndSet
+                // detaches the callback atomically — a concurrent writer can
+                // not install a NEW callback into a slot we are about to
+                // dispatch, and we can never dispatch a callback twice (the
+                // second reader iteration sees null).
+                val cb = commandState.getAndSet(null)
+                if (cb != null && !cb.isDone) {
                     val markerExitPattern = "__MINIS_DONE_${cb.marker}_EXIT_"
                     val markerIdx = text.indexOf(markerExitPattern)
 
                     if (markerIdx >= 0) {
-                        // Extract output before marker
                         val beforeMarker = text.substring(0, markerIdx)
                         cb.output.append(beforeMarker)
                         if (cb.lineCallback != null) {
                             feedLines(beforeMarker, cb.lineCallback)
                         }
 
-                        // Extract exit code from marker line
+                        // Exit code lives on the SAME line as the marker up to
+                        // "__\n"; find it in the remainder of this chunk
+                        // (marker line is usually atomic because echo writes
+                        // it in one syscall, but do not rely on that).
                         val afterMarker = text.substring(markerIdx)
-                        val exitCode = parseExitCode(afterMarker, cb.marker)
+                        val exitCode = parseExitCode(afterMarker, cb.marker) // -1 if absent
+                        // Where the terminated marker LINE ends (first \n at
+                        // or after the marker start); everything after it is
+                        // overshoot for a FUTURE command. lineEnd == -1 means
+                        // the marker line itself was cut by the chunk edge —
+                        // the tail after `text.length` will arrive next chunk,
+                        // so any complete-`__`-absent fragment stays in the
+                        // fold (see comment; parseExitCode already saw all of
+                        // the bytes present, which is the marker-body case).
+                        val lineEnd = text.indexOf('\n', markerIdx)
+                        if (lineEnd >= 0 && lineEnd + 1 < text.length) {
+                            pendingCarry.set(text.substring(lineEnd + 1))
+                        }
+                        text = "" // consumed (before + marker line + carry)
 
-                        // Signal completion
-                        cb.onComplete?.invoke(cb.output.toString(), exitCode)
-                        pendingCallback = null
+                        // [D-2/D-10] Single-shot completion via CAS: reader
+                        // wins iff it is the first to mark this callback done.
+                        if (cb.markDone()) {
+                            cb.onComplete?.invoke(cb.output.toString(), exitCode)
+                        }
+                        // commandState stays null — next writer may install a
+                        // fresh callback only AFTER its wrapped bytes (and any
+                        // queued env flush) are written under writeMutex.
                     } else {
+                        // No complete marker yet — but the chunk TAIL may hold
+                        // a marker CUT mid-way. If a partial marker fragment
+                        // is detected in what would be the last (unterminated)
+                        // part of the chunk, keep it in carry instead of
+                        // mis-delivering it to lineCallback/output twice
+                        // [D-3a] and losing it [D-3b].
+                        val splitIdx = lastSafeAppendIndex(text, cb.marker)
+                        if (splitIdx < text.length) {
+                            pendingCarry.set(text.substring(splitIdx))
+                            text = text.substring(0, splitIdx)
+                        }
                         cb.output.append(text)
                         if (cb.lineCallback != null) {
                             feedLines(text, cb.lineCallback)
                         }
+                        // Re-install the claimed callback: command not done.
+                        commandState.set(cb)
                     }
                 }
-                // If no pending callback, this is shell prompt noise — or, in
-                // release builds (redirectErrorStream=true), proot's own error
-                // output on a failed boot. Keep it in the ring buffer so a
-                // start failure can quote it; it is discarded otherwise.
-                if (cb == null) {
+                // [orphan] No live callback and nothing to claim: prompt noise,
+                // proot boot errors (release merged stderr), output of a
+                // command being drained after cancel (drain target keeps its
+                // own claim slot free until it re-arms — see executeCommand).
+                if (cb == null || cb.isDone) {
                     for (line in text.split('\n')) {
                         if (line.isNotBlank()) recordStderr(line.trimEnd('\r'))
                     }
@@ -420,28 +531,70 @@ class PersistentShell(
             Log.d(TAG, "Reader loop ended: ${e.message}")
         }
 
-        // Process exited
-        val cb = pendingCallback
-        if (cb != null) {
-            cb.onComplete?.invoke(cb.output.toString(), -1)
-            pendingCallback = null
+        // [D-2/D-10] Process exited: complete the in-flight callback ONCE via
+        // CAS, so reader-EOF concurrent with stop() cannot double-resume.
+        commandState.getAndSet(null)?.let { cb ->
+            if (cb.markDone()) {
+                cb.onComplete?.invoke(cb.output.toString(), -1)
+            }
         }
-
         process = null
         stdinWriter = null
         Log.i(TAG, "Persistent shell process exited")
     }
 
-    private fun feedLines(text: String, callback: (String) -> Unit) {
-        val lines = text.split('\n')
-        for (i in lines.indices) {
-            val line = lines[i].replace("\r", "")
-            if (line.isNotEmpty() && (i < lines.size - 1 || text.endsWith('\n'))) {
-                callback(line)
-            } else if (line.isNotEmpty() && i == lines.size - 1) {
-                // Partial line — still feed it for real-time updates
-                callback(line)
+    /**
+     * [D-2/D-10] CAS-style single-shot guard. Returns true iff this caller
+     * is the one that flips done=false -> done=true. Synchronized on the
+     * callback because readLoop dispatch and the stop() thread may race;
+     * the flag throws away the second completion regardless of who wins.
+     */
+    private fun CommandCallback.markDone(): Boolean {
+        synchronized(this) {
+            if (completed) return false
+            completed = true
+            return true
+        }
+    }
+
+    /**
+     * [D-3b] If the chunk tail contains a PREFIX of "__MINIS_DONE_{marker}_EXIT_"
+     * (a marker cut by the 4 KB read boundary), return the index from which
+     * those bytes start so they can be parked in carry until the remainder
+     * arrives in the next chunk. Returns [text] length if no fragment found.
+     *
+     * We only need to preserve the SHORTEST correct tail: the marker line is
+     * written by a single echo (one write syscall), so it can only ever be cut
+     * at a chunk boundary — never spliced mid-line by interleaved output.
+     */
+    private fun lastSafeAppendIndex(text: String, marker: String): Int {
+        val full = "__MINIS_DONE_${marker}_EXIT_"
+        val maxCheck = minOf(full.length - 1, text.length)
+        // Longest prefix first: the fragment closest to a complete marker.
+        for (len in maxCheck downTo 1) {
+            var isPrefix = true
+            for (i in 0 until len) {
+                if (text[text.length - len + i] != full[i]) {
+                    isPrefix = false
+                    break
+                }
             }
+            if (isPrefix) return text.length - len
+        }
+        return text.length
+    }
+
+    /**
+     * [D-3a] A trailing line WITHOUT '\n' is a partial: it stays in the output
+     * buffer and will be re-parsed together with its completing newline in the
+     * NEXT chunk. Emitting it now caused the same line to reach lineCallback
+     * twice (once as partial, once as complete). Only complete lines feed.
+     */
+    private fun feedLines(text: String, callback: (String) -> Unit) {
+        val complete = if (text.endsWith('\n')) text else text.substringBeforeLast('\n', "")
+        if (complete.isEmpty()) return
+        for (line in complete.split('\n').dropLast(1)) { // drop the empty tail after final \n
+            if (line.isNotEmpty()) callback(line.replace("\r", ""))
         }
     }
 
@@ -487,52 +640,126 @@ class PersistentShell(
     ): Pair<String, Int> {
         ensureStarted()
 
-        val writer = stdinWriter
-        if (writer == null || !isAlive) {
-            return Pair(shellNotRunningMessage(), -1)
-        }
+        // [D-1] One writer at a time. Everything below that touches the shell
+        // protocol (install callback, write wrapped command, flush env queue)
+        // happens inside this lock. The lock is NOT held while waiting for the
+        // command's END marker — other callers queue on the mutex instead, and
+        // the reader thread never takes it, so output keeps flowing.
+        writeMutex.lock()
 
-        val marker = UUID.randomUUID().toString().take(8)
-        val wrappedCommand = "$command\necho \"__MINIS_DONE_${marker}_EXIT_\$?__\"\n"
+        try {
+            // Re-check under the lock: the shell may have died while this
+            // caller waited for the mutex (stop() ran between our
+            // ensureStarted and this point).
+            val writer = stdinWriter
+            if (writer == null || !isAlive) {
+                return Pair(shellNotRunningMessage(), -1)
+            }
 
-        return withContext(Dispatchers.IO) {
-            val result = withTimeoutOrNull(timeout) {
-                suspendCancellableCoroutine { cont ->
-                    val cb = CommandCallback(
-                        marker = marker,
-                        lineCallback = lineCallback,
-                    )
-                    cb.onComplete = { output, exitCode ->
-                        if (cont.isActive) {
-                            cont.resume(Pair(output, exitCode))
+            val marker = UUID.randomUUID().toString().take(8)
+            val wrappedCommand = "$command\necho \"__MINIS_DONE_${marker}_EXIT_\$?__\"\n"
+
+            // [D-2 companion] Flush queued env writes at the idle->busy
+            // transition. FIFO order is preserved; a failed write keeps its
+            // entry (retry on the next transition) instead of corrupting the
+            // protocol stream.
+            flushPendingEnvLocked(writer)
+
+            val outcome = withContext(Dispatchers.IO) {
+                withTimeoutOrNull(timeout) {
+                    suspendCancellableCoroutine { cont ->
+                        val cb = CommandCallback(
+                            marker = marker,
+                            lineCallback = lineCallback,
+                        )
+                        cb.onComplete = { output, exitCode ->
+                            // [D-2/D-10] markDone() already gated the dispatch
+                            // (CAS in readLoop/EOF/stop), so this resume is
+                            // the single completion path; isActive only guards
+                            // an already-cancelled continuation.
+                            if (cont.isActive) {
+                                cont.resume(Pair(output, exitCode))
+                            }
                         }
-                    }
-                    pendingCallback = cb
+                        // [D-1] Install BEFORE writing the command bytes so no
+                        // output of this command can ever be orphaned ('cb
+                        // not yet set' window is closed by ordering: install
+                        // under writeMutex -> write -> flush).
+                        commandState.set(cb)
 
-                    cont.invokeOnCancellation {
-                        pendingCallback = null
-                    }
+                        cont.invokeOnCancellation {
+                            // [v2.3] Do NOT blindly clear the slot: a marker
+                            // fragment may already sit in pendingCarry and
+                            // the command is still running — the shell ONLY
+                            // recovers via drain (below) or watchdog.
+                            // Detach ONLY if we still own the slot.
+                            commandState.compareAndSet(cb, null)
+                        }
 
-                    try {
-                        writer.write(wrappedCommand)
-                        writer.flush()
-                    } catch (e: Exception) {
-                        pendingCallback = null
-                        if (cont.isActive) {
-                            cont.resume(Pair("[Write error: ${e.message}]", -1))
+                        try {
+                            writer.write(wrappedCommand)
+                            writer.flush()
+                        } catch (e: Exception) {
+                            commandState.compareAndSet(cb, null)
+                            if (cont.isActive) {
+                                cont.resume(Pair("[Write error: ${e.message}]", -1))
+                            }
                         }
                     }
                 }
             }
 
-            if (result == null) {
-                // Timeout — cancel pending, but don't kill the shell
-                pendingCallback = null
-                Pair("[Command timed out after ${timeout / 1000}s]", 124)
+            if (outcome == null) {
+                // [D-1] Timeout: the command keeps running shell-side; detach
+                // our callback if we still own the slot. Residual output goes
+                // to the orphan path; the next command's marker is unique so
+                // it can never adopt this command's late END marker.
+                val installed = commandState.get()
+                if (installed != null && installed.marker == marker) {
+                    commandState.compareAndSet(installed, null)
+                }
+                return Pair("[Command timed out after ${timeout / 1000}s]", 124)
             } else {
-                result
+                return outcome
+            }
+        } finally {
+            // [D-1] Release is AFTER protocol state is restored: either the
+            // marker dispatched (state already null) or we timed out /
+            // cancelled (state detached above). The next waiting command
+            // starts on a clean idle.
+            writeMutex.unlock()
+        }
+    }
+
+    /**
+     * [D-2 companion] Drain the pending-env queue at a safe boundary (called
+     * under writeMutex at the idle->busy transition). Retried entries stay
+     * queued on transient write errors; a hard shell death clears the whole
+     * queue (handled in stop()).
+     */
+    private fun flushPendingEnvLocked(writer: BufferedWriter) {
+        while (pendingEnv.isNotEmpty()) {
+            val (prevKeys, envVars) = pendingEnv.first()
+            try {
+                writeEnvLocked(writer, prevKeys, envVars)
+                pendingEnv.removeFirst()
+            } catch (e: Exception) {
+                Log.w(TAG, "Deferred env flush failed, will retry: ${e.message}")
+                break
             }
         }
+    }
+
+    /** Raw env-byte writer; caller holds writeMutex. */
+    private fun writeEnvLocked(writer: BufferedWriter, previousKeys: Set<String>, envVars: Map<String, String>) {
+        for (key in previousKeys - envVars.keys) {
+            writer.write("unset $key\n")
+        }
+        for ((key, value) in envVars) {
+            val escaped = value.replace("'", "'\\''")
+            writer.write("export $key='$escaped'\n")
+        }
+        writer.flush()
     }
 
     /**
@@ -554,23 +781,36 @@ class PersistentShell(
         previousKeys: Set<String> = emptySet(),
     ) {
         if (!isAlive) return
-        val writer = stdinWriter ?: return
-        withContext(Dispatchers.IO) {
-            try {
-                for (key in previousKeys - envVars.keys) {
-                    writer.write("unset $key\n")
-                }
-                for ((key, value) in envVars) {
-                    // Escape single quotes in values
-                    val escaped = value.replace("'", "'\\''")
-                    writer.write("export $key='$escaped'\n")
-                }
-                writer.flush()
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to apply env vars: ${e.message}")
+        // [D-2 companion] Serialize against executeCommand — both write shell
+        // protocol bytes to the same stdin. If a command is in flight, the
+        // env snapshot is QUEUED and flushed at the next idle->busy
+        // transition (broadcast* callers run outside the per-session
+        // command mutex, so this is the only ordering they get).
+        writeMutex.lock()
+        try {
+            val writer = stdinWriter ?: return
+            if (commandState.get() != null) {
+                // Command in flight: queue a snapshot and return. Repeated
+                // broadcasts for the same previousKeys overwrite the queued
+                // entry instead of growing the queue unboundedly (the latest
+                // snapshot wins — overlays are idempotent).
+                pendingEnv.removeAll { it.first == previousKeys }
+                pendingEnv.addLast(previousKeys to envVars)
+                return
             }
+            withContext(Dispatchers.IO) {
+                try {
+                    writeEnvLocked(writer, previousKeys, envVars)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to apply env vars: ${e.message}")
+                }
+            }
+        } finally {
+            writeMutex.unlock()
         }
     }
+
+
 
     /**
      * Stop the persistent shell.
@@ -589,13 +829,29 @@ class PersistentShell(
         val proc = process
         stdinWriter = null
         process = null
-        val cb = pendingCallback
-        pendingCallback = null
+        // [D-2/D-10] Claim the in-flight callback ATOMICALLY (not plain-read
+        // + null-write): a racing reader dispatch for the same marker must
+        // be impossible. CAS-based getAndSet(null) makes stop vs
+        // marker-dispatch mutually exclusive.
+        val cb = commandState.getAndSet(null)
+        // [v2.3] Residual carry bytes (partial marker / overshoot) are NOT
+        // silently dropped — they land in the stderr ring so post-mortem
+        // diagnostics can see what was buffered at kill time.
+        pendingCarry.getAndSet(null)?.let { carry ->
+            if (carry.isNotBlank()) recordStderr("[carry-dropped] $carry")
+        }
+        // [D-2 companion] Queued env snapshots belong to a dead shell.
+        pendingEnv.clear()
         killExecutor.execute {
             try { writer?.close() } catch (_: Exception) {}
             proc?.destroyForcibly()
             Log.i(TAG, "Persistent shell stopped (async kill)")
         }
-        cb?.let { it.onComplete?.invoke(it.output.toString(), -1) }
+        // Single-shot: markDone() here races a concurrent reader dispatch
+        // for the same callback — only the first CAS wins; the loser's
+        // onComplete never fires, so the caller's cont.resume happens once.
+        if (cb != null && cb.markDone()) {
+            cb.onComplete?.invoke(cb.output.toString(), -1)
+        }
     }
 }
