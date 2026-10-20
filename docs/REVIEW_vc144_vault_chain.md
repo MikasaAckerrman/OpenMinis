@@ -97,7 +97,67 @@ mutex.write не обогреваем? пишется сразу после set-
 (каждый находит свой output и exit от единственного соответствующего Wrapped-маркера, 0 потерянных),
 потом CI green (тоже с [quick] сообщением, отдельный коммит).
 
-## Ответы на контрольные вопросы юзера (по протоколу)
+## Дизайн v2 (протокол handshake) — готовит реализацию D-1/D-2/D-3/D-10, ждёт юзер-сигнал
+
+Ответы на 4 нюанса юзера — каждый превращён в ИНВАРИАНТ протокола:
+
+**Invariant-1 (race END vs следующий вызов):**
+AtomicReference<CommandState?> (atomic get/set/CAS — не volatile). Команда HANDOFF: reader делает
+`cb = state.getAndSet(null)` — забирает АТОМАРНО. Пока.getAndSet не выполнен: (а) следующий `executeCommand`
+висит в `mutex.lock()` (write-side очередь), (б) reader получает `state == null` → output попадает в буфер;
+маркер END с callback==null → orphan-обработка (D-orphans): бытность подтверждается только через размер буфера.
+Поэтому Handshake трёхчастный: haber (null -> busy) -> dispatch (getAndSet null) -> ack (writer single ack).
+
+**Invariant-2 (double complete CAS):**
+`completed: AtomicBoolean` и CAS(false → true) в единственности dispatch-пути. Если CAS fail — вызов
+отклонён. Reader делает CAS ДО resume; stop() — ИЖЕ ОДИН-ПУТЬ: если reader уже взял callback (state null) —
+stop() не может dispatch. Fix: cb.stopRequest = AtomicBoolean; оба пути (reader stop) упираются в CAS
+`cb.completed` — победитель один.
+
+**Invariant-3 (cancellation):**
+Caller Córants cancel happens in `invokeOnCancellation`:
+1. CAS state: busy → dead (без снятия with lock)
+2. pendingCallback autorelease: `state.getAndSet(null)` → null (потерять callback, чтобы reader не повесился)
+3. родившийся вывод: пишется в buffer, но НЕТ callback: теряется только буфер, не состояние; reader sees null.
+4.-orders состояние протокола «busy-with-cancelled-callback» cannot существовать: всегда либо callback
+.sendStatus(cc) атомарно забран, либо сброшен. Заблокированный reader может подцепить «нет callback» → тогда
+маркер END теряется, и вывод сбрасывается в buffer-илиphan. Протокол становится блокирующим: write-side
+(следующий executeCommand) ожидает `plain = state == null`, а reader перед следующим dispatch сбрасывает
+журнал END (не висит).
+	
+**Invariant-4 (pendingEnv lifecycle):**
+- pendingEnv применяется только между командами: перед следующим «busy-becomes» permission check:
+  `if (pendingEnv.isNotEmpty() && !writerBusy) { flush; }`, behind mutex write-side.
+- write error (IO exception при записи env в writer): pendingEnv НЕ очищается; создаётся retry — сдвиг
+  «нужен retry» на следующий turn; если writer сломался окончательно (isAlive==false), pendingEnv фиксируется
+  как объединение лога ошибки, no-op после next start.
+- stop() / killAll: весь pendingEnv очищается (потому что writer окончательно мёртв).
+- cancel алгоритм caller'а НЕ должен касаться pendingEnv (он общий для executeCommand, не per-client).
+
+**Резюме по контролюРасисма юзера:** дизайн v2:
+- Race atomic: AtomicReference.getAndSet (не volatile)
+- Double-complete: AtomicBoolean CAS (не Boolean)
+- Cancellation: state machine busy→dead + commit-before-requeue; reader никогда не держит ссылку на мёртвую callback.
+- pendingEnv: очередь, flush при переходе idle, безопасная остановка/каты и очистка при killAll.
+
+## Дизайн v2.1 (краевой случай readLoop, не меняющий v2-инварианты)
+
+**Найдено при повторной сверке readLoop** (строки 404+): reader читает `pendingCallback` ПЕРЕД обработкой
+каждого chunk. Крит-случай «chunk содержит маркер END **и** первые байты следующей команды»: при
+`getAndSet(null)` по достижению маркера остаток chunk-после-маркера потеряется.
+
+Протокол-фикс (добавка к v2, не отмена):
+- Reader: поиск маркера → `cb = state.getAndSet(null)` (атомарное снятие); **текст после маркер-строки
+  до конца chunk = carry** → `pendingCarry` (AtomicReference<String>), склеивается с началом СЛЕДУЮЩЕГО
+  chunk-а до парсинга (только ОДИН carry существует: writer-side mutex гарантирует серийность команд).
+- Reader-vs-reader race не существует (один readLoop-поток); reader-vs-writer закрыт handshake
+  (busy-set до write; END после конца write).
+- Crash-recovery: carry остался, а новой callback нет (writer умер) → carry сбрасывается в stop-лог
+  при stop(), не тихо теряется.
+
+**v2.1 статус:** инварианты v2 сохранены, добавлен carry-invariant. Все 5 вопросов (race, double-complete,
+cancellation, pendingEnv, carry) закрыты формально. Коммит: НЕТ кода, только этот док. signal у юзера —
+отдельное явное подтверждение.
 1. **Чего хочет юзер от vault-цепочки:** автостарт MCP-сервера Telegram внутри proot при старте приложения, без агент-вмешательства.
 2. **Что должен увидеть:** server.log «vault MCP launched» факт рабочего состояния, порт 7824 OPEN, RPC tools=20.
 3. **Соответствует ли реализация:** нет — текущее поведение после рестарта: лог печатается (566 б), порт CLOSED, execve denied первичен.
