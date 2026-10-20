@@ -38,7 +38,8 @@ class ShellProtocolEngineTest {
             val cb = arm(marker)
             // simulate writer: echo wrapped command then its output
             val output = "OUT_$i"
-            engine.feed(output + "\n")
+            engine.feed("$output\n")
+            println("DBG s1 i=$i marker=$marker buf=<${cb.output}>")
             // marker dispatch resets the slot; the buffered output keeps its
             // raw stream shape (trailing \n included) — contract matches
             // PersistentShell's StringBuilder semantics
