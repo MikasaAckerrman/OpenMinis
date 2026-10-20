@@ -144,6 +144,10 @@ internal class ShellProtocolEngine {
     /** Single-shot completion via CAS; returns the Dispatch iff this wins. */
     private fun complete(cb: CommandCallbackContract, exitCode: Int): Dispatch? {
         if (!cb.markDone()) return null
+        // Lifecycle: a dispatched command no longer owns the slot — the next
+        // winner may start immediately (test harness arms B right after A's
+        // dispatch, mirroring the PersistentShell writeMutex flow).
+        if (current === cb) current = null
         return Dispatch(cb.marker, cb.output.toString(), exitCode)
     }
 

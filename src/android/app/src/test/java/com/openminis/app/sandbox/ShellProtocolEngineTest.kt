@@ -39,10 +39,13 @@ class ShellProtocolEngineTest {
             // simulate writer: echo wrapped command then its output
             val output = "OUT_$i"
             engine.feed(output + "\n")
-            assertEquals(output, cb.output.toString())
+            // marker dispatch resets the slot; the buffered output keeps its
+            // raw stream shape (trailing \n included) — contract matches
+            // PersistentShell's StringBuilder semantics
+            assertEquals("$output\n", cb.output.toString())
             val d = engine.feed("__MINIS_DONE_${marker}_EXIT_${i % 100}__\n")
             assertEquals(i % 100, d!!.exitCode)
-            assertEquals(output, d.output)
+            assertEquals("$output\n", d.output)
             assertTrue(cb.isDone)
             // next command never sees residue
             assertNull(engine.feed("NEXT-CMD-BYTES\n"))
