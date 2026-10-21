@@ -69,6 +69,8 @@ internal class ShellProtocolEngine {
      * the CURRENT command). Exactly one carry chain — the caller serializes
      * command starts.
      */
+    // Thread-confined to the reader (feed/drainFold) + teardown
+    // (drainParked/reset) — see reset() note.
     private var carry: String? = null
 
     val marker: String? get() = current?.marker  // contract getter
@@ -244,6 +246,31 @@ internal class ShellProtocolEngine {
         return old
     }
 
+    /**
+     * [wiring] Hard protocol reset for shell-epoch teardown (stop()).
+     * Called only after detachCurrent() harvested the in-flight callback:
+     * clears drain + carry so a RESTARTED shell (same PersistentShell
+     * instance, new process) begins from a clean protocol state instead of
+     * inheriting a stale drain marker. Orphan log is preserved — it is
+     * read-only diagnostics.
+     */
+    fun reset() {
+        // Note: carry/drainMarker are reader-thread-written in normal opera-
+        // tion; reset() runs from stop()/EOF teardown where the reader is
+        // dying or dead, and the next shell epoch starts from a fresh feed.
+        // current/drainMarker are @Volatile (F4); plain carry is safe here
+        // because only drainParked()/reset() touch it cross-thread, both
+        // from the same teardown path.
+        drainMarker = null
+        carry = null
+    }
+
+    /** [wiring] Caller mirrored the accumulated orphan log — start a fresh
+     *  accumulation window so the next mirror reports only NEW entries. */
+    fun compactOrphanLog() {
+        orphanLog = null
+    }
+
     /** Single-shot completion via CAS; returns the Dispatch iff this wins. */
     private fun complete(cb: CommandCallbackContract, exitCode: Int): Dispatch? {
         if (!cb.markDone()) return null
@@ -305,6 +332,13 @@ internal class ShellProtocolEngine {
         val output: StringBuilder
         val lineCallback: ((String) -> Unit)?
         val isDone: Boolean
+
+        /**
+         * Exactly-once CAS completion gate (F2/F5/D-2/D-10). All completion
+         * paths — dispatch, EOF, stop, timeout-emulation — funnel through
+         * here; the loser of the race silently skips dispatch/resume.
+         */
         fun markDone(): Boolean
+
     }
 }
