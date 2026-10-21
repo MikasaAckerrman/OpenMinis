@@ -73,6 +73,11 @@ internal class ShellProtocolEngine {
     // (drainParked/reset) — see reset() note.
     private var carry: String? = null
 
+    /** D3: tail of a line whose '\n' has not arrived yet (reader-thread only,
+     *  like [carry]). Reset on command start/teardown so a half line can never
+     *  leak from one command into the next. */
+    private var pendingLine: StringBuilder? = null
+
     val marker: String? get() = current?.marker  // contract getter
 
     /** True while a cancelled/detached command's drain is pending (F2 gate):
@@ -164,7 +169,7 @@ internal class ShellProtocolEngine {
         carry = null
 
         val head = MARKER_PREFIX + cb.marker + MARKER_SUFFIX
-        val idx = text.indexOf(head)
+        val idx = findMarkerAtLineStart(text, head)
 
         if (idx >= 0) {
             // F3: the marker HEAD is present but the exit-code zone may still
@@ -182,12 +187,19 @@ internal class ShellProtocolEngine {
             }
             val before = text.substring(0, idx)
             cb.output.append(before)
+            // D1: the text that arrived in the SAME chunk as the END marker is
+            // still output of THIS command. Without this call the streaming
+            // subscriber silently lost the command's last output block.
+            feedLines(before, cb.lineCallback)
             val afterMarker = text.substring(idx)
             val exitCode = parseExitCode(afterMarker, cb.marker)
             if (lineEnd + 1 < text.length) {
                 // Overshoot belongs to a FUTURE command.
                 takeIfCarrying(text.substring(lineEnd + 1))
             }
+            // Flush a trailing partial line: at completion there is no next
+            // chunk to finish it (D3).
+            flushLine(cb.lineCallback)
             return complete(cb, exitCode)
         }
 
@@ -219,6 +231,7 @@ internal class ShellProtocolEngine {
                 "arm refused — wait for drain closure or stop the shell"
         }
         current = callback
+        pendingLine = null // a half line never leaks across commands (D3)
         // carry is NOT cleared here: byte-carry (post-normal-END overshoot)
         // belongs to the NEXT command per v2.3 invariant D — its bytes merge
         // into the new owner's buffer at the next fold. This is safe ONLY
@@ -263,6 +276,7 @@ internal class ShellProtocolEngine {
         // from the same teardown path.
         drainMarker = null
         carry = null
+        pendingLine = null
     }
 
     /** [wiring] Caller mirrored the accumulated orphan log — start a fresh
@@ -287,13 +301,34 @@ internal class ShellProtocolEngine {
      *  Line callbacks therefore never see the same line twice. */
     private fun feedLines(text: String, lineCallback: ((String) -> Unit)?) {
         if (lineCallback == null || text.isEmpty()) return
-        val completeText = if (text.endsWith("\n")) text else text.substringBeforeLast('\n', "")
-        if (completeText.isEmpty()) return
-        val lines = completeText.split('\n')
-        for (i in 0 until lines.size - 1) { // complete lines only (skip empty tail after final \n)
-            lineCallback(lines[i].trimEnd('\r'))
+        // D3: a line cut by a chunk boundary used to be DROPPED (the previous
+        // version emitted only up to the last '\n' of the current chunk and
+        // forgot the head). Accumulate the partial line across chunks and emit
+        // it exactly once, when its '\n' arrives.
+        val buf = pendingLine ?: StringBuilder().also { pendingLine = it }
+        var start = 0
+        for (i in text.indices) {
+            if (text[i] == '\n') {
+                buf.append(text, start, i)
+                lineCallback(buf.toString().trimEnd('\r'))
+                buf.setLength(0)
+                start = i + 1
+            }
         }
+        if (start < text.length) buf.append(text, start, text.length)
     }
+
+    /** Emit the still-unterminated tail (command completion / teardown). */
+    private fun flushLine(lineCallback: ((String) -> Unit)?) {
+        val buf = pendingLine ?: return
+        if (buf.isNotEmpty() && lineCallback != null) lineCallback(buf.toString().trimEnd('\r'))
+        buf.setLength(0)
+    }
+
+    /** Public for the driver EOF path: a process death leaves the pending
+     *  half line with no future chunk to complete it - emit it rather than
+     *  dropping the user-visible tail. */
+    fun flushOnDeath(lineCallback: ((String) -> Unit)?) = flushLine(lineCallback)
 
     private fun takeIfCarrying(bytes: String?) {
         if (!bytes.isNullOrEmpty()) carry = bytes
@@ -321,6 +356,20 @@ internal class ShellProtocolEngine {
             if (isPrefix) return text.length - len
         }
         return text.length
+    }
+
+    /** D4: the END marker is only trusted at the start of a line. A command
+     *  whose OUTPUT contains the literal marker text (cat of an old log,
+     *  `set -x`, an echo) must not complete the command early with a foreign
+     *  exit code. */
+    private fun findMarkerAtLineStart(text: String, head: String): Int {
+        var from = 0
+        while (true) {
+            val i = text.indexOf(head, from)
+            if (i < 0) return -1
+            if (i == 0 || text[i - 1] == '\n') return i
+            from = i + 1
+        }
     }
 
     data class Dispatch(val marker: String, val output: String, val exitCode: Int)

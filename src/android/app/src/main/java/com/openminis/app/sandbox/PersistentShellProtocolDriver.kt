@@ -125,10 +125,40 @@ internal class PersistentShellProtocolDriver(
         try {
             val buffer = ByteArray(4096)
             val stream = p.inputStream
+            // D2: raw bytes whose UTF-8 sequence is SPLIT by the 4096-byte
+            // buffer boundary used to be decoded per-chunk, producing U+FFFD
+            // replacement chars in the middle of multi-byte characters
+            // (Cyrillic/emoji). Hold the incomplete tail bytes and prepend
+            // them to the next chunk.
+            val remainder = java.io.ByteArrayOutputStream()
             while (true) {
                 val n = stream.read(buffer)
                 if (n < 0) break
-                val text = String(buffer, 0, n, Charsets.UTF_8)
+                // Find how many TRAILING bytes complete an unterminated
+                // multi-byte sequence at the chunk end.
+                var end = n
+                var i = n - 1
+                while (i >= 0 && i >= n - 4) {
+                    val b = buffer[i].toInt()
+                    if (b and 0xC0 == 0xC0) { // lead byte
+                        val len = when {
+                            b and 0xE0 == 0xC0 -> 2
+                            b and 0xF0 == 0xE0 -> 3
+                            b and 0xF8 == 0xF0 -> 4
+                            else -> 1
+                        }
+                        if (n - i < len) end = i // incomplete tail: hold it
+                        break
+                    }
+                    if (b and 0xC0 != 0x80) break // ASCII or standalone
+                    i--
+                }
+                remainder.write(buffer, 0, end)
+                val bytes = remainder.toByteArray()
+                remainder.reset()
+                if (end < n) remainder.write(buffer, end, n - end)
+                if (bytes.isEmpty()) continue
+                val text = String(bytes, Charsets.UTF_8)
 
                 // [WIRING] The ENTIRE protocol decision for this chunk —
                 // carry folding, marker split detection, exit-zone parking,
@@ -167,6 +197,16 @@ internal class PersistentShellProtocolDriver(
             Log.d(TAG, "Reader loop ended: ${e.message}")
         }
 
+        // D2-EOF: leftover accession bytes of a truncated final UTF-8
+        // sequence cannot be decoded (the process died mid-character);
+        // decode them with REPLACE so they surface as U+FFFD diagnostics
+        // instead of being silently dropped by the loop exit.
+        if (remainder.size() > 0) {
+            val tail = String(remainder.toByteArray(), Charsets.UTF_8)
+            if (tail.isNotEmpty()) protocol.feed(tail)
+            remainder.reset()
+        }
+
         // [D-2/D-10, WIRING] Process exited: protocol teardown — parked
         // fragments to diagnostics, single-resumer registry claim below.
         // [WIRING D-2/D-10] Single-resumer rule: whoever owns the registry
@@ -176,6 +216,10 @@ internal class PersistentShellProtocolDriver(
         // and the reader resumes; otherwise we own it and resume death.
         protocol.drainParked()?.let { parked -> diagnostics("orphan-at-eof: $parked") }
         protocol.detachCurrent()?.let { cb ->
+            // D3-EOF: a half line parked in pendingLine has no next chunk to
+            // complete it; emit it before the death resume so the subscriber
+            // still sees the command's last (unterminated) output line.
+            protocol.flushOnDeath(cb.lineCallback)
             val armed = claimForResume(cb.marker)
             if (armed != null && armed === cb) {
                 armed.resume?.invoke(armed.output.toString(), -1)
@@ -210,6 +254,11 @@ internal class PersistentShellProtocolDriver(
             if (carry.isNotBlank()) diagnostics("[carry-dropped] $carry")
         }
         val cb = protocol.detachCurrent()
+        // D3-stop: emit the parked half line BEFORE the death resumes, so
+        // the subscriber sees the unterminated tail exactly once (the
+        // reader-owner path did not fire because start/stop gates the
+        // writer thread here).
+        if (cb != null) protocol.flushOnDeath(cb.lineCallback)
         protocol.reset()
         // [WIRING stop] Registry harvest: every ARMED waiter gets death (-1)
         // exactly once. Blind clear() would orphan an entry the reader had

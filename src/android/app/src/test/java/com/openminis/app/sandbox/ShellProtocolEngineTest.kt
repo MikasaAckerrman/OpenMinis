@@ -208,8 +208,26 @@ class ShellProtocolEngineTest {
 
         val markerB = ShellProtocolEngine.newMarker()
         arm(markerB)
-        val dB = engine.feed("B-body__MINIS_DONE_${markerB}_EXIT_5__\n")
+        // D4: the END marker is trusted ONLY at the start of a line
+        // (a literal marker inside command OUTPUT must not complete it),
+        // so the late END must arrive on its own line.
+        val dB = engine.feed("B-body\n__MINIS_DONE_${markerB}_EXIT_5__\n")
         assertEquals(5, dB!!.exitCode)
+    }
+
+    @Test
+    fun `s10 marker inside line does not complete the command`() {
+        val marker = ShellProtocolEngine.newMarker()
+        val cb = arm(marker)
+        // A command's OUTPUT contains the literal marker text (cat of an old
+        // log, `set -x`): findMarkerAtLineStart must reject it because the
+        // marker is NOT at the start of its line.
+        val d = engine.feed("cat: __MINIS_DONE_${marker}_EXIT_0__\n")
+        assertNull("in-line marker is not a dispatch", d)
+        assertTrue("command is still running", !cb.isDone)
+        // The legit line-start marker still completes the command.
+        val dOk = engine.feed("__MINIS_DONE_${marker}_EXIT_2__\n")
+        assertEquals(2, dOk!!.exitCode)
     }
 
     // ==================== S7 (F1): post-END bytes of a CANCELLED command never contaminate the next ====================
