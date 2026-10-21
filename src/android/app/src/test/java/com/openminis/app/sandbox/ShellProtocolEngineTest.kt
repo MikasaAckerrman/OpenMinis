@@ -128,17 +128,30 @@ class ShellProtocolEngineTest {
     }
 
     // ==================== S5: смерть shell при непустом carry — bytes не потеряны ====================
+    // F8 rewrite: the old s5 stole the fragment via drainParked() BEFORE
+    // detaching, then only asserted identity — it never modeled the EOF path
+    // (fragment surviving the detach, available for diagnostics afterwards)
+    // and never fired the EOF completion. This version does the honest EOF:
+    // fragment feeds, command detaches (process death), the fragment must
+    // still be retrievable for diagnostics, and the callback is completed
+    // EXACTLY once (markDone true -> second completion refused).
 
     @Test
     fun `s5 death with nonempty carry preserves bytes for diagnostics`() {
         val marker = ShellProtocolEngine.newMarker()
         val cb = arm(marker)
         engine.feed("partial\n__MINIS_DO")
-        val parked = engine.drainParked()
-        assertEquals("__MINIS_DO", parked) // fragment не выброшен
-        // EOF-handler эквивалент: detach + явный -1 dispatch
+        // EOF: process dies mid-marker-fragment. Reader stops. PersistentShell
+        // detaches the in-flight command and completes it with an error/EOF.
         val detached = engine.detachCurrent()
-       assertSame(cb, detached)
+        assertSame(cb, detached)
+        // The parked fragment survives the detach and is retrievable for
+        // diagnostics (EOF handler must not throw the bytes away silently).
+        assertEquals("__MINIS_DO", engine.drainParked())
+        // EOF completion: callback fires exactly once; a second attempt
+        // (reader thread racing the EOF path) is refused by the CAS latch.
+        assertTrue(cb.markDone())
+        assertFalse(cb.markDone())
     }
 
     // ==================== S6: cancel-A → partial-END_A → cancel cleanup → remainder → B ====================
@@ -149,17 +162,27 @@ class ShellProtocolEngineTest {
         val cbA = arm(markerA)
         engine.feed("A-user-output\n")
         // A cancelled mid-marker-fragment: the fragment is part of the
-        // CURRENT carry (splitPoint path), not yet dispatched
+        // CURRENT carry (splitPoint path), not yet dispatched. It stays in
+        // the carry — NO drainParked() steal here (F6): the drain recogniser
+        // needs those bytes to reassemble the marker when the remainder
+        // arrives after cancel.
         engine.feed("__MINIS_DONE_" + markerA.take(3)) // fragment без хвоста
-        assertEquals("__MINIS_DONE_" + markerA.take(3), engine.drainParked())
-        // cancel cleanup: caller detaches; fragment MUST survive the swap
-        // (PersistentShell holds the fragment in pendingCarry, engine mirrors).
+        // cancel: detachCurrent atomically voids the slot AND (because the
+        // callback is not yet done) arms the drain target for late bytes.
         engine.detachCurrent()
 
-        // late remainder arrives while drained
+        // F2 writer-gate: arming the NEXT command while the drain of the
+        // cancelled one is still pending must be REFUSED — late bytes of A
+        // are still in flight and a parked A-marker fragment sits in carry
+        // (F10 trace: without the gate that fragment would fold into B).
+        assertFailsWith<IllegalStateException> { engine.start(ShellEngineCallback(ShellProtocolEngine.newMarker())) }
+        assertTrue(engine.isDraining)
+
+        // late remainder arrives while drained — closes the drain silently,
+        // dispatches nothing, and (F1) leaves NO residue in carry
         assertNull(engine.feed(markerA.substring(3) + "_EXIT_1__\n"))
 
-        // B arms: its output is exactly its own
+        // gate is open again: B arms and its output is EXACTLY its own
         val markerB = ShellProtocolEngine.newMarker()
         val cbB = arm(markerB)
         val dB = engine.feed("B-out\n__MINIS_DONE_${markerB}_EXIT_0__\n")
@@ -181,6 +204,62 @@ class ShellProtocolEngineTest {
         arm(markerB)
         val dB = engine.feed("B-body__MINIS_DONE_${markerB}_EXIT_5__\n")
         assertEquals(5, dB!!.exitCode)
+    }
+
+    // ==================== S7 (F1): post-END bytes of a CANCELLED command never contaminate the next ====================
+
+    @Test
+    fun `s7 drain overshoot bytes orphaned not carried into next command`() {
+        val markerA = ShellProtocolEngine.newMarker()
+        arm(markerA)
+        engine.feed("A-out\n")
+        engine.detachCurrent() // cancel: drain(A) armed, late bytes may come
+        assertTrue(engine.isDraining)
+        // Late chunk closes the drain AND carries A's own late tail — the
+        // tail must vanish into orphan diagnostics, NOT into carry (F1):
+        assertNull(engine.feed("__MINIS_DONE_${markerA}_EXIT_0__\nA-late-tail"))
+        val markerB = ShellProtocolEngine.newMarker()
+        arm(markerB)
+        val dB = engine.feed("B-out\n__MINIS_DONE_${markerB}_EXIT_0__\n")
+        assertEquals("B-out\n", dB!!.output)
+        // B must NOT contain ANY of A's late tail (F1 invariant):
+        assertFalse(dB.output.contains("A-late-tail"))
+        assertFalse(dB.output.contains("__MINIS_DONE_${markerA}"))
+    }
+
+    // ==================== S8 (F3): exit-code zone cut across chunks parks, real code preserved ====================
+
+    @Test
+    fun `s8 exit zone cut across chunks dispatches with the real code`() {
+        val marker = ShellProtocolEngine.newMarker()
+        val cb = arm(marker)
+        // head + "_EXIT_" WITHOUT the digit tail: must NOT dispatch. Old
+        // code fired exit=-1 immediately and the real code was lost forever.
+        assertNull(engine.feed("OUT\n__MINIS_DONE_${marker}_EXIT_"))
+        assertTrue(!cb.isDone)
+        // (remainder of chunk: digits + terminator complete the marker line)
+        val d2 = engine.feed("12__\n")
+        assertNotNull(d2)
+        assertEquals(12, d2!!.exitCode) // the REAL code, not -1
+        assertEquals("OUT\n", d2.output)
+    }
+
+    // ==================== S9 (F9): concurrent feed storm — exactly one dispatch ====================
+
+    @Test
+    fun `s9 storm feeds produce exactly one dispatch`() {
+        val marker = ShellProtocolEngine.newMarker()
+        arm(marker)
+        val wins = java.util.concurrent.atomic.AtomicInteger(0)
+        val threads = (1..8).map { i ->
+            Thread {
+                if (engine.feed("storm-$i\n__MINIS_DONE_${marker}_EXIT_0__\n") != null)
+                    wins.incrementAndGet()
+            }
+        }
+        threads.forEach { it.start() }
+        threads.forEach { it.join() }
+        assertEquals(1, wins.get())
     }
 }
 
