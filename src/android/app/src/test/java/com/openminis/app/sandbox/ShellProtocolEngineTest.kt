@@ -175,7 +175,13 @@ class ShellProtocolEngineTest {
         // cancelled one is still pending must be REFUSED — late bytes of A
         // are still in flight and a parked A-marker fragment sits in carry
         // (F10 trace: without the gate that fragment would fold into B).
-        assertFailsWith<IllegalStateException> { engine.start(ShellEngineCallback(ShellProtocolEngine.newMarker())) }
+        var gateRefused = false
+        try {
+            engine.start(ShellEngineCallback(ShellProtocolEngine.newMarker()))
+        } catch (expected: IllegalStateException) {
+            gateRefused = true
+        }
+        assertTrue(gateRefused)
         assertTrue(engine.isDraining)
 
         // late remainder arrives while drained — closes the drain silently,
