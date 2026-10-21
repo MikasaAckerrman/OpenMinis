@@ -491,8 +491,9 @@ class PersistentShell(
         // and the reader resumes; otherwise we own it and resume death.
         protocol.drainParked()?.let { parked -> recordStderr("orphan-at-eof: $parked") }
         protocol.detachCurrent()?.let { cb ->
-            if (claimForResume(cb.marker) === cb) {
-                cb.resume?.invoke(cb.output.toString(), -1)
+            val armed = claimForResume(cb.marker)
+            if (armed != null && armed === cb) {
+                armed.resume?.invoke(armed.output.toString(), -1)
             }
         }
         // Reader is dead: clear protocol epoch (carry/drain) so a RESTARTED
@@ -537,10 +538,11 @@ class PersistentShell(
      *  may not still be armed in the registry (reader may have claimed it a
      *  nanosecond earlier with a real Dispatch). Claim it back; if we won,
      *  resume with death — if the reader won, it resumed with real output. */
-    private fun dropResumeIfArmed(cb: CommandCallback?) {
+    private fun dropResumeIfArmed(cb: ShellProtocolEngine.CommandCallbackContract?) {
         if (cb == null) return
-        if (claimForResume(cb.marker) === cb) {
-            cb.resume?.invoke(cb.output.toString(), -1)
+        val armed = claimForResume(cb.marker)
+        if (armed != null && armed === cb) {
+            armed.resume?.invoke(armed.output.toString(), -1)
         }
     }
 
@@ -802,11 +804,6 @@ class PersistentShell(
             try { writer?.close() } catch (_: Exception) {}
             proc?.destroyForcibly()
             Log.i(TAG, "Persistent shell stopped (async kill)")
-        }
-        // Single-shot: markDone() races the reader dispatch — CAS winner
-        // resumes, loser never fires a second resume.
-        if (cb != null && cb.markDone()) {
-            cb.resume?.invoke(cb.output.toString(), -1)
         }
     }
 }
