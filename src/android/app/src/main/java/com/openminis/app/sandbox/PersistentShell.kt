@@ -19,10 +19,12 @@ import kotlinx.coroutines.sync.withLock
 
 /**
  * @Volatile-imports APPLIED (D-1..D-10 protocol patch, v2.3 design):
- * ShellProtocolEngine (single protocol owner: markers, carry, drain, dispatch
- * CAS), resumeRegistry (atomic per-marker continuation claims), Mutex to serialize
- * executeCommand + applyEnvironment writes (write-side only), CAS 'completed'
- * on CommandCallback for single-shot completion.
+ * PersistentShellProtocolDriver (protocol owner: ShellProtocolEngine, resume
+ * registry with atomic per-marker continuation claims, reader loop, EOF/stop
+ * teardown, process fields with the W-3 restart-race guard) and the write Mutex
+ * serializing executeCommand + applyEnvironment (write-side only). Extracted
+ * from the previous all-in-one class so integration acceptance tests can
+ * drive the wiring on the JVM without Android Context (docs 214-232).
  */
 
 
@@ -58,11 +60,19 @@ class PersistentShell(
             }
     }
 
-    @Volatile
-    private var process: Process? = null
-
-    @Volatile
-    private var stdinWriter: BufferedWriter? = null
+    // [WIRING extraction] Protocol-driving half split into
+    // PersistentShellProtocolDriver: the engine, the atomic resume registry
+    // (single-resumer claims), the reader loop, EOF/stop teardown and the
+    // process fields (incl. the W-3 restart-race guard) live there. This
+    // class keeps shell process SPAWNING (Context/RootfsManager/proot), the
+    // write mutex + suspension frame, env queue, stderr ring, kill executor.
+    private val driver = PersistentShellProtocolDriver(diagnostics = ::recordStderr)
+    private var process: Process?
+        get() = driver.process
+        set(value) { driver.process = value }
+    private var stdinWriter: BufferedWriter?
+        get() = driver.stdinWriter
+        set(value) { driver.stdinWriter = value }
 
     private val isStarting = AtomicBoolean(false)
 
@@ -75,7 +85,7 @@ class PersistentShell(
      * caller-side serialization ([writeMutex]) — zero duplicate protocol
      * logic remains in this class (acceptance 01).
      */
-    private val protocol = ShellProtocolEngine()
+    private val protocol: ShellProtocolEngine get() = driver.protocol
 
     /**
      * [D-1] Write-side serialization. ONLY caller coroutines take this lock —
@@ -96,15 +106,9 @@ class PersistentShell(
      */
     private val pendingEnv = ArrayDeque<Pair<Set<String>, Map<String, String>>>()
 
-    /**
-     * [WIRING] Activation records, shell-side: marker -> suspended caller's
-     * callback. The engine owns protocol state (slots, drain, carry); this
-     * registry owns the CONTINUATION mapping so a Dispatch (engine-side,
-     * produced by a reader thread that never sees suspend world) can be
-     * matched back to exactly one waiting executeCommand. Guarded by its own
-     * monitor — recordStderr/executeCommand/stop threads all touch it.
-     */
-    private val resumeRegistry = java.util.concurrent.ConcurrentHashMap<String, CommandCallback>()
+    // [WIRING extraction] Activation records (marker -> suspended caller's
+    // callback) moved into the driver's atomic resume registry; the shell
+    // reaches them only through the driver claim API (single-resumer model).
 
 
 
@@ -203,30 +207,9 @@ class PersistentShell(
     /** [diag] Read back the mount this shell was started with (frozen at boot). */
     fun debugBindMount(linuxPath: String): String? = sessionBindMounts[linuxPath]
 
-    /**
-     * [D-2/D-10] Single-shot command callback. `completed` is a CAS flag: the
-     * reader's marker dispatch and a concurrent stop()/EOF teardown both race
-     * for it, only ONE atomic registry claim wins and invokes resume exactly
-     * once. The losing path drops silently — resuming the caller's
-     * continuation twice is no longer possible even between the isActive
-     * check and resume (that check alone is not atomic).
-     */
-    private class CommandCallback(
-        override val marker: String,
-        override val output: StringBuilder = StringBuilder(),
-        override val lineCallback: ((String) -> Unit)?,
-    ) : ShellProtocolEngine.CommandCallbackContract {
-        /** Resumes the suspended executeCommand with (output, exitCode).
-         *  Called ONLY by the single markDone() winner → single resume by
-         *  construction (D-2/D-10). */
-        var resume: ((String, Int) -> Unit)? = null
-
-        /** Exactly-once CAS gate (Engine contract). */
-        private val done = java.util.concurrent.atomic.AtomicBoolean(false)
-        override val isDone: Boolean get() = done.get()
-        override fun markDone(): Boolean = done.compareAndSet(false, true)
-
-    }
+    // [WIRING extraction] CommandCallback now lives in the driver
+    // (internal class, same CAS single-shot contract) — see
+    // PersistentShellProtocolDriver.CommandCallback.
 
     /**
      * Ensure the persistent shell process is running.
@@ -436,81 +419,10 @@ class PersistentShell(
         Log.i(TAG, "Persistent shell started")
     }
 
-    private fun readLoop(p: Process) {
-        try {
-            val buffer = ByteArray(4096)
-            val stream = p.inputStream
-            while (true) {
-                val n = stream.read(buffer)
-                if (n < 0) break
-                val text = String(buffer, 0, n, StandardCharsets.UTF_8)
-
-                // [WIRING] The ENTIRE protocol decision for this chunk —
-                // carry folding, marker split detection, exit-zone parking,
-                // drain consumption, dispatch, orphan routing — happens in
-                // the Engine (single owner, acceptance 01). The reader thread
-                // only moves bytes and fires the single completion path.
-                val dispatch = protocol.feed(text)
-
-                // [WIRING orphans] Protocol violations and drain leftovers
-                // accumulate in the engine's orphan log; mirror whatever is
-                // there into the stderr ring (post-mortem diagnostics) and
-                // compact — the engine then accumulates from zero, so the
-                // next non-null log is by construction NEW bytes only.
-                protocol.orphanLog?.let { log ->
-                    if (log.isNotBlank()) {
-                        for (line in log.lines()) {
-                            if (line.isNotBlank()) recordStderr("orphan: $line")
-                        }
-                        protocol.compactOrphanLog()
-                    }
-                }
-
-                // [D-2/D-10] Resume ownership: the ENGINE flipped markDone()
-                // inside complete() (single CAS, dispatch funnel). Here the
-                // reader resolves the Dispatch to its suspended caller via
-                // the ATOMIC registry claim — claimForResume is the one and
-                // only resume gate; a racing stop()/EOF detach finds the
-                // registry entry already gone and resumes nothing.
-                if (dispatch != null) {
-                    claimForResume(dispatch.marker)?.let { cb ->
-                        cb.resume?.invoke(dispatch.output, dispatch.exitCode)
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            Log.d(TAG, "Reader loop ended: ${e.message}")
-        }
-
-        // [D-2/D-10, WIRING] Process exited: protocol teardown — parked
-        // fragments to diagnostics, single-resumer registry claim below.
-        // [WIRING D-2/D-10] Single-resumer rule: whoever owns the registry
-        // entry (atomic remove) resumes. detachCurrent harvests the protocol
-        // slot; then we claim OUR OWN marker back — if a racing reader
-        // already claimed it with a real Dispatch, claim returns null here
-        // and the reader resumes; otherwise we own it and resume death.
-        protocol.drainParked()?.let { parked -> recordStderr("orphan-at-eof: $parked") }
-        protocol.detachCurrent()?.let { cb ->
-            val armed = claimForResume(cb.marker)
-            if (armed != null && armed === cb) {
-                armed.resume?.invoke(armed.output.toString(), -1)
-            }
-        }
-        // Reader is dead: clear protocol epoch (carry/drain) so a RESTARTED
-        // shell begins clean instead of inheriting stale fragments.
-        protocol.reset()
-        // [W-3, review③] THE RESTART RACE: this teardown runs on the reader
-        // thread of the DEAD process. Meanwhile ensureStarted() may have
-        // already spawned a NEW process into these fields (process=p_new at
-        // startup). Nulling unconditionally would kill the live shell's
-        // bookkeeping (isAlive=false forever, steerInput dead). Only clear
-        // the fields if they still belong to THIS reader's process.
-        if (process === p) {
-            process = null
-            stdinWriter = null
-        }
-        Log.i(TAG, "Persistent shell process exited")
-    }
+    // [WIRING extraction] The reader loop and the EOF teardown live in the
+    // driver now (PersistentShellProtocolDriver.readLoop) — verbatim move,
+    // including the W-3 restart-race guard and the single-resumer claims.
+    private fun readLoop(p: Process) = driver.readLoop(p)
 
     /**
      * [WIRING, acceptance 01] The ONLY place where a Dispatch's marker is
@@ -519,40 +431,27 @@ class PersistentShell(
      * that same marker, keeping the activation record (resume continuation)
      * on the shell side while the protocol state stays engine-side.
      */
-    private fun claimForResume(marker: String): CommandCallback? = synchronized(resumeRegistry) {
-        resumeRegistry.remove(marker)
-    }
+    private fun claimForResume(marker: String): PersistentShellProtocolDriver.CommandCallback? =
+        driver.claimForResume(marker)
 
-    private fun armForResume(marker: String, cb: CommandCallback) = synchronized(resumeRegistry) {
-        resumeRegistry[marker] = cb
-    }
+    private fun armForResume(marker: String, cb: PersistentShellProtocolDriver.CommandCallback) =
+        driver.armForResume(marker, cb)
 
-    private fun dropResume(marker: String) = synchronized(resumeRegistry) {
-        resumeRegistry.remove(marker)
-    }
+    private fun dropResume(marker: String) = driver.dropResume(marker)
 
     /** [stop-path] Atomically harvest every still-armed activation record.
      *  Each removed entry is ours to resume: a concurrent reader Dispatch
      *  finds its entry already gone (claimForResume -> null) and skips —
      *  exactly one side of the race resumes. */
-    private fun claimAllResumes(): List<CommandCallback> = synchronized(resumeRegistry) {
-        val out = ArrayList<CommandCallback>(resumeRegistry.size)
-        out.addAll(resumeRegistry.values)
-        resumeRegistry.clear()
-        out
-    }
+    private fun claimAllResumes(): List<PersistentShellProtocolDriver.CommandCallback> =
+        driver.claimAllResumes()
 
     /** [stop-path] The in-flight callback harvested from the protocol may or
      *  may not still be armed in the registry (reader may have claimed it a
      *  nanosecond earlier with a real Dispatch). Claim it back; if we won,
      *  resume with death — if the reader won, it resumed with real output. */
-    private fun dropResumeIfArmed(cb: ShellProtocolEngine.CommandCallbackContract?) {
-        if (cb == null) return
-        val armed = claimForResume(cb.marker)
-        if (armed != null && armed === cb) {
-            armed.resume?.invoke(armed.output.toString(), -1)
-        }
-    }
+    private fun dropResumeIfArmed(cb: ShellProtocolEngine.CommandCallbackContract?) =
+        driver.dropResumeIfArmed(cb)
 
     /**
      * Execute a command in the persistent shell and wait for completion.
@@ -617,7 +516,7 @@ class PersistentShell(
             val outcome: Pair<String, Int>? = withContext(Dispatchers.IO) {
                 withTimeoutOrNull(timeout) {
                     suspendCancellableCoroutine { cont ->
-                        val cb = CommandCallback(
+                        val cb = driver.createCallback(
                             marker = marker,
                             lineCallback = lineCallback,
                         )
@@ -788,24 +687,10 @@ class PersistentShell(
         val proc = process
         stdinWriter = null
         process = null
-        // [v2.3, WIRING] Protocol teardown runs through the engine: parked
-        // drain fragments land in diagnostics (never silently dropped), the
-        // in-flight callback is claimed and completed ONCE via CAS — racing
-        // reader dispatch for the same marker loses silently.
-        protocol.drainParked()?.let { carry ->
-            if (carry.isNotBlank()) recordStderr("[carry-dropped] $carry")
-        }
-        val cb = protocol.detachCurrent()
-        protocol.reset()
-        // [WIRING D-2/D-10] Resume ALL still-armed callers — via the same
-        // single-resumer rule: an entry survives only if its Dispatch is
-        // already in flight to the reader (reader will claim it); every
-        // entry we manage to remove here gets resumed with death (-1).
-        // A blind clear() could orphan a dispatched-but-unclaimed callback
-        // into a hang; the claim loop cannot.
-        claimAllResumes().forEach { entry -> entry.resume?.invoke(entry.output.toString(), -1) }
-        dropResumeIfArmed(cb)
-
+        // [v2.3, WIRING extraction] Protocol teardown (parked fragments to
+        // diagnostics, in-flight claim, registry harvest, single-resumer
+        // death resumes) lives in the driver now — verbatim move.
+        driver.teardownForStop()
         // [D-2 companion] Queued env snapshots belong to a dead shell.
         pendingEnv.clear()
         killExecutor.execute {
