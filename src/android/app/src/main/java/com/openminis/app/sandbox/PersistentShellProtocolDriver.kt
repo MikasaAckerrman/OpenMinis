@@ -122,15 +122,16 @@ internal class PersistentShellProtocolDriver(
     // Reader loop (moved verbatim from PersistentShell.readLoop).
     // ---------------------------------------------------------------------------
     fun readLoop(p: Process) {
+        // D2: raw bytes whose UTF-8 sequence is SPLIT by the 4096-byte
+        // buffer boundary used to be decoded per-chunk, producing U+FFFD
+        // replacement chars in the middle of multi-byte characters
+        // (Cyrillic/emoji). Hold the incomplete tail bytes and prepend
+        // them to the next chunk. Declared OUTSIDE the try-block: the
+        // EOF path below decodes the leftovers after a reader exception.
+        val remainder = java.io.ByteArrayOutputStream()
         try {
             val buffer = ByteArray(4096)
             val stream = p.inputStream
-            // D2: raw bytes whose UTF-8 sequence is SPLIT by the 4096-byte
-            // buffer boundary used to be decoded per-chunk, producing U+FFFD
-            // replacement chars in the middle of multi-byte characters
-            // (Cyrillic/emoji). Hold the incomplete tail bytes and prepend
-            // them to the next chunk.
-            val remainder = java.io.ByteArrayOutputStream()
             while (true) {
                 val n = stream.read(buffer)
                 if (n < 0) break
