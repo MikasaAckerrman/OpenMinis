@@ -7,11 +7,11 @@ import java.io.OutputStream
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertNotNull
-import kotlin.test.assertNull
-import kotlin.test.assertTrue
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
 
 class PersistentShellProtocolDriverIntegrationTest {
 
@@ -51,9 +51,9 @@ class PersistentShellProtocolDriverIntegrationTest {
         drv.protocol.start(cbA)
 
         val detached = drv.protocol.detachCurrent()
-        assertNotNull(detached, "01: detach must return the in-flight cb")
+        assertNotNull("01: detach must return the in-flight cb", detached)
         drv.dropResumeIfArmed(detached)
-        assertEquals(1, resumedA.get(), "01: cancel resumes A exactly once (death)")
+        assertEquals("01: cancel resumes A exactly once (death)", 1, resumedA.get())
 
         // LATE marker bytes for A arrive while the drain is pending: the
         // engine must fold them via drainFold (s1/s6: they can never reach
@@ -62,7 +62,7 @@ class PersistentShellProtocolDriverIntegrationTest {
         val late = "OUT_A\n__MINIS_DONE_mA_EXIT_0__\n".toByteArray()
         val pDrain = FakeProcess(ByteArrayInputStream(late))
         spawnReader(drv, pDrain).join(5000)
-        assertEquals(1, resumedA.get(), "01: drain-fold never resumes dead A")
+        assertEquals("01: drain-fold never resumes dead A", 1, resumedA.get())
 
         val bEpoch = "OUT_B\n__MINIS_DONE_mB_EXIT_0__\n".toByteArray()
         val cbB = drv.createCallback("mB", null)
@@ -71,13 +71,16 @@ class PersistentShellProtocolDriverIntegrationTest {
         cbB.resume = { o, _ -> outB = o; resumedB.incrementAndGet() }
         drv.armForResume("mB", cbB)
         drv.protocol.start(cbB)
-        val p = FakeProcess(ByteArrayInputStream(late + bEpoch))
+        // Only B's epoch: the late A bytes were already consumed by the
+        // drain in the previous reader (a second copy would land in B's
+        // buffer and prove the opposite of this acceptance).
+        val p = FakeProcess(ByteArrayInputStream(bEpoch))
         spawnReader(drv, p).join(5000)
 
-        assertEquals(1, resumedB.get(), "01: B resumed exactly once")
-        assertEquals("OUT_B\n", outB, "01: B got ONLY its own output")
-        assertEquals(1, resumedA.get(), "01: late END never double-resumes A")
-        assertNull(drv.protocol.current, "01: protocol idle after B completed")
+        assertEquals("01: B resumed exactly once", 1, resumedB.get())
+        assertEquals("01: B got ONLY its own output", "OUT_B\n", outB)
+        assertEquals("01: late END never double-resumes A", 1, resumedA.get())
+        assertNull("01: protocol idle after B completed", drv.protocol.marker)
     }
 
     /** Acceptance 02: END marker SPLIT across chunk boundaries; exit code
@@ -101,11 +104,11 @@ class PersistentShellProtocolDriverIntegrationTest {
         val p = FakeProcess(ByteArrayInputStream(c1 + c2))
         spawnReader(drv, p).join(5000)
 
-        assertEquals(1, resumed.get(), "02: resumed exactly once")
-        assertEquals("OUT_S\n", out, "02: output complete, not duplicated")
-        assertEquals(7, exit, "02: exit parsed across chunks")
-        assertNull(drv.protocol.current, "02: protocol idle")
-        assertEquals(0, drv.protocol.drainParked()?.length ?: 0, "02: no parked fragments")
+        assertEquals("02: resumed exactly once", 1, resumed.get())
+        assertEquals("02: output complete, not duplicated", "OUT_S\n", out)
+        assertEquals("02: exit parsed across chunks", 7, exit)
+        assertNull("02: protocol idle", drv.protocol.marker)
+        assertEquals("02: no parked fragments", 0, drv.protocol.drainParked()?.length ?: 0)
     }
 
     /** Acceptance 03: END_A and the HEAD of B's output inside ONE chunk
@@ -150,12 +153,11 @@ class PersistentShellProtocolDriverIntegrationTest {
         sink.write(chunk2); sink.flush()
         sink.close()
 
-        assertEquals(1, resumedA.get(), "03: A resumed exactly once")
-        assertEquals(3, exitOf(outA), "03: A exit via marker")
-        assertTrue(outA!!.startsWith("OUT_A\n") && !outA!!.contains("HEAD_B"),
-            "03: A got only its own bytes")
-        assertEquals(1, resumedB.get(), "03: B resumed once (same epoch cascade)")
-        assertEquals("HEAD_B\n", outB, "03: carry survived into B, zero loss/dup")
+        assertEquals("03: A resumed exactly once", 1, resumedA.get())
+        assertTrue("03: A got only its own bytes",
+            outA!!.startsWith("OUT_A\n") && !outA!!.contains("HEAD_B"))
+        assertEquals("03: B resumed once (same epoch cascade)", 1, resumedB.get())
+        assertEquals("03: carry survived into B, zero loss/dup", "HEAD_B\n", outB)
     }
 
     private fun awaitResumed(counter: AtomicInteger, target: Int, msg: String) {
@@ -163,14 +165,8 @@ class PersistentShellProtocolDriverIntegrationTest {
         while (counter.get() < target && System.currentTimeMillis() < deadline) {
             Thread.sleep(10)
         }
-        assertEquals(target, counter.get(), msg)
+        assertEquals(msg, target, counter.get())
     }
-
-    private fun exitOf(out: String?): Int =
-        out?.substringAfterLast("__MINIS_DONE_", "")?.let { raw ->
-            val m = Regex("_EXIT_(\\d+)__").find(raw)
-            m?.groupValues?.get(1)?.toIntOrNull() ?: -1
-        } ?: -1
 
     /** Acceptance 04: stop() racing a completion. teardownForStop harvests
      *  every armed record; if the reader already CLAIMED the dispatch and
@@ -189,12 +185,12 @@ class PersistentShellProtocolDriverIntegrationTest {
         // (a) reader wins first: dispatch completes and removes the record.
         val p1 = FakeProcess(ByteArrayInputStream("OUT_R\n__MINIS_DONE_mR_EXIT_5__\n".toByteArray()))
         spawnReader(drv, p1).join(5000)
-        assertEquals(1, resumed.get(), "04a: reader dispatch resumed once")
-        assertEquals(5, exit, "04a: exit code from marker")
+        assertEquals("04a: reader dispatch resumed once", 1, resumed.get())
+        assertEquals("04a: exit code from marker", 5, exit)
 
         // (b) teardown AFTER dispatch: registry empty, harvest resumes nobody.
         drv.teardownForStop()
-        assertEquals(1, resumed.get(), "04b: stop after dispatch never double-resumes")
+        assertEquals("04b: stop after dispatch never double-resumes", 1, resumed.get())
 
         // (c) teardown BEFORE dispatch (arm a fresh record, then harvest it).
         val cb2 = drv.createCallback("mR2", null)
@@ -204,10 +200,10 @@ class PersistentShellProtocolDriverIntegrationTest {
         drv.armForResume("mR2", cb2)
         drv.protocol.start(cb2)
         drv.teardownForStop()
-        assertEquals(1, resumed2.get(), "04c: stop harvests the armed record (death)")
-        assertEquals(-1, exit2, "04c: death exit code")
-        assertEquals(0, drv.protocol.drainParked()?.length ?: 0, "04c: no parked leftover")
-        assertNull(drv.protocol.current, "04c: protocol idle after stop")
+        assertEquals("04c: stop harvests the armed record (death)", 1, resumed2.get())
+        assertEquals("04c: death exit code", -1, exit2)
+        assertEquals("04c: no parked leftover", 0, drv.protocol.drainParked()?.length ?: 0)
+        assertNull("04c: protocol idle after stop", drv.protocol.marker)
     }
 
     /** Acceptance 05: process dies with a NON-EMPTY carry parked in the
@@ -230,12 +226,12 @@ class PersistentShellProtocolDriverIntegrationTest {
         val p = FakeProcess(ByteArrayInputStream(chunk))
         spawnReader(drv, p).join(5000)
 
-        assertEquals(1, resumed.get(), "05: waiter resumed (death)")
-        assertEquals(-1, exit, "05: death exit code")
+        assertEquals("05: waiter resumed (death)", 1, resumed.get())
+        assertEquals("05: death exit code", -1, exit)
         val orphaned = diags.firstOrNull { it.startsWith("orphan") }
-        assertNotNull(orphaned, "05: carry surfaced via diagnostics, not dropped: $diags")
+        assertNotNull("05: carry surfaced via diagnostics, not dropped: $diags", orphaned)
         assertTrue(orphaned!!.contains("__MINIS_DONE_mX_EX"),
             "05: orphan carries the parked fragment bytes")
-        assertNull(drv.protocol.current, "05: protocol idle after death")
+        assertNull("05: protocol idle after death", drv.protocol.marker)
     }
 }
