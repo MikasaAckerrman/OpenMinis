@@ -134,24 +134,25 @@ class PersistentShellProtocolDriverIntegrationTest {
         val resumedB = AtomicInteger(0)
         var outB: String? = null
         cbB.resume = { o, _ -> outB = o; resumedB.incrementAndGet() }
-        drv.armForResume("mB", cbB)
 
         val headB = "HEAD_B\n"
+        // CANON: END_A and the HEAD of B inside ONE chunk (s4). A completes
+        // from the marker; the overshoot after the END line parks into carry.
         val chunk1 = ("OUT_A\n__MINIS_DONE_mA_EXIT_3__\n" + headB).toByteArray()
-        val chunk2 = "__MINIS_DONE_mB_EXIT_0__\n".toByteArray()
+        val chunk2 = ("__MINIS_DONE_mB_EXIT_0__\n").toByteArray()
         val stream = java.io.PipedInputStream()
         val sink = java.io.PipedOutputStream(stream)
         val p = FakeProcess(stream)
 
-        // Reader thread consumes the stream exactly as readLoop does.
-        spawnReader(drv, p)
+        val reader = spawnReader(drv, p)
         sink.write(chunk1); sink.flush()
-        // Writer-side: A's dispatch happened during chunk1's feed; arm B's
-        // engine slot now (RELEASE-slot semantics, discharge A first).
+        // A's dispatch happens inside the reader; then B takes the slot.
         awaitResumed(resumedA, 1, "03: A resumed from chunk1")
         drv.protocol.start(cbB)
         sink.write(chunk2); sink.flush()
         sink.close()
+        reader.join(5000)
+        awaitResumed(resumedB, 1, "03: B resumed once (carry folded into B)")
 
         assertEquals("03: A resumed exactly once", 1, resumedA.get())
         assertTrue("03: A got only its own bytes",
