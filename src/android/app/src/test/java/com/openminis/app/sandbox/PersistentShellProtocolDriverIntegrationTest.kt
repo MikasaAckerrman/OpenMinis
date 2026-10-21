@@ -230,8 +230,8 @@ class PersistentShellProtocolDriverIntegrationTest {
         assertEquals("05: death exit code", -1, exit)
         val orphaned = diags.firstOrNull { it.startsWith("orphan") }
         assertNotNull("05: carry surfaced via diagnostics, not dropped: $diags", orphaned)
-        assertTrue(orphaned!!.contains("__MINIS_DONE_mX_EX"),
-            "05: orphan carries the parked fragment bytes")
+        assertTrue("05: orphan carries the parked fragment bytes",
+            orphaned!!.contains("__MINIS_DONE_mX_EX"))
         assertNull("05: protocol idle after death", drv.protocol.marker)
     }
 }
