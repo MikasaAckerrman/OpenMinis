@@ -121,37 +121,40 @@ class PersistentShellProtocolDriverIntegrationTest {
         val cbA = drv.createCallback("mA", null)
         val resumedA = AtomicInteger(0)
         var outA: String? = null
-        cbA.resume = { o, _ -> outA = o; resumedA.incrementAndGet() }
+        var exitA = Int.MIN_VALUE
+        cbA.resume = { o, e -> outA = o; exitA = e; resumedA.incrementAndGet() }
         drv.armForResume("mA", cbA)
         drv.protocol.start(cbA)
 
-        // Pre-arm B's registry record, then push the reader through the SAME
-        // feed cascade the real readLoop uses: chunk1 completes A (marker +
-        // head of B in ONE chunk -> carry), the writer-side start(B) follows
-        // (exactly as executeCommand does under the writeMutex), then chunk2
-        // delivers B's END - zero loss, zero duplication (s4 semantics).
         val cbB = drv.createCallback("mB", null)
         val resumedB = AtomicInteger(0)
         var outB: String? = null
         cbB.resume = { o, _ -> outB = o; resumedB.incrementAndGet() }
 
         val headB = "HEAD_B\n"
-        // CANON (s4): A's END and B's head inside ONE chunk. Driven through
-        // the public feed() of the same engine instance the readLoop uses -
-        // deliberately NOT via a piped reader, because the OS may split or
-        // coalesce writer flushes arbitrarily and that would test the pipe,
-        // not the protocol (readLoop wiring is covered by i01/i02/i04/i05).
+        // CANON (s4): A's END and B's head inside ONE chunk. feed() returns
+        // the Dispatch; resolving it to the caller is the readLoop's job, so
+        // the test performs exactly that step (claim -> resume) - the same
+        // two calls the reader makes. A pipe is deliberately NOT used: the OS
+        // may split or coalesce flushes arbitrarily, which would test pipe
+        // scheduling instead of the protocol (reader wiring is covered by
+        // i01/i02/i04/i05).
         drv.armForResume("mB", cbB)
-        drv.protocol.feed("OUT_A\n__MINIS_DONE_mA_EXIT_3__\n" + headB)
+        val dA = drv.protocol.feed("OUT_A\n__MINIS_DONE_mA_EXIT_3__\n" + headB)
+        assertNotNull("03: A's END produced a dispatch", dA)
+        drv.claimForResume(dA!!.marker)!!.resume!!.invoke(dA.output, dA.exitCode)
 
         assertEquals("03: A resumed exactly once from the shared chunk", 1, resumedA.get())
+        assertEquals("03: A exit code from its own marker", 3, exitA)
         assertTrue("03: A got only its own bytes",
             outA!!.startsWith("OUT_A\n") && !outA!!.contains("HEAD_B"))
 
         // The carried head is handed to the NEXT owner at start(), then its
         // own END folds the buffer and resumes exactly once.
         drv.protocol.start(cbB)
-        drv.protocol.feed("__MINIS_DONE_mB_EXIT_0__\n")
+        val dB = drv.protocol.feed("__MINIS_DONE_mB_EXIT_0__\n")
+        assertNotNull("03: B's END produced a dispatch", dB)
+        drv.claimForResume(dB!!.marker)!!.resume!!.invoke(dB.output, dB.exitCode)
 
         assertEquals("03: B resumed exactly once", 1, resumedB.get())
         assertEquals("03: carry survived into B, zero loss/dup", "HEAD_B\n", outB)
