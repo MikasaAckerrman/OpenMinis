@@ -499,8 +499,16 @@ class PersistentShell(
         // Reader is dead: clear protocol epoch (carry/drain) so a RESTARTED
         // shell begins clean instead of inheriting stale fragments.
         protocol.reset()
-        process = null
-        stdinWriter = null
+        // [W-3, review③] THE RESTART RACE: this teardown runs on the reader
+        // thread of the DEAD process. Meanwhile ensureStarted() may have
+        // already spawned a NEW process into these fields (process=p_new at
+        // startup). Nulling unconditionally would kill the live shell's
+        // bookkeeping (isAlive=false forever, steerInput dead). Only clear
+        // the fields if they still belong to THIS reader's process.
+        if (process === p) {
+            process = null
+            stdinWriter = null
+        }
         Log.i(TAG, "Persistent shell process exited")
     }
 
