@@ -225,6 +225,35 @@ drain-завершения; END_A и B не могут встречаться в
    затем все ожидающие callbacks получают onComplete(смерть, exit=-1) либо ошибку из
    executeCommand (isAlive=false check), очереди не висят.
 
+## WIRING ПЛАН (подготовлен по запросу юзера; БЕЗ кода до сигнала)
+
+Юзер-статус: этап (a) PASS по отчёту (run 39483947146 SUCCESS на acccf94); wiring — следующий
+отдельный этап, "пока не выполнен и не одобрен". Подготовка = документ. Код не менять.
+
+**Five обяз. проверок после wiring (приёмка интеграции):**
+1. Engine — единственный владелец протокольного состояния в PS (нет параллельной реализации).
+2. cancel сохраняет частичный фрагмент маркера.
+3. late END_A (после timeout) не завершает B.
+4. resume защищён CAS от гонок reader/dispatch/stop.
+5. Все пути завершения освобождают слот и continuation; зависших continuation нет.
+
+**Маппинг (реальные точки из кода, строки PS 452-640):**
+| PS (текущий) | Engine (делегирование) |
+|---|---|
+| `commandState: AtomicReference` claim getAndSet (460, 517, 536, 688) | `engine.start(cb)` / `engine.detachCurrent()` (slot-правила уже в Engine) |
+| dispatch-блок readLoop 460-517 (getAndSet + markersplit + overshoot + complete-CAS) | `engine.feed(chunk)` — один вызов |
+| `lastSafeAppendIndex` + `pendingCarry` + `feedLines` (585-620) | удалены из PS (Engine содержит: splitPoint/park/feedLines D-3a) |
+| stop() 536-560 (CAS claim + kill + markDone) | `engine.detachCurrent()` + engine.feed(EOF-маркер park) + pendingEnv.clear() — похоже, всё есть |
+| pendingEnv/flushPendingEnvLocked | остаётся в PS (не протокол; serialization env) |
+| CommandCallback class | реализует `CommandCallbackContract` (marker/output/lineCallback/isDone/markDone — все есть) |
+| DBG-вывод PS | НЕ в stdout — только в CI harness (юзер-замечание) |
+
+**Чего не хватает в Engine для wiring:** ничего критичного; нужен только один мелкий bridge: EOF-парковка при process.death (PS читает InputStream напрямую; по смерти вызывает `engine.feed(<EOF-marker-парковка>)` — уже покрыта s5, псевдо-маршрут "engineering-fed EOF chunk" = через feed('') с текущей семантикой park; уточнить test-ом на интеграционном пути).
+
+**Интеграционный тест-план:** PersistentShellEngineIntegrationTest (JVM, Android-unavailable): mock Process с подготовленными потоками. Один счастливый сценарий на каждую из пяти проверок (5 тестов), точная симуляция событий: dispatch атомарный wakeup reader-thread, cancel-vs-dispatch-гонка, late-END, stop-vs-EOF.
+К организмическим причинам: run через gradle `testCloneUnitTest --tests "*PersistentShellEngineIntegrationTest*"`.
+**Не смешивать с:** TVM/MinisApp (D-4/D-5/D-12), telegram.py D-6..11, loader-диагностика (b) — отдельные сигналы.
+
 ## РЕАЛИЗАЦИЯ (a) ЗАВЕРШЕНА И ПРИНЯТА CI (коммиты 50911d0 → acccf94; run 39483947146 SUCCESS)
 
 PersistentShell.kt D-1/D-2/D-3/D-10 — реализовано; ShellProtocolEngine — выделенный протокол-движок;
