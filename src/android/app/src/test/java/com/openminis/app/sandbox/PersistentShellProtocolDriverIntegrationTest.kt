@@ -136,37 +136,25 @@ class PersistentShellProtocolDriverIntegrationTest {
         cbB.resume = { o, _ -> outB = o; resumedB.incrementAndGet() }
 
         val headB = "HEAD_B\n"
-        // CANON: END_A and the HEAD of B inside ONE chunk (s4). A completes
-        // from the marker; the overshoot after the END line parks into carry.
-        val chunk1 = ("OUT_A\n__MINIS_DONE_mA_EXIT_3__\n" + headB).toByteArray()
-        val chunk2 = ("__MINIS_DONE_mB_EXIT_0__\n").toByteArray()
-        val stream = java.io.PipedInputStream()
-        val sink = java.io.PipedOutputStream(stream)
-        val p = FakeProcess(stream)
+        // CANON (s4): A's END and B's head inside ONE chunk. Driven through
+        // the public feed() of the same engine instance the readLoop uses -
+        // deliberately NOT via a piped reader, because the OS may split or
+        // coalesce writer flushes arbitrarily and that would test the pipe,
+        // not the protocol (readLoop wiring is covered by i01/i02/i04/i05).
+        drv.armForResume("mB", cbB)
+        drv.protocol.feed("OUT_A\n__MINIS_DONE_mA_EXIT_3__\n" + headB)
 
-        val reader = spawnReader(drv, p)
-        sink.write(chunk1); sink.flush()
-        // A's dispatch happens inside the reader; then B takes the slot.
-        awaitResumed(resumedA, 1, "03: A resumed from chunk1")
-        drv.protocol.start(cbB)
-        sink.write(chunk2); sink.flush()
-        sink.close()
-        reader.join(5000)
-        awaitResumed(resumedB, 1, "03: B resumed once (carry folded into B)")
-
-        assertEquals("03: A resumed exactly once", 1, resumedA.get())
+        assertEquals("03: A resumed exactly once from the shared chunk", 1, resumedA.get())
         assertTrue("03: A got only its own bytes",
             outA!!.startsWith("OUT_A\n") && !outA!!.contains("HEAD_B"))
-        assertEquals("03: B resumed once (same epoch cascade)", 1, resumedB.get())
-        assertEquals("03: carry survived into B, zero loss/dup", "HEAD_B\n", outB)
-    }
 
-    private fun awaitResumed(counter: AtomicInteger, target: Int, msg: String) {
-        val deadline = System.currentTimeMillis() + 5000
-        while (counter.get() < target && System.currentTimeMillis() < deadline) {
-            Thread.sleep(10)
-        }
-        assertEquals(msg, target, counter.get())
+        // The carried head is handed to the NEXT owner at start(), then its
+        // own END folds the buffer and resumes exactly once.
+        drv.protocol.start(cbB)
+        drv.protocol.feed("__MINIS_DONE_mB_EXIT_0__\n")
+
+        assertEquals("03: B resumed exactly once", 1, resumedB.get())
+        assertEquals("03: carry survived into B, zero loss/dup", "HEAD_B\n", outB)
     }
 
     /** Acceptance 04: stop() racing a completion. teardownForStop harvests
