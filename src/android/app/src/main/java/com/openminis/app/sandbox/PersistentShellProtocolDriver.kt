@@ -76,6 +76,7 @@ internal class PersistentShellProtocolDriver(
         @Volatile var resume: ((String, Int) -> Unit)? = null
         private val done = AtomicBoolean(false)
         override fun markDone(): Boolean = done.compareAndSet(false, true)
+        override val isDone: Boolean get() = done.get()
     }
 
     fun createCallback(
