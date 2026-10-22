@@ -10,6 +10,7 @@ import android.os.SystemClock
 import android.view.InputDevice
 import android.view.MotionEvent
 import com.openminis.app.BuildConfig
+import com.openminis.app.diagnostics.AllocProbe
 import com.openminis.app.diagnostics.JankMonitor
 import com.openminis.app.logging.AppLogger
 import com.openminis.app.sandbox.ExecutionCoordinator
@@ -151,6 +152,17 @@ class DebugRPCHandler(private val context: Context) {
                 }
             }
             "debug.jankReset" -> { JankMonitor.resetWindow(); JSONObject().put("reset", true) }
+            // [T-gc-churn] Allocation-rate probe. The 19.10 logcat showed 70-140MB
+            // freed every ~1.5s with a flat post-GC heap, which reads as churn,
+            // but no log line can prove churn vs a bounded leak. This returns the
+            // live allocation RATE plus the live set, so repeated calls during a
+            // long session separate the two: a leak grows liveSetMB, churn does not.
+            "debug.alloc.measure" -> {
+                val interval = params.optLong("intervalMs", 3000L)
+                AllocProbe.measure(interval)
+            }
+            "debug.alloc.rate" -> AllocProbe.rate()
+            "debug.alloc.snapshot" -> AllocProbe.snapshot()
             "debug.agentTrace" -> handleAgentTrace(params)
             "debug.fetch" -> handleFetch(params)
             "debug.shellExecute" -> handleShellExecute(params)

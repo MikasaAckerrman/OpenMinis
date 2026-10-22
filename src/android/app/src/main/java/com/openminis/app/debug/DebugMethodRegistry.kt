@@ -45,6 +45,29 @@ object DebugMethodRegistry {
 
     private val DEBUG_ONLY_METHODS: List<MethodSpec> = listOf(
         MethodSpec(
+            name = "debug.alloc.measure",
+            description = "DEBUG-only: measure the live allocation RATE over a window and report it with the live set. Separates GC churn (high rate, flat live set) from a leak (live set grows) — the question logcat GC lines cannot answer.",
+            params = listOf(
+                ParamSpec("intervalMs", "number", required = false, default = 3000L, description = "Sampling window, clamped to [200, 60000]. Default 3000."),
+            ),
+            returns = "{javaHeapUsedMB, javaHeapMaxMB, nativeHeapMB, allocatedTotalMB, allocDeltaMB, allocRateMBps, liveSetStartMB, liveSetEndMB, liveSetDeltaMB}",
+            example = ex("intervalMs" to 3000L),
+        ),
+        MethodSpec(
+            name = "debug.alloc.rate",
+            description = "DEBUG-only: allocation rate between two calls of this method — no sleeping. Chain it after debug.alloc.measure to track a long session without blocking.",
+            params = emptyList(),
+            returns = "{allocDeltaMB, allocRateMBps, sinceMs, javaHeapUsedMB, ...}",
+            example = ex(),
+        ),
+        MethodSpec(
+            name = "debug.alloc.snapshot",
+            description = "DEBUG-only: instantaneous heap counters (java used/max/free%, native heap, process-lifetime allocated bytes). Zero cost, safe to poll.",
+            params = emptyList(),
+            returns = "{javaHeapUsedMB, javaHeapTotalMB, javaHeapMaxMB, javaHeapFreePct, nativeHeapMB, allocatedTotalMB, uptimeMs}",
+            example = ex(),
+        ),
+        MethodSpec(
             name = "debug.shizuku.exec",
             description = "DEBUG-only: invoke ShizukuOffloadHandler directly with the given argv (T344). Bypasses the agent loop for e2e harness verification of android-shizuku-cli.",
             params = listOf(

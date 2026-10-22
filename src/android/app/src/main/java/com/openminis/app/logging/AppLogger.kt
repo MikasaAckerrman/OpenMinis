@@ -25,8 +25,43 @@ object AppLogger {
     // (d83bc894). The previous 14 came from the March parity-scaffolding
     // batch with no recorded rationale — plain historical drift, not intent.
     private const val MAX_AGE_DAYS = 15
-    private val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.US)
-    private val timestampFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
+    /**
+     * SimpleDateFormat is NOT thread-safe. Logging runs concurrently from the
+     * UI thread, several coroutine dispatchers and the LogcatTailer sink
+     * thread, and the three writers below shared ONE formatter instance, so a
+     * concurrent format could emit a torn date (or throw). writeFileLine was
+     * already @Synchronized; log() and writeLogcatLine() were not.
+     *
+     * [T-gc-churn] One formatter set per thread, created once: the hot path
+     * no longer allocates a formatter per line, and no longer formats the
+     * day label twice per line (the day label is cached until the epoch day
+     * rolls over, so only the millisecond stamp is rebuilt).
+     */
+    internal class Formatters {
+        val day = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+        val stamp = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
+        @Volatile var dayKey: Long = Long.MIN_VALUE
+        @Volatile var dayLabel: String = ""
+
+        /** Day label for [millis], formatted only when the day changed. */
+        fun dayLabel(millis: Long): String {
+            val key = millis / 86_400_000L
+            if (key != dayKey) {
+                dayLabel = synchronized(this) {
+                    if (key != dayKey) {
+                        dayLabel = day.format(Date(millis))
+                        dayKey = key
+                    }
+                    dayLabel
+                }
+            }
+            return dayLabel
+        }
+    }
+
+    private val formattersTls = object : ThreadLocal<Formatters>() {
+        override fun initialValue(): Formatters = Formatters()
+    }
 
     private const val PREF_NAME = "logging_prefs"
     private const val KEY_ENABLED = "logging_enabled"
@@ -147,7 +182,7 @@ object AppLogger {
         }
         try {
             val now = Date()
-            val today = dateFormat.format(now)
+            val today = formattersTls.get()!!.dayLabel(now.time)
             val w = getWriter(today)
             w.println("[LOGCAT] $rawLine")
             w.flush()
@@ -220,8 +255,10 @@ object AppLogger {
         if (!enabled) return
         try {
             val now = Date()
-            val today = dateFormat.format(now)
-            val timestamp = timestampFormat.format(now)
+            val nowMs = now.time
+            val f = formattersTls.get()!!
+            val today = f.dayLabel(nowMs)
+            val timestamp = f.stamp.format(Date(nowMs))
             val w = getWriter(today)
             w.println("[$timestamp] [$channel] $line")
             w.flush()
@@ -275,8 +312,10 @@ object AppLogger {
 
     private fun log(level: String, category: String, message: String) {
         val now = Date()
-        val today = dateFormat.format(now)
-        val timestamp = timestampFormat.format(now)
+        val f = formattersTls.get()!!
+        val nowMs = now.time
+        val today = f.dayLabel(nowMs)
+        val timestamp = f.stamp.format(Date(nowMs))
 
         // Also output to logcat
         val logcatTag = "Minis.$category"
