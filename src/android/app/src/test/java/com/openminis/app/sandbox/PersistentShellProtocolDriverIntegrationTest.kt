@@ -299,7 +299,11 @@ class PersistentShellProtocolDriverIntegrationTest {
         // the filler chunk, and the lead byte arrives in its own 1-byte
         // read followed by the rest - the real split the D2 decode-carry
         // exists for (lead-only remainder, continuation next chunk).
-        val filler = "a".repeat(4095)
+        // 4094 filler chars + LF = exactly 4095 bytes, so the geometry is
+        // unchanged (lead still lands on body[4095]) but every line before
+        // the split one is COMPLETE: an unterminated 4095-char run would
+        // pile up in pendingLine and change what the engine folds.
+        val filler = "a".repeat(4094) + "\n"
         val tail = "ЖИЛ-БЫЛ-КОТ..ok\n__MINIS_DONE_mU_EXIT_3__\n"
         val body = (filler + tail).toByteArray()
         // sanity: the split point really falls INSIDE a 2-byte sequence
@@ -314,15 +318,15 @@ class PersistentShellProtocolDriverIntegrationTest {
         val got = out.get()
         assertNotNull("07: waiter received the folded output (resumed=$resumed exit=$exit)", got)
         val text = got!!
-        assertEquals("07: waiter resumed once", 1, resumed.get())
-        assertEquals("07: exit parsed", 3, exit.get())
+        assertEquals("07: waiter resumed once (exit=$exit)", 1, resumed.get())
+        assertEquals("07: exit parsed (resumed=$resumed)", 3, exit.get())
         // The mojibake U+FFFD must not appear anywhere: the lead byte held
         // in remainder met its continuation in the next chunk.
         assertFalse("07: no U+FFFD", text.contains('\uFFFD'))
         assertTrue("07: split char restored", text.contains("ЖИЛ-БЫЛ"))
         assertTrue(
             "07: filler intact",
-            text.startsWith("a".repeat(4095))
+            text.startsWith("a".repeat(4094) + "\n")
         )
     }
 
