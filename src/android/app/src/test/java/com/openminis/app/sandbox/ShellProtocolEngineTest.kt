@@ -107,9 +107,13 @@ class ShellProtocolEngineTest {
         assertEquals("OUT\n", d.output) // до полного маркера — только вывод
         // звонок: overshoot идёт в carry и выдаётся НОВОЙ команде
         val cb2 = arm(ShellProtocolEngine.newMarker())
-        val d2 = engine.feed("__MINIS_DONE_${cb2.marker}_EXIT_0__\n")
+        // D4: markers are trusted only at a line start. The real driver
+        // always emits the wrapped marker after a newline (persistent
+        // shell writes "cmd\necho \"__MINIS_DONE...\""), so feed the
+        // follow-up marker the same way: carry 'next-begins' + '\n'.
+        val d2 = engine.feed("\n__MINIS_DONE_${cb2.marker}_EXIT_0__\n")
         assertNotNull(d2)
-        assertEquals("next-begins", d2!!.output)
+        assertEquals("next-begins\n", d2!!.output)
     }
 
     // ==================== S4: END_A + начало B в одном chunk — без потерь/дублей ====================
