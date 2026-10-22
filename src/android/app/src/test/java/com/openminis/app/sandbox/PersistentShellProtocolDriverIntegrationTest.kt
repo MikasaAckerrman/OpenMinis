@@ -281,9 +281,9 @@ class PersistentShellProtocolDriverIntegrationTest {
         val drv = PersistentShellProtocolDriver { diags.add(it) }
         val out = java.util.concurrent.atomic.AtomicReference<String?>(null)
         val resumed = AtomicInteger(0)
-        val exit = AtomicInteger(-77)
+        val exit = AtomicInteger(-77) // -77 = never resumed
         val cb = drv.createCallback("mU", null)
-        cb.resume = { o, _ -> out.set(o); resumed.incrementAndGet() }
+        cb.resume = { o, e -> out.set(o); exit.set(e); resumed.incrementAndGet() }
         drv.armForResume("mU", cb)
         // [root-cause] Without this the protocol has NO current command, so
         // every incoming byte is idle-gap data: it is parked as orphan and
