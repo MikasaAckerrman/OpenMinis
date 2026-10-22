@@ -14,7 +14,7 @@ import java.util.concurrent.atomic.AtomicReference
  * readLoop delegates the same logic to ShellProtocolEngine, so these tests
  * exercise the production path without an Android process.
  */
-// Trigger for the [test] path-filter: full JVM run after D1-D4 fixes.
+// Full-JVM trigger: verifies D1-D4 fixes + s3 line-start contract rework.
 class ShellProtocolEngineTest {
 
     private lateinit var engine: ShellProtocolEngine
