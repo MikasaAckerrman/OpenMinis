@@ -319,7 +319,7 @@ class PersistentShellProtocolDriverIntegrationTest {
         assertNotNull("07: waiter received the folded output (resumed=$resumed exit=$exit)", got)
         val text = got!!
         assertEquals("07: waiter resumed once (exit=$exit)", 1, resumed.get())
-        assertEquals("07: exit parsed (resumed=$resumed)", 3, exit.get())
+        assertEquals("07: exit parsed (resumed=$resumed got=${got!!.take(40)})", 3, exit.get())
         // The mojibake U+FFFD must not appear anywhere: the lead byte held
         // in remainder met its continuation in the next chunk.
         assertFalse("07: no U+FFFD", text.contains('\uFFFD'))
