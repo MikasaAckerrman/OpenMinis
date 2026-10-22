@@ -386,13 +386,14 @@ class PersistentShellProtocolDriverIntegrationTest {
     }
 
     /** Reader-side stream wrapper: real 4096-boundary splitter.
-     *  Every read() is capped at [limit] bytes; in [cutPos..cutEnd] every
-     *  read() returns at most ONE byte, forcing the driver's 4096-byte
-     *  chunk boundary to land between cutPos and cutPos+1 (inside a
-     *  multi-byte UTF-8 char when the geometry is chosen right).
-     *  ByteArrayInputStream alone never splits (it fills the whole
-     *  buffer), so without this wrapper the decode-carry is exercised
-     *  only by the decoder, not through the real stream path. */
+     *  Every read() is capped at [limit] bytes. Between positions
+     *  cutPos and cutEnd each read returns at most ONE byte, so the
+     *  driver's 4096-byte chunk boundary lands exactly between
+     *  cutPos and cutPos+1 - inside a multi-byte UTF-8 char when the
+     *  geometry is chosen right. ByteArrayInputStream alone never
+     *  splits (it fills the whole buffer), so without this wrapper
+     *  the decode-carry is exercised only by the decoder, not
+     *  through the real stream path. */
     private class ThrottledInputStream(
         private val src: InputStream,
         private val limit: Int,
