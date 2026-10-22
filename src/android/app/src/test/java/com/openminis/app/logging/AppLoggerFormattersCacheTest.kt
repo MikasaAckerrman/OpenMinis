@@ -45,7 +45,7 @@ class AppLoggerFormattersCacheTest {
 
     @Test
     fun dayLabel_isFormattedOnceAndReusedWithinTheSameDay() {
-        val f = Formatters()
+        val f = AppLogger.Formatters()
         val morning = millisFor(2024, 3, 7, 9, 15, 0, 0)
         val evening = millisFor(2024, 3, 7, 21, 45, 30, 500)
 
@@ -59,7 +59,7 @@ class AppLoggerFormattersCacheTest {
 
     @Test
     fun dayLabel_changesExactlyWhenTheDayRollsOver() {
-        val f = Formatters()
+        val f = AppLogger.Formatters()
         val beforeMidnight = millisFor(2024, 3, 7, 23, 59, 59, 999)
         val afterMidnight = millisFor(2024, 3, 8, 0, 0, 0, 0)
 
@@ -71,7 +71,7 @@ class AppLoggerFormattersCacheTest {
 
     @Test
     fun dayLabel_isMonotonicAcrossManySamplesOfTheSameDay() {
-        val f = Formatters()
+        val f = AppLogger.Formatters()
         val labels = (0 until 500).map { i ->
             f.dayLabel(millisFor(2024, 12, 25, 0, 0, 0, i))
         }
@@ -83,7 +83,7 @@ class AppLoggerFormattersCacheTest {
     fun stamp_doesNotDependOnTheDayCache() {
         // The millisecond stamp is always re-formatted (it must change), while
         // the day label is cached. Both must agree on the day they describe.
-        val f = Formatters()
+        val f = AppLogger.Formatters()
         val t0 = millisFor(2024, 6, 1, 12, 0, 0, 0)
         val t1 = millisFor(2024, 6, 1, 12, 0, 0, 500)
 
