@@ -226,7 +226,6 @@ class PersistentShellProtocolDriverIntegrationTest {
             orphaned!!.contains("__MINIS_DONE_mX_EX"))
         assertNull("05: protocol idle after death", drv.protocol.marker)
     }
-import java.util.concurrent.atomic.AtomicInteger
 
     /** Acceptance 06 (D3): the process dies leaving an unterminated half
      *  line parked in pendingLine. EOF teardown emits it to the streaming
