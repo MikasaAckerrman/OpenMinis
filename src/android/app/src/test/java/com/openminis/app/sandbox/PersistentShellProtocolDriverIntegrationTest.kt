@@ -285,6 +285,10 @@ class PersistentShellProtocolDriverIntegrationTest {
         val cb = drv.createCallback("mU", null)
         cb.resume = { o, _ -> out.set(o); resumed.incrementAndGet() }
         drv.armForResume("mU", cb)
+        // [root-cause] Without this the protocol has NO current command, so
+        // every incoming byte is idle-gap data: it is parked as orphan and
+        // the marker never dispatches - the waiter stays forever.
+        drv.protocol.start(cb)
 
         // Geometry: bytes [0..4094] = ASCII filler 'a' (4095 bytes),
         // byte [4095] = LEAD of a 2-byte char (0xD0), byte [4096] = its
@@ -308,7 +312,7 @@ class PersistentShellProtocolDriverIntegrationTest {
         assertFalse("07: reader exited in time", rt.isAlive)
 
         val got = out.get()
-        assertNotNull("07: waiter received the folded output", got)
+        assertNotNull("07: waiter received the folded output (resumed=$resumed exit=$exit)", got)
         val text = got!!
         assertEquals("07: waiter resumed once", 1, resumed.get())
         assertEquals("07: exit parsed", 3, exit.get())
