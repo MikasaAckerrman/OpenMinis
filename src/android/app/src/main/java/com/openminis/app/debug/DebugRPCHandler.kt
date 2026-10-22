@@ -161,7 +161,6 @@ class DebugRPCHandler(private val context: Context) {
                 val interval = params.optLong("intervalMs", 3000L)
                 AllocProbe.measure(interval)
             }
-            "debug.alloc.rate" -> AllocProbe.rate()
             "debug.alloc.snapshot" -> AllocProbe.snapshot()
             "debug.agentTrace" -> handleAgentTrace(params)
             "debug.fetch" -> handleFetch(params)

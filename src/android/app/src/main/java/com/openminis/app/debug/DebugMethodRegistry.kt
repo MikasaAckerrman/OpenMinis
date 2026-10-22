@@ -54,13 +54,6 @@ object DebugMethodRegistry {
             example = ex("intervalMs" to 3000L),
         ),
         MethodSpec(
-            name = "debug.alloc.rate",
-            description = "DEBUG-only: allocation rate between two calls of this method — no sleeping. Chain it after debug.alloc.measure to track a long session without blocking.",
-            params = emptyList(),
-            returns = "{allocDeltaMB, allocRateMBps, sinceMs, javaHeapUsedMB, ...}",
-            example = ex(),
-        ),
-        MethodSpec(
             name = "debug.alloc.snapshot",
             description = "DEBUG-only: instantaneous heap counters (java used/max/free%, native heap, process-lifetime allocated bytes). Zero cost, safe to poll.",
             params = emptyList(),

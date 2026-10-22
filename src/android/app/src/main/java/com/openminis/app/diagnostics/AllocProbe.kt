@@ -3,7 +3,6 @@ package com.openminis.app.diagnostics
 import android.os.Debug
 import android.os.SystemClock
 import org.json.JSONObject
-import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Allocation probe — answers one question on a REAL device in one call:
@@ -11,93 +10,94 @@ import java.util.concurrent.atomic.AtomicLong
  * leak (retained set growing)?
  *
  * The 19.10 incident log showed "GC freed 70-140MB" every ~1.5s with the
- * post-GC heap flat at 169-205MB. Flat post-GC heap means CHURN, but only a
- * live measurement can separate "high garbage rate with bounded live set"
- * from "bounded leak at a high allocation rate".
+ * post-GC heap flat at 169-205MB. A flat post-GC heap points at churn, but
+ * only a live measurement can separate "high garbage rate with a bounded
+ * live set" from "bounded leak at a high allocation rate" — and logcat GC
+ * lines cannot, because they only report what a GC already reclaimed.
  *
- * [android.os.Debug.getAllocatedBytes] is a process-lifetime counter of bytes
- * the runtime has allocated (API 23+). Differencing it across a window gives
- * the true allocation RATE in MB/s, which no logcat GC line can give you.
+ * HOW IT MEASURES, without any uncertain platform API:
+ *   java heap in use = totalMemory() - freeMemory()   (Runtime, always there)
+ * As the runtime allocates, this value climbs until a GC drops it back —
+ * the classic sawtooth that the "AllocSpace" lines in the logcat GC output
+ * are reporting from the other side. Summing every POSITIVE step over a
+ * window therefore gives bytes allocated in that window, i.e. exactly the
+ * allocation rate, and is API-independent.
  *
- * Deliberately zero-cost when unused: no timer, no sampling thread, no hooks
- * in the hot path. It is pull-based, called from the debug RPC only.
+ * Read the two numbers together:
+ *   allocRateMBps high + liveSet flat  -> churn (fix the hot path)
+ *   allocRateMBps high + liveSet rising -> leak (fix the retention)
+ *
+ * Deliberately zero-cost when unused: no timer, no sampling thread, no
+ * hooks anywhere in the streaming path. Pull-based, from the debug RPC only.
  */
 object AllocProbe {
 
-    private val lastCounter = AtomicLong(-1L)
-    private val lastAt = AtomicLong(0L)
+    private const val SAMPLE_MS = 100L
+
+    private fun javaUsedBytes(): Long {
+        val rt = Runtime.getRuntime()
+        return rt.totalMemory() - rt.freeMemory()
+    }
 
     /** Instantaneous counters, no sleeping. */
     fun snapshot(): JSONObject {
         val rt = Runtime.getRuntime()
-        val javaUsed = rt.totalMemory() - rt.freeMemory()
-        val allocTotal = Debug.getAllocatedBytes()
-        val nativeAlloc = Debug.getNativeHeapAllocatedSize()
-        val o = JSONObject()
-            .put("javaHeapUsedMB", javaUsed / 1048576.0)
+        val used = rt.totalMemory() - rt.freeMemory()
+        return JSONObject()
+            .put("javaHeapUsedMB", used / 1048576.0)
             .put("javaHeapTotalMB", rt.totalMemory() / 1048576.0)
             .put("javaHeapMaxMB", rt.maxMemory() / 1048576.0)
             .put("javaHeapFreePct", 100.0 * rt.freeMemory() / rt.totalMemory())
-            .put("nativeHeapMB", nativeAlloc / 1048576.0)
-            .put("allocatedTotalMB", allocTotal / 1048576.0)
+            .put("nativeHeapMB", Debug.getNativeHeapAllocatedSize() / 1048576.0)
             .put("uptimeMs", SystemClock.elapsedRealtime())
-        return o
     }
 
     /**
      * Measure the allocation rate over [intervalMs].
      *
-     * Returns the same counters plus:
-     *   allocRateMBps  - bytes allocated per second (THE number to look at)
-     *   allocDeltaMB  - bytes allocated during the window
-     *   liveSetMB     - java heap in use (grows under a real leak)
+     * Adds to [snapshot]:
+     *   allocDeltaMB   - bytes allocated during the window (sum of positive steps)
+     *   allocRateMBps  - allocDeltaMB per second — THE number to look at
+     *   liveSetMinMB   - lowest heap-in-use seen (the post-GC floor)
+     *   liveSetMaxMB   - highest heap-in-use seen (the pre-GC peak)
+     *   gcCount        - sawtooth drops observed in the window
      *
-     * A leak shows liveSetMB climbing across repeated calls; churn shows a
-     * large allocRateMBps with a flat liveSetMB. Call it repeatedly during the
-     * same long session to see the trend.
+     * Call it repeatedly during one long session: a rising liveSetMinMB across
+     * calls is a leak; a flat liveSetMinMB with a large allocRateMBps is churn.
      */
     fun measure(intervalMs: Long): JSONObject {
-        val window = intervalMs.coerceIn(200L, 60_000L)
-        val a0 = Debug.getAllocatedBytes()
-        val rt0 = Runtime.getRuntime()
-        val live0 = rt0.totalMemory() - rt0.freeMemory()
-        val t0 = SystemClock.elapsedRealtime()
+        val window = intervalMs.coerceIn(300L, 120_000L)
+        val deadline = SystemClock.elapsedRealtime() + window
 
-        Thread.sleep(window)
+        var prev = javaUsedBytes()
+        var min = prev
+        var max = prev
+        var allocated = 0L
+        var gcCount = 0
 
-        val a1 = Debug.getAllocatedBytes()
-        val rt1 = Runtime.getRuntime()
-        val live1 = rt1.totalMemory() - rt1.freeMemory()
-        val dt = (SystemClock.elapsedRealtime() - t0).coerceAtLeast(1L)
-
-        val delta = a1 - a0
-        lastCounter.set(a1)
-        lastAt.set(SystemClock.elapsedRealtime())
-
-        return snapshot()
-            .put("intervalMs", dt)
-            .put("allocDeltaMB", delta / 1048576.0)
-            .put("allocRateMBps", delta / 1048576.0 / (dt / 1000.0))
-            .put("liveSetStartMB", live0 / 1048576.0)
-            .put("liveSetEndMB", live1 / 1048576.0)
-            .put("liveSetDeltaMB", (live1 - live0) / 1048576.0)
-    }
-
-    /** Rate between two explicit snapshots, without sleeping. */
-    fun rate(): JSONObject {
-        val prevAlloc = lastCounter.get()
-        val prevAt = lastAt.get()
-        val now = snapshot()
-        if (prevAlloc < 0 || prevAt <= 0L) {
-            return now.put("note", "call debug.alloc.measure first to prime the delta")
+        while (SystemClock.elapsedRealtime() < deadline) {
+            Thread.sleep(SAMPLE_MS)
+            val now = javaUsedBytes()
+            val delta = now - prev
+            if (delta > 0) {
+                allocated += delta
+            } else if (delta < 0) {
+                // Heap dropped: a GC reclaimed. That drop IS the churn.
+                allocated += -delta
+                gcCount++
+            }
+            if (now < min) min = now
+            if (now > max) max = now
+            prev = now
         }
-        val dt = (SystemClock.elapsedRealtime() - prevAt).coerceAtLeast(1L)
-        val delta = Debug.getAllocatedBytes() - prevAlloc
-        lastCounter.set(Debug.getAllocatedBytes())
-        lastAt.set(SystemClock.elapsedRealtime())
-        return now
-            .put("sinceMs", dt)
-            .put("allocDeltaMB", delta / 1048576.0)
-            .put("allocRateMBps", delta / 1048576.0 / (dt / 1000.0))
+
+        val elapsed = window.coerceAtLeast(1L)
+        return snapshot()
+            .put("intervalMs", elapsed)
+            .put("allocDeltaMB", allocated / 1048576.0)
+            .put("allocRateMBps", allocated / 1048576.0 / (elapsed / 1000.0))
+            .put("liveSetMinMB", min / 1048576.0)
+            .put("liveSetMaxMB", max / 1048576.0)
+            .put("gcCount", gcCount)
     }
 }
