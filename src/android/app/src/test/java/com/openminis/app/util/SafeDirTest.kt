@@ -1,6 +1,7 @@
 package com.openminis.app.util
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -157,6 +158,48 @@ class SafeDirTest {
             }
             val seen = SafeDir.walk(dir).count()
             assertTrue("the walk must terminate", seen < 1000)
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    /**
+     * The depth limit has to be a real bound, not a hint.
+     *
+     * `maxDepth` is what keeps debug.appInfo and the offload size walks from
+     * running to the bottom of the whole tree, and it has no other consumer, so
+     * a regression here would be invisible until a device call took minutes.
+     * Depth is counted the way the stdlib counts it: the root is depth 0, its
+     * children depth 1.
+     */
+    @Test
+    fun walkHonoursTheDepthLimit() {
+        val dir = tmpDir("depth")
+        try {
+            // root/d1/d2/d3/d4/file — file sits at depth 5.
+            val deepest = File(dir, "d1/d2/d3/d4").also { it.mkdirs() }
+            File(deepest, "file.txt").writeText("x")
+
+            val all = SafeDir.walk(dir, 12).toList()
+            assertTrue("an unlimited depth must reach the file", all.any { it.name == "file.txt" })
+
+            val cappedAt2 = SafeDir.walk(dir, 2).toList()
+            val names = cappedAt2.map { it.relativeTo(dir).path }
+            assertTrue("the root is depth 0 and must be included", names.contains(""))
+            assertTrue("depth 1 must be included", names.contains("d1"))
+            assertTrue("depth 2 must be included", names.contains("d1/d2"))
+            assertFalse("depth 3 is past the limit", names.contains("d1/d2/d3"))
+            assertFalse(
+                "nothing below the limit may be yielded",
+                names.any { it.count { ch -> ch == '/' } >= 2 },
+            )
+
+            // Depth 0 alone must be just the root: a limit of 0 means "do not
+            // descend at all", not "one level".
+            assertEquals(
+                listOf(""),
+                SafeDir.walk(dir, 0).map { it.relativeTo(dir).path },
+            )
         } finally {
             dir.deleteRecursively()
         }
