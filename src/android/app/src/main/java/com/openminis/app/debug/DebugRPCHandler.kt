@@ -383,6 +383,45 @@ class DebugRPCHandler(private val context: Context) {
                 put("liveShellReaderThreads", runCatching { com.openminis.app.sandbox.ExecutionCoordinator.liveReaderThreadCount() }.getOrDefault(-1))
                 put("liveShellExecuteProcesses", runCatching { com.openminis.app.sandbox.ShellExecutor.liveProcessCount() }.getOrDefault(-1))
             })
+            // [T-hangdetector-threshold-vs-heartbeat] The hang detector's own
+            // state, so its behaviour can be watched instead of inferred from
+            // logcat.
+            //
+            // The counter is the thing that trips the two circuit breakers -
+            // at 2 the streaming markdown degrades to plain text, at 3 the app
+            // opens on home instead of the chosen session. It used to be
+            // invisible from here, and it grew to 35 while every one of those
+            // "hangs" was a false positive caused by the heartbeat interval
+            // being longer than the detection threshold.
+            //
+            // stallLogBytes is here for the same reason: a detector that fires
+            // every second wrote 9MB of stack traces a day, and the size of
+            // that file is the cheapest proof of whether it is still firing.
+            put("hangDetector", JSONObject().apply {
+                put(
+                    "hangCount",
+                    runCatching {
+                        com.openminis.app.diagnostics.HangDetector.currentHangCount(context)
+                    }.getOrDefault(-1),
+                )
+                put(
+                    "lastHangAtMs",
+                    runCatching {
+                        context.getSharedPreferences(
+                            "hang_detector_prefs",
+                            android.content.Context.MODE_PRIVATE,
+                        ).getLong("last_hang_at_ms", 0L)
+                    }.getOrDefault(0L),
+                )
+                put(
+                    "stallLogBytes",
+                    runCatching {
+                        val logs = java.io.File(context.filesDir, "logs")
+                        logs.listFiles { f -> f.name.startsWith("stall-") }
+                            ?.sumOf { it.length() } ?: 0L
+                    }.getOrDefault(-1L),
+                )
+            })
         }
     }
 

@@ -83,6 +83,27 @@ class AppInfoSchemaDocTest {
     }
 
     @Test
+    fun hangDetectorCountersAreDocumentedSoTheFixCanBeMeasured() {
+        // [T-hangdetector-threshold-vs-heartbeat] The hang detector's counter
+        // trips two circuit breakers - streaming markdown degrades to plain
+        // text at 2, the app opens on home at 3 - and it used to be invisible
+        // from here, so the only way to watch it was to parse logcat. These
+        // keys make the behaviour observable, and the documented shape has to
+        // name them or a client reads null instead of a count.
+        val doc = returnsOf("debug.appInfo")
+        for (key in listOf(
+            "hangCount",
+            "lastHangAtMs",
+            "stallLogBytes",
+        )) {
+            assertTrue(
+                "debug.appInfo no longer documents hangDetector.$key",
+                doc.contains(key),
+            )
+        }
+    }
+
+    @Test
     fun discoverReportsItsOwnMethodCountHonestly() {
         val d = DebugMethodRegistry.discover()
         val declared = d.optInt("methodCount", -1)
