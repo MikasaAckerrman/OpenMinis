@@ -42,4 +42,30 @@ object NativeCrashHandler {
     }
 
     private external fun nativeInstall(logDir: String)
+
+    /**
+     * [T-native-crash-selftest] Runs the crash capture path without a signal
+     * and returns the path of the report it wrote.
+     *
+     * The native diagnostics are only worth trusting if they have been seen
+     * to work. Verifying them by crashing the app on purpose kills the
+     * session the user is in, so the native side builds a synthetic faulting
+     * context instead: a real frame chain with real return addresses, which
+     * exercises the frame walk and the register dump for real.
+     *
+     * Returns null when the native library is not loaded, or the write
+     * failed.
+     */
+    fun selfTest(logsDir: File): File? {
+        if (!installed) return null
+        return try {
+            val path = nativeSelfTest(logsDir.absolutePath) ?: return null
+            File(path)
+        } catch (t: Throwable) {
+            Log.w(TAG, "selfTest failed: ${t.message}")
+            null
+        }
+    }
+
+    private external fun nativeSelfTest(logDir: String): String?
 }

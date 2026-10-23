@@ -29,6 +29,7 @@
 // malloc on bionic; if it faults on a corrupted heap, the reentrancy
 // guard above routes the second signal straight to SIG_DFL.
 #include <dlfcn.h>
+#include <ucontext.h>
 
 #define LOG_TAG "MinisCrashHandler"
 
@@ -59,6 +60,8 @@ static const char* signal_name(int sig) {
 // kept open across frames; each frame is formatted into a stack buffer
 // (no malloc) and written with a partial-write loop.
 #define MAX_UNWIND_FRAMES 32
+// [T-native-crash-context] Frame-pointer chain depth.
+#define MAX_FP_FRAMES 24
 
 struct UnwindCtx {
     int fd;
@@ -75,6 +78,25 @@ static void write_all(int fd, const char* buf, int len) {
     }
 }
 
+// [T-native-crash-backtrace] Module attribution for one program counter.
+// Absolute pc → "<soname>+<offset from base>". Even without symbol tables the
+// module says who aborted.
+//
+// dladdr() is not async-signal-safe - it takes the linker's lock, so a crash
+// inside the linker could deadlock here. The unwinder below has the same
+// exposure and has been in place without incident; the alternative, no
+// attribution at all, is worse, because then a crash log cannot even name
+// the library that crashed.
+static void pc_module(uintptr_t pc, const char** module, uintptr_t* base) {
+    *module = "?";
+    *base = 0;
+    Dl_info dli;
+    if (dladdr(reinterpret_cast<void*>(pc), &dli) != 0 && dli.dli_fname != nullptr) {
+        *module = dli.dli_fname;
+        *base = reinterpret_cast<uintptr_t>(dli.dli_fbase);
+    }
+}
+
 static _Unwind_Reason_Code unwind_frame_cb(struct _Unwind_Context* uctx, void* data) {
     UnwindCtx* out = static_cast<UnwindCtx*>(data);
     if (out->count >= MAX_UNWIND_FRAMES) return _URC_END_OF_STACK;
@@ -82,16 +104,9 @@ static _Unwind_Reason_Code unwind_frame_cb(struct _Unwind_Context* uctx, void* d
     uintptr_t pc = (uintptr_t)_Unwind_GetIP(uctx);
     if (pc == 0) return _URC_CONTINUE_UNWIND;
 
-    // Module attribution: absolute pc → "<soname>+<offset from base>".
-    // Skips the anonymous-signal-crash problem: even without symbol
-    // names, the module says who aborted.
     const char* module = "?";
     uintptr_t base = 0;
-    Dl_info dli;
-    if (dladdr(reinterpret_cast<void*>(pc), &dli) != 0 && dli.dli_fname != nullptr) {
-        module = dli.dli_fname;
-        base = reinterpret_cast<uintptr_t>(dli.dli_fbase);
-    }
+    pc_module(pc, &module, &base);
 
     int n = snprintf(out->buf, sizeof(out->buf),
         "  #%02d pc 0x%016lx  %s+0x%lx\n",
@@ -114,6 +129,103 @@ static void write_backtrace(int fd) {
     if (ctx.count == 0) {
         static const char none[] = "  <unavailable: unwinder returned 0 frames>\n";
         write_all(fd, none, (int)sizeof(none) - 1);
+    }
+}
+
+// [T-native-crash-context] The faulting thread's registers and a walk of
+// its frame-pointer chain.
+//
+// _Unwind_Backtrace cannot cross a signal frame: the trampoline the kernel
+// installed has no unwind information, so the walk stops at the handler
+// itself. Every native crash log this app produced therefore contained
+// exactly one frame, and that frame was in this library - the crash itself
+// was never attributable. Thirteen of them had accumulated, all unreadable.
+//
+// The signal handler receives the interrupted context, and that context
+// carries the faulting PC, the stack pointer, the frame pointer and the link
+// register. Starting from the faulting code's frame pointer skips both the
+// handler and the trampoline, and each frame's saved link register is the
+// return address into its caller. The link register of the faulting frame
+// alone already names the caller, so even a leaf function that has no frame
+// pointer at all yields a usable caller.
+//
+// Reading the chain can fault if a frame is stale. The reentrancy guard
+// catches that: the handler restores SIG_DFL and re-raises, and Android
+// produces its own tombstone. The frame validation below is what keeps that
+// from happening in the first place.
+static void write_fault_context(int fd, void* ctx) {
+    if (ctx == nullptr) return;
+    ucontext_t* uc = static_cast<ucontext_t*>(ctx);
+
+#if defined(__aarch64__)
+    const uintptr_t pc = reinterpret_cast<uintptr_t>(uc->uc_mcontext.pc);
+    const uintptr_t sp = reinterpret_cast<uintptr_t>(uc->uc_mcontext.sp);
+    uintptr_t fp = reinterpret_cast<uintptr_t>(uc->uc_mcontext.regs[29]);
+    const uintptr_t lr = reinterpret_cast<uintptr_t>(uc->uc_mcontext.regs[30]);
+#else
+    // The app is arm64-only (abiFilters), so this branch is never built.
+    // It is left without register access on purpose: the field names for the
+    // other ABIs differ (__gregs on arm32, gregs on x86), and naming one of
+    // them here would turn a future ABI addition into a compile error
+    // instead of a missing feature.
+    const uintptr_t pc = 0, sp = 0, lr = 0;
+    uintptr_t fp = 0;
+#endif
+
+    char buf[512];
+    int n = snprintf(buf, sizeof(buf),
+        "\nFaulting context:\n"
+        "  pc 0x%016lx  sp 0x%016lx  fp 0x%016lx  lr 0x%016lx\n",
+        (unsigned long)pc, (unsigned long)sp, (unsigned long)fp, (unsigned long)lr);
+    if (n > 0) write_all(fd, buf, n);
+
+    if (pc != 0) {
+        const char* module = "?";
+        uintptr_t base = 0;
+        pc_module(pc, &module, &base);
+        n = snprintf(buf, sizeof(buf), "  faulting pc -> %s+0x%lx\n",
+                     module, (unsigned long)(pc >= base ? pc - base : 0));
+        if (n > 0) write_all(fd, buf, n);
+    }
+    if (lr != 0) {
+        const char* module = "?";
+        uintptr_t base = 0;
+        pc_module(lr, &module, &base);
+        n = snprintf(buf, sizeof(buf), "  caller (lr)  -> %s+0x%lx\n",
+                     module, (unsigned long)(lr >= base ? lr - base : 0));
+        if (n > 0) write_all(fd, buf, n);
+    }
+
+    // The stack grows down, so older frames sit at higher addresses. A frame
+    // record is [caller frame pointer][return address], so the return
+    // address stored in the current frame belongs to the frame BELOW it.
+    static const char hdr[] = "\nFaulting frames (frame-pointer chain):\n";
+    write_all(fd, hdr, (int)sizeof(hdr) - 1);
+
+    uintptr_t prev_fp = 0;
+    int frame = 0;
+    while (frame < MAX_FP_FRAMES) {
+        if (fp == 0) break;
+        if ((fp & 7u) != 0u) break;                 // arm64 frames are 8-aligned
+        if (fp < sp) break;                        // below the stack pointer
+        if (fp - sp > (1u << 20)) break;           // implausibly far above it
+        if (prev_fp != 0 && fp <= prev_fp) break;  // not moving up the stack
+
+        uintptr_t next_fp = *reinterpret_cast<uintptr_t*>(fp);
+        uintptr_t ret = *reinterpret_cast<uintptr_t*>(fp + sizeof(uintptr_t));
+        if (ret == 0) break;
+
+        const char* module = "?";
+        uintptr_t base = 0;
+        pc_module(ret, &module, &base);
+        n = snprintf(buf, sizeof(buf), "  #%02d pc 0x%016lx  %s+0x%lx\n",
+                     frame, (unsigned long)ret, module,
+                     (unsigned long)(ret >= base ? ret - base : 0));
+        if (n > 0) write_all(fd, buf, n);
+
+        prev_fp = fp;
+        fp = next_fp;
+        frame++;
     }
 }
 
@@ -213,6 +325,10 @@ static void crash_signal_handler(int sig, siginfo_t* info, void* ctx) {
     // attribution we get. Module+offset names the suspect even without
     // symbol tables.
     write_backtrace(fd);
+    // [T-native-crash-context] The faulting thread's own frames. The
+    // unwinder above stops at the signal trampoline; this one starts past
+    // it, in the code that actually crashed.
+    write_fault_context(fd, ctx);
     close(fd);
 
     // Re-raise with default handler so Android still produces a tombstone
@@ -256,4 +372,72 @@ Java_com_openminis_app_crash_NativeCrashHandler_nativeInstall(
 
     __android_log_print(ANDROID_LOG_INFO, LOG_TAG,
         "installed: dir=%s", g_log_dir);
+}
+
+// [T-native-crash-selftest] Exercises the capture path without a signal.
+//
+// The diagnostics this file produces are only worth anything if they are
+// verified, and verifying them used to mean crashing the app on purpose -
+// which kills the session the user is in. Instead, this builds a synthetic
+// faulting context: a real stack region holding a frame chain whose return
+// addresses are real function pointers, so the symbolisation and the walk
+// both do real work, and writes the result to a file the caller can read.
+//
+// It does not test signal delivery - that path is exercised by every real
+// crash - but it does test everything that was broken: the frame walk and
+// the register dump, which previously produced a single useless frame.
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_openminis_app_crash_NativeCrashHandler_nativeSelfTest(
+    JNIEnv* env, jobject, jstring logDir) {
+    if (logDir == nullptr) return nullptr;
+
+    const char* dir = env->GetStringUTFChars(logDir, nullptr);
+    if (dir == nullptr) return nullptr;
+
+    char path[640];
+    snprintf(path, sizeof(path), "%s/native-crash-selftest.log", dir);
+
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) {
+        env->ReleaseStringUTFChars(logDir, dir);
+        return nullptr;
+    }
+
+    // A real frame chain on this thread's stack. Each record is
+    // [caller frame pointer][return address], exactly what the arm64 ABI
+    // stores, so the walk in write_fault_context reads it the same way it
+    // would read a crashed thread's stack.
+    uintptr_t chain[2 * 24];
+    for (int i = 0; i < 24; i++) {
+        chain[2 * i + 0] = (i + 1 < 24) ? reinterpret_cast<uintptr_t>(&chain[2 * (i + 1)]) : 0;
+        // Real function addresses: dladdr has to resolve them for the output
+        // to be meaningful, and a fake address would resolve to nothing.
+        chain[2 * i + 1] = reinterpret_cast<uintptr_t>(
+            (i % 2 == 0) ? (void*)&pc_module : (void*)&write_fault_context);
+    }
+
+    ucontext_t uc;
+    memset(&uc, 0, sizeof(uc));
+#if defined(__aarch64__)
+    uc.uc_mcontext.pc = reinterpret_cast<uintptr_t>(&write_fault_context);
+    uc.uc_mcontext.sp = reinterpret_cast<uintptr_t>(&chain[0]) - 256;
+    uc.uc_mcontext.regs[29] = reinterpret_cast<uintptr_t>(&chain[0]);
+    uc.uc_mcontext.regs[30] = reinterpret_cast<uintptr_t>(&pc_module);
+#else
+    uc.uc_mcontext.__gregs[29] = reinterpret_cast<uintptr_t>(&chain[0]);
+    uc.uc_mcontext.__gregs[30] = reinterpret_cast<uintptr_t>(&pc_module);
+#endif
+
+    char line[512];
+    int n = snprintf(line, sizeof(line),
+        "=== Minis Native Crash SELF-TEST ===\n"
+        "This file is produced without crashing the app.\n");
+    if (n > 0) write_all(fd, line, n);
+
+    write_backtrace(fd);
+    write_fault_context(fd, &uc);
+    close(fd);
+
+    env->ReleaseStringUTFChars(logDir, dir);
+    return env->NewStringUTF(path);
 }

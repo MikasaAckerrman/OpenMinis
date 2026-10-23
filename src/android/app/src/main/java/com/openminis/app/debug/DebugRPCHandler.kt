@@ -99,6 +99,7 @@ class DebugRPCHandler(private val context: Context) {
         return when (method) {
             "rpc.discover" -> DebugMethodRegistry.discover()
             "debug.appInfo" -> handleAppInfo()
+            "debug.crashSelfTest" -> handleCrashSelfTest()
             "debug.installHistory" -> handleInstallHistory()
             "debug.screenshot" -> handleScreenshot(params)
             "debug.ls" -> handleLS(params)
@@ -326,6 +327,34 @@ class DebugRPCHandler(private val context: Context) {
     }
 
     // ── App Info ─────────────────────────────────────────────────────────────
+
+    /**
+     * [T-native-crash-selftest] Runs the native crash capture path and
+     * returns the report it wrote.
+     *
+     * The native crash reports were unreadable: the unwinder stopped at the
+     * signal trampoline, so every one of them contained a single frame
+     * pointing into the crash handler itself. Fixing that is only worth
+     * anything if the result is seen to work, and crashing the app on
+     * purpose to find out would kill the session in progress. The native
+     * side builds a synthetic faulting context instead, so this produces a
+     * real report with a real frame chain without killing anything.
+     */
+    private fun handleCrashSelfTest(): JSONObject {
+        val logsDir = java.io.File(context.filesDir, "logs")
+        if (!logsDir.exists()) logsDir.mkdirs()
+        val report = com.openminis.app.crash.NativeCrashHandler.selfTest(logsDir)
+            ?: return JSONObject().apply {
+                put("ok", false)
+                put("error", "the native crash handler is not installed")
+            }
+        return JSONObject().apply {
+            put("ok", true)
+            put("path", report.absolutePath)
+            put("sizeBytes", report.length())
+            put("content", runCatching { report.readText() }.getOrDefault(""))
+        }
+    }
 
     private fun handleAppInfo(): JSONObject {
         val filesDir = context.filesDir
