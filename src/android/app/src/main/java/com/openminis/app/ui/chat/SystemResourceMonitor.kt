@@ -292,7 +292,7 @@ fun rememberSystemResourceMonitor(active: Boolean): SystemResourceMonitor {
             delay(2000)
             // Memory every MEMORY_SAMPLE_EVERY-th tick (10s), CPU every tick
             // (2s). See the class doc for why the two rates differ.
-            val withMemory = (tick % MEMORY_SAMPLE_EVERY) == 0
+            val withMemory = (tick % SystemResourceMonitor.MEMORY_SAMPLE_EVERY) == 0
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                 monitor.sampleOnce(context, includeMemory = withMemory)
             }
