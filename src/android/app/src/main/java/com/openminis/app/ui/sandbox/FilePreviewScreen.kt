@@ -132,6 +132,7 @@ private fun ResumePendingApkInstall() {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FilePreviewScreen(
     item: FileItem,
