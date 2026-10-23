@@ -111,6 +111,16 @@ object AppLogger {
     private val pendingWrites = java.util.concurrent.atomic.AtomicInteger(0)
     @Volatile private var lastFlushMs: Long = 0L
 
+    /**
+     * logcat tags ("Minis.<category>"), built once per category.
+     *
+     * Bounded: the key is always a compile-time constant from the call
+     * sites, never a runtime string, so the map cannot grow with traffic.
+     * Concurrent because log() runs on the UI thread, coroutine dispatchers
+     * and the logcat tailer at once.
+     */
+    private val logcatTags = java.util.concurrent.ConcurrentHashMap<String, String>()
+
     // Saved references to the JVM's original stdout/stderr. Captured on the
     // first startCapture() so stopCapture() can restore them — without this we
     // would never be able to detach our PrintStream wrapper, and the redirection
@@ -386,7 +396,12 @@ object AppLogger {
         val f = formattersTls.get()!!
 
         // Also output to logcat
-        val logcatTag = "Minis.$category"
+        // [T-logging-hot-path] The tag was rebuilt as "Minis.$category" on
+        // every call. ChatViewModel alone issues 265 log calls, several of
+        // them per streamed token, so that concatenation was one String per
+        // call for the whole session. The categories are code constants, so
+        // the map stays bounded.
+        val logcatTag = logcatTags.getOrPut(category) { "Minis.$category" }
         when (level) {
             "ERROR" -> Log.e(logcatTag, message)
             "WARN" -> Log.w(logcatTag, message)
