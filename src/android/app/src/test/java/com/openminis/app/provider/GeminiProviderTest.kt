@@ -12,6 +12,7 @@ import okhttp3.mockwebserver.MockWebServer
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -133,15 +134,57 @@ class GeminiProviderTest {
 
     // -- Request construction --
 
+    /**
+     * [T-provider-secret-in-url] The key travels in a header.
+     *
+     * It used to be a query parameter. A URL is the one part of a request
+     * that ends up in the provider's access logs, in any proxy's logs, and
+     * in every error message that prints the request. This test is what
+     * stops it from quietly going back into the URL.
+     */
     @Test
-    fun `sendMessage includes API key in URL`() = runBlocking {
+    fun `sendMessage sends the API key in a header, not in the URL`() = runBlocking {
         server.enqueue(MockResponse().setBody("""{"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}"""))
 
         provider.sendMessage(listOf(LLMMessage(LLMMessage.Role.USER, "test")), null, 100)
 
         val request = server.takeRequest()
-        assertTrue(request.path!!.contains("key=test-key"))
+        assertEquals("test-key", request.getHeader("x-goog-api-key"))
         assertTrue(request.path!!.contains("generateContent"))
+        assertFalse(
+            "the API key must not be part of the URL",
+            request.path!!.contains("test-key"),
+        )
+        assertFalse(
+            "the API key must not be part of the query string",
+            request.path!!.contains("key="),
+        )
+    }
+
+    /**
+     * The streaming path carries the key the same way, so it is checked
+     * the same way.
+     */
+    @Test
+    fun `streamMessage sends the API key in a header, not in the URL`() = runBlocking {
+        val sseBody = buildString {
+            appendLine("""data: {"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}""")
+            appendLine()
+        }
+        server.enqueue(MockResponse().setBody(sseBody).setHeader("Content-Type", "text/event-stream"))
+
+        provider.streamMessage(listOf(LLMMessage(LLMMessage.Role.USER, "Hi")), null, 1024).toList()
+
+        val request = server.takeRequest()
+        assertEquals("test-key", request.getHeader("x-goog-api-key"))
+        assertFalse(
+            "the API key must not be part of the URL",
+            request.path!!.contains("test-key"),
+        )
+        assertFalse(
+            "the API key must not be part of the query string",
+            request.path!!.contains("key="),
+        )
     }
 
     @Test
