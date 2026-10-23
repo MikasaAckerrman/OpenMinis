@@ -133,6 +133,11 @@ jobs:
             --tests 'com.openminis.app.tools.AgentSystemPromptStoreTest' \
             --tests 'com.openminis.app.tools.AgentWorkerPromptTest' \
             --tests 'com.openminis.app.tools.AgentSystemPromptStandaloneTest' \
+            --tests 'com.openminis.app.tools.ShellExecuteRoutingHintTest' \
+            --tests 'com.openminis.app.logging.AppLoggerDayLabelTest' \
+            --tests 'com.openminis.app.logging.AppLoggerFormattersCacheTest' \
+            --tests 'com.openminis.app.logging.AppLoggerTailDedupTest' \
+            --tests 'com.openminis.app.ui.chat.PartialJsonToolArgsTest' \
             --tests 'com.openminis.app.ui.chat.VmCacheLruTest' \
             --tests 'com.openminis.app.ui.chat.PartsJsonCacheTest' \
             --tests 'com.openminis.app.ui.chat.AgentModePrefsTest' \
