@@ -17,13 +17,21 @@ import java.util.TimeZone
  * line of stdout, for every LogcatTailer line and for every log() call.
  *
  * The fix keeps a per-thread Formatters and caches the day label until the
- * epoch day actually rolls over, so a steady stream of log lines inside one
+ * LOCAL day actually rolls over, so a steady stream of log lines inside one
  * day formats the calendar once instead of twice per line.
  *
  * These assertions are exact (no flakiness): they check the cache semantics
  * directly on the class the production code now uses.
+ *
+ * The zone is pinned explicitly in both the formatter and the fixtures. The
+ * test used to build its instants in UTC while the formatter used the JVM
+ * default zone, so it only passed on a machine whose default zone was UTC
+ * (or close enough); in a zone east of Greenwich the "evening" instant
+ * landed on the NEXT local day and the assertion failed.
  */
 class AppLoggerFormattersCacheTest {
+
+    private val zone: TimeZone = TimeZone.getTimeZone("UTC")
 
     private fun millisFor(
         year: Int,
@@ -43,9 +51,11 @@ class AppLoggerFormattersCacheTest {
         }.timeInMillis
     }
 
+    private fun formatters(): AppLogger.Formatters = AppLogger.Formatters(zone)
+
     @Test
     fun dayLabel_isFormattedOnceAndReusedWithinTheSameDay() {
-        val f = AppLogger.Formatters()
+        val f = formatters()
         val morning = millisFor(2024, 3, 7, 9, 15, 0, 0)
         val evening = millisFor(2024, 3, 7, 21, 45, 30, 500)
 
@@ -59,7 +69,7 @@ class AppLoggerFormattersCacheTest {
 
     @Test
     fun dayLabel_changesExactlyWhenTheDayRollsOver() {
-        val f = AppLogger.Formatters()
+        val f = formatters()
         val beforeMidnight = millisFor(2024, 3, 7, 23, 59, 59, 999)
         val afterMidnight = millisFor(2024, 3, 8, 0, 0, 0, 0)
 
@@ -71,7 +81,7 @@ class AppLoggerFormattersCacheTest {
 
     @Test
     fun dayLabel_isMonotonicAcrossManySamplesOfTheSameDay() {
-        val f = AppLogger.Formatters()
+        val f = formatters()
         val labels = (0 until 500).map { i ->
             f.dayLabel(millisFor(2024, 12, 25, 0, 0, 0, i))
         }
@@ -83,7 +93,7 @@ class AppLoggerFormattersCacheTest {
     fun stamp_doesNotDependOnTheDayCache() {
         // The millisecond stamp is always re-formatted (it must change), while
         // the day label is cached. Both must agree on the day they describe.
-        val f = AppLogger.Formatters()
+        val f = formatters()
         val t0 = millisFor(2024, 6, 1, 12, 0, 0, 0)
         val t1 = millisFor(2024, 6, 1, 12, 0, 0, 500)
 
