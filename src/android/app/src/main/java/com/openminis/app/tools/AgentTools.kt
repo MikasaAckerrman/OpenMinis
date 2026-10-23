@@ -317,7 +317,15 @@ object AgentTools {
         description = "Execute a command in an isolated Linux process (Alpine Linux via PRoot). " +
             "The command runs via /bin/sh -c with stdout and stderr merged. " +
             "Each invocation spawns a fresh process — there is no shared terminal session. " +
-            "Default timeout is 15 minutes.",
+            "Default timeout is 15 minutes. " +
+            "[T-ptrace-routing] EVERY syscall this command makes is intercepted by the " +
+            "PRoot ptrace layer, so wide tree walks are very slow and heat up the phone. " +
+            "Use the dedicated tools instead: native_search for content search " +
+            "(replaces `grep -r`, `grep -R`, `grep -rn`) and native_glob for file listing " +
+            "(replaces `find`, `find ... -name`, `ls -R`). They run the bundled ripgrep " +
+            "natively, resolve guest paths to host mounts, and bypass the shell entirely. " +
+            "Reserve shell_execute for things they cannot do: builds, package installs, " +
+            "scripts, git, and commands whose behaviour you need verbatim.",
         parameters = mapOf(
             "tool_title" to AgentToolParam("string", "A concise 5-10 word summary of what this tool call does, shown to the user (e.g. 'Install Python data analysis packages', 'List files in home directory'). Use the same language as the user."),
             "command" to AgentToolParam("string", "The shell command to execute. Supports multi-line commands directly — no special escaping needed. Keep under 1000 chars; for longer scripts, write to a file with file_write first, then run it."),
