@@ -37,28 +37,48 @@ class SafeDirSourceGuardTest {
      *
      * `ScheduledTaskOffloadHandler` calls `manager.list()` on its own
      * `TaskManager`, which has nothing to do with `java.io.File`.
+     *
+     * `SafeDirTest` is exempt as a whole: it has to call `walkTopDown()` in
+     * order to prove SafeDir reproduces the stdlib's order. It only ever
+     * applies it to a temporary directory it filled with plain ASCII names,
+     * so there is no file name for the platform listing to choke on.
      */
     private val allowed = listOf(
         "manager.list()" to "TaskManager.list(), not java.io.File"
     )
 
+    private val exemptFiles = setOf("SafeDir.kt", "SafeDirTest.kt")
+
+    /**
+     * No source tree may use the platform listing.
+     *
+     * `src/androidTest` is included even though CI never executes those
+     * tests - there is no emulator job in any workflow - because a test that
+     * is never run is exactly where a dangerous call would rot unnoticed, and
+     * the file it uses still aborts the process the day somebody runs it on a
+     * device.
+     */
     @Test
     fun appCodeNeverUsesTheFatalPlatformListing() {
         val module = moduleDir()
         assumeTrue("app sources are not on disk, nothing to inspect", module != null)
-        val sources = File(module!!, "src/main/java")
-        assumeTrue(sources.isDirectory)
+
+        val roots = listOf("src/main/java", "src/androidTest/java", "src/test/java")
+            .map { File(module!!, it) }
+            .filter { it.isDirectory }
+
+        assumeTrue("no Kotlin source trees found", roots.isNotEmpty())
 
         val offenders = ArrayList<String>()
 
-        fun scan(file: File) {
+        fun scan(file: File, sources: File) {
             val name = file.name
             if (file.isDirectory) {
-                SafeDir.listFiles(file)?.forEach { scan(it) }
+                SafeDir.listFiles(file)?.forEach { scan(it, sources) }
                 return
             }
             if (!name.endsWith(".kt")) return
-            if (name == "SafeDir.kt") return
+            if (name in exemptFiles) return
             val text = try {
                 file.readText()
             } catch (_: Exception) {
@@ -102,7 +122,7 @@ class SafeDirSourceGuardTest {
             }
         }
 
-        scan(sources)
+        for (root in roots) scan(root, root)
 
         assertTrue(
             "The platform listing aborts the process on a file name with a character " +
