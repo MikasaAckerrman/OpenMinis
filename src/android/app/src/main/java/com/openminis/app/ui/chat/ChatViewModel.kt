@@ -580,10 +580,10 @@ class ChatViewModel(
     // "current round not yet persisted" — the exact text a terminator must
     // commit. Earlier rounds are already their own rows; re-committing them
     // duplicated content.
-    @Volatile private var liveTurnTextSb: StringBuilder? = null
+    @Volatile private var liveTurnTextSb: LiveTurnBuffer? = null
     @Volatile private var liveStreamTurnText: String = ""
     @Volatile private var liveStreamId: String? = null
-    @Volatile private var liveTurnThinkingSb: StringBuilder? = null
+    @Volatile private var liveTurnThinkingSb: LiveTurnBuffer? = null
     // Opaque reasoning_content blob (DeepSeek/Kimi emit reasoning as a single
     // field, not ThinkingDelta events — the journal NEVER sees it). Round-end
     // gives the blob precedence over the concatenated thinking; the terminators
@@ -594,7 +594,7 @@ class ChatViewModel(
 
     /** Latest current-round text for a terminator (error/cancel path). */
     private fun currentLiveTurnText(): String =
-        runCatching { liveTurnTextSb?.toString() }.getOrNull()?.takeIf { it.isNotEmpty() }
+        runCatching { liveTurnTextSb?.snapshot() }.getOrNull()?.takeIf { it.isNotEmpty() }
             ?: liveStreamTurnText
 
     /**
@@ -610,7 +610,7 @@ class ChatViewModel(
      */
     private fun currentLiveTurnThinking(): String? {
         liveTurnReasoningBlob?.takeIf { it.isNotEmpty() }?.let { return it }
-        runCatching { liveTurnThinkingSb?.toString() }.getOrNull()
+        runCatching { liveTurnThinkingSb?.snapshot() }.getOrNull()
             ?.takeIf { it.isNotEmpty() }?.let { return it }
         return liveStreamId
             ?.let { com.openminis.app.data.StreamHeartbeat.readThinking(streamHeartbeatDir(), it) }
@@ -13437,7 +13437,7 @@ class ChatViewModel(
             // growing content; reset to a fresh builder whenever a new text
             // block opens (which happens after a tool_use / thinking break
             // interrupts the text run).
-            val turnTextSb = StringBuilder()
+            val turnTextSb = LiveTurnBuffer()
             var currentTextBlockSb: StringBuilder? = null
             // [T-partial-turn-durability] Export THIS round's accumulator so a
             // mid-round terminator (error/cancel/crash) can commit it, and
@@ -13476,7 +13476,7 @@ class ChatViewModel(
                     allToolBlocks[idx] = allToolBlocks[idx].copy(content = sb.toString())
                 }
             }
-            val turnThinking = StringBuilder()
+            val turnThinking = LiveTurnBuffer()
             // [T-thinking-durability] Export THIS round's reasoning accumulator
             // to the live bridge (same reference — a mutable alias, not a copy).
             // Retry-sites .clear() it (export then reads "" → null), round-persist
@@ -13643,14 +13643,14 @@ class ChatViewModel(
                             allToolBlocks.add(AssistantBlock(
                                 id = "thinking_$turn",
                                 kind = "thinking",
-                                content = turnThinking.toString(),
+                                content = turnThinking.snapshot(),
                                 toolTitle = "Thinking",
                             ))
                         } else {
-                            allToolBlocks[thinkIdx] = allToolBlocks[thinkIdx].copy(content = turnThinking.toString())
+                            allToolBlocks[thinkIdx] = allToolBlocks[thinkIdx].copy(content = turnThinking.snapshot())
                         }
                         withContext(Dispatchers.Main) {
-                            updateAssistantMessage(assistantId, accumulatedText + turnTextSb.toString(), true, allToolBlocks)
+                            updateAssistantMessage(assistantId, accumulatedText + turnTextSb.snapshot(), true, allToolBlocks)
                         }
                     }
                     is LLMStreamChunk.Text -> {
@@ -13768,7 +13768,7 @@ class ChatViewModel(
                             // but happen at throttled cadence, not per delta.
                             // (activeSb === currentTextBlockSb by construction.)
                             materializeActiveTextBlock()
-                            val turnSnap = turnTextSb.toString()
+                            val turnSnap = turnTextSb.snapshot()
                             liveStreamTurnText = turnSnap
                             withContext(Dispatchers.Main) {
                                 updateAssistantMessage(assistantId, accumulatedText + turnSnap, true, allToolBlocks)
@@ -13814,7 +13814,7 @@ class ChatViewModel(
                             if (!currentProvider.streamTextIsMonolithic) {
                                 currentTextBlockSb = null
                             }
-                            val turnSnap = turnTextSb.toString()
+                            val turnSnap = turnTextSb.snapshot()
                             liveStreamTurnText = turnSnap
                             withContext(Dispatchers.Main) {
                                 updateAssistantMessage(assistantId, accumulatedText + turnSnap, true, allToolBlocks)
@@ -13839,7 +13839,7 @@ class ChatViewModel(
                                 startTimeMs = System.currentTimeMillis(),
                             ))
                             withContext(Dispatchers.Main) {
-                                updateAssistantMessage(assistantId, accumulatedText + turnTextSb.toString(), true, allToolBlocks)
+                                updateAssistantMessage(assistantId, accumulatedText + turnTextSb.snapshot(), true, allToolBlocks)
                             }
                         }
                     }
@@ -13901,7 +13901,7 @@ class ChatViewModel(
                                     content = "",
                                 )
                                 withContext(Dispatchers.Main) {
-                                    updateAssistantMessage(assistantId, accumulatedText + turnTextSb.toString(), true, allToolBlocks)
+                                    updateAssistantMessage(assistantId, accumulatedText + turnTextSb.snapshot(), true, allToolBlocks)
                                 }
                             }
                         }
@@ -13940,7 +13940,7 @@ class ChatViewModel(
                                 content = "", // Clear ToolInputDelta JSON accumulation before real output arrives
                             )
                             withContext(Dispatchers.Main) {
-                                updateAssistantMessage(assistantId, accumulatedText + turnTextSb.toString(), true, allToolBlocks)
+                                updateAssistantMessage(assistantId, accumulatedText + turnTextSb.snapshot(), true, allToolBlocks)
                             }
                         }
                     }
@@ -14002,7 +14002,7 @@ class ChatViewModel(
                         // T307: also flush the active text block's pending
                         // tail and snapshot turnText.
                         materializeActiveTextBlock()
-                        val turnSnap = turnTextSb.toString()
+                        val turnSnap = turnTextSb.snapshot()
                         withContext(Dispatchers.Main) {
                             updateAssistantMessage(assistantId, accumulatedText + turnSnap, true, allToolBlocks)
                         }
@@ -14276,11 +14276,11 @@ class ChatViewModel(
                             // `accumulatedText + newTurnText`, so this transient
                             // value is overwritten cleanly (no duplication).
                             withContext(Dispatchers.Main) {
-                                updateAssistantMessage(assistantId, accumulatedText + turnTextSb.toString(), true, allToolBlocks)
+                                updateAssistantMessage(assistantId, accumulatedText + turnTextSb.snapshot(), true, allToolBlocks)
                             }
                         }
                         // T307: SB-based per-turn accumulators reset.
-                        turnTextSb.setLength(0)
+                        turnTextSb.clear()
                         currentTextBlockSb = null
                         // [T-android-tool-splits-reply-fix] The tracked turn
                         // text block was just rolled back with the rest of
@@ -14398,10 +14398,10 @@ class ChatViewModel(
                                 allToolBlocks.removeAt(allToolBlocks.size - 1)
                             }
                             withContext(Dispatchers.Main) {
-                                updateAssistantMessage(assistantId, accumulatedText + turnTextSb.toString(), true, allToolBlocks)
+                                updateAssistantMessage(assistantId, accumulatedText + turnTextSb.snapshot(), true, allToolBlocks)
                             }
                         }
-                        turnTextSb.setLength(0)
+                        turnTextSb.clear()
                         currentTextBlockSb = null
                         turnTextBlockIdx = -1
                         turnThinking.clear()
@@ -14568,10 +14568,10 @@ class ChatViewModel(
                         // provider streams into a fresh `turnTextSb` (reset just
                         // below) and re-publishes `accumulatedText + newTurnText`.
                         withContext(Dispatchers.Main) {
-                            updateAssistantMessage(assistantId, accumulatedText + turnTextSb.toString(), true, allToolBlocks)
+                            updateAssistantMessage(assistantId, accumulatedText + turnTextSb.snapshot(), true, allToolBlocks)
                         }
                         // Reset turn state for retry with new provider
-                        turnTextSb.setLength(0)
+                        turnTextSb.clear()
                         currentTextBlockSb = null
                         // [T-android-tool-splits-reply-fix] Fresh stream from a
                         // different provider — and the add(0, info) above
@@ -14619,7 +14619,7 @@ class ChatViewModel(
             // turn boundary. After this point everything is plain String
             // semantics — `turnText` participates in cross-turn accumulation
             // and gets persisted into agentHistory below.
-            val turnText = turnTextSb.toString()
+            val turnText = turnTextSb.snapshot()
             // [T-partial-turn-durability] Full-fidelity snapshot right before
             // the tool-execution gap: a cancel/error during tool runs must
             // commit exactly this round's complete text.
@@ -14653,7 +14653,7 @@ class ChatViewModel(
             // real streamed thinking. Only when BOTH are empty do we keep the
             // blob verbatim (the DeepSeek ""-round-trip contract).
             val turnReasoningContent: String? = turnReasoningBlob?.takeIf { it.isNotEmpty() }
-                ?: turnThinking.toString().takeIf { it.isNotEmpty() }
+                ?: turnThinking.snapshot().takeIf { it.isNotEmpty() }
                 ?: turnReasoningBlob
 
             agentHistory.add(LLMMessage(
