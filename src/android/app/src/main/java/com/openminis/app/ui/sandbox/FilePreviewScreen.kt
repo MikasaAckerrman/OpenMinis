@@ -133,6 +133,7 @@ private fun ResumePendingApkInstall() {
     }
 }
 
+@Composable
 fun FilePreviewScreen(
     item: FileItem,
     onBack: () -> Unit,
