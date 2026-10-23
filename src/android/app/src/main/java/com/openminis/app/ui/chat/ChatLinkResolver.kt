@@ -156,6 +156,18 @@ object ChatLinkResolver {
      */
     private fun resolveInGlobalPool(raw: String, scheme: String?, context: Context?): File? {
         val ctx = context ?: return null
+        return resolveInGlobalPool(File(ctx.filesDir, "minis-global"), raw, scheme)
+    }
+
+    /**
+     * [T-chat-link-global-fallback] Pure core of the global-pool lookup.
+     *
+     * Takes the global root instead of a Context so the rule can be unit
+     * tested on a plain JVM - the project has no Robolectric dependency, and
+     * this is the piece that actually decides whether a cross-session
+     * attachment resolves.
+     */
+    internal fun resolveInGlobalPool(globalRoot: File, raw: String, scheme: String?): File? {
         val linuxPath = when (scheme) {
             "minis" -> {
                 val stripped = raw.removePrefix("minis://").substringBefore('?')
@@ -165,19 +177,33 @@ object ChatLinkResolver {
             null -> if (raw.startsWith("/")) raw else return null
             else -> return null
         }
-        // /var/minis/<subdir>/<rest> - only per-session subdirs are eligible.
+        // /var/minis/<subdir>/<tail> - only per-session subdirs are eligible.
         val rest = linuxPath.removePrefix("/var/minis/")
         val slash = rest.indexOf('/')
         val subdir = if (slash < 0) rest else rest.substring(0, slash)
         if (subdir !in PER_SESSION_SUBDIRS) return null
         val tail = if (slash < 0) "" else rest.substring(slash + 1)
         if (tail.isEmpty()) return null
-        val candidate = File(File(File(ctx.filesDir, "minis-global"), subdir), tail)
+        val base = File(globalRoot, subdir)
+        val candidate = File(base, tail)
+        // [T-chat-link-global-fallback] `File.isFile` resolves ".." through
+        // the OS, so "attachments/../secret.txt" would happily open a file
+        // outside the global pool. The per-session resolver in PRootKernel
+        // already guards its tail; this is the same rule for this path.
+        val inside = runCatching {
+            val cb = base.canonicalFile
+            val ct = candidate.canonicalFile
+            ct.absolutePath.startsWith(cb.absolutePath + File.separator)
+        }.getOrDefault(false)
+        if (!inside) {
+            android.util.Log.w("ChatLinkDiag", "global fallback refused traversal: $raw")
+            return null
+        }
         return if (candidate.isFile) candidate else null
     }
 
     /** [T-chat-link-global-fallback] Mirrors PRootKernel.perSessionSubdirs. */
-    private val PER_SESSION_SUBDIRS = setOf("attachments", "offloads", "workspace", "browser")
+    internal val PER_SESSION_SUBDIRS = setOf("attachments", "offloads", "workspace", "browser")
 
     /** Fire a system intent so MainActivity's BROWSABLE filter picks the deep link up. */
     fun dispatchDeepLink(context: Context, originalUrl: String) {
