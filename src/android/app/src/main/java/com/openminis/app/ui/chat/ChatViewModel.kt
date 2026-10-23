@@ -2918,12 +2918,27 @@ class ChatViewModel(
         // location — no recompute, no drift, NO system share sheet (the
         // user asked to drop it: the file already sits in
         // Download/Minis/ExportCompact, opening a chooser adds friction).
-        val lastUri = externalCompactionPrefs.getString("lastExportUri", null)
-        val lastMs = externalCompactionPrefs.getLong("exportedAtMs", 0L)
-        val fresh = lastUri != null &&
-            System.currentTimeMillis() - lastMs < 15 * 60 * 1000L
-        if (fresh && lastUri != null) {
-            val uri = android.net.Uri.parse(lastUri)
+        // [T-export-cache-not-session-scoped] Scoped to this chat. The gate
+        // used to read one app-wide slot, so exporting chat B right after chat
+        // A was refused with "свежий экспорт уже готов" pointing at A's file.
+        val prefs = externalCompactionPrefs
+        val remembered = ExternalExportCache.Entry(
+            uri = prefs.getString(ExternalExportCache.uriKey(sessionId), null).orEmpty(),
+            atMs = prefs.getLong(ExternalExportCache.atMsKey(sessionId), 0L),
+            where = prefs.getString(
+                ExternalExportCache.whereKey(sessionId),
+                "Download/Minis/ExportCompact/",
+            ).orEmpty(),
+            firstDbId = prefs.getString(ExternalExportCache.firstDbIdKey(sessionId), null),
+            lastDbId = prefs.getString(ExternalExportCache.lastDbIdKey(sessionId), null),
+        )
+        val fresh = ExternalExportCache.pickFresh(
+            remembered,
+            sessionId,
+            System.currentTimeMillis(),
+        )
+        if (fresh != null) {
+            val uri = android.net.Uri.parse(fresh.uri)
             val exists = try {
                 context.contentResolver.openInputStream(uri)?.close()
                 true
@@ -2931,11 +2946,8 @@ class ChatViewModel(
                 false
             }
             if (exists) {
-                val where = externalCompactionPrefs.getString(
-                    "lastExportWhere",
-                    "Download/Minis/ExportCompact/",
-                )
-                val ageMin = (System.currentTimeMillis() - lastMs) / 60000L
+                val where = fresh.where
+                val ageMin = (System.currentTimeMillis() - fresh.atMs) / 60000L
                 appendSystemInfo(
                     text = "Свежий экспорт уже готов ($ageMin мин. назад): $where. " +
                         "Отправь файл внешней модели — окно больше не открываю.",
@@ -2996,13 +3008,27 @@ class ChatViewModel(
     }
 
     fun applyExternalCompactionText(text: String) {
-        val first = externalCompactionPrefs.getString("firstDbId", null)
-        val last = externalCompactionPrefs.getString("lastDbId", null)
-        val exportedSession = externalCompactionPrefs.getString("sessionId", null)
-        if (first == null || last == null || exportedSession != sessionId) {
+        // [T-export-cache-not-session-scoped] This chat's own export, not whichever
+        // was written last. With one shared slot, exporting a second chat
+        // invalidated the first chat's range and made its import impossible.
+        val first = externalCompactionPrefs.getString(
+            ExternalExportCache.firstDbIdKey(sessionId),
+            null,
+        )
+        val last = externalCompactionPrefs.getString(
+            ExternalExportCache.lastDbIdKey(sessionId),
+            null,
+        )
+        // Kept for the refusal message: is some OTHER chat the one holding a
+        // live export, so the user knows which chat to go back to.
+        val tracked = ExternalExportCache.parseIndex(
+            externalCompactionPrefs.getString(ExternalExportCache.INDEX_KEY, null),
+        )
+        val exportedSession = tracked.lastOrNull { it != sessionId }
+        if (first == null || last == null) {
             viewModelScope.launch(Dispatchers.Main) {
                 appendSystemInfo(
-                    text = if (exportedSession != null && exportedSession != sessionId) {
+                    text = if (exportedSession != null) {
                         "Активный экспорт — из другой сессии. Сделай /export-compact в ЭТОМ чате."
                     } else {
                         "Нет активного экспорта — сначала /export-compact, сожми файл внешней моделью, потом /import-compact."
@@ -3097,16 +3123,26 @@ class ChatViewModel(
             whereText = uri?.let { cacheFallbackPath(it).toString() } ?: "не записан"
         }
 
-        // Remember the range so /import-compact can verify against it.
-        // Session-scoped: an export from ANOTHER chat must never fold here.
-        externalCompactionPrefs.edit()
-            .putString("firstDbId", firstDbId)
-            .putString("lastDbId", lastDbId)
-            .putString("sessionId", sessionId)
-            .putString("lastExportUri", uri?.toString())
-            .putString("lastExportWhere", whereText)
-            .putLong("exportedAtMs", System.currentTimeMillis())
-            .apply()
+        // Remember the range so /import-compact can verify against it, under THIS
+        // chat's own key: an export from ANOTHER chat must never fold here, and
+        // it must not erase what this chat exported earlier. The index is what
+        // makes the set bounded.
+        val prefs = externalCompactionPrefs
+        val previous = ExternalExportCache.parseIndex(
+            prefs.getString(ExternalExportCache.INDEX_KEY, null),
+        )
+        val kept = ExternalExportCache.remember(previous, sessionId)
+        val editor = prefs.edit()
+            .putString(ExternalExportCache.firstDbIdKey(sessionId), firstDbId)
+            .putString(ExternalExportCache.lastDbIdKey(sessionId), lastDbId)
+            .putString(ExternalExportCache.uriKey(sessionId), uri?.toString())
+            .putString(ExternalExportCache.whereKey(sessionId), whereText)
+            .putLong(ExternalExportCache.atMsKey(sessionId), System.currentTimeMillis())
+            .putString(ExternalExportCache.INDEX_KEY, ExternalExportCache.formatIndex(kept))
+        for (gone in ExternalExportCache.evicted(previous, kept)) {
+            for (key in ExternalExportCache.keysFor(gone)) editor.remove(key)
+        }
+        editor.apply()
 
         if (uri == null) {
             setCompactCardTerminal("Не удалось записать файл экспорта.")
