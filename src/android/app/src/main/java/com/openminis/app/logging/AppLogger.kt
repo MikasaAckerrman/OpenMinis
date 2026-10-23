@@ -170,6 +170,29 @@ object AppLogger {
      * / etc. call would appear twice in the file (once from [log], once
      * echoed back through logcat).
      */
+    /**
+     * Tags whose lines AppLogger has ALREADY written to the file itself, so
+     * the logcat tail must not write them a second time.
+     *
+     * - `Minis.*` and `AppLogger`: emitted by [log] through [writer].
+     * - `System.out` / `System.err`: [install] replaced the JVM's stdout and
+     *   stderr with a [PrintWriter] that writes each captured line via
+     *   [writeFileLine] AND forwards the raw bytes to the original stream.
+     *   Those forwarded bytes reach logcat and come back through
+     *   [LogcatTailer] under the `System.out` tag — so without this filter
+     *   every `println` in the process was written to the file TWICE, with a
+     *   `flush()` each time, plus one String allocation per line on the
+     *   tailer's `readLine()`. In the 19.10 incident `System.out` alone
+     *   accounted for 14 927 log lines.
+     *
+     * The only loss is a line printed to stdout BEFORE [install] ran; the
+     * tailer starts with `-T 1` (most recent line only) and was never a
+     * reliable source for history anyway.
+     */
+    internal fun isOwnOutputTag(tag: String): Boolean =
+        tag.startsWith("Minis.") || tag == "AppLogger" ||
+            tag == "System.out" || tag == "System.err"
+
     private fun writeLogcatLine(rawLine: String) {
         if (!enabled) return
         // logcat -v time format: "MM-DD HH:MM:SS.mmm L/Tag(pid): message"
@@ -178,7 +201,7 @@ object AppLogger {
         val parenIdx = if (slashIdx >= 0) rawLine.indexOf('(', slashIdx) else -1
         if (slashIdx >= 0 && parenIdx > slashIdx) {
             val tag = rawLine.substring(slashIdx + 1, parenIdx).trim()
-            if (tag.startsWith("Minis.") || tag == "AppLogger") return
+            if (isOwnOutputTag(tag)) return
         }
         try {
             val now = Date()
