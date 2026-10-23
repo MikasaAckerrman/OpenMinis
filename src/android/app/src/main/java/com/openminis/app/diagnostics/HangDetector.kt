@@ -56,7 +56,44 @@ object HangDetector {
      * lower threshold only means we LEARN sooner, the breaker logic is
      * unchanged.
      */
-    private const val HANG_THRESHOLD_MS = 800L
+    /**
+     * [T-hangdetector-threshold-vs-heartbeat] How long the main thread may
+     * stay silent before it counts as hung.
+     *
+     * This used to be 800ms while the heartbeat fired every 1000ms, which
+     * made a hang structurally impossible to detect - and a hang
+     * structurally impossible to *not* report. The gap between two heartbeats
+     * can never be smaller than the heartbeat interval, so every single
+     * heartbeat looked like a hang. Measured on the device: 1162 reported
+     * "hangs" in one watch window, each exactly ~1000ms, driving the
+     * persisted count to 35 and climbing.
+     *
+     * The consequences were not cosmetic. The count feeds two circuit
+     * breakers: at 2 the streaming markdown degrades to plain text, at 3 the
+     * app forces launch mode = home instead of the user's chosen session.
+     * And the count only resets after 10s without a hang firing - with a
+     * false hang every second there was never such a window, so the breakers
+     * latched permanently.
+     *
+     * The watchdog polls every 500ms, so a healthy main thread is observed
+     * with a gap of 1000-1500ms. 2500ms keeps a clear margin over that
+     * (a ~1s block still does not trip it) while still firing well before
+     * Android's 5s ANR kill. The heartbeat cadence is unchanged, so this
+     * costs no extra main-thread wakeups.
+     */
+    private const val HANG_THRESHOLD_MS = 2_500L
+
+    /**
+     * [T-hangdetector-breaker-expiry] How long a recorded hang keeps
+     * influencing the launch and render breakers.
+     *
+     * The persisted counter had no expiry: two real hangs yesterday still
+     * forced the app open on home today, and the user could not get their
+     * launch preference back without a manual reset. "This chat hung
+     * recently" is a useful signal; "this chat hung at some point in the
+     * past" is not.
+     */
+    private const val BREAKER_VALID_WINDOW_MS = 30 * 60 * 1000L
 
     /**
      * [T-android-hangdetector-midhang-sample] While a hang episode is still
@@ -129,7 +166,11 @@ object HangDetector {
         // long enough to accumulate 2 in-process hangs, but the count
         // survives restarts — so a relaunch mid-loop starts with degraded
         // streaming rendering instead of hanging once more first.
-        if (currentHangCount(context) >= RENDER_DEGRADE_HANG_COUNT) {
+        //
+        // [T-hangdetector-breaker-expiry] Only a recent hang seeds it. A count
+        // left over from a previous day must not start the new session with
+        // streaming markdown already degraded.
+        if (recentHangCount(context) >= RENDER_DEGRADE_HANG_COUNT) {
             _renderBreakerActive.value = true
             Log.w(TAG, "render breaker seeded ACTIVE from persisted hang count")
         }
@@ -180,8 +221,9 @@ object HangDetector {
      * have been hanging.
      */
     fun shouldForceHomeOnLaunch(context: Context): Boolean {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        return prefs.getInt(KEY_HANG_COUNT, 0) >= HANG_LIMIT_FOR_BREAKER
+        // [T-hangdetector-breaker-expiry] A hang from hours ago must not
+        // decide how the app opens today. Only a recent one counts.
+        return recentHangCount(context) >= HANG_LIMIT_FOR_BREAKER
     }
 
     /** Manual reset (Settings → "Reset hang counter") — clears immediately. */
@@ -198,6 +240,30 @@ object HangDetector {
     fun currentHangCount(context: Context): Int =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getInt(KEY_HANG_COUNT, 0)
+
+    /**
+     * [T-hangdetector-breaker-expiry] The hang count, but only if a hang was
+     * recorded recently enough to still say something about now.
+     *
+     * The counters are persisted, so without a time bound a hang from
+     * yesterday keeps the launch breaker tripped and the app opens on home
+     * instead of the session the user asked for. Expiring the influence after
+     * [BREAKER_VALID_WINDOW_MS] keeps the signal ("this hung a moment ago")
+     * and drops the stale one.
+     */
+    private fun recentHangCount(context: Context): Int {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val count = prefs.getInt(KEY_HANG_COUNT, 0)
+        if (count == 0) return 0
+        val lastHangAt = prefs.getLong(KEY_LAST_HANG_AT, 0L)
+        if (lastHangAt <= 0L) return 0
+        val age = System.currentTimeMillis() - lastHangAt
+        if (age > BREAKER_VALID_WINDOW_MS) {
+            Log.i(TAG, "hang count $count is ${age / 60000}min old - breakers ignore it")
+            return 0
+        }
+        return count
+    }
 
     // -- internals -----------------------------------------------------------
 
