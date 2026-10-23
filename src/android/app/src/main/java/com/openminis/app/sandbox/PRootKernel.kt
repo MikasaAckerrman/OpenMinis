@@ -41,6 +41,16 @@ object PRootKernel {
 
     private lateinit var rootfsManager: RootfsManager
 
+    /**
+     * [T-sandbox-global-pool-fallback] Application context, kept for the
+     * global-pool fallback in [resolveHostPath].
+     *
+     * PRootKernel is an object with no way to reach filesDir otherwise, and
+     * the fallback needs it. `applicationContext` is held deliberately so a
+     * destroyed Activity cannot be leaked through it.
+     */
+    private lateinit var appContext: Context
+
     /** Custom environment variables injected into every proot command. */
     val customEnvironment: MutableMap<String, String> = mutableMapOf()
 
@@ -56,6 +66,7 @@ object PRootKernel {
             return
         }
 
+        appContext = context.applicationContext
         rootfsManager = RootfsManager.getInstance(context)
         rootfsManager.installIfNeeded()
         rootfsManager.installProotIfNeeded()
@@ -665,6 +676,47 @@ object PRootKernel {
         return cmd
     }
 
+    /**
+     * [T-sandbox-global-pool-fallback] Prefer a file that exists over one that
+     * does not.
+     *
+     * `bindMounts["/var/minis/<subdir>"]` is last-writer-wins: every shell
+     * build overwrites it with THAT session's directory, so a session-blind
+     * lookup answers for whichever session started a shell most recently.
+     * The codebase already documents this - ModelUseOffloadHandler works
+     * around it with a per-call-site `sessionScopedHostFile` - but there are
+     * around fifteen call sites of resolveHostPath and only some of them carry
+     * the workaround: MarkdownText, MinisImageFetcher, BrowserUseManager,
+     * FileBrowserViewModel, ConfigOffloadHandler and the debug handlers do not.
+     *
+     * Fixing it here rather than at each call site is what makes it hold for
+     * new callers too.
+     *
+     * Deliberately conservative: when the bind-mount target EXISTS it is
+     * returned unchanged, so behaviour only changes in the case that was
+     * already broken (resolving to a path that is not there). Only the four
+     * per-session subdirs are eligible - memory, skills, shared and
+     * mcp-servers are global mounts already and must not be second-guessed.
+     */
+    private fun preferExistingGlobalPool(bindMountResult: File, linuxPath: String): File {
+        if (bindMountResult.exists()) return bindMountResult
+        if (!::appContext.isInitialized) return bindMountResult
+        if (!linuxPath.startsWith("/var/minis/")) return bindMountResult
+
+        val rest = linuxPath.removePrefix("/var/minis/")
+        val slash = rest.indexOf('/')
+        val subdir = if (slash < 0) rest else rest.substring(0, slash)
+        if (subdir !in perSessionSubdirs) return bindMountResult
+
+        val tail = if (slash < 0) "" else rest.substring(slash + 1)
+        val base = File(appContext.filesDir, "minis-global/$subdir")
+        val candidate = if (tail.isEmpty()) base else File(base, tail)
+        if (!candidate.exists()) return bindMountResult
+
+        Log.d(TAG, "global-pool fallback for $linuxPath -> ${candidate.absolutePath}")
+        return candidate
+    }
+
     /** Subdirs that live under `minis-sessions/<sessionId>/` rather than the global pool. */
     private val perSessionSubdirs = setOf("attachments", "offloads", "workspace", "browser")
 
@@ -751,11 +803,12 @@ object PRootKernel {
             if (linuxPath == mountPoint || linuxPath.startsWith("$mountPoint/")) {
                 val hostBase = bindMounts[mountPoint]!!
                 val relativePath = linuxPath.removePrefix(mountPoint).removePrefix("/")
-                return if (relativePath.isEmpty()) {
+                val resolved = if (relativePath.isEmpty()) {
                     File(hostBase)
                 } else {
                     File(hostBase, relativePath)
                 }
+                return preferExistingGlobalPool(resolved, linuxPath)
             }
         }
 
