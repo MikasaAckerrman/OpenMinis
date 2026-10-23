@@ -26,6 +26,35 @@ import java.util.concurrent.ConcurrentHashMap
  */
 object ExecutionCoordinator {
 
+    /**
+     * [T-android-leak-measure] How many sessions currently hold a shell.
+     *
+     * Every shell is one proot process plus its reader threads, so a count
+     * that only ever grows is the leak signal for EC-1 and EC-2. Exposed so
+     * debug.appInfo can report it: until this existed there was no way to
+     * ask the app whether a background task had actually released its
+     * session.
+     */
+    fun liveShellCount(): Int = shells.size
+
+    /**
+     * [T-android-leak-measure] Reader threads still alive across every shell
+     * we own. Must fall back to zero once the sessions have been terminated.
+     */
+    fun liveReaderThreadCount(): Int {
+        var n = 0
+        for (shell in shells.values) {
+            runCatching { n += shell.liveReaderThreadCount() }
+        }
+        return n
+    }
+
+    /**
+     * [T-android-leak-measure] Session ids currently holding a shell, for
+     * spotting which caller failed to release.
+     */
+    fun liveShellSessionIds(): List<String> = shells.keys.sorted()
+
     private const val TAG = "ExecutionCoordinator"
 
     data class CommandResult(

@@ -33,6 +33,26 @@ class AppInfoSchemaDocTest {
     }
 
     @Test
+    fun leakCountersAreDocumentedSoTheContractStaysCheckable() {
+        // [T-android-leak-measure] These are the numbers that verify EC-1,
+        // EC-2 and SE-1 on a device. If the documented shape stops matching
+        // the response, the verification silently reads null instead of a
+        // count - which is the failure this whole class of bug produces.
+        val doc = returnsOf("debug.appInfo")
+        for (key in listOf(
+            "liveShells",
+            "liveShellSessions",
+            "liveShellReaderThreads",
+            "liveShellExecuteProcesses",
+        )) {
+            assertTrue(
+                "debug.appInfo no longer documents shellLeaks.$key",
+                doc.contains(key),
+            )
+        }
+    }
+
+    @Test
     fun documentedDiskUsageKeysMatchTheBoundedWalkImplementation() {
         val doc = returnsOf("debug.appInfo")
         for (key in listOf(

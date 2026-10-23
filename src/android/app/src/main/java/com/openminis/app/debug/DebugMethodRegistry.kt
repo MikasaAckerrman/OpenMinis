@@ -243,7 +243,7 @@ object DebugMethodRegistry {
             name = "debug.appInfo",
             description = "Return app metadata, build provenance (git sha/branch/ci run id/build date), device info, and disk usage.",
             params = emptyList(),
-            returns = "{versionCode, versionName, gitSha, gitBranch, ciRunId, buildDate, isDebugBuild, platform, sdkVersion, device, androidVersion, prootBooted, filesDir, logFiles, totalLogSize, diskUsage:{filesDirExclSubtrees, sessions, global, truncated, maxDepth, maxEntries}}",
+            returns = "{versionCode, versionName, gitSha, gitBranch, ciRunId, buildDate, isDebugBuild, platform, sdkVersion, device, androidVersion, prootBooted, filesDir, logFiles, totalLogSize, diskUsage:{filesDirExclSubtrees, sessions, global, truncated, maxDepth, maxEntries}, shellLeaks:{liveShells, liveShellSessions, liveShellReaderThreads, liveShellExecuteProcesses}}",
             example = JSONObject(),
         ),
         MethodSpec(

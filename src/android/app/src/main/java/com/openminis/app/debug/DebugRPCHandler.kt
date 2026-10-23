@@ -349,6 +349,18 @@ class DebugRPCHandler(private val context: Context) {
                 put("maxDepth", MAX_WALK_DEPTH)
                 put("maxEntries", MAX_WALK_ENTRIES)
             })
+            // [T-android-leak-measure] Resource-lifecycle counters.
+            //
+            // EC-1, EC-2 and SE-1 all produced orphans that nothing could
+            // see. These three numbers are the check: after background tasks
+            // and sessions are done they must all be zero, and a non-zero
+            // value names the caller in liveShellSessionIds.
+            put("shellLeaks", JSONObject().apply {
+                put("liveShells", runCatching { com.openminis.app.sandbox.ExecutionCoordinator.liveShellCount() }.getOrDefault(-1))
+                put("liveShellSessions", runCatching { com.openminis.app.sandbox.ExecutionCoordinator.liveShellSessionIds() }.getOrDefault(emptyList<String>()))
+                put("liveShellReaderThreads", runCatching { com.openminis.app.sandbox.ExecutionCoordinator.liveReaderThreadCount() }.getOrDefault(-1))
+                put("liveShellExecuteProcesses", runCatching { com.openminis.app.sandbox.ShellExecutor.liveProcessCount() }.getOrDefault(-1))
+            })
         }
     }
 
