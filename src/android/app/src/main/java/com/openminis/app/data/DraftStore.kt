@@ -34,11 +34,33 @@ object DraftStore {
     private const val DRAFT_PREFIX = "draft."
     private const val SENT_PREFIX = "sent."
 
+    /**
+     * [T-session-purge] The text the composer held before the user started
+     * editing a queued message. It used to live in its own preferences file
+     * under "backup_<sessionId>", which meant a second mechanism for the
+     * same kind of data - and one that nothing ever cleaned up.
+     */
+    private const val PREEDIT_PREFIX = "preedit."
+
+    /** The old, separate preferences file the pre-edit backup used to live in. */
+    private const val LEGACY_PREFS = "queue_edit_backup"
+    private const val LEGACY_PREFIX = "backup_"
+
     /** Minimal string KV the pure [Logic] runs against (Context-free for tests). */
     interface Store {
         fun get(key: String): String?
         fun put(key: String, value: String)
         fun remove(key: String)
+
+        /**
+         * Every key currently held.
+         *
+         * The default is empty rather than abstract because an implementation
+         * that cannot enumerate simply has nothing to sweep - and a sweep
+         * that finds nothing leaves the store untouched. Callers that need
+         * the sweep to do something must implement it.
+         */
+        fun keys(): Set<String> = emptySet()
     }
 
     /**
@@ -49,9 +71,79 @@ object DraftStore {
      * prefs-Logic split (the pattern PlanModePrefs uses).
      */
     object Logic {
+        /**
+         * Every key prefix this store owns. A key that does not start with
+         * one of them is left alone by the orphan sweep.
+         */
+        private val OWNED_PREFIXES = listOf(DRAFT_PREFIX, SENT_PREFIX, PREEDIT_PREFIX, "minis_queue:")
+
         fun draftKey(sessionId: String) = DRAFT_PREFIX + sessionId
         fun sentKey(sessionId: String) = SENT_PREFIX + sessionId
         fun queueKey(sessionId: String) = "minis_queue:" + sessionId
+        fun preeditKey(sessionId: String) = PREEDIT_PREFIX + sessionId
+
+        fun savePreEdit(store: Store, sessionId: String, text: String) {
+            if (sessionId.isEmpty()) return
+            if (text.isEmpty()) store.remove(preeditKey(sessionId)) else store.put(preeditKey(sessionId), text)
+        }
+
+        fun loadPreEdit(store: Store, sessionId: String): String {
+            if (sessionId.isEmpty()) return ""
+            return store.get(preeditKey(sessionId)) ?: ""
+        }
+
+        fun clearPreEdit(store: Store, sessionId: String) {
+            if (sessionId.isEmpty()) return
+            store.remove(preeditKey(sessionId))
+        }
+
+        /**
+         * [T-session-purge] Everything this store holds for one session.
+         *
+         * Deleting a session removed its row from the database and left
+         * every one of these behind: the draft, the last-sent recovery
+         * text, the queued prompt and the pre-edit backup. They are the
+         * user's own words, and they accumulate for as long as the app is
+         * installed.
+         */
+        fun clearSession(store: Store, sessionId: String) {
+            if (sessionId.isEmpty()) return
+            store.remove(draftKey(sessionId))
+            store.remove(sentKey(sessionId))
+            store.remove(queueKey(sessionId))
+            store.remove(preeditKey(sessionId))
+        }
+
+        /**
+         * [T-session-purge] Drop every key whose session is gone.
+         *
+         * The per-session delete path is not the only way a session can
+         * disappear, and a store that has been leaking for months still
+         * holds the old keys. This reclaims them: for each key this store
+         * owns, the session id is read out of the key, and if that session
+         * is not in [liveSessionIds] the key is removed.
+         *
+         * Keys this store does not own are left alone - the store is shared
+         * with nothing else, but a future key prefix must be added to
+         * [sessionIdOf] before its orphans can be reclaimed.
+         */
+        fun removeOrphans(store: Store, liveSessionIds: Set<String>) {
+            for (key in store.keys()) {
+                val sessionId = sessionIdOf(key) ?: continue
+                if (sessionId !in liveSessionIds) store.remove(key)
+            }
+        }
+
+        /**
+         * The session id a key belongs to, or null when the key is not one
+         * of ours.
+         */
+        fun sessionIdOf(key: String): String? {
+            for (prefix in OWNED_PREFIXES) {
+                if (key.startsWith(prefix)) return key.substring(prefix.length)
+            }
+            return null
+        }
 
         fun saveDraft(store: Store, sessionId: String, text: String) {
             if (sessionId.isEmpty()) return
@@ -97,6 +189,7 @@ object DraftStore {
         override fun get(key: String): String? = p.getString(key, null)
         override fun put(key: String, value: String) { p.edit().putString(key, value).apply() }
         override fun remove(key: String) { p.edit().remove(key).apply() }
+        override fun keys(): Set<String> = p.all.keys.toSet()
     }
 
     private fun store(context: Context): Store = PrefsStore(context)
@@ -150,4 +243,41 @@ object DraftStore {
         if (sessionId.isEmpty()) return
         store(context).remove(Logic.queueKey(sessionId))
     }
+
+    /** [T-session-purge] Persist the text the composer held before an edit. */
+    fun savePreEdit(context: Context, sessionId: String, text: String) =
+        Logic.savePreEdit(store(context), sessionId, text)
+
+    /**
+     * [T-session-purge] The pre-edit backup for [sessionId].
+     *
+     * The backup used to live in its own preferences file under
+     * "backup_<sessionId>". Reading it here once and moving it into this
+     * store makes the old file self-healing: the first read after the
+     * upgrade finds the text, moves it, and drops the old copy.
+     */
+    fun loadPreEdit(context: Context, sessionId: String): String {
+        if (sessionId.isEmpty()) return ""
+        val st = store(context)
+        val current = Logic.loadPreEdit(st, sessionId)
+        if (current.isNotEmpty()) return current
+        val legacy = context.getSharedPreferences(LEGACY_PREFS, Context.MODE_PRIVATE)
+        val old = legacy.getString(LEGACY_PREFIX + sessionId, null)
+        if (old.isNullOrEmpty()) return ""
+        Logic.savePreEdit(st, sessionId, old)
+        legacy.edit().remove(LEGACY_PREFIX + sessionId).apply()
+        return old
+    }
+
+    /** [T-session-purge] Drop the pre-edit backup for [sessionId]. */
+    fun clearPreEdit(context: Context, sessionId: String) =
+        Logic.clearPreEdit(store(context), sessionId)
+
+    /** [T-session-purge] Everything this store holds for [sessionId]. */
+    fun clearSession(context: Context, sessionId: String) =
+        Logic.clearSession(store(context), sessionId)
+
+    /** [T-session-purge] Drop the keys of sessions that no longer exist. */
+    fun removeOrphans(context: Context, liveSessionIds: Set<String>) =
+        Logic.removeOrphans(store(context), liveSessionIds)
 }

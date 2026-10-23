@@ -150,6 +150,13 @@ class SessionListViewModel(
     private var knownSessionIds: Set<String> = emptySet()
     private var newTopBaselineSeeded = false
 
+    /**
+     * [T-session-purge] The orphan sweep runs once, on the first list that
+     * arrives. It reads the preferences file, so running it on every list
+     * change would be work for nothing.
+     */
+    private var orphansSwept = false
+
     init {
         // T-android-crash-safe-mode-v2: gate the cold-start session list
         // observer behind the safe-mode flag. The Room observable issues a
@@ -192,6 +199,20 @@ class SessionListViewModel(
                 _allSessions.value = it
                 if (!_isInitialLoadComplete.value) _isInitialLoadComplete.value = true
                 detectNewTopSession(it)
+                // [T-session-purge] Reclaim the per-session leftovers of
+                // sessions that no longer exist. The delete path purges a
+                // session when the user deletes it, but the leftovers of
+                // sessions deleted before that path existed - or deleted
+                // some other way - are still there, and they are the user's
+                // own words. The sweep refuses to run on an empty list, so a
+                // list that has not loaded yet cannot wipe the store.
+                if (!orphansSwept) {
+                    orphansSwept = true
+                    com.openminis.app.service.SessionPurge.sweepOrphans(
+                        context,
+                        it.map { s -> s.id }.toSet(),
+                    )
+                }
             }
         }
         viewModelScope.launch {
@@ -259,11 +280,10 @@ class SessionListViewModel(
         viewModelScope.launch {
             ids.forEach {
                 chatRepository.deleteSession(it)
-                ChatViewModelStore.release(it)
-                // [T-android-session-paused-badge] Drop badges for the
-                // deleted session so persisted PAUSED entries don't leak
-                // forever in SharedPreferences.
-                com.openminis.app.service.SessionBadgeStore.clear(it)
+                // [T-session-purge] Same purge as the single delete, so a
+                // bulk delete cannot leave anything behind that a single
+                // delete would have cleaned.
+                com.openminis.app.service.SessionPurge.purge(context, it)
             }
         }
         clearSelection()
@@ -272,8 +292,13 @@ class SessionListViewModel(
     fun deleteSession(id: String) {
         viewModelScope.launch {
             chatRepository.deleteSession(id)
-            ChatViewModelStore.release(id)
-            com.openminis.app.service.SessionBadgeStore.clear(id)
+            // [T-session-purge] The database row is only half of a session.
+            // Everything else the app remembered about it - the composer
+            // draft, the queued prompt, the pre-edit backup, the edit marks,
+            // the offload grants - is purged here, in one place, so that no
+            // delete path can miss a piece of it. The badge cleanup that
+            // used to be here is part of the purge now.
+            com.openminis.app.service.SessionPurge.purge(context, id)
         }
     }
 

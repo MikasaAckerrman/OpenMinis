@@ -4205,14 +4205,16 @@ class ChatViewModel(
     private fun persistPreEditText() {
         val sid = realSessionId.ifEmpty { sessionId }
         if (sid.isEmpty()) return
-        context.getSharedPreferences("queue_edit_backup", Context.MODE_PRIVATE)
-            .edit().putString("backup_$sid", _preEditTextBackup.value).apply()
+        // [T-session-purge] The pre-edit backup used to live in its own
+        // preferences file under "backup_<sid>" - a second mechanism for the
+        // same kind of data, and one that nothing ever cleaned up. It now
+        // lives in the draft store, which is swept when the session goes.
+        com.openminis.app.data.DraftStore.savePreEdit(context, sid, _preEditTextBackup.value)
     }
     private fun clearPreEditText() {
         val sid = realSessionId.ifEmpty { sessionId }
         if (sid.isEmpty()) return
-        context.getSharedPreferences("queue_edit_backup", Context.MODE_PRIVATE)
-            .edit().remove("backup_$sid").apply()
+        com.openminis.app.data.DraftStore.clearPreEdit(context, sid)
     }
 
     fun deleteMessage(messageId: String) {
@@ -7934,6 +7936,14 @@ class ChatViewModel(
                 // restore it (e.g. a hard crash mid-stream). See DraftStore.
                 runCatching {
                     val sid = realSessionId.ifEmpty { sessionId }
+                    // [T-session-purge] The pre-edit backup now survives
+                    // process death. Before, it was written to disk on every
+                    // edit and never read back, so it was a cost with no
+                    // benefit - and a key that outlived the session.
+                    if (_preEditTextBackup.value.isEmpty()) {
+                        _preEditTextBackup.value =
+                            com.openminis.app.data.DraftStore.loadPreEdit(context, sid)
+                    }
                     if (_inputText.value.isEmpty()) {
                         val draft = com.openminis.app.data.DraftStore.loadDraft(context, sid)
                         val restore = draft.ifEmpty {

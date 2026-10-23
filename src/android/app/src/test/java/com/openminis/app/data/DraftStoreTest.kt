@@ -1,6 +1,7 @@
 package com.openminis.app.data
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -16,6 +17,7 @@ class DraftStoreTest {
         override fun get(key: String): String? = map[key]
         override fun put(key: String, value: String) { map[key] = value }
         override fun remove(key: String) { map.remove(key) }
+        override fun keys(): Set<String> = map.keys.toSet()
     }
 
     @Test
@@ -90,5 +92,70 @@ class DraftStoreTest {
         DraftStore.Logic.saveDraft(s, "s1", "keep me")
         DraftStore.Logic.migrate(s, "s1", "s1")
         assertEquals("keep me", DraftStore.Logic.loadDraft(s, "s1"))
+    }
+
+    /**
+     * [T-session-purge] Deleting a session must take everything the store
+     * holds for it, not just its row in the database.
+     */
+    @Test
+    fun `clearing a session removes every key the store holds for it`() {
+        val store = FakeStore()
+        DraftStore.Logic.saveDraft(store, "s1", "draft text")
+        DraftStore.Logic.markSent(store, "s1", "sent text")
+        store.put(DraftStore.Logic.queueKey("s1"), "queued")
+        DraftStore.Logic.savePreEdit(store, "s1", "pre-edit text")
+
+        DraftStore.Logic.clearSession(store, "s1")
+
+        assertNull(store.get(DraftStore.Logic.draftKey("s1")))
+        assertNull(store.get(DraftStore.Logic.sentKey("s1")))
+        assertNull(store.get(DraftStore.Logic.queueKey("s1")))
+        assertNull(store.get(DraftStore.Logic.preeditKey("s1")))
+    }
+
+    /**
+     * [T-session-purge] The leftovers of sessions that are already gone are
+     * reclaimed by the sweep.
+     */
+    @Test
+    fun `the orphan sweep removes the keys of sessions that are gone`() {
+        val store = FakeStore()
+        DraftStore.Logic.saveDraft(store, "live", "keep")
+        DraftStore.Logic.savePreEdit(store, "dead", "drop")
+        store.put(DraftStore.Logic.queueKey("also-dead"), "drop")
+
+        DraftStore.Logic.removeOrphans(store, setOf("live"))
+
+        assertEquals("keep", store.get(DraftStore.Logic.draftKey("live")))
+        assertNull(store.get(DraftStore.Logic.preeditKey("dead")))
+        assertNull(store.get(DraftStore.Logic.queueKey("also-dead")))
+    }
+
+    /**
+     * The sweep must not touch keys the store does not own.
+     */
+    @Test
+    fun `the orphan sweep leaves keys the store does not own alone`() {
+        val store = FakeStore()
+        store.put("someone.else.key", "value")
+
+        DraftStore.Logic.removeOrphans(store, setOf("live"))
+
+        assertEquals("value", store.get("someone.else.key"))
+    }
+
+    /**
+     * The pre-edit backup is part of the same store now, so it is swept
+     * with everything else.
+     */
+    @Test
+    fun `the pre-edit backup is saved, loaded and cleared`() {
+        val store = FakeStore()
+        DraftStore.Logic.savePreEdit(store, "s1", "typed but not sent")
+        assertEquals("typed but not sent", DraftStore.Logic.loadPreEdit(store, "s1"))
+
+        DraftStore.Logic.clearPreEdit(store, "s1")
+        assertEquals("", DraftStore.Logic.loadPreEdit(store, "s1"))
     }
 }
