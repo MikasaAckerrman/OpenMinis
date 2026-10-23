@@ -37,6 +37,14 @@ class DebugRPCHandler(private val context: Context) {
     companion object {
         /** Set this from MainActivity to enable screenshot capture. */
         var currentActivity: WeakReference<Activity>? = null
+
+        /**
+         * Depth/entry caps for [dirSize]. Deep enough for every real Minis
+         * layout (rootfs, repo checkouts, session trees), low enough that a
+         * runaway tree cannot hold a dispatcher thread indefinitely.
+         */
+        const val MAX_WALK_DEPTH = 12
+        const val MAX_WALK_ENTRIES = 200_000
     }
 
     suspend fun handle(json: String): String {
@@ -323,16 +331,64 @@ class DebugRPCHandler(private val context: Context) {
             put("logFiles", AppLogger.listLogFiles().size)
             put("totalLogSize", AppLogger.totalSize())
             put("diskUsage", JSONObject().apply {
-                put("filesDir", dirSize(filesDir))
-                put("sessions", dirSize(File(filesDir, "minis-sessions")))
-                put("global", dirSize(File(filesDir, "minis-global")))
+                // [T-android-debugserver-dirsize] The sessions and global
+                // trees are measured on their own below, so they are skipped
+                // here: the previous version walked filesDir and then walked
+                // minis-global a SECOND time, paying for every file twice.
+                val sessionsDir = File(filesDir, "minis-sessions")
+                val globalDir = File(filesDir, "minis-global")
+                val (filesSize, filesTrunc) = dirSize(filesDir, skipSubtrees = setOf(sessionsDir, globalDir))
+                val (sessionsSize, sessionsTrunc) = dirSize(sessionsDir)
+                val (globalSize, globalTrunc) = dirSize(globalDir)
+                put("filesDirExclSubtrees", filesSize)
+                put("sessions", sessionsSize)
+                put("global", globalSize)
+                // A truncated number is worse than no number: without this
+                // flag a capped walk is indistinguishable from a complete one.
+                put("truncated", filesTrunc || sessionsTrunc || globalTrunc)
+                put("maxDepth", MAX_WALK_DEPTH)
+                put("maxEntries", MAX_WALK_ENTRIES)
             })
         }
     }
 
-    private fun dirSize(dir: File): Long {
-        if (!dir.exists()) return 0
-        return dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+    /**
+     * Bounded recursive size of [dir].
+     *
+     * [T-android-debugserver-dirsize] The previous version was
+     * `dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }` with no
+     * depth limit, no entry limit and no cancellation. Under filesDir that
+     * includes minis-global, which holds the shared folder with the whole
+     * source tree and every bundle built so far - so a single debug.appInfo
+     * call stat'ed hundreds of thousands of files and never answered (it was
+     * observed to run past 60 s, inside runBlocking, holding a dispatcher
+     * thread for the whole time).
+     *
+     * Returns the size together with a flag saying whether the walk hit a
+     * cap, so the caller can report a partial number as partial.
+     */
+    private fun dirSize(dir: File, skipSubtrees: Set<File> = emptySet()): Pair<Long, Boolean> {
+        if (!dir.exists()) return 0L to false
+        if (!dir.isDirectory) return (if (dir.isFile) dir.length() else 0L) to false
+
+        val skipPrefixes = skipSubtrees
+            .filter { it.exists() }
+            .map { it.absolutePath + File.separator }
+
+        var total = 0L
+        var seen = 0
+        val entries = dir.walkTopDown()
+            .maxDepth(MAX_WALK_DEPTH)
+            .filter { f -> skipPrefixes.none { p -> f.absolutePath.startsWith(p) } }
+            // +1 so hitting the cap exactly is still detectable.
+            .take(MAX_WALK_ENTRIES.toLong() + 1L)
+
+        for (f in entries) {
+            if (seen >= MAX_WALK_ENTRIES) return total to true
+            if (f.isFile) total += f.length()
+            seen++
+        }
+        return total to false
     }
 
     // ── Install history [T-build-tracking] ────────────────────────────────

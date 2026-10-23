@@ -23,6 +23,16 @@ sealed class ChatLinkAction {
     data class SandboxFile(val item: FileItem) : ChatLinkAction()
     data class ExternalApp(val url: String) : ChatLinkAction()
     data class Web(val url: String) : ChatLinkAction()
+
+    /**
+     * [T-chat-link-not-found] A `minis://` link whose file is not there.
+     *
+     * Falling through to [Web] used to end in the in-app browser, which has
+     * no idea what `minis://` means and reported it as a blocked external
+     * link. A missing file is a different fact from a web page and deserves
+     * its own outcome.
+     */
+    data class NotFound(val url: String, val detail: String) : ChatLinkAction()
 }
 
 object ChatLinkResolver {
@@ -53,6 +63,32 @@ object ChatLinkResolver {
             "resolve url=${trimmed.take(200)} sid=$sessionId hostFile=${hostFile?.absolutePath} exists=${hostFile?.exists()}")
         if (hostFile != null && hostFile.exists() && !hostFile.isDirectory) {
             FileItem.from(hostFile)?.let { return ChatLinkAction.SandboxFile(it) }
+        }
+
+        // [T-chat-link-global-fallback] A file produced by ANY session must be
+        // reachable from any other. `attachments`, `offloads`, `workspace` and
+        // `browser` are bind-mounted per session (files/minis-sessions/<sid>/),
+        // so an attachment written by a background-task session is invisible
+        // to the chat session that renders the link - it simply is not in that
+        // directory. Verified on device: a 43 MB APK written at 09:06 existed
+        // at 09:06 and the session's attachments directory was empty at 09:18.
+        // Falling back to the global pool fixes exactly that case without
+        // making attachments global, which would let two sessions collide on
+        // one filename.
+        val globalHit = resolveInGlobalPool(trimmed, scheme, context)
+        if (globalHit != null) {
+            FileItem.from(globalHit)?.let { return ChatLinkAction.SandboxFile(it) }
+        }
+
+        // [T-chat-link-not-found] Do not let an unresolvable `minis://` link
+        // continue as if it were a web page: the in-app browser cannot load
+        // our own scheme and reported it as a blocked external link, which is
+        // both wrong and useless to the reader.
+        if (scheme == "minis") {
+            return ChatLinkAction.NotFound(
+                trimmed,
+                "Файл не найден: ${hostFile?.absolutePath ?: trimmed}",
+            )
         }
 
         // T136: intent://, mailto:, tel:, geo:, market: etc. need a system
@@ -108,6 +144,40 @@ object ChatLinkResolver {
             else -> null
         }
     }
+
+    /**
+     * [T-chat-link-global-fallback] Second chance for session-scoped paths,
+     * looked up in the global pool under files/minis-global/.
+     *
+     * Only the four per-session subdirs are consulted, and only when [context]
+     * is available — the global pool lives under the app's filesDir, which
+     * needs a Context to locate. Returns null rather than throwing when the
+     * name does not exist, and never returns a directory.
+     */
+    private fun resolveInGlobalPool(raw: String, scheme: String?, context: Context?): File? {
+        val ctx = context ?: return null
+        val linuxPath = when (scheme) {
+            "minis" -> {
+                val stripped = raw.removePrefix("minis://").substringBefore('?')
+                val decoded = runCatching { java.net.URLDecoder.decode(stripped, "UTF-8") }.getOrDefault(stripped)
+                if (decoded.startsWith("/")) decoded else "/var/minis/$decoded"
+            }
+            null -> if (raw.startsWith("/")) raw else return null
+            else -> return null
+        }
+        // /var/minis/<subdir>/<rest> - only per-session subdirs are eligible.
+        val rest = linuxPath.removePrefix("/var/minis/")
+        val slash = rest.indexOf('/')
+        val subdir = if (slash < 0) rest else rest.substring(0, slash)
+        if (subdir !in PER_SESSION_SUBDIRS) return null
+        val tail = if (slash < 0) "" else rest.substring(slash + 1)
+        if (tail.isEmpty()) return null
+        val candidate = File(File(File(ctx.filesDir, "minis-global"), subdir), tail)
+        return if (candidate.isFile) candidate else null
+    }
+
+    /** [T-chat-link-global-fallback] Mirrors PRootKernel.perSessionSubdirs. */
+    private val PER_SESSION_SUBDIRS = setOf("attachments", "offloads", "workspace", "browser")
 
     /** Fire a system intent so MainActivity's BROWSABLE filter picks the deep link up. */
     fun dispatchDeepLink(context: Context, originalUrl: String) {

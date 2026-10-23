@@ -34,7 +34,17 @@ import com.openminis.app.logging.AppLogger
 object BrowserExternalSchemeHandler {
     private const val TAG = "BrowserExternalScheme"
 
-    private val INTERNAL_SCHEMES = setOf("http", "https", "about", "file")
+    /**
+     * Schemes this app owns and must never hand to another application.
+     *
+     * [T-chat-minis-scheme-internal] `minis` belongs here: it is our own deep
+     * link scheme, so `scheme !in INTERNAL_SCHEMES` classified every
+     * `minis://` link as an external app. A link whose file could not be
+     * resolved was then dispatched through ACTION_VIEW, and the user got
+     * "Blocked link to external app (minis)" — a message about a foreign app
+     * for a link that never left the app in the first place.
+     */
+    private val INTERNAL_SCHEMES = setOf("http", "https", "about", "file", "minis")
 
     /**
      * `intent://` schemes that require Intent.parseUri (NOT plain

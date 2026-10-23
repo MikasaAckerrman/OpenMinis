@@ -1984,6 +1984,15 @@ fun ChatScreen(
                     com.openminis.app.ui.browser.BrowserExternalSchemeHandler
                         .handle(context, action.url)
                 is ChatLinkAction.Web -> previewUrl = action.url
+                // [T-chat-link-not-found] A `minis://` link whose file is gone.
+                // Say so instead of handing our own scheme to the browser,
+                // which could only report it as a blocked external link.
+                is ChatLinkAction.NotFound ->
+                    android.widget.Toast.makeText(
+                        context,
+                        "${action.detail}\n(проверены каталоги сессии и общий)",
+                        android.widget.Toast.LENGTH_LONG,
+                    ).show()
             }
         }
     }

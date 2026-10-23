@@ -20,10 +20,24 @@ internal class LogcatTailer(private val sink: (String) -> Unit) {
     private var thread: Thread? = null
     @Volatile private var stopping: Boolean = false
 
+    /**
+     * [T-logcat-tailer-stop-race] Generation counter for the reader thread.
+     *
+     * `stopping` alone was not enough: `stop()` set it true and immediately
+     * dropped the `thread` field, so a `start()` right after reset it to false
+     * while the old reader was still blocked in `readLine()`. The old thread
+     * then saw `stopping == false` and kept calling the sink alongside the new
+     * one — every line arriving twice after a quick disable/enable of logging.
+     * Each reader captures its own generation and exits as soon as the
+     * counter moves, which is independent of what a later start() does.
+     */
+    private val generation = java.util.concurrent.atomic.AtomicInteger(0)
+
     @Synchronized
     fun start() {
         if (process != null) return
         stopping = false
+        val myGeneration = generation.incrementAndGet()
         try {
             // -v time     : "MM-DD HH:MM:SS.mmm L/Tag(pid): message" format
             // -T 1        : start from the most recent line (skip backlog)
@@ -59,7 +73,9 @@ internal class LogcatTailer(private val sink: (String) -> Unit) {
                 try {
                     var line: String?
                     while (reader.readLine().also { line = it } != null) {
-                        if (stopping) break
+                        // Exit on a stale generation as well as an explicit stop,
+                        // so a restarted tailer cannot resurrect this reader.
+                        if (stopping || generation.get() != myGeneration) break
                         val l = line ?: continue
                         // Skip the leading "--------- beginning of main" banner
                         if (l.startsWith("---------")) continue
@@ -84,7 +100,18 @@ internal class LogcatTailer(private val sink: (String) -> Unit) {
     @Synchronized
     fun stop() {
         stopping = true
+        // Invalidate the running reader immediately, independently of the flag
+        // a later start() would reset.
+        generation.incrementAndGet()
         try { process?.destroy() } catch (_: Throwable) {}
+        // Wait for the reader to actually exit before dropping the handle: it
+        // is blocked in readLine() and only wakes when the pipe closes.
+        val t = thread
+        if (t != null && t !== Thread.currentThread()) {
+            try { t.join(500) } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+        }
         process = null
         thread = null
     }
