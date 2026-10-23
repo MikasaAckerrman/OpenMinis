@@ -166,8 +166,28 @@ object ExecutionCoordinator {
 
             val bindMounts = buildSessionBindMounts(sessionId)
             val shell = PersistentShell(appContext, sessionId, bindMounts)
+            // [T-exec-coordinator-partial-start] Publish only after the shell is
+            // actually up.
+            //
+            // The old order was `shells[sessionId] = shell` then
+            // `shell.ensureStarted()`. If the start failed - proot spawn
+            // refused, rootfs busy, process limit reached - the entry stayed
+            // in the map pointing at a shell that may already own a live
+            // proot process. The next attempt saw it, found it not alive,
+            // built a replacement and OVERWROTE the entry, dropping the only
+            // reference to the half-started shell: a proot process nobody owns,
+            // for the rest of the process lifetime.
+            //
+            // Stopping on failure closes the other half: a shell that never
+            // became reachable still must not keep a process alive.
+            try {
+                shell.ensureStarted()
+            } catch (t: Throwable) {
+                runCatching { shell.stop() }
+                    .onFailure { Log.w(TAG, "[$sessionId] stop after failed start threw: ${it.message}") }
+                throw t
+            }
             shells[sessionId] = shell
-            shell.ensureStarted()
             Log.i(TAG, "[$sessionId] Shell created with ${bindMounts.size} bind mounts")
             Log.w(TAG, "[diag] new shell created sessionId=$sessionId attachmentsMount=${bindMounts["/var/minis/attachments"]}")
             shell
