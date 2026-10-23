@@ -41,6 +41,29 @@ object ShellExecutor {
         private set
 
     /**
+     * [T-shellexec-concurrent-process] Every proot process this executor has
+     * started and not yet reaped.
+     *
+     * `currentProcess` alone cannot describe reality: shell_execute runs
+     * concurrently (several agent tools at once, background tasks beside the
+     * chat session), and a single field loses the other runs. The set is the
+     * ownership record - a process that leaves this set was reaped by its own
+     * caller, so anything still in it is a process we forgot.
+     */
+    private val liveProcesses = java.util.concurrent.ConcurrentHashMap.newKeySet<Process>()
+
+    /**
+     * [T-shellexec-concurrent-process] Reap exactly the process this call
+     * started, and clear the shared slot only if it still points at it.
+     */
+    private fun killOwnedProcess(process: Process?) {
+        if (process == null) return
+        try { process.destroyForcibly() } catch (_: Throwable) {}
+        liveProcesses.remove(process)
+        if (currentProcess === process) currentProcess = null
+    }
+
+    /**
      * Execute a command inside the PRoot sandbox.
      *
      * @param context Android context for resolving PROOT_TMP_DIR
@@ -93,11 +116,17 @@ object ShellExecutor {
 
         val output = StringBuilder()
         var exitCode = -1
+        // [T-shellexec-concurrent-process] This invocation's own process.
+        // The catch blocks below need it because `currentProcess` is a single
+        // global slot shared by every concurrent run.
+        var started: Process? = null
 
         try {
             withTimeout(timeout) {
                 val process = processBuilder.start()
+                started = process
                 currentProcess = process
+                liveProcesses.add(process)
 
                 try {
                     // Read raw chars to preserve \r for TerminalSanitizer CR-folding.
@@ -128,19 +157,33 @@ object ShellExecutor {
 
                     exitCode = process.waitFor()
                 } finally {
-                    currentProcess = null
+                    // Deregister THIS process, not "whatever is in the slot".
+                    //
+                    // Two shell_execute calls run in parallel routinely - the
+                    // agent may drive several tools at once, and background
+                    // tasks run beside the chat session. With one shared field
+                    // the second start overwrote the first, and the first to
+                    // finish nulled out the SECOND one's reference. From that
+                    // moment the second process could no longer be killed: its
+                    // timeout branch called destroyForcibly() on null, so the
+                    // proot process stayed alive with nobody owning it, and
+                    // the STOP button killed whichever process happened to be
+                    // in the slot rather than the one the user asked to stop.
+                    liveProcesses.remove(process)
+                    if (currentProcess === process) currentProcess = null
                 }
             }
         } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
             Log.w(TAG, "Command timed out after ${timeout}ms: $command")
-            currentProcess?.destroyForcibly()
-            currentProcess = null
+            // Kill this invocation's process, never `currentProcess`: with
+            // concurrent runs that slot may already belong to somebody else,
+            // which leaked the timed-out process AND killed an innocent one.
+            killOwnedProcess(started)
             output.appendLine("\n[Command timed out after ${timeout / 1000}s]")
             exitCode = 124 // Standard timeout exit code
         } catch (e: Exception) {
             Log.e(TAG, "Command failed: $command", e)
-            currentProcess?.destroyForcibly()
-            currentProcess = null
+            killOwnedProcess(started)
             output.appendLine("\n[Error: ${e.message}]")
             exitCode = -1
         }
@@ -161,6 +204,9 @@ object ShellExecutor {
     fun destroyCurrent() {
         currentProcess?.let { process ->
             currentProcess = null
+            // Drop the ownership record too, otherwise the STOP button would
+            // leak a Process reference per use into liveProcesses.
+            liveProcesses.remove(process)
             Log.i(TAG, "Destroying current process (async kill)")
             // [T-stop-button-freeze] process reaping is blocking; the
             // STOP button path must not pay for it on the main thread.
@@ -169,4 +215,11 @@ object ShellExecutor {
             }
         }
     }
+
+    /**
+     * [T-shellexec-concurrent-process] How many proot processes this executor
+     * still owns. Non-zero after all commands have finished means one was
+     * started and never reaped - the leak this class of bug produces.
+     */
+    internal fun liveProcessCount(): Int = liveProcesses.size
 }
