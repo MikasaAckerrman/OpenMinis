@@ -39,19 +39,22 @@ import java.nio.file.Files
  * [File.listFiles] and [File.list] must not be used anywhere in this app.
  * Use [listFiles], [listNames] and [walk] instead.
  *
- * The contract is deliberately identical to the stdlib it replaces:
- * a directory that cannot be read yields `null`, not an empty list, so
- * existing null checks keep their meaning.
+ * The contract is deliberately identical to the stdlib it replaces: a
+ * directory that cannot be read yields `null`, not an empty list, so the
+ * existing null checks keep their meaning. A `null` receiver yields `null`
+ * as well, which is what `dir?.listFiles()` did.
  */
 object SafeDir {
 
     /**
      * Names of the entries directly inside [dir], decoded in Java.
      *
-     * @return the names, or `null` when [dir] is not a directory or cannot be
-     *   read - the same condition under which [File.listFiles] returns null.
+     * @return the names, or `null` when [dir] is `null`, is not a directory
+     *   or cannot be read - the same conditions under which [File.listFiles]
+     *   returns null.
      */
-    fun listNames(dir: File): List<String>? {
+    fun listNames(dir: File?): List<String>? {
+        if (dir == null) return null
         val out = ArrayList<String>()
         val stream = try {
             Files.newDirectoryStream(dir.toPath())
@@ -82,21 +85,23 @@ object SafeDir {
      * replaced by U+FFFD and therefore no longer resolves, which is a
      * tolerable loss next to losing the process.
      */
-    fun listFiles(dir: File): List<File>? {
-        val names = listNames(dir) ?: return null
+    fun listFiles(dir: File?): List<File>? {
+        val target = dir ?: return null
+        val names = listNames(target) ?: return null
         val out = ArrayList<File>(names.size)
         for (name in names) {
-            out.add(File(dir, name))
+            out.add(File(target, name))
         }
         return out
     }
 
     /** Direct children of [dir] that satisfy [filter]. */
-    fun listFiles(dir: File, filter: (File) -> Boolean): List<File>? {
-        val names = listNames(dir) ?: return null
+    fun listFiles(dir: File?, filter: (File) -> Boolean): List<File>? {
+        val target = dir ?: return null
+        val names = listNames(target) ?: return null
         val out = ArrayList<File>(names.size)
         for (name in names) {
-            val f = File(dir, name)
+            val f = File(target, name)
             if (filter(f)) out.add(f)
         }
         return out
@@ -106,29 +111,36 @@ object SafeDir {
      * Depth-first walk of [root], yielding the root first and then every
      * entry below it.
      *
-     * Equivalent to `File.walkTopDown()`, which is itself implemented on top
-     * of `File.listFiles()` and therefore just as fatal. The order matches
-     * the stdlib exactly - a parent is immediately followed by its own
-     * children - because [Sequence.maxDepth] derives the depth of an element
-     * from its position in the sequence and would miscount otherwise.
+     * Replaces `File.walkTopDown()`, which is itself built on
+     * `File.listFiles()` and therefore just as fatal. The order matches the
+     * stdlib exactly - a parent is immediately followed by its own children
+     * - and the depth numbering matches too: the root is depth 0, its
+     * children are depth 1.
      *
-     * Unlike the stdlib version this one refuses to descend into a directory
-     * it has already visited, so a symlink cycle terminates instead of
-     * spinning forever.
+     * [maxDepth] replaces `FileTreeWalk.maxDepth`, which is a member of the
+     * stdlib's walk type and therefore not reachable from a plain
+     * [Sequence]. Entries deeper than [maxDepth] are not yielded and not
+     * descended into.
+     *
+     * Unlike the stdlib version this one refuses to descend into a
+     * directory it has already visited, so a symlink cycle terminates
+     * instead of spinning forever.
      */
-    fun walk(root: File): Sequence<File> = sequence {
+    fun walk(root: File?, maxDepth: Int = Int.MAX_VALUE): Sequence<File> = sequence {
+        if (root == null) return@sequence
         val visited = HashSet<String>()
-        val stack = ArrayDeque<File>()
-        stack.addLast(root)
+        val stack = ArrayDeque<Pair<File, Int>>()
+        stack.addLast(root to 0)
         while (stack.isNotEmpty()) {
-            val f = stack.removeLast()
+            val (f, depth) = stack.removeLast()
+            if (depth > maxDepth) continue
             yield(f)
             if (!f.isDirectory) continue
             if (!visited.add(canonicalOrAbsolute(f))) continue
             val children = listFiles(f).orEmpty()
             // Reversed, so the first child is popped first and the traversal
             // keeps the stdlib's sibling order.
-            for (i in children.indices.reversed()) stack.addLast(children[i])
+            for (i in children.indices.reversed()) stack.addLast(children[i] to depth + 1)
         }
     }
 
@@ -136,11 +148,12 @@ object SafeDir {
      * Depth-first walk of [root] that yields every entry before the
      * directory that contains it.
      *
-     * Equivalent to `File.walkBottomUp()`, which is built on
-     * `File.listFiles()` and therefore just as fatal. Used when entries have
-     * to be removed before their parent directory can go.
+     * Replaces `File.walkBottomUp()`, which is built on `File.listFiles()`
+     * and therefore just as fatal. Used when entries have to be removed
+     * before their parent directory can go.
      */
-    fun walkBottomUp(root: File): Sequence<File> = sequence {
+    fun walkBottomUp(root: File?): Sequence<File> = sequence {
+        if (root == null) return@sequence
         val visited = HashSet<String>()
         val ordered = ArrayList<File>()
         // (node, expanded) - a node is re-visited after its children so that

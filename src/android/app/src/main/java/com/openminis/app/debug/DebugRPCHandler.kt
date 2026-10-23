@@ -391,8 +391,7 @@ class DebugRPCHandler(private val context: Context) {
 
         var total = 0L
         var seen = 0
-        val entries = SafeDir.walk(dir)
-            .maxDepth(MAX_WALK_DEPTH)
+        val entries = SafeDir.walk(dir, MAX_WALK_DEPTH)
             .filter { f -> skipPrefixes.none { p -> f.absolutePath.startsWith(p) } }
             // +1 so hitting the cap exactly is still detectable.
             .take(MAX_WALK_ENTRIES + 1)
