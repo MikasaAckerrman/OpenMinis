@@ -34,6 +34,7 @@ class ProviderConfigDetachTest {
         instances = mutableListOf(
             ProviderInstance(
                 id = "inst-1",
+                label = "inst-1",
                 providerType = ProviderType.openAI,
                 credentialType = ProviderCredential.apiKey,
             ),
