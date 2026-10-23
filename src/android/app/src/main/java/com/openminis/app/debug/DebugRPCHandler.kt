@@ -412,6 +412,23 @@ class DebugRPCHandler(private val context: Context) {
                 put("liveShellReaderThreads", runCatching { com.openminis.app.sandbox.ExecutionCoordinator.liveReaderThreadCount() }.getOrDefault(-1))
                 put("liveShellExecuteProcesses", runCatching { com.openminis.app.sandbox.ShellExecutor.liveProcessCount() }.getOrDefault(-1))
             })
+            // [T-perf-resource-monitor-split] What the resource sampler is
+            // actually doing. The memory half calls Debug.getMemoryInfo(),
+            // which walks /proc for every process on the device, so its cost
+            // and frequency have to be visible to be judged.
+            put("resourceMonitor", JSONObject().apply {
+                val m = com.openminis.app.ui.chat.SystemResourceMonitor.lastInstance
+                if (m == null) {
+                    put("active", false)
+                } else {
+                    put("active", true)
+                    put("cpuSampleCount", m.cpuSampleCount)
+                    put("memorySampleCount", m.memorySampleCount)
+                    put("lastCpuSampleMs", m.lastCpuSampleMs)
+                    put("lastMemorySampleMs", m.lastMemorySampleMs)
+                    put("memorySampleEveryTicks", com.openminis.app.ui.chat.SystemResourceMonitor.MEMORY_SAMPLE_EVERY)
+                }
+            })
             // [T-hangdetector-threshold-vs-heartbeat] The hang detector's own
             // state, so its behaviour can be watched instead of inferred from
             // logcat.

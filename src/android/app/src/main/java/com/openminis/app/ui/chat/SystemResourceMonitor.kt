@@ -55,6 +55,28 @@ import java.io.File
  * recompose loop while the caller wants live numbers.
  */
 class SystemResourceMonitor {
+    /**
+     * [T-perf-resource-monitor-split] The two halves of the sample cost very
+     * differently, and they were running at the same rate.
+     *
+     * The CPU half reads /proc/self/stat - one small file, cheap.
+     *
+     * The memory half calls Debug.getMemoryInfo(), which walks /proc for EVERY
+     * process on the device to compute the app's PSS. That is the expensive
+     * one, and it was running every 2 seconds for as long as a shell tool was
+     * live.
+     *
+     * The number it produces - the app's PSS - moves over seconds, not
+     * milliseconds, so sampling it five times less often costs the displayed
+     * value nothing measurable and cuts the /proc walk by five. The CPU
+     * number keeps its 2-second cadence, because it is the one that is
+     * supposed to look live.
+     */
+    @Volatile var cpuSampleCount: Long = 0L
+    @Volatile var memorySampleCount: Long = 0L
+    @Volatile var lastCpuSampleMs: Long = 0L
+    @Volatile var lastMemorySampleMs: Long = 0L
+
     var cpuUsage: Float = 0f          // top-style IRIX %; 100% = 1 core, up to numCores * 100
         private set
     var memUsedBytes: Long = 0L
@@ -90,9 +112,16 @@ class SystemResourceMonitor {
         Os.sysconf(OsConstants._SC_CLK_TCK)
     }.getOrNull()?.takeIf { it > 0 } ?: 100L
 
-    fun sampleOnce(context: Context) {
+    fun sampleOnce(context: Context, includeMemory: Boolean = true) {
+        val cpuStart = System.nanoTime()
         sampleCpu()
+        lastCpuSampleMs = (System.nanoTime() - cpuStart) / 1_000_000L
+        cpuSampleCount++
+        if (!includeMemory) return
+        val memStart = System.nanoTime()
         sampleMemory(context)
+        lastMemorySampleMs = (System.nanoTime() - memStart) / 1_000_000L
+        memorySampleCount++
     }
 
     /**
@@ -202,6 +231,21 @@ class SystemResourceMonitor {
         val totalGB = memTotalBytes / 1_073_741_824.0
         return String.format("MEM %.1f/%.1f GB", usedGB, totalGB)
     }
+
+    companion object {
+        /**
+         * [T-perf-resource-monitor-split] How many 2-second ticks pass
+         * between two memory samples. 5 means memory every 10 seconds.
+         */
+        const val MEMORY_SAMPLE_EVERY = 5
+
+        /**
+         * The most recently created monitor, so the debug surface can report
+         * what the sampler is actually doing instead of guessing from logcat.
+         */
+        @Volatile
+        var lastInstance: SystemResourceMonitor? = null
+    }
 }
 
 /**
@@ -217,6 +261,12 @@ class SystemResourceMonitor {
 fun rememberSystemResourceMonitor(active: Boolean): SystemResourceMonitor {
     val context = LocalContext.current
     val monitor = remember { SystemResourceMonitor() }
+    // [T-perf-resource-monitor-split] Publish it so the debug surface can
+    // report what the sampler is doing - how many samples it took and how
+    // long each half took - instead of that being guesswork from logcat.
+    androidx.compose.runtime.SideEffect {
+        SystemResourceMonitor.lastInstance = monitor
+    }
     var tick by remember { mutableStateOf(0) }
     LaunchedEffect(active) {
         if (!active) {
@@ -231,14 +281,20 @@ fun rememberSystemResourceMonitor(active: Boolean): SystemResourceMonitor {
         // chat frozen (ANR-grade), even on an otherwise idle chat. All
         // sampling runs on Dispatchers.IO; the main thread only gets the
         // tick++ recompose signal.
+        // [T-perf-resource-monitor-split] The first sample carries memory, so
+        // the strip is populated immediately rather than after the first
+        // memory tick.
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             monitor.sampleOnce(context)
         }
         tick++
         while (isActive) {
             delay(2000)
+            // Memory every MEMORY_SAMPLE_EVERY-th tick (10s), CPU every tick
+            // (2s). See the class doc for why the two rates differ.
+            val withMemory = (tick % MEMORY_SAMPLE_EVERY) == 0
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                monitor.sampleOnce(context)
+                monitor.sampleOnce(context, includeMemory = withMemory)
             }
             tick++
         }

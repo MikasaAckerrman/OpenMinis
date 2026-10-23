@@ -104,6 +104,26 @@ class AppInfoSchemaDocTest {
     }
 
     @Test
+    fun resourceMonitorCountersAreDocumentedSoTheSamplingCostIsVisible() {
+        // [T-perf-resource-monitor-split] The memory half of the resource
+        // sampler calls Debug.getMemoryInfo(), which walks /proc for every
+        // process on the device. Its frequency and cost are only judgeable if
+        // they are reported, and the documented shape has to name them.
+        val doc = returnsOf("debug.appInfo")
+        for (key in listOf(
+            "cpuSampleCount",
+            "memorySampleCount",
+            "lastMemorySampleMs",
+            "memorySampleEveryTicks",
+        )) {
+            assertTrue(
+                "debug.appInfo no longer documents resourceMonitor.$key",
+                doc.contains(key),
+            )
+        }
+    }
+
+    @Test
     fun discoverReportsItsOwnMethodCountHonestly() {
         val d = DebugMethodRegistry.discover()
         val declared = d.optInt("methodCount", -1)
