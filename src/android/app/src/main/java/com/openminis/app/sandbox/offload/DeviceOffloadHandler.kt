@@ -149,11 +149,16 @@ class DeviceOffloadHandler(private val context: Context) : NativeOffloadHandler 
         // the real figure.
         var n = 0L
         var seen = 0
+        // take() bounds the walk itself, not just the arithmetic: without it
+        // the traversal would still stat every entry and only the total would
+        // stop growing.
         SafeDir.walk(dir, MAX_DIRSIZE_DEPTH)
-            .forEach {
-                if (seen >= MAX_DIRSIZE_ENTRIES) return
-                if (it.isFile) n += it.length()
-                seen++
+            .take(MAX_DIRSIZE_ENTRIES + 1)
+            .forEach { f ->
+                if (seen < MAX_DIRSIZE_ENTRIES) {
+                    if (f.isFile) n += f.length()
+                    seen++
+                }
             }
         if (seen >= MAX_DIRSIZE_ENTRIES) {
             AppLogger.warning(TAG, "dirSize hit the $MAX_DIRSIZE_ENTRIES entry cap - total is a lower bound")
@@ -162,6 +167,7 @@ class DeviceOffloadHandler(private val context: Context) : NativeOffloadHandler 
     }
 
     companion object {
+        private const val TAG = "DeviceOffloadHandler"
         private const val MAX_DIRSIZE_DEPTH = 12
         private const val MAX_DIRSIZE_ENTRIES = 15_000
         private const val HELP = """android-device — device model, OS, battery, storage (JSON)
