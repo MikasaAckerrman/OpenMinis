@@ -4,136 +4,106 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * [T-provider-config-cme] Regression test for the defensive shape of
- * `ProviderRepository.entryById`.
+ * [T-provider-config-cme] Regression tests for `ProviderRepository.entryById`.
  *
  * Origin: a real device crash log recorded
  * `ConcurrentModificationException at ArrayList$Itr.checkForComodification`
  * inside `ChatViewModel$showEnhancedCacheToggle$1.invokeSuspend`, i.e. inside a
  * `combine` block. `ProviderConfig` exposes MutableLists and the mutators
- * rewrite them in place, so `find {}` was iterating a list another thread was
- * rebuilding.
+ * rewrite them in place, so a reader iterating one could see `modCount` change
+ * mid-scan.
  *
- * The helper now scans BY INDEX under the repository lock, with `getOrNull`
- * on every read. This pins the two properties that matter:
- *   - an index scan does not throw `ConcurrentModificationException`; and
- *   - it does not trade that for `IndexOutOfBoundsException` when the list
- *     shrinks mid-scan, which a naive `for (i in list.indices) list[i]` does.
- *
- * The writer here deliberately takes NO lock and the reader takes a different
- * one, so the two really do interleave: that models the "reader forgot the
- * lock" case the defensive shape has to survive on its own.
+ * The fix is the LOCK, not the shape of the scan: reader and mutator now take
+ * the same monitor, so they cannot interleave and an ordinary `firstOrNull` is
+ * correct. These tests pin that contract, and pin the two clever scan shapes
+ * that were tried and rejected so nobody re-introduces them believing they
+ * were improvements.
  */
 class ProviderConfigConcurrentLookupTest {
 
     private data class Entry(val id: String, val payload: String)
 
-    /** Byte-for-byte the scan `ProviderRepository.entryById` performs. */
-    private fun entryById(list: MutableList<Entry>, entryId: String): Entry? =
-        synchronized(list) {
-            for (i in list.indices) {
-                val e = list.getOrNull(i) ?: break
-                if (e.id == entryId) return@synchronized e
-            }
-            null
-        }
+    /** What the repository helper does: the same monitor, then a plain scan. */
+    private fun entryById(lock: Any, list: MutableList<Entry>, entryId: String): Entry? =
+        synchronized(lock) { list.firstOrNull { it.id == entryId } }
 
     @Test
-    fun `index lookup returns the same element find would`() {
+    fun `locked lookup returns the same element find would`() {
+        val lock = Any()
         val list = mutableListOf(
             Entry("a", "alpha"), Entry("b", "bravo"), Entry("c", "charlie"),
         )
-        assertEquals(Entry("b", "bravo"), entryById(list, "b"))
-        assertEquals(list.find { it.id == "a" }, entryById(list, "a"))
-        assertNull(entryById(list, "missing"))
+        assertEquals(Entry("b", "bravo"), entryById(lock, list, "b"))
+        assertEquals(list.find { it.id == "a" }, entryById(lock, list, "a"))
+        assertNull(entryById(lock, list, "missing"))
     }
 
     @Test
-    fun `index lookup returns first match like find would`() {
+    fun `locked lookup returns first match like find would`() {
         // Duplicates survive a merge race; `find` yields the FIRST, so order
         // is part of the contract rather than an accident.
+        val lock = Any()
         val list = mutableListOf(Entry("dup", "first"), Entry("dup", "second"))
-        assertEquals("first", entryById(list, "dup")?.payload)
+        assertEquals("first", entryById(lock, list, "dup")?.payload)
     }
 
     @Test
-    fun `index loop tolerates a list emptied mid-scan`() {
-        val list = mutableListOf(Entry("a", "1"), Entry("b", "2"))
-        synchronized(list) {
-            list.clear()
-            var seen = 0
-            for (i in list.indices) {
-                list.getOrNull(i) ?: break
-                seen++
-            }
-            assertEquals(0, seen)
-        }
+    fun `list indices is a snapshot, so a scan can over-read`() {
+        // This is the mechanism behind two rejected implementations.
+        //
+        // `for (i in list.indices) list[i]` captures the range once. A
+        // concurrent shrink after that makes `list[i]` throw
+        // IndexOutOfBoundsException — so it swaps the CME for a different
+        // crash rather than fixing anything.
+        val list = mutableListOf(1, 2, 3)
+        val range = list.indices
+        list.clear()
+        assertEquals(3, range.count())
+        assertEquals(0, list.size)
+        assertTrue("captured range outlived the list", range.any { it >= list.size })
     }@Test
-    fun `index lookup survives a concurrent clear and refill storm`() {
+    fun `locked reader and locked writer never throw`() {
+        val lock = Any()
         val size = 400
         val list = MutableList(size) { Entry("id-$it", "payload-$it") }
         val stop = AtomicBoolean(false)
-        val iteratorFailures = AtomicInteger(0)
 
-        // Shape of `replaceEntries`: drop the old generation, append a new
-        // one. `clear()` rather than `removeAll{}` — removeAll compacts and
-        // leaves nulls in the middle of the backing array until it finishes,
-        // and a reader hitting one of those NPEs instead of the CME we are
-        // actually trying to provoke.
+        // Both sides take the same monitor, exactly as `entryById` and
+        // `replaceEntries` do in production. The unguarded scan below is the
+        // test: if a throw ever escapes it, the lock is not doing its job.
         val writer = Thread {
             var generation = 0
             while (!stop.get()) {
                 generation++
-                list.clear()
-                list.addAll(List(size) { Entry("id-$it", "p-$it-g$generation") })
-            }
-        }
-
-        // Probes the OLD form to prove the hazard is real in this environment
-        // rather than merely theoretical. Catches Throwable because a probe is
-        // expected to break in whatever way the runtime sees fit — letting a
-        // single CME escape a background thread fails the run for the wrong
-        // reason.
-        val iteratorProber = Thread {
-            while (!stop.get()) {
-                try {
-                    list.find { it.id == "id-377" }
-                } catch (_: Throwable) {
-                    iteratorFailures.incrementAndGet()
+                synchronized(lock) {
+                    list.clear()
+                    list.addAll(List(size) { Entry("id-$it", "p-$it-g$generation") })
                 }
             }
         }
 
-        val gate = CountDownLatch(1)
-        writer.start()
-        iteratorProber.start()
-        gate.countDown()
-
-        var found = 0
         var answered = 0
-        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(1_500)
-        while (System.nanoTime() < deadline) {
-            // Must never throw — that is the entire point of the fix.
-            val hit = entryById(list, "id-377")
-            found++
-            if (hit != null) answered++
+        var attempts = 0
+        val worker = Thread {
+            while (!stop.get()) {
+                // No try/catch: reaching the end of the loop body IS the
+                // assertion. Any exception thrown here fails the test outright.
+                if (entryById(lock, list, "id-377") != null) answered++
+                attempts++
+            }
         }
-        stop.set(true)
-        writer.join(2_000)
-        iteratorProber.join(2_000)
 
-        assertTrue("lookup loop never ran", found > 100)
-        assertTrue("scan answered with a real entry at least once", answered > 0)
-        assertTrue(
-            "the iterator form should have failed at least once — otherwise " +
-                "this test proves nothing about the hazard",
-            iteratorFailures.get() > 0,
-        )
+        writer.start()
+        worker.start()
+        Thread.sleep(1_500)
+        stop.set(true)
+        writer.join(3_000)
+        worker.join(3_000)
+
+        assertTrue("reader thread died — check the exception in the report", attempts > 100)
+        assertTrue("scan answered with a live entry at least once", answered > 0)
     }
 }

@@ -777,7 +777,7 @@ class ProviderRepository(private val context: Context) {
      * [T-provider-config-cme] Snapshot-safe lookups by id.
      *
      * `ProviderConfig` holds **MutableList** fields (`instances`,
-     * `modelEntries`, `modelGroups`) and mutators rewrite them IN PLACE
+     * `modelEntries`, `modelGroups`) and the mutators rewrite them IN PLACE
      * under [configLock] — `replaceEntries` even calls out the race in a
      * comment. Readers did not take that lock, so any
      * `config.modelEntries.find { … }` executed from a coroutine could see
@@ -785,50 +785,39 @@ class ProviderRepository(private val context: Context) {
      * `ConcurrentModificationException`. That is not hypothetical: a real
      * device crash log captured it at
      * `ChatViewModel$showEnhancedCacheToggle$1.invokeSuspend` inside a
-     * `combine(_activeEntryId, config)` block — i.e. it killed the flow,
-     * not merely one call.
+     * `combine(_activeEntryId, config)` block — it killed the flow, not
+     * merely one call.
      *
-     * Two things make these safe, and both are needed:
-     *  1. the lock, so a reader cannot interleave with a mutator's
-     *     `removeAll`/`addAll` sequence; and
-     *  2. an **index loop instead of an iterator** — `find {}` allocates an
-     *     `Itr` whose `checkForComodification` is precisely what threw. An
-     *     index loop reads `list[i]` directly, which cannot CME.
+     * **The lock is the whole fix.** Holding the same monitor the mutator
+     * holds is what makes an ordinary `firstOrNull` safe; nothing about the
+     * scan shape matters once reader and writer cannot run at once.
      *
-     * `getOrNull` rather than `list[i]`: `list.indices` snapshots the range,
-     * so a shrink between that read and the access still throws
-     * `IndexOutOfBoundsException` — caught by the regression test
-     * `ProviderConfigConcurrentLookupTest` on its first CI run. Trading a CME
-     * for an IOOBE would have been no fix at all.
+     * Two cleverer shapes were tried here first and both were wrong, so the
+     * reasoning is recorded rather than repeated:
      *
-     * Zero-allocation by design: these run on every `combine` emission, so
-     * a defensive `toList()` copy per call would trade a crash for churn.
+     *   - An index loop (`for (i in list.indices) list[i]`) instead of an
+     *     iterator dodges `checkForComodification`, but `list.indices`
+     *     snapshots the range and the list can shrink before `list[i]`, so
+     *     it trades the CME for `IndexOutOfBoundsException`.
+     *   - `list.getOrNull(i)` looks like the fix for that, but it is
+     *     `if (index in indices) this[index] else null` — check-then-act, so
+     *     it throws `IndexOutOfBoundsException` from inside itself under the
+     *     same race.
+     *
+     * Both were caught by `ProviderConfigConcurrentLookupTest`. Prefer the
+     * obvious code guarded by the lock over a clever scan that merely moves
+     * the crash.
      */
     fun entryById(entryId: String): ModelEntry? = synchronized(configLock) {
-        val list = _config.value.modelEntries
-        for (i in list.indices) {
-            val e = list.getOrNull(i) ?: break
-            if (e.id == entryId) return@synchronized e
-        }
-        null
+        _config.value.modelEntries.firstOrNull { it.id == entryId }
     }
 
     fun instanceById(instanceId: String): ProviderInstance? = synchronized(configLock) {
-        val list = _config.value.instances
-        for (i in list.indices) {
-            val inst = list.getOrNull(i) ?: break
-            if (inst.id == instanceId) return@synchronized inst
-        }
-        null
+        _config.value.instances.firstOrNull { it.id == instanceId }
     }
 
     fun groupById(groupId: String): ModelGroup? = synchronized(configLock) {
-        val list = _config.value.modelGroups
-        for (i in list.indices) {
-            val g = list.getOrNull(i) ?: break
-            if (g.id == groupId) return@synchronized g
-        }
-        null
+        _config.value.modelGroups.firstOrNull { it.id == groupId }
     }
 
     fun enabledInstances(providerType: ProviderType): List<ProviderInstance> =
