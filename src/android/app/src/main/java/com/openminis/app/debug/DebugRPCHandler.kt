@@ -381,7 +381,7 @@ class DebugRPCHandler(private val context: Context) {
             .maxDepth(MAX_WALK_DEPTH)
             .filter { f -> skipPrefixes.none { p -> f.absolutePath.startsWith(p) } }
             // +1 so hitting the cap exactly is still detectable.
-            .take(MAX_WALK_ENTRIES.toLong() + 1L)
+            .take(MAX_WALK_ENTRIES + 1)
 
         for (f in entries) {
             if (seen >= MAX_WALK_ENTRIES) return total to true
