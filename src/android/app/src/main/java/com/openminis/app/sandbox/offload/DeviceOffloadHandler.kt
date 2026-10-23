@@ -9,6 +9,7 @@ import android.os.BatteryManager
 import android.os.Build
 import android.os.Environment
 import android.os.StatFs
+import com.openminis.app.logging.AppLogger
 import com.openminis.app.sandbox.NativeOffloadHandler
 import com.openminis.app.sandbox.NativeOffloadRequest
 import com.openminis.app.sandbox.NativeOffloadResult
@@ -139,12 +140,30 @@ class DeviceOffloadHandler(private val context: Context) : NativeOffloadHandler 
     }
 
     private fun dirSize(dir: File): Long {
+        // [T-offload-dirsize-bounds] This walks filesDir, which also holds
+        // minis-global - the shared folder with repository checkouts and
+        // build artifacts. Unbounded, that is tens of thousands of stat()
+        // calls on every device-info request, and the cost lands on whatever
+        // dispatcher asked for the info. Bounded like DebugRPCHandler.dirSize,
+        // and a capped result is reported as capped rather than passed off as
+        // the real figure.
         var n = 0L
-        SafeDir.walk(dir).forEach { if (it.isFile) n += it.length() }
+        var seen = 0
+        SafeDir.walk(dir, MAX_DIRSIZE_DEPTH)
+            .forEach {
+                if (seen >= MAX_DIRSIZE_ENTRIES) return
+                if (it.isFile) n += it.length()
+                seen++
+            }
+        if (seen >= MAX_DIRSIZE_ENTRIES) {
+            AppLogger.warning(TAG, "dirSize hit the $MAX_DIRSIZE_ENTRIES entry cap - total is a lower bound")
+        }
         return n
     }
 
     companion object {
+        private const val MAX_DIRSIZE_DEPTH = 12
+        private const val MAX_DIRSIZE_ENTRIES = 15_000
         private const val HELP = """android-device — device model, OS, battery, storage (JSON)
 
 Usage:

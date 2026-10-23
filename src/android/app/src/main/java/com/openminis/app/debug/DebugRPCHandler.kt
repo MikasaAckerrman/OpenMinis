@@ -46,7 +46,23 @@ class DebugRPCHandler(private val context: Context) {
          * runaway tree cannot hold a dispatcher thread indefinitely.
          */
         const val MAX_WALK_DEPTH = 12
-        const val MAX_WALK_ENTRIES = 200_000
+
+        /**
+         * Entries visited per subtree, per `debug.appInfo` call.
+         *
+         * Measured, not guessed: with the previous 200_000 a single call took
+         * 27s on an idle device, because handleAppInfo walks filesDir, the
+         * sessions tree and the global tree separately and every visited entry
+         * costs a stat() through proot - so the cap was in practice 600_000
+         * stats, which is the opposite of "low enough that a runaway tree
+         * cannot hold a dispatcher thread". 15_000 keeps the whole call in the
+         * low seconds even when all three trees are full.
+         *
+         * Hitting the cap is reported as `truncated`, and `entries` says how
+         * much was actually visited, so a capped answer can be recognised
+         * instead of being read as a total.
+         */
+        const val MAX_WALK_ENTRIES = 15_000
     }
 
     suspend fun handle(json: String): String {
@@ -339,9 +355,10 @@ class DebugRPCHandler(private val context: Context) {
                 // minis-global a SECOND time, paying for every file twice.
                 val sessionsDir = File(filesDir, "minis-sessions")
                 val globalDir = File(filesDir, "minis-global")
-                val (filesSize, filesTrunc) = dirSize(filesDir, skipSubtrees = setOf(sessionsDir, globalDir))
-                val (sessionsSize, sessionsTrunc) = dirSize(sessionsDir)
-                val (globalSize, globalTrunc) = dirSize(globalDir)
+                val (filesSize, filesTrunc, filesEntries) =
+                    dirSize(filesDir, skipSubtrees = setOf(sessionsDir, globalDir))
+                val (sessionsSize, sessionsTrunc, sessionsEntries) = dirSize(sessionsDir)
+                val (globalSize, globalTrunc, globalEntries) = dirSize(globalDir)
                 put("filesDirExclSubtrees", filesSize)
                 put("sessions", sessionsSize)
                 put("global", globalSize)
@@ -350,6 +367,9 @@ class DebugRPCHandler(private val context: Context) {
                 put("truncated", filesTrunc || sessionsTrunc || globalTrunc)
                 put("maxDepth", MAX_WALK_DEPTH)
                 put("maxEntries", MAX_WALK_ENTRIES)
+                // How much was actually visited. Without it a capped walk could
+                // only be recognised by the boolean, not sized against the cap.
+                put("entriesVisited", filesEntries + sessionsEntries + globalEntries)
             })
             // [T-android-leak-measure] Resource-lifecycle counters.
             //
@@ -381,9 +401,11 @@ class DebugRPCHandler(private val context: Context) {
      * Returns the size together with a flag saying whether the walk hit a
      * cap, so the caller can report a partial number as partial.
      */
-    private fun dirSize(dir: File, skipSubtrees: Set<File> = emptySet()): Pair<Long, Boolean> {
-        if (!dir.exists()) return 0L to false
-        if (!dir.isDirectory) return (if (dir.isFile) dir.length() else 0L) to false
+    private fun dirSize(dir: File, skipSubtrees: Set<File> = emptySet()): Triple<Long, Boolean, Int> {
+        if (!dir.exists()) return Triple(0L, false, 0)
+        if (!dir.isDirectory) {
+            return Triple(if (dir.isFile) dir.length() else 0L, false, 1)
+        }
 
         val skipPrefixes = skipSubtrees
             .filter { it.exists() }
@@ -397,11 +419,11 @@ class DebugRPCHandler(private val context: Context) {
             .take(MAX_WALK_ENTRIES + 1)
 
         for (f in entries) {
-            if (seen >= MAX_WALK_ENTRIES) return total to true
+            if (seen >= MAX_WALK_ENTRIES) return Triple(total, true, seen)
             if (f.isFile) total += f.length()
             seen++
         }
-        return total to false
+        return Triple(total, false, seen)
     }
 
     // ── Install history [T-build-tracking] ────────────────────────────────

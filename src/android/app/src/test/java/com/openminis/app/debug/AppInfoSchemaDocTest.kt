@@ -62,6 +62,7 @@ class AppInfoSchemaDocTest {
             "truncated",
             "maxDepth",
             "maxEntries",
+            "entriesVisited",
         )) {
             assertTrue(
                 "debug.appInfo no longer documents diskUsage.$key",

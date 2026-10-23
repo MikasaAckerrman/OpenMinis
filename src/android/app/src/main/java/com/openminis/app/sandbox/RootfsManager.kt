@@ -1,5 +1,6 @@
 package com.openminis.app.sandbox
 
+import com.openminis.app.logging.AppLogger
 import com.openminis.app.util.SafeDir
 
 import android.content.Context
@@ -230,14 +231,25 @@ class RootfsManager private constructor(private val context: Context) {
     }
 
     private fun calculateDirSize(dir: File): Long {
+        // [T-rootfs-dirsize-cycles] This recursed through directories with no
+        // depth limit and no cycle guard. The rootfs is a real filesystem, and
+        // a symlink in it can point at an ancestor - that is unbounded
+        // recursion ending in StackOverflowError, which is a crash and not a
+        // wrong number. SafeDir.walk keeps a visited set and refuses to
+        // descend into a directory twice; both caps make the result a lower
+        // bound, which is what gets logged.
         var total = 0L
-        val files = SafeDir.listFiles(dir) ?: return 0L
-        for (file in files) {
-            total += if (file.isDirectory) {
-                calculateDirSize(file)
-            } else {
-                file.length()
+        var seen = 0
+        for (f in SafeDir.walk(dir, MAX_DIRSIZE_DEPTH)) {
+            if (seen >= MAX_DIRSIZE_ENTRIES) {
+                AppLogger.warning(
+                    TAG,
+                    "calculateDirSize hit the $MAX_DIRSIZE_ENTRIES entry cap - total is a lower bound",
+                )
+                break
             }
+            if (f.isFile) total += f.length()
+            seen++
         }
         return total
     }
@@ -746,6 +758,10 @@ class RootfsManager private constructor(private val context: Context) {
 
     companion object {
         private const val TAG = "RootfsManager"
+
+        /** Bounds for calculateDirSize, matching the debug surface's. */
+        private const val MAX_DIRSIZE_DEPTH = 12
+        private const val MAX_DIRSIZE_ENTRIES = 15_000
         private const val ARCH = "aarch64"
         private const val ROOTFS_ASSET = "alpine-minirootfs.tar.gz"
         private const val ROOTFS_ASSET_TAR = "alpine-minirootfs.tar"
