@@ -1,5 +1,7 @@
 package com.openminis.app.ui.settings
 
+import com.openminis.app.util.SafeDir
+
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
@@ -145,7 +147,7 @@ internal object ProviderImportZip {
     }
 
     private fun collectSupportedFiles(dir: File, out: MutableList<File>) {
-        val children = dir.listFiles() ?: return
+        val children = SafeDir.listFiles(dir) ?: return
         for (child in children) {
             if (child.isDirectory) {
                 collectSupportedFiles(child, out)

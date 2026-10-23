@@ -1,5 +1,7 @@
 package com.openminis.app.sandbox
 
+import com.openminis.app.util.SafeDir
+
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.LinkProperties
@@ -229,7 +231,7 @@ class RootfsManager private constructor(private val context: Context) {
 
     private fun calculateDirSize(dir: File): Long {
         var total = 0L
-        val files = dir.listFiles() ?: return 0L
+        val files = SafeDir.listFiles(dir) ?: return 0L
         for (file in files) {
             total += if (file.isDirectory) {
                 calculateDirSize(file)
@@ -468,7 +470,7 @@ class RootfsManager private constructor(private val context: Context) {
         // walkBottomUp so child files are locked before their parent dir loses
         // write — dir mode doesn't gate chmod of already-visited children, but
         // bottom-up keeps the intent clear and avoids any traversal surprise.
-        for (f in libDir.walkBottomUp()) {
+        for (f in SafeDir.walkBottomUp(libDir)) {
             f.setWritable(false, false)
             f.setReadable(true, false)
             if (f.isDirectory) f.setExecutable(true, false)
@@ -500,7 +502,7 @@ class RootfsManager private constructor(private val context: Context) {
                            "usr/local/share/minis-uicopy")) {
             val dir = File(rootfsDir, rel)
             if (!dir.isDirectory) continue
-            for (f in dir.walkBottomUp()) {
+            for (f in SafeDir.walkBottomUp(dir)) {
                 f.setWritable(false, false)
                 f.setReadable(true, false)
                 if (f.isDirectory) f.setExecutable(true, false)
@@ -518,7 +520,7 @@ class RootfsManager private constructor(private val context: Context) {
      */
     private fun removeExternallyManagedMarker(): Int {
         val usrLib = File(rootfsDir, "usr/lib")
-        val children = usrLib.listFiles() ?: return 0
+        val children = SafeDir.listFiles(usrLib) ?: return 0
         var removed = 0
         for (entry in children) {
             if (!entry.name.startsWith("python3")) continue

@@ -1,5 +1,7 @@
 package com.openminis.app.data
 
+import com.openminis.app.util.SafeDir
+
 import android.content.Context
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -224,7 +226,7 @@ class FileMentionIndex(
         while (queue.isNotEmpty() && out.size < budget) {
             val (dir, depth) = queue.removeFirst()
             if (depth > maxDepth) continue
-            val children = dir.listFiles() ?: continue
+            val children = SafeDir.listFiles(dir) ?: continue
             for (child in children) {
                 if (out.size >= budget) break
                 if (child.name.startsWith(".")) continue

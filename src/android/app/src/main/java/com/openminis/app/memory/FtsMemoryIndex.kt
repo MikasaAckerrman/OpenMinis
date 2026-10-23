@@ -1,5 +1,7 @@
 package com.openminis.app.memory
 
+import com.openminis.app.util.SafeDir
+
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import java.io.File
@@ -334,7 +336,7 @@ object FtsMemoryIndex {
         val e = requireEngine() ?: return 0
         if (!dir.isDirectory) return 0
         var reindexed = 0
-        val files = dir.listFiles { f -> f.isFile && f.name.endsWith(".md") }
+        val files = SafeDir.listFiles(dir) { f -> f.isFile && f.name.endsWith(".md") }
             ?: return 0
         for (f in files) {
             val known = e.query(

@@ -1,5 +1,7 @@
 package com.openminis.app.ui.settings
 
+import com.openminis.app.util.SafeDir
+
 import com.openminis.app.R
 import com.openminis.app.ui.components.MinisTextButton
 
@@ -364,7 +366,7 @@ private fun StorageOverviewRow(
 private fun directorySize(dir: File): Long {
     if (!dir.exists()) return 0L
     var total = 0L
-    dir.walkTopDown().forEach { file ->
+    SafeDir.walk(dir).forEach { file ->
         if (file.isFile) total += file.length()
     }
     return total
@@ -383,7 +385,7 @@ private fun databaseSize(context: Context): Long {
 private fun mediaSizesBySession(mediaDir: File, sessionIds: Set<String>): Map<String, Long> {
     if (!mediaDir.exists()) return emptyMap()
     val sizes = mutableMapOf<String, Long>()
-    mediaDir.walkTopDown().forEach { file ->
+    SafeDir.walk(mediaDir).forEach { file ->
         if (file.isFile) {
             val parent = file.parentFile ?: return@forEach
             val sid = parent.name
@@ -397,7 +399,7 @@ private fun mediaSizesBySession(mediaDir: File, sessionIds: Set<String>): Map<St
 
 private fun deleteSessionMedia(mediaDir: File, sessionId: String) {
     if (!mediaDir.exists()) return
-    mediaDir.walkTopDown().forEach { dir ->
+    SafeDir.walk(mediaDir).forEach { dir ->
         if (dir.isDirectory && dir.name == sessionId) {
             dir.deleteRecursively()
         }

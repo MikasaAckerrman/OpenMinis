@@ -1,5 +1,7 @@
 package com.openminis.app.crash
 
+import com.openminis.app.util.SafeDir
+
 import android.app.Activity
 import android.app.AlertDialog
 import android.app.Application
@@ -224,7 +226,7 @@ object CrashFrequencyDetector {
                 pendingShareFiles = null
                 return
             }
-            val all = logsDir.listFiles { f ->
+            val all = SafeDir.listFiles(logsDir) { f ->
                 val n = f.name
                 (n.startsWith("crash-") || n.startsWith("native-crash-")) && n.endsWith(".log")
             } ?: return
@@ -382,11 +384,10 @@ object CrashFrequencyDetector {
         // the "older crashes" bucket — if the user wants those they can
         // dig into Settings → Logs; this dialog is for the immediate
         // "you just crashed, here's what to send" workflow.
-        val crashes = (logsDir.listFiles { f ->
+        val crashes = (SafeDir.listFiles(logsDir) { f ->
             val n = f.name
             (n.startsWith("crash-") || n.startsWith("native-crash-")) && n.endsWith(".log")
-        } ?: emptyArray<File>())
-            .toList()
+        } ?: emptyList())
             .filter {
                 it.absolutePath in triggerSet || now - it.lastModified() <= PICK_CRASH_WINDOW_MS
             }
@@ -397,10 +398,9 @@ object CrashFrequencyDetector {
         // days. Default unchecked — they're large and only useful for
         // tracking down what the agent was doing right before the
         // crash; the user opts in when they care about that context.
-        val dailyLogs = (logsDir.listFiles { f ->
+        val dailyLogs = (SafeDir.listFiles(logsDir) { f ->
             f.name.startsWith("minis-") && f.name.endsWith(".log")
-        } ?: emptyArray<File>())
-            .toList()
+        } ?: emptyList())
             .filter { now - it.lastModified() <= PICK_RUN_LOG_WINDOW_MS }
             .sortedByDescending { it.lastModified() }
 

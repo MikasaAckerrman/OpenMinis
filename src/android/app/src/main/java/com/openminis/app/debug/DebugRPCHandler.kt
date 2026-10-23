@@ -1,5 +1,7 @@
 package com.openminis.app.debug
 
+import com.openminis.app.util.SafeDir
+
 import android.app.Activity
 import android.content.Context
 import android.graphics.Bitmap
@@ -368,7 +370,7 @@ class DebugRPCHandler(private val context: Context) {
      * Bounded recursive size of [dir].
      *
      * [T-android-debugserver-dirsize] The previous version was
-     * `dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }` with no
+     * `SafeDir.walk(dir).filter { it.isFile }.sumOf { it.length() }` with no
      * depth limit, no entry limit and no cancellation. Under filesDir that
      * includes minis-global, which holds the shared folder with the whole
      * source tree and every bundle built so far - so a single debug.appInfo
@@ -389,7 +391,7 @@ class DebugRPCHandler(private val context: Context) {
 
         var total = 0L
         var seen = 0
-        val entries = dir.walkTopDown()
+        val entries = SafeDir.walk(dir)
             .maxDepth(MAX_WALK_DEPTH)
             .filter { f -> skipPrefixes.none { p -> f.absolutePath.startsWith(p) } }
             // +1 so hitting the cap exactly is still detectable.
@@ -531,7 +533,7 @@ class DebugRPCHandler(private val context: Context) {
     }
 
     private fun listFlat(dir: File): JSONArray {
-        val files = dir.listFiles() ?: return JSONArray()
+        val files = SafeDir.listFiles(dir) ?: return JSONArray()
         val array = JSONArray()
         for (file in files.sortedBy { it.name }) {
             array.put(JSONObject().apply {
@@ -546,7 +548,7 @@ class DebugRPCHandler(private val context: Context) {
 
     private fun listRecursive(dir: File, virtualPath: String, maxDepth: Int, depth: Int): JSONArray {
         val array = JSONArray()
-        val files = dir.listFiles()?.sortedBy { it.name } ?: return array
+        val files = SafeDir.listFiles(dir)?.sortedBy { it.name } ?: return array
         for (file in files) {
             val childPath = if (virtualPath == "/") "/${file.name}" else "$virtualPath/${file.name}"
             val entry = JSONObject().apply {

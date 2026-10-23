@@ -1,5 +1,7 @@
 package com.openminis.app.share
 
+import com.openminis.app.util.SafeDir
+
 import android.content.Context
 import com.openminis.app.logging.AppLogger
 import org.json.JSONObject
@@ -46,6 +48,6 @@ object SharedShareStore {
     /** Remove all staged binary attachments. Call after consumption or on stale buffer. */
     fun cleanSharedFiles(context: Context) {
         val dir = sharedFileDirectory(context)
-        dir.listFiles()?.forEach { runCatching { it.delete() } }
+        SafeDir.listFiles(dir)?.forEach { runCatching { it.delete() } }
     }
 }

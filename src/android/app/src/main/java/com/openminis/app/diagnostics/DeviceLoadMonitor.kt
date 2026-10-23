@@ -1,5 +1,7 @@
 package com.openminis.app.diagnostics
 
+import com.openminis.app.util.SafeDir
+
 import android.content.Context
 import android.os.BatteryManager
 import com.openminis.app.service.SessionActivityTracker
@@ -121,7 +123,7 @@ object DeviceLoadMonitor {
     private fun readTopZoneC(): Double {
         var top = 0.0
         val dir = File("/sys/class/thermal")
-        val zones = dir.listFiles { f -> f.name.startsWith("thermal_zone") } ?: return 0.0
+        val zones = SafeDir.listFiles(dir) { f -> f.name.startsWith("thermal_zone") } ?: return 0.0
         for (z in zones) {
             runCatching {
                 val t = File(z, "temp").readText().trim().toDouble()

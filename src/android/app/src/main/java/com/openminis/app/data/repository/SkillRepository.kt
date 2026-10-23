@@ -1,5 +1,7 @@
 package com.openminis.app.data.repository
 
+import com.openminis.app.util.SafeDir
+
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
@@ -714,7 +716,7 @@ class SkillRepository(private val context: Context) {
     private fun sweepStaleExports() {
         val root = File(context.cacheDir, "share")
         val now = System.currentTimeMillis()
-        val entries = root.listFiles() ?: return
+        val entries = SafeDir.listFiles(root) ?: return
         for (entry in entries) {
             if (!entry.isDirectory || !entry.name.startsWith("skill-export-")) continue
             if (now - entry.lastModified() < EXPORT_TTL_MS) continue
@@ -732,7 +734,7 @@ class SkillRepository(private val context: Context) {
         val dir = File(skillsDir, skillId)
         if (!dir.isDirectory) return emptyList()
         val rootLen = dir.absolutePath.length + 1
-        val files = dir.walkTopDown()
+        val files = SafeDir.walk(dir)
             .filter { it.isFile && !it.name.startsWith(".") }
             .map { it.absolutePath.substring(rootLen) }
             .toList()
@@ -1225,7 +1227,7 @@ class SkillRepository(private val context: Context) {
         val sb = StringBuilder()
         runCatching {
             sb.append(skillsDir.lastModified()).append('/')
-            val children = skillsDir.listFiles()?.sortedBy { it.name } ?: return sb.toString()
+            val children = SafeDir.listFiles(skillsDir)?.sortedBy { it.name } ?: return sb.toString()
             for (child in children) {
                 sb.append(child.name).append(':')
                     .append(child.lastModified()).append(':')
@@ -1289,7 +1291,7 @@ class SkillRepository(private val context: Context) {
         cursor.close()
 
         // Auto-discover skills on disk without DB entries
-        val onDisk = skillsDir.listFiles()?.filter { it.isDirectory } ?: emptyList()
+        val onDisk = SafeDir.listFiles(skillsDir)?.filter { it.isDirectory } ?: emptyList()
         for (dir in onDisk) {
             val skillMd = File(dir, "SKILL.md")
             if (skillMd.exists() && dbSkills.none { it.id == dir.name }) {

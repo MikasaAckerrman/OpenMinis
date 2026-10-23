@@ -1,5 +1,7 @@
 package com.openminis.app.data.storage
 
+import com.openminis.app.util.SafeDir
+
 import android.content.Context
 import com.openminis.app.data.model.MediaRef
 import java.io.File
@@ -84,7 +86,7 @@ class MediaStore(context: Context) {
     }
 
     fun deleteSessionMedia(sessionId: String) {
-        mediaBaseDir.walkTopDown().forEach { dir ->
+        SafeDir.walk(mediaBaseDir).forEach { dir ->
             if (dir.isDirectory && dir.name == sessionId) {
                 dir.deleteRecursively()
             }

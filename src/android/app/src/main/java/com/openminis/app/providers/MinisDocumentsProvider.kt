@@ -1,5 +1,7 @@
 package com.openminis.app.providers
 
+import com.openminis.app.util.SafeDir
+
 import android.database.Cursor
 import android.database.MatrixCursor
 import android.os.CancellationSignal
@@ -152,7 +154,7 @@ class MinisDocumentsProvider : DocumentsProvider() {
         val cursor = MatrixCursor(projection ?: DOCUMENT_PROJECTION)
         val parent = resolveDoc(parentDocumentId)
         val isRoot = parentDocumentId.isEmpty()
-        val children = parent.listFiles()?.toList() ?: emptyList()
+        val children = SafeDir.listFiles(parent) ?: emptyList()
         for (child in children) {
             val name = child.name
             if (name.startsWith(".")) continue

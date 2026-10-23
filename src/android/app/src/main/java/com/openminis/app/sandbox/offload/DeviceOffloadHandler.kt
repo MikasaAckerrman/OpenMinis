@@ -1,5 +1,7 @@
 package com.openminis.app.sandbox.offload
 
+import com.openminis.app.util.SafeDir
+
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -138,7 +140,7 @@ class DeviceOffloadHandler(private val context: Context) : NativeOffloadHandler 
 
     private fun dirSize(dir: File): Long {
         var n = 0L
-        dir.walkTopDown().forEach { if (it.isFile) n += it.length() }
+        SafeDir.walk(dir).forEach { if (it.isFile) n += it.length() }
         return n
     }
 

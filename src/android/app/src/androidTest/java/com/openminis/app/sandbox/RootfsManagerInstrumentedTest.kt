@@ -1,5 +1,7 @@
 package com.openminis.app.sandbox
 
+import com.openminis.app.util.SafeDir
+
 import android.content.Context
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -289,7 +291,7 @@ class RootfsManagerInstrumentedTest {
             manager.extractTar(ByteArrayInputStream(emptyTar), testDir)
 
             // Should create no files (only the dir itself)
-            assertEquals(0, testDir.listFiles()?.size ?: 0)
+            assertEquals(0, SafeDir.listFiles(testDir)?.size ?: 0)
         } finally {
             testDir.deleteRecursively()
         }

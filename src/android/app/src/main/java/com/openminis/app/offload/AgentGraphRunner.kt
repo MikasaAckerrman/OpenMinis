@@ -1,5 +1,7 @@
 package com.openminis.app.offload
 
+import com.openminis.app.util.SafeDir
+
 import android.content.Context
 import com.openminis.app.MinisApp
 import com.openminis.app.data.model.AgentGraph
@@ -573,7 +575,7 @@ internal object AgentGraphRunner {
         val ws = state.artifactHostDir ?: return
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             runCatching {
-                val entries = ws.listFiles()
+                val entries = SafeDir.listFiles(ws)
                     ?.filter { it.name != CHECKPOINT_DIR }
                     .orEmpty()
                 if (entries.isEmpty()) return@runCatching
@@ -589,7 +591,7 @@ internal object AgentGraphRunner {
                 val checkRoot = java.io.File(ws, CHECKPOINT_DIR)
                 val dir = java.io.File(checkRoot, runtimeId).apply { mkdirs() }
                 entries.forEach { src -> src.copyRecursively(java.io.File(dir, src.name)) }
-                checkRoot.listFiles()
+                SafeDir.listFiles(checkRoot)
                     ?.sortedByDescending { it.lastModified() }
                     ?.drop(MAX_CHECKPOINTS)
                     ?.forEach { it.deleteRecursively() }
@@ -615,7 +617,7 @@ internal object AgentGraphRunner {
 
     /** File length, or the recursive sum for a directory (checkpoint sizing). */
     private fun dirSize(file: java.io.File): Long =
-        if (file.isDirectory) file.walkTopDown().filter { it.isFile }.sumOf { it.length() } else 0L
+        if (file.isDirectory) SafeDir.walk(file).filter { it.isFile }.sumOf { it.length() } else 0L
 
     private suspend fun executeNode(        execContext: ExecutionContext,
         node: AgentNode,

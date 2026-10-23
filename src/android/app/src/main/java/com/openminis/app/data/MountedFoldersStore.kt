@@ -1,5 +1,7 @@
 package com.openminis.app.data
 
+import com.openminis.app.util.SafeDir
+
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -269,7 +271,7 @@ class MountedFoldersStore(private val context: Context) {
             // Read probe: a resolvable dir the app can't actually readdir will
             // mount but show empty. Surface it now so the log explains the
             // eventual empty-folder report instead of leaving it silent.
-            val children = full.list()
+            val children = SafeDir.listNames(full)
             if (children == null) {
                 AppLogger.warning(
                     TAG,

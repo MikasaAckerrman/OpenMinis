@@ -1,5 +1,7 @@
 package com.openminis.app.sandbox
 
+import com.openminis.app.util.SafeDir
+
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Uri
@@ -352,7 +354,7 @@ object PRootKernel {
 
         // Clean placeholder dirs that no longer correspond to a mount.
         val desiredNames = desiredLinuxPaths.map { it.removePrefix(MOUNTS_LINUX_PREFIX) }.toSet()
-        mountsRoot.listFiles()?.forEach { f ->
+        SafeDir.listFiles(mountsRoot)?.forEach { f ->
             if (f.isDirectory && f.name !in desiredNames) {
                 f.deleteRecursively()
             }
@@ -435,7 +437,7 @@ object PRootKernel {
                 // proot) can't readdir it because the ROM only grants the
                 // /mnt/runtime/default FUSE view. list() returning null == EACCES.
                 if (candidate.exists() && candidate.canRead()) {
-                    val childCount = candidate.list()?.size
+                    val childCount = SafeDir.listNames(candidate)?.size
                     if (childCount == null) {
                         Log.w(
                             TAG,

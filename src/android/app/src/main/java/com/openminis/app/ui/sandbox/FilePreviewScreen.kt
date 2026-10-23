@@ -1,5 +1,7 @@
 package com.openminis.app.ui.sandbox
 
+import com.openminis.app.util.SafeDir
+
 import com.openminis.app.R
 import androidx.compose.ui.res.stringResource
 import android.content.ContentValues
@@ -1248,7 +1250,7 @@ private fun collectImageGallery(
     file: java.io.File,
 ): Pair<List<com.openminis.app.ui.components.ImageGalleryItem>, Int> {
     val parent = file.parentFile
-    val siblings = parent?.listFiles()
+    val siblings = SafeDir.listFiles(parent)
         ?.filter {
             it.isFile && it.extension.lowercase() in IMAGE_GALLERY_EXTENSIONS
         }

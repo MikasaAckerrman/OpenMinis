@@ -1,5 +1,7 @@
 package com.openminis.app.diagnostics
 
+import com.openminis.app.util.SafeDir
+
 import android.content.Context
 import com.openminis.app.logging.AppLogger
 import java.io.File
@@ -158,7 +160,7 @@ object LaunchCycleBeacon {
     private fun readLastSessionId(context: Context): String {
         return try {
             val logsDir = File(context.filesDir, "logs")
-            val stall = logsDir.listFiles()
+            val stall = SafeDir.listFiles(logsDir)
                 ?.filter { it.name.startsWith("stall-") }
                 ?.maxByOrNull { it.lastModified() }
                 ?: return "unknown"
@@ -209,7 +211,7 @@ object LaunchCycleBeacon {
         // Look for crash artefacts produced between previous launch and now.
         val logsDir = File(context.filesDir, "logs")
         val previousLaunchMs = parseTs(lastLaunch) ?: return "ambiguous_no_timestamp"
-        val crashLogs = logsDir.listFiles()?.filter { f ->
+        val crashLogs = SafeDir.listFiles(logsDir)?.filter { f ->
             val name = f.name
             (name.startsWith("crash-") || name.startsWith("native-crash-") || name.startsWith("stall-")) &&
                 f.lastModified() in previousLaunchMs..now

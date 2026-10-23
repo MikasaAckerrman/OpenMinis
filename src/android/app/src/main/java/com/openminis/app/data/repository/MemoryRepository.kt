@@ -1,5 +1,7 @@
 package com.openminis.app.data.repository
 
+import com.openminis.app.util.SafeDir
+
 import android.util.Log
 import java.io.File
 import java.text.SimpleDateFormat
@@ -182,7 +184,7 @@ class MemoryRepository(private val memoryDir: File) {
         }
 
         // Daily logs sorted descending
-        val dailyFiles = memoryDir.listFiles()
+        val dailyFiles = SafeDir.listFiles(memoryDir)
             ?.filter { it.extension == "md" && it.name != GLOBAL_FILE }
             ?.sortedByDescending { it.name }
             ?: emptyList()
@@ -545,7 +547,7 @@ class MemoryRepository(private val memoryDir: File) {
         ))
 
         // Daily logs sorted descending
-        val dailyFiles = memoryDir.listFiles()
+        val dailyFiles = SafeDir.listFiles(memoryDir)
             ?.filter { it.extension == "md" && it.name != GLOBAL_FILE }
             ?.sortedByDescending { it.name }
             ?: emptyList()

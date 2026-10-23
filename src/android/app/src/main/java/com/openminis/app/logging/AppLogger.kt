@@ -1,5 +1,7 @@
 package com.openminis.app.logging
 
+import com.openminis.app.util.SafeDir
+
 import android.content.Context
 import android.util.Log
 import java.io.ByteArrayOutputStream
@@ -586,7 +588,7 @@ object AppLogger {
      */
     fun listLogFiles(): List<File> {
         val dir = logDir ?: return emptyList()
-        return dir.listFiles { f -> f.extension == "log" }
+        return SafeDir.listFiles(dir) { f -> f.extension == "log" }
             ?.sortedByDescending { it.name }
             ?: emptyList()
     }
@@ -623,7 +625,7 @@ object AppLogger {
      */
     fun listLogFileMetas(prefix: String, limit: Int): List<LogFileMeta> {
         val dir = logDir ?: return emptyList()
-        val files = dir.listFiles { f ->
+        val files = SafeDir.listFiles(dir) { f ->
             f.extension == "log" && (prefix.isEmpty() || f.name.startsWith(prefix))
         } ?: return emptyList()
         // Sort then cap BEFORE the per-file stat — File.listFiles already
@@ -656,7 +658,7 @@ object AppLogger {
      */
     @Synchronized
     fun clearLogs() {
-        logDir?.listFiles()?.forEach { if (it.name !in PRUNE_EXEMPT) it.delete() }
+        SafeDir.listFiles(logDir)?.forEach { if (it.name !in PRUNE_EXEMPT) it.delete() }
         // [T-logging-zombie-fd-android] The open writer still references the
         // just-deleted file; a FileWriter on an unlinked inode keeps writing to
         // the zombie file (invisible on disk) until currentDate changes or the
@@ -672,7 +674,7 @@ object AppLogger {
      * Total size of all log files in bytes.
      */
     fun totalSize(): Long {
-        return logDir?.listFiles()?.sumOf { it.length() } ?: 0L
+        return SafeDir.listFiles(logDir)?.sumOf { it.length() } ?: 0L
     }
 
     /**
@@ -697,7 +699,7 @@ object AppLogger {
 
     private fun pruneOldLogs() {
         val cutoff = System.currentTimeMillis() - MAX_AGE_DAYS * 24L * 60 * 60 * 1000
-        logDir?.listFiles()?.forEach { file ->
+        SafeDir.listFiles(logDir)?.forEach { file ->
             if (file.name in PRUNE_EXEMPT) return@forEach
             if (file.lastModified() < cutoff) {
                 file.delete()

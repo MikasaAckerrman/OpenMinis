@@ -1,5 +1,7 @@
 package com.openminis.app.ui.sandbox
 
+import com.openminis.app.util.SafeDir
+
 import android.text.format.Formatter
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
@@ -446,7 +448,7 @@ class FileBrowserViewModel(
                 // showHidden here so we don't see a torn read if the
                 // setter races with this background load.
                 val showHidden = _uiState.value.showHidden
-                val files = resolvedPath.listFiles()
+                val files = SafeDir.listFiles(resolvedPath)
                     ?.filter { showHidden || !it.name.startsWith(".") }
                     ?.mapNotNull { FileItem.from(it) }
                     ?: emptyList()

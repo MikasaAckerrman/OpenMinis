@@ -1,5 +1,7 @@
 package com.openminis.app.data
 
+import com.openminis.app.util.SafeDir
+
 import com.openminis.app.data.ChunkArchive.ArchivedMessage
 import com.openminis.app.data.ChunkArchive.ChunkResult
 import org.junit.Assert.assertEquals
@@ -153,7 +155,7 @@ class ChunkArchiveTest {
         val row2 = ChunkArchive.archiveChunk(db, dir, "s2", 0, msgs)
         assertEquals(row1, row2)
         // Only one gz file exists despite three passes.
-        val gzFiles = dir.listFiles { f -> f.name.endsWith(".gz") }!!.size
+        val gzFiles = SafeDir.listFiles(dir) { f -> f.name.endsWith(".gz") }!!.size
         assertEquals(1, gzFiles)
         db.close()
     }
@@ -216,7 +218,7 @@ class ChunkArchiveTest {
         val loaded = (ChunkArchive.loadChunk(db, dir, "big", 3) as ChunkResult.Ok).messages
         val loadMs = (System.nanoTime() - t2) / 1_000_000
 
-        val gzBytes = dir.listFiles { f -> f.name.endsWith(".gz") }!!.sumOf { it.length() }
+        val gzBytes = SafeDir.listFiles(dir) { f -> f.name.endsWith(".gz") }!!.sumOf { it.length() }
 
         assertEquals(chunks, verified)
         assertEquals(ChunkArchive.DEFAULT_CHUNK_MSGS, loaded.size)

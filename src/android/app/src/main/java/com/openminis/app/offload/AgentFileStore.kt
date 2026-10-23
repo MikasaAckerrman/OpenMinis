@@ -1,5 +1,7 @@
 package com.openminis.app.offload
 
+import com.openminis.app.util.SafeDir
+
 import android.content.Context
 import java.io.File
 
@@ -24,7 +26,7 @@ object AgentFileStore {
     /** Every valid agent file found; an empty list is a normal state. */
     fun list(context: Context): List<AgentFileParser.AgentFile> {
         val dir = agentsDir(context)
-        val files = dir.listFiles { f -> f.isFile && f.extension == "md" }
+        val files = SafeDir.listFiles(dir) { f -> f.isFile && f.extension == "md" }
             ?: return emptyList()
         return files
             .sortedBy { it.name }

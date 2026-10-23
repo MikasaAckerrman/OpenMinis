@@ -1,5 +1,7 @@
 package com.openminis.app.ui.chat
 
+import com.openminis.app.util.SafeDir
+
 import android.content.Context
 import android.content.Intent
 import androidx.compose.material3.MaterialTheme
@@ -2227,7 +2229,7 @@ internal fun resolveMdMediaFile(context: Context, url: String, sessionId: String
     val subdir = decoded.substringBefore('/', missingDelimiterValue = "").takeIf { it.isNotEmpty() } ?: "attachments"
     val root = File(context.filesDir, "minis-sessions")
     if (root.isDirectory) {
-        root.listFiles()?.forEach { sessionDir ->
+        SafeDir.listFiles(root)?.forEach { sessionDir ->
             val candidate = File(sessionDir, "$subdir/$basename")
             if (candidate.exists() && candidate.isFile) {
                 android.util.Log.d("MdStream", "resolveMdMediaFile url=$url -> fallback=${candidate.absolutePath}")

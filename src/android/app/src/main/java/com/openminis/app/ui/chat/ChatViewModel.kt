@@ -1,5 +1,7 @@
 package com.openminis.app.ui.chat
 
+import com.openminis.app.util.SafeDir
+
 import kotlinx.coroutines.runBlocking
 
 import android.content.Context
@@ -7149,7 +7151,7 @@ class ChatViewModel(
             val src = java.io.File(draftBase, subdir)
             if (!src.isDirectory) return@forEach
             val dst = java.io.File(realBase, subdir).apply { mkdirs() }
-            src.listFiles()?.forEach { child ->
+            SafeDir.listFiles(src)?.forEach { child ->
                 val target = java.io.File(dst, child.name)
                 runCatching {
                     if (!target.exists() && !child.renameTo(target)) {
@@ -7184,7 +7186,7 @@ class ChatViewModel(
     private fun copyRecursive(src: java.io.File, dst: java.io.File): Boolean = runCatching {
         if (src.isDirectory) {
             dst.mkdirs()
-            src.listFiles()?.all { copyRecursive(it, java.io.File(dst, it.name)) } ?: true
+            SafeDir.listFiles(src)?.all { copyRecursive(it, java.io.File(dst, it.name)) } ?: true
         } else {
             src.copyTo(dst, overwrite = false)
             src.delete()
@@ -17017,7 +17019,7 @@ class ChatViewModel(
         // command text, and while filesDir is app-private, stale copies are
         // pure liability with zero value.
         val now = System.currentTimeMillis()
-        context.filesDir.listFiles { f ->
+        SafeDir.listFiles(context.filesDir) { f ->
             f.name.startsWith("root_cmd_") && f.name.endsWith(".sh") &&
                 f.lastModified() < now - 3_600_000L
         }?.forEach { runCatching { it.delete() } }

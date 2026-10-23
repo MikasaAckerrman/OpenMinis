@@ -1,5 +1,7 @@
 package com.openminis.app.data
 
+import com.openminis.app.util.SafeDir
+
 import java.io.File
 
 /**
@@ -134,8 +136,8 @@ object StreamHeartbeat {
      */
     fun recoverOrphans(dir: File, minChars: Int = StreamDurability.FIRST_WRITE_CHARS): List<Orphan> {
         val ids = runCatching {
-            (dir.listFiles { f -> f.name.endsWith(FILE_SUFFIX) }?.map { it.name.removeSuffix(FILE_SUFFIX) } ?: emptyList()) +
-                (dir.listFiles { f -> f.name.endsWith(THINK_SUFFIX) }?.map { it.name.removeSuffix(THINK_SUFFIX) } ?: emptyList())
+            (SafeDir.listFiles(dir) { f -> f.name.endsWith(FILE_SUFFIX) }?.map { it.name.removeSuffix(FILE_SUFFIX) } ?: emptyList()) +
+                (SafeDir.listFiles(dir) { f -> f.name.endsWith(THINK_SUFFIX) }?.map { it.name.removeSuffix(THINK_SUFFIX) } ?: emptyList())
         }.getOrNull() ?: return emptyList()
         // (streamId, earliest mtime across its two files)
         val ordered = ids.distinct().mapNotNull { id ->
