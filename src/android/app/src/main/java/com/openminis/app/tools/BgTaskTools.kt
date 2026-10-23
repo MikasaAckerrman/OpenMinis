@@ -2,6 +2,7 @@ package com.openminis.app.tools
 
 import com.openminis.app.data.model.AgentToolDefinition
 import com.openminis.app.data.model.AgentToolParam
+import com.openminis.app.sandbox.ExecutionCoordinator
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -257,6 +258,32 @@ object BgTaskTools {
                 task.exitCode = -1
                 task.state = "FAILED"
                 runCatching { appendLine("[bg] crashed: ${t.message}") }
+            } finally {
+                // [T-bg-private-session] Release the private session.
+                //
+                // The contract above ("MUST terminate it (sessionDidTerminate)
+                // in a finally") was documented but never implemented: there
+                // was no finally at all. Every background task therefore left
+                // its PersistentShell registered in ExecutionCoordinator.shells
+                // for the lifetime of the process - a proot process plus a
+                // "PersistentShell-reader" thread each, never reaped.
+                //
+                // That is precisely the churn ThreadWatch names as a source
+                // ("DefaultDispatch / NDK MediaCodec / pool-N / PersistentShell")
+                // and the shape behind the two 07.10 SIGABRT deaths documented
+                // in its KDoc (32k+ OS threads over hours) - the map only ever
+                // shrank through this very call, which no caller of the exec
+                // block made.
+                //
+                // `finally` so it also runs on cancellation (the bg_kill path),
+                // which is exactly when the shell must go away. runCatching
+                // because stopping a shell must not mask the task's own
+                // outcome or turn a cancellation into a crash.
+                runCatching {
+                    ExecutionCoordinator.sessionDidTerminate(bgSessionId)
+                }.onFailure {
+                    android.util.Log.w("BgTaskTools", "bg session cleanup failed: ${it.message}")
+                }
             }
         }
         register(task)

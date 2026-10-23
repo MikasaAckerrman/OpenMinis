@@ -60,23 +60,56 @@ object ThreadWatch {
     }
 
     private fun tick() {
-        val count = Thread.activeCount()
+        // [T-thread-watch] Measure the OS count too.
+        //
+        // `Thread.activeCount()` only sees threads the JVM manages. The limit
+        // that actually fails is the PROCESS thread limit, and everything
+        // native - PRoot's ptrace workers, MediaCodec, RenderThread - lives
+        // outside that count. A guard that only watches the JVM half cannot
+        // see the churn it was written for: the 07.10 deaths were OS threads,
+        // and the documented sources ("NDK MediaCodec / pool-N /
+        // PersistentShell") are not all JVM threads.
+        val jvmCount = Thread.activeCount()
+        val osCount = osThreadCount()
+        val count = maxOf(jvmCount, osCount)
         val now = System.currentTimeMillis()
         when {
-            count >= ALARM -> log("CRITICAL threads=$count — pthread exhaustion approaching", force = true)
+            count >= ALARM -> log("CRITICAL threads=$count (jvm=$jvmCount os=$osCount) — pthread exhaustion approaching", force = true)
             count >= DUMP -> {
                 if (now - lastDumpMs >= 60_000L) {
                     lastDumpMs = now
-                    log("threads=$count — top groups: ${histogram()}", force = true)
+                    log("threads=$count (jvm=$jvmCount os=$osCount) — top groups: ${histogram()}", force = true)
                 }
             }
             count >= SOFT -> {
                 if (now - lastSoftMs >= 300_000L) {
                     lastSoftMs = now
-                    log("soft threads=$count (growing?)", force = false)
+                    log("soft threads=$count (jvm=$jvmCount os=$osCount)", force = false)
                 }
             }
         }
+    }
+
+    /**
+     * Every thread the kernel knows about for this process, native included.
+     *
+     * Read once per tick from /proc/self/status; -1 when it cannot be read,
+     * so the JVM half still works where procfs is hidden. One small read per
+     * 30 s is not the overhead this class was designed to avoid.
+     */
+    private fun osThreadCount(): Int = try {
+        java.io.File("/proc/self/status").bufferedReader().use { reader ->
+            var line = reader.readLine()
+            while (line != null) {
+                if (line.startsWith("Threads:")) {
+                    return line.substringAfter(':').trim().toIntOrNull() ?: -1
+                }
+                line = reader.readLine()
+            }
+        }
+        -1
+    } catch (_: Throwable) {
+        -1
     }
 
     /**
