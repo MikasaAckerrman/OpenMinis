@@ -40,7 +40,10 @@ class PartialJsonToolArgsUnescapeTest {
 
     @Test
     fun consecutiveEscapesAreEachConsumedOnce() {
-        assertEquals("\\", extractValue("\\\\\\\\"))
+        // Four backslashes in the JSON text are two escaped backslashes, so
+        // the value is two backslashes - not one. findUnescapedEnd skips two
+        // characters per escape, so it lands on the real closing quote.
+        assertEquals("\\\\", extractValue("\\\\\\\\"))
     }
 
     @Test
