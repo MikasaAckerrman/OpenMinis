@@ -92,9 +92,14 @@ class GeminiProvider(
         com.openminis.app.provider.LlmDispatchGate.awaitRateSlot(throttleKey)
         com.openminis.app.provider.LlmDispatchGate.withStreamPermit {
         val body = buildRequestBody(messages, systemPrompt, maxTokens, temperature, imageParts, tools, thinkingLevel)
-        val url = "$basePath/models/${model.id}:generateContent?key=$apiKey"
+        val url = "$basePath/models/${model.id}:generateContent"
         val request = Request.Builder()
             .url(url)
+            // [T-provider-secret-in-url] The key travels in a header, not in
+            // the query string: a URL ends up in the provider's access logs,
+            // in any proxy's logs, and in every error message that prints
+            // the request.
+            .header("x-goog-api-key", apiKey)
             .post(body.toString().toRequestBody("application/json".toMediaType()))
             // [T-android-default-ua] Brand the outbound UA so server logs
             // can trace the request back to the Minis build. Gemini has no
@@ -140,9 +145,12 @@ class GeminiProvider(
         thinkingLevel: ThinkingLevel,
     ): Flow<LLMStreamChunk> = callbackFlow {
         val body = buildRequestBody(messages, systemPrompt, maxTokens, temperature, imageParts, tools, thinkingLevel)
-        val url = "$basePath/models/${model.id}:streamGenerateContent?alt=sse&key=$apiKey"
+        val url = "$basePath/models/${model.id}:streamGenerateContent?alt=sse"
         val request = Request.Builder()
             .url(url)
+            // [T-provider-secret-in-url] Same reasoning as the non-streaming
+            // branch: the key is a header, never part of the URL.
+            .header("x-goog-api-key", apiKey)
             .post(body.toString().toRequestBody("application/json".toMediaType()))
             // [T-android-default-ua] same intent as the non-streaming
             // branch above — brand outbound requests with Minis/<version>.

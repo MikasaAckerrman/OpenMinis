@@ -1,6 +1,7 @@
 package com.openminis.app.service
 
 import android.content.Context
+import com.openminis.app.MinisApp
 import com.openminis.app.data.DraftStore
 import com.openminis.app.offload.OffloadPermissionManager
 import com.openminis.app.ui.chat.ChatViewModelStore

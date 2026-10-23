@@ -51,7 +51,13 @@ object GeminiModelsApi {
             builder.url("https://generativelanguage.googleapis.com/v1beta/models")
             builder.header("Authorization", "Bearer $apiKey")
         } else {
-            builder.url("https://generativelanguage.googleapis.com/v1beta/models?key=$apiKey")
+            builder.url("https://generativelanguage.googleapis.com/v1beta/models")
+            // [T-provider-secret-in-url] The key travels in a header, not in
+            // the query string. A URL is the one part of a request that ends
+            // up in the provider's access logs, in any proxy's logs, and in
+            // every error message that prints the request. Gemini accepts
+            // x-goog-api-key for exactly this reason.
+            builder.header("x-goog-api-key", apiKey)
         }
 
         // [T-android-default-ua] brand outbound /v1beta/models request.
