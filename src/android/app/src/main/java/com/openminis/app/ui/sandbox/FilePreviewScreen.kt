@@ -96,12 +96,53 @@ private const val MAX_TEXT_PREVIEW_BYTES = 512_000 // 500 KB
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
+/**
+ * [T-apk-install-resume] Fire an install that was interrupted by the
+ * permission Settings screen.
+ *
+ * Runs on first composition, which is exactly when the app comes back from
+ * Settings (the Activity was recreated). Consumes the path first so a second
+ * composition cannot fire it twice, and re-checks the permission because the
+ * user may have declined again - in which case the record is already cleared
+ * and the next attempt starts from a clean state.
+ */
+@Composable
+private fun ResumePendingApkInstall() {
+    val context = LocalContext.current
+    LaunchedEffect(Unit) {
+        val path = com.openminis.app.deeplink.DeepLinkCoordinator.consumePendingApkInstall()
+            ?: return@LaunchedEffect
+        val apk = java.io.File(path)
+        if (!apk.isFile) {
+            Toast.makeText(
+                context,
+                context.getString(R.string.filepreview_apk_unreadable),
+                Toast.LENGTH_SHORT,
+            ).show()
+            return@LaunchedEffect
+        }
+        if (!com.openminis.app.data.UpdateChecker.canInstall(context)) {
+            Toast.makeText(
+                context,
+                context.getString(R.string.filepreview_enable_install_permission),
+                Toast.LENGTH_LONG,
+            ).show()
+            return@LaunchedEffect
+        }
+        com.openminis.app.data.UpdateChecker.installApk(context, apk)
+    }
+}
+
 fun FilePreviewScreen(
     item: FileItem,
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+
+    // [T-apk-install-resume] An install interrupted by the permission
+    // Settings screen resumes by itself on return.
+    ResumePendingApkInstall()
 
     // T-android-preview-title-toggle-path: tap the title to swap between
     // file name and absolute path. Mirrors the iOS preview's tap-to-toggle
@@ -259,6 +300,12 @@ private fun installApkFromPreview(context: Context, apk: File) {
         return
     }
     if (!com.openminis.app.data.UpdateChecker.canInstall(context)) {
+        // [T-apk-install-resume] Record WHY we are leaving before we leave.
+        // Returning from the Settings Activity recreates this screen and drops
+        // every remember{} slot, so without this the grant looked like it did
+        // nothing and the user had to start over. Held only for the round trip;
+        // consumed on resume.
+        com.openminis.app.deeplink.DeepLinkCoordinator.setPendingApkInstall(apk.absolutePath)
         com.openminis.app.data.UpdateChecker.openInstallPermissionSettings(context)
         Toast.makeText(context, R.string.filepreview_enable_install_permission, Toast.LENGTH_LONG).show()
         return

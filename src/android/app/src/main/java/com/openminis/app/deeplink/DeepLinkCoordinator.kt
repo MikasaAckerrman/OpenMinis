@@ -84,4 +84,28 @@ object DeepLinkCoordinator {
         _pendingChatAction.value = null
         return current
     }
+
+    /**
+     * [T-apk-install-resume] Absolute path of an APK the user was sent to
+     * Settings to authorise.
+     *
+     * The install-permission prompt is an Activity the app leaves, and coming
+     * back recreates every Compose `remember` slot. Without a persisted
+     * intention the user granted the permission and had to find the file and
+     * tap install again - which is exactly the dead end that made an APK in
+     * chat look unopenable. Same read-and-clear slot shape as
+     * [pendingLogsTab] and [pendingHtmlPreview], so there is no second resume
+     * mechanism to learn.
+     */
+    private val _pendingApkInstall = MutableStateFlow<String?>(null)
+    val pendingApkInstall: StateFlow<String?> = _pendingApkInstall.asStateFlow()
+
+    fun setPendingApkInstall(apkPath: String) { _pendingApkInstall.value = apkPath }
+
+    /** Read-and-clear so a resumed install fires exactly once. */
+    fun consumePendingApkInstall(): String? {
+        val current = _pendingApkInstall.value
+        _pendingApkInstall.value = null
+        return current
+    }
 }
