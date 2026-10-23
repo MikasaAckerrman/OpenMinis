@@ -417,7 +417,12 @@ class DebugRPCHandler(private val context: Context) {
                     "stallLogBytes",
                     runCatching {
                         val logs = java.io.File(context.filesDir, "logs")
-                        logs.listFiles { f -> f.name.startsWith("stall-") }
+                        // SafeDir, not File.listFiles: the platform listing
+                        // aborts the process on a file name with a character
+                        // outside the BMP, and the source guard test enforces
+                        // that here.
+                        com.openminis.app.util.SafeDir
+                            .listFiles(logs) { f -> f.name.startsWith("stall-") }
                             ?.sumOf { it.length() } ?: 0L
                     }.getOrDefault(-1L),
                 )
