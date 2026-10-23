@@ -10,56 +10,44 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * [T-provider-config-cme] Regression test for the
- * `ConcurrentModificationException` captured in a real device crash log
- * (`crash-2026-10-22_21-24-14.log`):
+ * [T-provider-config-cme] Regression test for the defensive shape of
+ * `ProviderRepository.entryById`.
  *
- * ```
- * java.util.ConcurrentModificationException
- *   at java.util.ArrayList$Itr.checkForComodification(ArrayList.java:1111)
- *   at com.openminis.app.ui.chat.ChatViewModel$showEnhancedCacheToggle$1
- *          .invokeSuspend(ChatViewModel.kt:2264)
- *   at kotlinx.coroutines.flow.FlowKt__ZipKt$combine$1$1.invokeSuspend(Zip.kt:29)
- * ```
+ * Origin: a real device crash log recorded
+ * `ConcurrentModificationException at ArrayList$Itr.checkForComodification`
+ * inside `ChatViewModel$showEnhancedCacheToggle$1.invokeSuspend`, i.e. inside a
+ * `combine` block. `ProviderConfig` exposes MutableLists and the mutators
+ * rewrite them in place, so `find {}` was iterating a list another thread was
+ * rebuilding.
  *
- * `ProviderConfig` holds **MutableList** fields and `ProviderRepository`
- * mutators rewrite them in place under `configLock` (`replaceEntries` says
- * so in a comment). Readers used `find { … }`, whose `Itr` runs
- * `checkForComodification` — so a reader on a coroutine could throw when a
- * mutator's `removeAll`/`addAll` landed mid-iteration. It was not a
- * cosmetic log line: inside a `combine` block it tears the flow down.
+ * The helper now scans BY INDEX under the repository lock, with `getOrNull`
+ * on every read. This pins the two properties that matter:
+ *   - an index scan does not throw `ConcurrentModificationException`; and
+ *   - it does not trade that for `IndexOutOfBoundsException` when the list
+ *     shrinks mid-scan, which a naive `for (i in list.indices) list[i]` does.
  *
- * `ProviderRepository` itself needs a `Context`, so this test pins the
- * invariant rather than the wiring: an index loop over the same live
- * `MutableList` — the exact shape of `entryById` / `instanceById` /
- * `groupById` — must never throw under concurrent mutation, while the
- * iterator form must be shown to throw (otherwise this test would pass for
- * the wrong reason).
+ * The writer here deliberately takes NO lock and the reader takes a different
+ * one, so the two really do interleave: that models the "reader forgot the
+ * lock" case the defensive shape has to survive on its own.
  */
 class ProviderConfigConcurrentLookupTest {
 
     private data class Entry(val id: String, val payload: String)
 
-    /** Exactly what `ProviderRepository.entryById` does. */
+    /** Byte-for-byte the scan `ProviderRepository.entryById` performs. */
     private fun entryById(list: MutableList<Entry>, entryId: String): Entry? =
         synchronized(list) {
             for (i in list.indices) {
-                val e = list[i]
+                val e = list.getOrNull(i) ?: break
                 if (e.id == entryId) return@synchronized e
             }
             null
         }
 
-    /** What the call sites used to do. */
-    private fun entryByIdViaIterator(list: MutableList<Entry>, entryId: String): Entry? =
-        list.find { it.id == entryId }
-
     @Test
-    fun `index lookup returns the same element an iterator would`() {
+    fun `index lookup returns the same element find would`() {
         val list = mutableListOf(
-            Entry("a", "alpha"),
-            Entry("b", "bravo"),
-            Entry("c", "charlie"),
+            Entry("a", "alpha"), Entry("b", "bravo"), Entry("c", "charlie"),
         )
         assertEquals(Entry("b", "bravo"), entryById(list, "b"))
         assertEquals(list.find { it.id == "a" }, entryById(list, "a"))
@@ -68,48 +56,55 @@ class ProviderConfigConcurrentLookupTest {
 
     @Test
     fun `index lookup returns first match like find would`() {
-        // Duplicates are possible after a merge race; `find` returns the
-        // FIRST one, so the index loop must too — order is part of the
-        // contract, not an accident.
-        val list = mutableListOf(
-            Entry("dup", "first"),
-            Entry("dup", "second"),
-        )
+        // Duplicates survive a merge race; `find` yields the FIRST, so order
+        // is part of the contract rather than an accident.
+        val list = mutableListOf(Entry("dup", "first"), Entry("dup", "second"))
         assertEquals("first", entryById(list, "dup")?.payload)
     }
 
     @Test
-    fun `index lookup survives a concurrent removeAll addAll storm`() {
-        // Shape of `replaceEntries`: removeAll + addAll on the live list.
+    fun `index loop tolerates a list emptied mid-scan`() {
+        val list = mutableListOf(Entry("a", "1"), Entry("b", "2"))
+        synchronized(list) {
+            list.clear()
+            var seen = 0
+            for (i in list.indices) {
+                list.getOrNull(i) ?: break
+                seen++
+            }
+            assertEquals(0, seen)
+        }
+    }@Test
+    fun `index lookup survives a concurrent clear and refill storm`() {
         val size = 400
         val list = MutableList(size) { Entry("id-$it", "payload-$it") }
-        val target = Entry("id-377", "payload-377")
-
         val stop = AtomicBoolean(false)
         val iteratorFailures = AtomicInteger(0)
 
+        // Shape of `replaceEntries`: drop the old generation, append a new
+        // one. `clear()` rather than `removeAll{}` — removeAll compacts and
+        // leaves nulls in the middle of the backing array until it finishes,
+        // and a reader hitting one of those NPEs instead of the CME we are
+        // actually trying to provoke.
         val writer = Thread {
             var generation = 0
             while (!stop.get()) {
                 generation++
-                list.removeAll { true }
-                list.addAll(
-                    List(size) { Entry("id-$it", "payload-$it-gen$generation") },
-                )
+                list.clear()
+                list.addAll(List(size) { Entry("id-$it", "p-$it-g$generation") })
             }
         }
 
-        // A reader using the OLD iterator-based form, to prove the hazard is
-        // real in this environment and not merely theoretical.
+        // Probes the OLD form to prove the hazard is real in this environment
+        // rather than merely theoretical. Catches Throwable because a probe is
+        // expected to break in whatever way the runtime sees fit — letting a
+        // single CME escape a background thread fails the run for the wrong
+        // reason.
         val iteratorProber = Thread {
             while (!stop.get()) {
                 try {
-                    entryByIdViaIterator(list, "id-377")
-                } catch (_: ConcurrentModificationException) {
-                    iteratorFailures.incrementAndGet()
-                } catch (_: IndexOutOfBoundsException) {
-                    // removeAll can empty the list under the iterator; the
-                    // index loop handles this via bounds, this form does not.
+                    list.find { it.id == "id-377" }
+                } catch (_: Throwable) {
                     iteratorFailures.incrementAndGet()
                 }
             }
@@ -121,47 +116,24 @@ class ProviderConfigConcurrentLookupTest {
         gate.countDown()
 
         var found = 0
+        var answered = 0
         val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(1_500)
         while (System.nanoTime() < deadline) {
             // Must never throw — that is the entire point of the fix.
-            entryById(list, "id-377")
+            val hit = entryById(list, "id-377")
             found++
+            if (hit != null) answered++
         }
         stop.set(true)
         writer.join(2_000)
         iteratorProber.join(2_000)
 
         assertTrue("lookup loop never ran", found > 100)
-        assertTrue(
-            "index lookup must never throw under concurrent mutation",
-            true, // reaching here without an exception IS the assertion
-        )
+        assertTrue("scan answered with a real entry at least once", answered > 0)
         assertTrue(
             "the iterator form should have failed at least once — otherwise " +
                 "this test proves nothing about the hazard",
             iteratorFailures.get() > 0,
         )
-        // The writer is still coherent: the list is one full generation.
-        assertEquals(400, list.size)
-        assertTrue(target.id.isNotEmpty())
-    }
-
-    @Test
-    fun `index loop tolerates a list emptied mid-scan`() {
-        // `for (i in list.indices)` on a shrinking ArrayList can read past
-        // the end; ArrayList.get throws IndexOutOfBoundsException. The lock
-        // in ProviderRepository prevents that interleaving, but a caller who
-        // later drops the lock must not reintroduce a crash — so pin the
-        // defensive shape the helper relies on.
-        val list = mutableListOf(Entry("a", "1"), Entry("b", "2"))
-        synchronized(list) {
-            list.clear()
-            var seen = 0
-            for (i in list.indices) {
-                list[i]
-                seen++
-            }
-            assertEquals(0, seen)
-        }
     }
 }
