@@ -15430,7 +15430,13 @@ class ChatViewModel(
         toolBlocks: MutableList<AssistantBlock>,
         assistantId: String,
         currentText: String,
-        policySessionId: String = sessionId,
+        // [T-allowlist-session-id] Defaults to the session that owns the
+        // turn, not to this ViewModel's own `sessionId`. `realSessionId` is
+        // the established idiom for that in this file (it is what lines 446,
+        // 696, 1214, 1248 and 2563 all use), and taking it as the default
+        // means every call site is right by construction instead of only the
+        // ones that were found and patched.
+        policySessionId: String = realSessionId.ifEmpty { sessionId },
     ): ToolExecutionResult {
         // [T-agent-graph] Second line of defence for the per-agent allowlist.
         // The primary barrier is schema-level: a tool absent from
