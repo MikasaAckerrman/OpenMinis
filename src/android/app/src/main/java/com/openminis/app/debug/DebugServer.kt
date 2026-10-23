@@ -36,6 +36,13 @@ class DebugServer(
         private const val MAX_BODY_CHARS = 8 * 1024 * 1024
 
         /**
+         * [T-android-debugserver-threads] Upper bound on concurrently served
+         * debug requests. Enough to script several probes in parallel, low
+         * enough that a debugging session cannot starve the app.
+         */
+        private const val DEBUG_RPC_PARALLELISM = 8
+
+        /**
          * [T-android-debugserver-auth] Remote-connection auth decision, kept
          * pure for unit testing. Loopback connections (adb forward — the
          * developer's own machine over USB) stay token-free so the local
@@ -66,6 +73,21 @@ class DebugServer(
     private var serverSocket: ServerSocket? = null
     private var acceptJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.IO)
+
+    /**
+     * [T-android-debugserver-threads] Capped dispatcher for connection
+     * handling.
+     *
+     * `handleConnection` runs `runBlocking`, so each open connection occupies
+     * a dispatcher thread for as long as the request takes - `alloc.measure`
+     * holds one for the whole window (up to 120 s). On the shared IO pool that
+     * competes with the app's own file and network work, and the more debug
+     * traffic there is, the more the app suffers for being observed. A capped
+     * dispatcher keeps the debug server's footprint bounded and lets it be
+     * reasoned about: at most DEBUG_RPC_PARALLELISM threads, regardless of
+     * how many clients connect.
+     */
+    private val rpcDispatcher = Dispatchers.IO.limitedParallelism(DEBUG_RPC_PARALLELISM)
     private val rpcHandler = DebugRPCHandler(context)
 
     /**
@@ -131,7 +153,7 @@ class DebugServer(
                 while (!stopped) {
                     try {
                         val client = ss.accept()
-                        launch { handleConnection(client) }
+                        launch(rpcDispatcher) { handleConnection(client) }
                     } catch (e: Exception) {
                         if (!stopped) Log.w(TAG, "Accept error: ${e.message}")
                     }
