@@ -3,6 +3,7 @@ package com.openminis.app.ui.chat
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -130,7 +131,7 @@ class PartialJsonToolArgsTest {
 
         // 200 KB document: the old code allocated ~200 KB per call here.
         // Generous headroom for JVM noise, but far below any document copy.
-        assert(
+        assertTrue(
             "allocated $perCall bytes per call - expected the value, not the document",
             perCall < 8_192,
         )
