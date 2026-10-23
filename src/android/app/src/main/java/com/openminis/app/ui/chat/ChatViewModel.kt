@@ -2923,6 +2923,7 @@ class ChatViewModel(
         // A was refused with "свежий экспорт уже готов" pointing at A's file.
         val prefs = externalCompactionPrefs
         val remembered = ExternalExportCache.Entry(
+            sessionId = sessionId,
             uri = prefs.getString(ExternalExportCache.uriKey(sessionId), null).orEmpty(),
             atMs = prefs.getLong(ExternalExportCache.atMsKey(sessionId), 0L),
             where = prefs.getString(

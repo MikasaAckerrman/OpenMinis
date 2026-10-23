@@ -36,6 +36,7 @@ internal object ExternalExportCache {
     const val INDEX_KEY = "exportCacheIndex"
 
     data class Entry(
+        val sessionId: String,
         val uri: String,
         val atMs: Long,
         val where: String,
@@ -91,12 +92,19 @@ internal object ExternalExportCache {
         previous.filter { it.isNotBlank() && it !in kept }
 
     /**
-     * The entry to re-announce for [sessionId], or null when there is none or
-     * it is stale. Kept separate from the pref read so the decision can be
-     * tested on its own.
+     * The entry to re-announce for [sessionId], or null when there is none, it
+     * is stale, or it belongs to another chat.
+     *
+     * The ownership check is inside this function on purpose. Keys are already
+     * namespaced per session, which makes a foreign entry impossible to read
+     * in the first place - but "impossible because the caller passed the right
+     * key" is exactly the kind of guarantee that stops holding when someone
+     * adds a fourth call site. Carrying the owner in the entry and comparing it
+     * here means the reported bug cannot come back through a new caller.
      */
     fun pickFresh(entry: Entry?, sessionId: String, nowMs: Long): Entry? {
         if (entry == null) return null
+        if (entry.sessionId != sessionId) return null
         if (entry.uri.isBlank()) return null
         if (entry.firstDbId == null || entry.lastDbId == null) return null
         return if (isFresh(entry.atMs, nowMs)) entry else null

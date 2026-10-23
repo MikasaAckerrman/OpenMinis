@@ -18,14 +18,18 @@ import org.junit.Test
  */
 class ExternalExportCacheTest {
 
-    private fun entry(atMs: Long, uri: String = "content://export/1") =
-        ExternalExportCache.Entry(
-            uri = uri,
-            atMs = atMs,
-            where = "Download/Minis/ExportCompact/",
-            firstDbId = "m1",
-            lastDbId = "m9",
-        )
+    private fun entry(
+        atMs: Long,
+        owner: String = "chat-A",
+        uri: String = "content://export/1",
+    ) = ExternalExportCache.Entry(
+        sessionId = owner,
+        uri = uri,
+        atMs = atMs,
+        where = "Download/Minis/ExportCompact/",
+        firstDbId = "m1",
+        lastDbId = "m9",
+    )
 
     private val now = 1_700_000_000_000L
 
@@ -75,6 +79,7 @@ class ExternalExportCacheTest {
     @Test
     fun anEntryWithoutARangeCannotBeImported() {
         val noRange = ExternalExportCache.Entry(
+            sessionId = "chat-A",
             uri = "content://export/1",
             atMs = now - 1000,
             where = "x",
