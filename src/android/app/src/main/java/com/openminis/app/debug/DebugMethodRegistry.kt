@@ -44,6 +44,134 @@ object DebugMethodRegistry {
     }
 
     private val DEBUG_ONLY_METHODS: List<MethodSpec> = listOf(
+        // [T-discover-sync] The fourteen methods below were dispatchable all
+        // along but absent from rpc.discover, whose own KDoc says "Keep this
+        // in sync with the dispatch `when` in DebugRPCHandler.dispatch". A
+        // client introspecting the API could not see that debug.shellExecute
+        // or the update.* trio exist at all, and would reimplement them or
+        // assume the capability was missing. The whole DebugServer only starts
+        // under BuildConfig.DEBUG, so every one of them belongs in this list.
+        MethodSpec(
+            name = "debug.rawLs",
+            description = "List files without going through the sanitizing layer, straight off the host filesystem. Defaults to minis-sessions.",
+            params = listOf(
+                ParamSpec("path", "string", false, "minis-sessions", "Directory to list; '..' is rejected."),
+                ParamSpec("recursive", "boolean", false, true, "Descend into subdirectories."),
+                ParamSpec("maxDepth", "int", false, 4, "Maximum depth for the walk."),
+            ),
+            returns = "JSONArray of {name, path, size, isDirectory}",
+            example = ex(),
+        ),
+        MethodSpec(
+            name = "debug.shellExecute",
+            description = "Run a command in the sandbox shell and return its output. Goes through the same path as the agent's shell_execute tool, so the session argument selects which session's environment applies.",
+            params = listOf(
+                ParamSpec("command", "string", true, null, "Command to run via /bin/sh -c."),
+                ParamSpec("session", "string", false, "debug-rpc", "Session whose shell and bind mounts are used."),
+                ParamSpec("timeout", "int", false, 60, "Timeout in seconds, clamped to 1..900."),
+            ),
+            returns = "{output, exitCode, session}",
+            example = ex("command" to "echo hi"),
+        ),
+        MethodSpec(
+            name = "debug.update.check",
+            description = "Query GitHub for the newest released tag and report it against the installed build.",
+            params = emptyList(),
+            returns = "{current, latest, updateAvailable}",
+            example = ex(),
+        ),
+        MethodSpec(
+            name = "debug.update.download",
+            description = "Download a released APK by URL.",
+            params = listOf(
+                ParamSpec("url", "string", true, null, "APK URL."),
+            ),
+            returns = "{path, bytes, sha256}",
+            example = ex("url" to "https://github.com/.../app.apk"),
+        ),
+        MethodSpec(
+            name = "debug.update.install",
+            description = "Hand a downloaded APK to the package installer. Triggers the system 'unknown sources' prompt if the app is not an allowed installer.",
+            params = listOf(
+                ParamSpec("path", "string", true, null, "Absolute path to the downloaded APK."),
+            ),
+            returns = "{started, path}",
+            example = ex("path" to "/data/local/tmp/app.apk"),
+        ),
+        MethodSpec(
+            name = "debug.engineSwap",
+            description = "Switch a conversation between the current engine and the legacy one, so a session started on one can be observed from the other.",
+            params = listOf(
+                ParamSpec("sessionId", "string", false, "", "Conversation to move; empty is rejected."),
+                ParamSpec("enabled", "boolean", false, false, "Target state."),
+            ),
+            returns = "{sessionId, engine, enabled}",
+            example = ex("enabled" to true),
+        ),
+        MethodSpec(
+            name = "debug.jankStats",
+            description = "Frame-timing counters collected by the jank watcher.",
+            params = emptyList(),
+            returns = "{frames, janky, percent, worst}",
+            example = ex(),
+        ),
+        MethodSpec(
+            name = "debug.jankReset",
+            description = "Reset the jank counters.",
+            params = listOf(
+                ParamSpec("intervalMs", "int", false, 0, "Sampling window the reset applies to; 0 resets all."),
+            ),
+            returns = "{reset}",
+            example = ex(),
+        ),
+        MethodSpec(
+            name = "debug.memoryFts",
+            description = "Toggle full-text search for memory files.",
+            params = listOf(
+                ParamSpec("enabled", "boolean", true, null, "Required; enables or disables FTS."),
+            ),
+            returns = "{useFts}",
+            example = ex("enabled" to true),
+        ),
+        MethodSpec(
+            name = "debug.permissions.list",
+            description = "List the Android runtime permissions the app currently holds or has been denied.",
+            params = emptyList(),
+            returns = "JSONArray of {permission, granted, requested}",
+            example = ex(),
+        ),
+        MethodSpec(
+            name = "debug.minisConfig.exec",
+            description = "Run the minis-config CLI against the running app and return its JSON output.",
+            params = listOf(
+                ParamSpec("path", "string", false, "", "Config path addressed by the subcommand."),
+                ParamSpec("subcommand", "string", false, "", "minis-config subcommand."),
+                ParamSpec("value_json", "string", false, "", "Value payload, JSON-encoded."),
+            ),
+            returns = "{ok, stdout, stderr, exitCode}",
+            example = ex("subcommand" to "get"),
+        ),
+        MethodSpec(
+            name = "debug.deviceState",
+            description = "Current device snapshot: battery, thermal state, memory and network reachability.",
+            params = emptyList(),
+            returns = "{battery, thermal, memory, network}",
+            example = ex(),
+        ),
+        MethodSpec(
+            name = "chat.session.rescue",
+            description = "Kill and cold-restart the process when MainActivity finds the app not ready and safe-mode is off. This is the manual counterpart of that self-restart.",
+            params = emptyList(),
+            returns = "{requested}",
+            example = ex(),
+        ),
+        MethodSpec(
+            name = "chat.uiPrompt",
+            description = "Surface a UI prompt in the chat surface, used by headless runners that need a decision they cannot take themselves.",
+            params = emptyList(),
+            returns = "{shown}",
+            example = ex(),
+        ),
         MethodSpec(
             name = "debug.alloc.measure",
             description = "DEBUG-only: measure the live allocation RATE over a window and report it with the live set. Separates GC churn (high rate, flat live set) from a leak (live set grows) — the question logcat GC lines cannot answer. Blocks the calling thread for the whole window (it samples with sleeps), so keep the window short. Only positive heap steps count as allocation; GC drops are reported separately as reclaimedMB, so the rate is a lower bound and never inflated by counting reclaimed bytes twice.",
