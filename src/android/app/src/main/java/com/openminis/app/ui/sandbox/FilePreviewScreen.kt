@@ -95,7 +95,6 @@ import com.openminis.app.ui.components.MinisTextButton
 private const val MAX_TEXT_PREVIEW_BYTES = 512_000 // 500 KB
 
 @OptIn(ExperimentalMaterial3Api::class)
-@Composable
 /**
  * [T-apk-install-resume] Fire an install that was interrupted by the
  * permission Settings screen.
