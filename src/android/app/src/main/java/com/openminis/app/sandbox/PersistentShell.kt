@@ -70,6 +70,22 @@ class PersistentShell(
     private var process: Process?
         get() = driver.process
         set(value) { driver.process = value }
+    // [T-persistent-shell-threads] Reader threads, kept on purpose.
+    //
+    // They used to be created, started and dropped on the floor:
+    // Thread({...}).apply { start() } keeps no reference anywhere, so stop()
+    // could neither interrupt them nor prove they had ended. They normally die
+    // because the pipe closes when proot is destroyed, but that leaves a
+    // failure invisible: if the kill does not land, the reader stays blocked
+    // in readLine forever holding this shell.
+    //
+    // In debug builds a shell runs TWO of them (stdout + stderr), which is the
+    // per-shell thread cost that adds up when shells are not reaped. Holding
+    // the references makes it measurable and lets stop() interrupt as a
+    // backstop when the pipe does not close.
+    @Volatile private var readerThread: Thread? = null
+    @Volatile private var stderrThread: Thread? = null
+
     private var stdinWriter: BufferedWriter?
         get() = driver.stdinWriter
         set(value) { driver.stdinWriter = value }
@@ -363,7 +379,7 @@ class PersistentShell(
         stdinWriter = BufferedWriter(OutputStreamWriter(p.outputStream, StandardCharsets.UTF_8))
 
         // Start background reader thread
-        Thread({
+        readerThread = Thread({
             readLoop(p)
         }, "PersistentShell-reader").apply {
             isDaemon = true
@@ -373,7 +389,7 @@ class PersistentShell(
         // In debug, drain stderr separately into logcat AND into a bounded
         // ring buffer so a start failure can be explained in the chat itself.
         if (debugOffload) {
-            Thread({
+            stderrThread = Thread({
                 val br = p.errorStream.bufferedReader(StandardCharsets.UTF_8)
                 try {
                     for (line in br.lineSequence()) {
@@ -696,7 +712,39 @@ class PersistentShell(
         killExecutor.execute {
             try { writer?.close() } catch (_: Exception) {}
             proc?.destroyForcibly()
+            // [T-persistent-shell-threads] Backstop only. The threads end on
+            // their own once destroyForcibly closes the pipes, which is the
+            // normal path; interrupting covers the case where the kill did not
+            // land, where the reader would otherwise sit in readLine forever
+            // holding this shell. InterruptedException is handled inside the
+            // loops, so this cannot turn into a crash.
+            interruptReaderThreads()
             Log.i(TAG, "Persistent shell stopped (async kill)")
         }
+    }
+
+    /**
+     * [T-persistent-shell-threads] Interrupt both reader threads and forget
+     * them, so a shell that is stopped stops being a thread owner.
+     */
+    private fun interruptReaderThreads() {
+        readerThread?.let { if (it !== Thread.currentThread()) { try { it.interrupt() } catch (_: Throwable) {} } }
+        stderrThread?.let { if (it !== Thread.currentThread()) { try { it.interrupt() } catch (_: Throwable) {} } }
+        readerThread = null
+        stderrThread = null
+    }
+
+    /**
+     * [T-persistent-shell-threads] Reader threads still alive.
+     *
+     * Zero after stop() has run and the process died. A non-zero count after
+     * every shell of a session has been terminated is the thread-leak signal
+     * that used to have no way to be observed at all.
+     */
+    fun liveReaderThreadCount(): Int {
+        var n = 0
+        readerThread?.let { if (it.isAlive) n++ }
+        stderrThread?.let { if (it.isAlive) n++ }
+        return n
     }
 }
