@@ -2,7 +2,6 @@ package com.openminis.app.ui.chat
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -83,10 +82,13 @@ class PartialJsonToolArgsTest {
     }
 
     @Test
-    fun valueWithoutEscapesReturnsTheOriginalInstance() {
-        // The fast path added to unescape(): no allocation when there is
-        // nothing to unescape.
-        assertSame("plain value", PartialJsonToolArgs.extract("tool_title", json("\"tool_title\": \"plain value\"")))
+    fun valueWithoutEscapesIsReturnedVerbatim() {
+        // The fast path in unescape() returns the input untouched when it
+        // holds no backslash. Identity is not observable here - the value
+        // always comes from a fresh substring of the document - so this
+        // pins the observable part: no escapes means no transformation.
+        val s = json("\"tool_title\": \"plain value\"")
+        assertEquals("plain value", PartialJsonToolArgs.extract("tool_title", s))
     }
 
     @Test
