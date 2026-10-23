@@ -32,6 +32,16 @@ class SafeDirSourceGuardTest {
         return null
     }
 
+    /**
+     * Call sites that look like the fatal listing but are not.
+     *
+     * `ScheduledTaskOffloadHandler` calls `manager.list()` on its own
+     * `TaskManager`, which has nothing to do with `java.io.File`.
+     */
+    private val allowed = listOf(
+        "manager.list()" to "TaskManager.list(), not java.io.File"
+    )
+
     @Test
     fun appCodeNeverUsesTheFatalPlatformListing() {
         val module = moduleDir()
@@ -54,21 +64,41 @@ class SafeDirSourceGuardTest {
             } catch (_: Exception) {
                 return
             }
-            text.lineSequence().forEachIndexed { index, line ->
-                val code = line.substringBefore("//").trim()
+            // Documentation is stripped first: a KDoc line that explains why
+            // the stdlib listing is fatal must not be reported as a call.
+            var inBlockComment = false
+            val rawLines = text.lineSequence().toList()
+            rawLines.forEachIndexed { index, rawLine ->
+                val trimmed = rawLine.trimStart()
+                if (inBlockComment) {
+                    if (trimmed.contains("*/")) inBlockComment = false
+                    return@forEachIndexed
+                }
+                if (trimmed.startsWith("/*")) {
+                    if (!trimmed.contains("*/")) inBlockComment = true
+                    return@forEachIndexed
+                }
+                if (trimmed.startsWith("//") || trimmed.startsWith("*")) {
+                    return@forEachIndexed
+                }
+                val code = rawLine.substringBefore("//").trim()
                 if (code.isEmpty()) return@forEachIndexed
                 val hits = buildList {
-                    if (Regex("""\.listFiles\s*\(""").containsMatchIn(code)) add("listFiles")
-                    if (Regex("""\.listFiles\s*\{""").containsMatchIn(code)) add("listFiles{}")
-                    if (Regex("""\.list\s*\(\s*\)""").containsMatchIn(code)) add("list")
-                    if (code.contains("walkTopDown(")) add("walkTopDown")
-                    if (code.contains("walkBottomUp(")) add("walkBottomUp")
+                    // The lookbehind matters: without it the guard would flag
+                    // every SafeDir call, which is exactly the code that fixes
+                    // the crash.
+                    if (Regex("""(?<!SafeDir)\.listFiles\s*\(""").containsMatchIn(code)) add("listFiles")
+                    if (Regex("""(?<!SafeDir)\.listFiles\s*\{""").containsMatchIn(code)) add("listFiles{}")
+                    if (Regex("""(?<!SafeDir)\.list\s*\(\s*\)""").containsMatchIn(code)) add("list")
+                    if (Regex("""(?<!SafeDir)\.walkTopDown\s*\(""").containsMatchIn(code)) add("walkTopDown")
+                    if (Regex("""(?<!SafeDir)\.walkBottomUp\s*\(""").containsMatchIn(code)) add("walkBottomUp")
                 }
-                if (hits.isNotEmpty()) {
-                    offenders.add(
-                        "${file.relativeTo(sources).path}:${index + 1} uses ${hits.joinToString(",")} - ${code.take(90)}"
-                    )
-                }
+                if (hits.isEmpty()) return@forEachIndexed
+                val exempt = allowed.firstOrNull { (needle, _) -> code.contains(needle) }
+                if (exempt != null) return@forEachIndexed
+                offenders.add(
+                    "${file.relativeTo(sources).path}:${index + 1} uses ${hits.joinToString(",")} - ${code.take(90)}"
+                )
             }
         }
 

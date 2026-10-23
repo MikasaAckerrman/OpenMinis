@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.io.File
 
@@ -26,22 +27,36 @@ class SafeDirTest {
      * The name that killed the app on Android 15: Cyrillic together with a
      * character outside the BMP. `File.list()` aborts the process on it
      * because the platform hands the raw bytes to `NewStringUTF`.
+     *
+     * The exact round-trip is only asserted when the JVM can represent the
+     * name on disk. Under a C locale `sun.jnu.encoding` is ASCII, the file is
+     * created with substituted bytes and the comparison would fail for a
+     * reason that has nothing to do with SafeDir. What always has to hold is
+     * that the listing completes and reports the entry.
      */
     @Test
     fun listsNameWithAstralCharacter() {
+        val encoding = System.getProperty("sun.jnu.encoding") ?: ""
+        val name = "2_Checkout (проверка \uD83D\uDE80 api_ root-).txt"
         val dir = tmpDir("astral")
         try {
-            val name = "2_Checkout (проверка \uD83D\uDE80 api_ root-).txt"
             val f = File(dir, name)
             assertTrue("precondition: file created", f.createNewFile())
 
             val names = SafeDir.listNames(dir)
 
             assertNotNull("listing must succeed, not abort", names)
-            assertEquals("the astral name must survive intact", listOf(name), names)
+            assertEquals("exactly one entry", 1, names!!.size)
+
             val files = SafeDir.listFiles(dir)
             assertNotNull(files)
             assertEquals(1, files!!.size)
+
+            assumeTrue(
+                "sun.jnu.encoding=$encoding cannot round-trip the name",
+                encoding.lowercase().contains("utf")
+            )
+            assertEquals("the astral name must survive intact", name, names[0])
             assertEquals(name, files[0].name)
             assertTrue("the entry must still resolve", files[0].exists())
         } finally {
