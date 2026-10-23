@@ -793,8 +793,13 @@ class ProviderRepository(private val context: Context) {
      *     `removeAll`/`addAll` sequence; and
      *  2. an **index loop instead of an iterator** — `find {}` allocates an
      *     `Itr` whose `checkForComodification` is precisely what threw. An
-     *     index loop reads `list[i]` directly, which cannot CME, so it
-     *     stays correct even if a future caller forgets the lock.
+     *     index loop reads `list[i]` directly, which cannot CME.
+     *
+     * `getOrNull` rather than `list[i]`: `list.indices` snapshots the range,
+     * so a shrink between that read and the access still throws
+     * `IndexOutOfBoundsException` — caught by the regression test
+     * `ProviderConfigConcurrentLookupTest` on its first CI run. Trading a CME
+     * for an IOOBE would have been no fix at all.
      *
      * Zero-allocation by design: these run on every `combine` emission, so
      * a defensive `toList()` copy per call would trade a crash for churn.
@@ -802,7 +807,7 @@ class ProviderRepository(private val context: Context) {
     fun entryById(entryId: String): ModelEntry? = synchronized(configLock) {
         val list = _config.value.modelEntries
         for (i in list.indices) {
-            val e = list[i]
+            val e = list.getOrNull(i) ?: break
             if (e.id == entryId) return@synchronized e
         }
         null
@@ -811,7 +816,7 @@ class ProviderRepository(private val context: Context) {
     fun instanceById(instanceId: String): ProviderInstance? = synchronized(configLock) {
         val list = _config.value.instances
         for (i in list.indices) {
-            val inst = list[i]
+            val inst = list.getOrNull(i) ?: break
             if (inst.id == instanceId) return@synchronized inst
         }
         null
@@ -820,7 +825,7 @@ class ProviderRepository(private val context: Context) {
     fun groupById(groupId: String): ModelGroup? = synchronized(configLock) {
         val list = _config.value.modelGroups
         for (i in list.indices) {
-            val g = list[i]
+            val g = list.getOrNull(i) ?: break
             if (g.id == groupId) return@synchronized g
         }
         null
