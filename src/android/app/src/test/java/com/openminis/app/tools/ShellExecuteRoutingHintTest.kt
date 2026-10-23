@@ -23,6 +23,10 @@ class ShellExecuteRoutingHintTest {
     private val description: String =
         com.openminis.app.tools.AgentTools.shellExecuteDefinition().description
 
+    private val withoutNativeTools: String =
+        com.openminis.app.tools.AgentTools.shellExecuteDefinition(nativeSearchAvailable = false)
+            .description
+
     @Test
     fun descriptionPointsAgentsAtTheNativeSearchTools() {
         assertTrue(
@@ -59,6 +63,25 @@ class ShellExecuteRoutingHintTest {
         assertTrue(
             "shell_execute lost its purpose statement",
             description.contains("Alpine Linux via PRoot"),
+        )
+    }
+
+    @Test
+    fun hintIsAbsentWhenTheNativeToolsAreNotRegistered() {
+        // A description that names a tool the model cannot call costs a
+        // turn on an unknown-tool error, so the hint must disappear when the
+        // allowlist excludes native_search / native_glob.
+        assertTrue(
+            "the hint still names native_search although it is unavailable",
+            !withoutNativeTools.contains("native_search"),
+        )
+        assertTrue(
+            "the hint still names native_glob although it is unavailable",
+            !withoutNativeTools.contains("native_glob"),
+        )
+        assertTrue(
+            "the base description must survive the hint being removed",
+            withoutNativeTools.contains("Alpine Linux via PRoot"),
         )
     }
 }

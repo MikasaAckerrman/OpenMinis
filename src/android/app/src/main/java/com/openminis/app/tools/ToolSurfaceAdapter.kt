@@ -60,7 +60,17 @@ object ToolSurfaceAdapter {
         }
 
         return ToolRegistry().apply {
-            register(this, "shell_execute", AgentTools.shellExecuteDefinition())
+            // [T-ptrace-routing] The shell description points the model at
+            // the native search tools, so it must only claim them when they
+            // are actually registered below - an explicit allowlist can
+            // exclude them, and a description naming an unavailable tool
+            // costs the agent a turn on an unknown-tool error.
+            val nativeSearchAvailable = SearchTools.definitions().any { permitted(it.name) }
+            register(
+                this,
+                "shell_execute",
+                AgentTools.shellExecuteDefinition(nativeSearchAvailable),
+            )
             register(this, FileReadTool.NAME, FileReadTool.definition())
             register(this, FileWriteTool.NAME, FileWriteTool.definition())
             register(this, FileEditTool.NAME, FileEditTool.definition())

@@ -175,7 +175,13 @@ object AgentTools {
         fun permitted(name: String): Boolean = allow == null || name in allow
 
         val tools = buildList {
-            if (permitted("shell_execute")) add(shellExecuteDefinition())
+            // [T-ptrace-routing] Same rule as the registry path: the hint
+            // may only name the native search tools when they are permitted.
+            val nativeSearchAvailable =
+                com.openminis.app.tools.SearchTools.definitions().any { permitted(it.name) }
+            if (permitted("shell_execute")) {
+                add(shellExecuteDefinition(nativeSearchAvailable))
+            }
             if (permitted(FileReadTool.NAME)) add(FileReadTool.definition())
             if (permitted(FileWriteTool.NAME)) add(FileWriteTool.definition())
             if (permitted(FileEditTool.NAME)) add(FileEditTool.definition())
@@ -311,21 +317,35 @@ object AgentTools {
         }
     }
 
-    // Aligned with iOS AIChatViewModel.swift:4982-4993
-    internal fun shellExecuteDefinition(): AgentToolDefinition = AgentToolDefinition(
+    /**
+     * Definition of the shell tool.
+     *
+     * [nativeSearchAvailable] must be true ONLY when native_search and
+     * native_glob are actually registered in the same schema. The routing
+     * hint names those tools, and a description that points at tools the
+     * model cannot call is worse than no hint at all: the agent would try
+     * the call and burn a turn on an unknown-tool error. The allowlist gate
+     * can exclude them (an explicit allowlist that lists shell_execute but
+     * not the search tools), so the hint is built at runtime.
+     */
+    internal fun shellExecuteDefinition(nativeSearchAvailable: Boolean = true): AgentToolDefinition = AgentToolDefinition(
         name = "shell_execute",
         description = "Execute a command in an isolated Linux process (Alpine Linux via PRoot). " +
             "The command runs via /bin/sh -c with stdout and stderr merged. " +
             "Each invocation spawns a fresh process — there is no shared terminal session. " +
             "Default timeout is 15 minutes. " +
-            "[T-ptrace-routing] EVERY syscall this command makes is intercepted by the " +
-            "PRoot ptrace layer, so wide tree walks are very slow and heat up the phone. " +
-            "Use the dedicated tools instead: native_search for content search " +
-            "(replaces `grep -r`, `grep -R`, `grep -rn`) and native_glob for file listing " +
-            "(replaces `find`, `find ... -name`, `ls -R`). They run the bundled ripgrep " +
-            "natively, resolve guest paths to host mounts, and bypass the shell entirely. " +
-            "Reserve shell_execute for things they cannot do: builds, package installs, " +
-            "scripts, git, and commands whose behaviour you need verbatim.",
+            if (nativeSearchAvailable) {
+                "[T-ptrace-routing] EVERY syscall this command makes is intercepted by the " +
+                    "PRoot ptrace layer, so wide tree walks are very slow and heat up the phone. " +
+                    "Use the dedicated tools instead: native_search for content search " +
+                    "(replaces `grep -r`, `grep -R`, `grep -rn`) and native_glob for file listing " +
+                    "(replaces `find`, `find ... -name`, `ls -R`). They run the bundled ripgrep " +
+                    "natively, resolve guest paths to host mounts, and bypass the shell entirely. " +
+                    "Reserve shell_execute for things they cannot do: builds, package installs, " +
+                    "scripts, git, and commands whose behaviour you need verbatim."
+            } else {
+                ""
+            },
         parameters = mapOf(
             "tool_title" to AgentToolParam("string", "A concise 5-10 word summary of what this tool call does, shown to the user (e.g. 'Install Python data analysis packages', 'List files in home directory'). Use the same language as the user."),
             "command" to AgentToolParam("string", "The shell command to execute. Supports multi-line commands directly — no special escaping needed. Keep under 1000 chars; for longer scripts, write to a file with file_write first, then run it."),
