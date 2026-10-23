@@ -195,10 +195,14 @@ class SafeDirTest {
             )
 
             // Depth 0 alone must be just the root: a limit of 0 means "do not
-            // descend at all", not "one level".
+            // descend at all", not "one level". Compared as File rather than
+            // through relativeTo().path, which leaves the empty-path case to
+            // be inferred.
+            val onlyRoot = SafeDir.walk(dir, 0).toList()
             assertEquals(
-                listOf(""),
-                SafeDir.walk(dir, 0).map { it.relativeTo(dir).path },
+                "depth 0 must yield the root alone, got ${onlyRoot.map { it.path }}",
+                listOf(dir),
+                onlyRoot,
             )
         } finally {
             dir.deleteRecursively()
