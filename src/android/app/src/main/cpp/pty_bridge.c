@@ -18,6 +18,67 @@
 #include <stdlib.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <stdint.h>
+
+// Convert a jstring to a freshly malloc'd standard-UTF-8 string.
+//
+// [T-pty-utf8] GetStringUTFChars would hand back Modified UTF-8, in which a
+// character outside the BMP is a surrogate pair written as two 3-byte
+// sequences. execve wants standard UTF-8, where the same character is one
+// 4-byte sequence, so an emoji in a command, an argument, an environment
+// variable or a working directory reached the shell as three invalid bytes.
+// Walking the UTF-16 units ourselves produces the encoding execve actually
+// expects. Returns NULL only on allocation failure; an empty string is a
+// legitimate result and is returned as "".
+//
+// Caller frees with free(), not ReleaseStringUTFChars.
+static char *jstring_to_utf8(JNIEnv *env, jstring s) {
+    if (s == NULL) return strdup("");
+    const jsize len = (*env)->GetStringLength(env, s);
+    if (len <= 0) return strdup("");
+    const jchar *units = (*env)->GetStringChars(env, s, NULL);
+    if (units == NULL) return NULL;
+    // At most 3 bytes per UTF-16 unit: BMP characters encode to three, and a
+    // surrogate pair consumes two units for four bytes.
+    char *out = (char *) malloc((size_t) len * 3 + 4);
+    if (out == NULL) {
+        (*env)->ReleaseStringChars(env, s, units);
+        return NULL;
+    }
+    size_t o = 0;
+    for (jsize i = 0; i < len; i++) {
+        uint32_t cp = units[i];
+        if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < len) {
+            const uint32_t low = units[i + 1];
+            if (low >= 0xDC00 && low <= 0xDFFF) {
+                cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
+                i++;
+            } else {
+                cp = 0xFFFD;  // high surrogate with no low surrogate after it
+            }
+        } else if (cp >= 0xD800 && cp <= 0xDFFF) {
+            cp = 0xFFFD;      // stray low surrogate
+        }
+        if (cp <= 0x7F) {
+            out[o++] = (char) cp;
+        } else if (cp <= 0x7FF) {
+            out[o++] = (char) (0xC0 | (cp >> 6));
+            out[o++] = (char) (0x80 | (cp & 0x3F));
+        } else if (cp <= 0xFFFF) {
+            out[o++] = (char) (0xE0 | (cp >> 12));
+            out[o++] = (char) (0x80 | ((cp >> 6) & 0x3F));
+            out[o++] = (char) (0x80 | (cp & 0x3F));
+        } else {
+            out[o++] = (char) (0xF0 | (cp >> 18));
+            out[o++] = (char) (0x80 | ((cp >> 12) & 0x3F));
+            out[o++] = (char) (0x80 | ((cp >> 6) & 0x3F));
+            out[o++] = (char) (0x80 | (cp & 0x3F));
+        }
+    }
+    out[o] = '\0';
+    (*env)->ReleaseStringChars(env, s, units);
+    return out;
+}
 #include <android/log.h>
 
 #define LOG_TAG "PtyBridge"
@@ -33,21 +94,20 @@ Java_com_openminis_app_sandbox_PtyBridge_forkExec(
     jstring jCmd, jobjectArray jArgv, jobjectArray jEnvp,
     jstring jCwd, jint cols, jint rows, jintArray outPid)
 {
-    const char *cmd = (*env)->GetStringUTFChars(env, jCmd, NULL);
-    if (!cmd) return -EINVAL;
+    char *cmd = jstring_to_utf8(env, jCmd);
+    if (!cmd) return -ENOMEM;
 
     // Build argv[] — owned strings copied from Java.
     jsize argc = (*env)->GetArrayLength(env, jArgv);
     char **argv = (char **) calloc(argc + 1, sizeof(char *));
     if (!argv) {
-        (*env)->ReleaseStringUTFChars(env, jCmd, cmd);
+        free(cmd);
         return -ENOMEM;
     }
     for (jsize i = 0; i < argc; i++) {
         jstring s = (jstring) (*env)->GetObjectArrayElement(env, jArgv, i);
-        const char *cs = (*env)->GetStringUTFChars(env, s, NULL);
-        argv[i] = strdup(cs ? cs : "");
-        (*env)->ReleaseStringUTFChars(env, s, cs);
+        char *cs = jstring_to_utf8(env, s);
+        argv[i] = cs ? cs : strdup("");
         (*env)->DeleteLocalRef(env, s);
     }
     argv[argc] = NULL;
@@ -58,19 +118,18 @@ Java_com_openminis_app_sandbox_PtyBridge_forkExec(
     if (!envp) {
         for (jsize i = 0; i < argc; i++) free(argv[i]);
         free(argv);
-        (*env)->ReleaseStringUTFChars(env, jCmd, cmd);
+        free(cmd);
         return -ENOMEM;
     }
     for (jsize i = 0; i < envc; i++) {
         jstring s = (jstring) (*env)->GetObjectArrayElement(env, jEnvp, i);
-        const char *cs = (*env)->GetStringUTFChars(env, s, NULL);
-        envp[i] = strdup(cs ? cs : "");
-        (*env)->ReleaseStringUTFChars(env, s, cs);
+        char *cs = jstring_to_utf8(env, s);
+        envp[i] = cs ? cs : strdup("");
         (*env)->DeleteLocalRef(env, s);
     }
     envp[envc] = NULL;
 
-    const char *cwd = jCwd ? (*env)->GetStringUTFChars(env, jCwd, NULL) : NULL;
+    char *cwd = jCwd ? jstring_to_utf8(env, jCwd) : NULL;
 
     // Configure initial window size.
     struct winsize ws;
@@ -111,8 +170,8 @@ Java_com_openminis_app_sandbox_PtyBridge_forkExec(
         free(argv);
         for (jsize i = 0; i < envc; i++) free(envp[i]);
         free(envp);
-        (*env)->ReleaseStringUTFChars(env, jCmd, cmd);
-        if (jCwd && cwd) (*env)->ReleaseStringUTFChars(env, jCwd, cwd);
+        free(cmd);
+        free(cwd);
         return -err;
     }
 
@@ -136,8 +195,8 @@ Java_com_openminis_app_sandbox_PtyBridge_forkExec(
     free(argv);
     for (jsize i = 0; i < envc; i++) free(envp[i]);
     free(envp);
-    (*env)->ReleaseStringUTFChars(env, jCmd, cmd);
-    if (jCwd && cwd) (*env)->ReleaseStringUTFChars(env, jCwd, cwd);
+    free(cmd);
+    free(cwd);
 
     jint pidOut = (jint) pid;
     (*env)->SetIntArrayRegion(env, outPid, 0, 1, &pidOut);
