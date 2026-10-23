@@ -18676,7 +18676,7 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
     private var titleGenerationInFlight = false
     private val TITLE_MAX_ATTEMPTS = 3
 
-    private fun generateSessionTitleIfNeeded() {
+    private suspend fun generateSessionTitleIfNeeded() {
         // [T-android-titlegen-diag-logging] Unified "TitleGen" trail across
         // every path of this function — XIN 40454 reported sessions silently
         // staying "New Chat" and the failure paths were under-logged.
@@ -18897,7 +18897,7 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
      * OAuth-Anthropic Claude-Code-only gate. Falls back to null if no sub is
      * configured — caller uses the primary provider then.
      */
-    private fun resolveTitleProvider(): LLMProvider? {
+    private suspend fun resolveTitleProvider(): LLMProvider? {
         // [T-disabled-provider-via-group-android] Resolve the dedicated
         // title-generation sub-model (first enabled member of defaultSubGroupId).
         // [T-android-regenerate-title-submodel] Shares
@@ -18916,12 +18916,17 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         // cached token would 401 during auto-title-gen and silently drop to the
         // first-message fallback title. A refresh failure is non-fatal: log it
         // and proceed with the stale token so the request's own 401 flows into
-        // the existing error/fallback handling. runBlocking is safe here — this
-        // is only reached from the suspend agent loop on a background thread.
+        // the existing error/fallback handling.
+        //
+        // This is awaited rather than wrapped in runBlocking. The refresh is a
+        // real network call, and blocking a thread on it is only safe as long
+        // as every caller happens to be on a background dispatcher - an
+        // assumption that is invisible until someone adds a Main-dispatched
+        // call site and the UI freezes for the length of the HTTP timeout.
         if (instance.credentialType == com.openminis.app.data.model.ProviderCredential.oauth) {
             try {
                 val manager = com.openminis.app.auth.OAuthManager.forInstance(context, instance)
-                val freshToken = kotlinx.coroutines.runBlocking { manager?.validAccessToken() }
+                val freshToken = manager?.validAccessToken()
                 if (freshToken != null && freshToken != apiKey) {
                     providerRepository.saveApiKey(instance.id, freshToken)
                     apiKey = freshToken

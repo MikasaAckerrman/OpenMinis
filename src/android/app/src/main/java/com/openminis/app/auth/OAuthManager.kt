@@ -4,8 +4,10 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.util.Log
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -123,6 +125,19 @@ abstract class OAuthManager(
     private var currentState: String? = null
     private var callbackServer: OAuthCallbackServer? = null
 
+    /**
+     * The token exchange started by the callback server, if one is running.
+     *
+     * It used to be launched on `GlobalScope`, which is a child of nothing:
+     * signing out cleared the stored tokens but left the exchange running, so
+     * a response that arrived afterwards wrote the tokens straight back and
+     * the provider ended up authenticated while the UI said signed out. The
+     * handle is kept so the work can actually be cancelled.
+     */
+    private var pendingExchange: Job? = null
+
+    private val exchangeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     open fun buildAuthorizationUrl(): String {
         val (_, challenge) = generateAndSavePKCE()
         currentState = generateAndSaveState()
@@ -145,7 +160,8 @@ abstract class OAuthManager(
                 onComplete(false)
                 return@OAuthCallbackServer
             }
-            kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
+            pendingExchange?.cancel()
+            pendingExchange = exchangeScope.launch {
                 val success = exchangeCode(code)
                 withContext(Dispatchers.Main) { onComplete(success) }
             }
@@ -274,6 +290,16 @@ abstract class OAuthManager(
     }
 
     fun logout() {
+        // Signing out has to end the login that may still be in flight.
+        // Without stopping the server its port stays bound, and a redirect
+        // already on its way could still complete the exchange and write the
+        // tokens back after they were cleared.
+        callbackServer?.stop()
+        callbackServer = null
+        pendingExchange?.cancel()
+        pendingExchange = null
+        codeVerifier = null
+        currentState = null
         getEncryptedPrefs().edit()
             .remove("oauth_tokens_$instanceId")
             .remove("oauth_${KEY_MANUAL_BEARER}_$instanceId")

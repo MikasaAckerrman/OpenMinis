@@ -7,8 +7,10 @@ import androidx.browser.customtabs.CustomTabsIntent
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -525,6 +527,19 @@ class XAIOAuthManager(context: Context, instanceId: String) : OAuthManager(conte
      */
     private var dismissalObserver: DefaultLifecycleObserver? = null
 
+    /**
+     * Scope for the dismissal timer.
+     *
+     * `Dispatchers.Default` on purpose: the timer body calls `server.stop()`,
+     * which closes a socket and joins its worker. The previous
+     * `GlobalScope.launch` with no dispatcher also ran there, and moving it to
+     * the main thread would put that work on the UI thread.
+     */
+    private val dismissalScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /** The pending dismissal timer, so a new attempt replaces the old one. */
+    private var pendingDismissal: Job? = null
+
     private fun armDismissalDetector() {
         disarmDismissalDetector()
         val observer = object : DefaultLifecycleObserver {
@@ -542,10 +557,16 @@ class XAIOAuthManager(context: Context, instanceId: String) : OAuthManager(conte
 
             override fun onResume(owner: LifecycleOwner) {
                 if (!sawBackgrounded) return
-                // Give the loopback callback up to 1.5s to land —
-                // covers the race where xAI's redirect arrives a beat
-                // after the Custom Tab dismisses.
-                GlobalScope.launch {
+                // Only one dismissal timer may be pending. onResume can fire
+                // again within the 1.5s window - the user bouncing back to
+                // the app would otherwise leave two timers alive, and the
+                // newer one would cut the grace period short and stop the
+                // server while the redirect was still in flight.
+                pendingDismissal?.cancel()
+                pendingDismissal = dismissalScope.launch {
+                    // Give the loopback callback up to 1.5s to land —
+                    // covers the race where xAI's redirect arrives a beat
+                    // after the Custom Tab dismisses.
                     delay(1500)
                     val server = loginCallbackServer ?: return@launch
                     Log.w(TAG, "App resumed without OAuth callback — treating as user dismissal, stopping server")
@@ -565,6 +586,10 @@ class XAIOAuthManager(context: Context, instanceId: String) : OAuthManager(conte
     }
 
     private fun disarmDismissalDetector() {
+        // A timer armed by a previous attempt must not outlive it: it would
+        // stop the server belonging to the next login.
+        pendingDismissal?.cancel()
+        pendingDismissal = null
         val observer = dismissalObserver ?: return
         dismissalObserver = null
         try {
