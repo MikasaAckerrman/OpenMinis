@@ -420,10 +420,13 @@ class DebugRPCHandler(private val context: Context) {
                         // SafeDir, not File.listFiles: the platform listing
                         // aborts the process on a file name with a character
                         // outside the BMP, and the source guard test enforces
-                        // that here.
-                        com.openminis.app.util.SafeDir
-                            .listFiles(logs) { f -> f.name.startsWith("stall-") }
-                            ?.sumOf { it.length() } ?: 0L
+                        // that here. The call stays on one line because the
+                        // guard's pattern looks for "SafeDir" immediately
+                        // before ".listFiles".
+                        val stallFiles = com.openminis.app.util.SafeDir.listFiles(logs) { f ->
+                            f.name.startsWith("stall-")
+                        }
+                        stallFiles?.sumOf { it.length() } ?: 0L
                     }.getOrDefault(-1L),
                 )
             })
