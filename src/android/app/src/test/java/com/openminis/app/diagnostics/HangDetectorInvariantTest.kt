@@ -39,7 +39,7 @@ class HangDetectorInvariantTest {
 
         assertTrue(
             "a healthy main thread produces a gap of at least the heartbeat " +
-                "interval ($intervalms), so the threshold ($thresholdms) must be " +
+                "interval (${interval}ms), so the threshold (${threshold}ms) must be " +
                 "above it or every heartbeat is reported as a hang",
             threshold > interval,
         )
@@ -55,8 +55,8 @@ class HangDetectorInvariantTest {
         // much keeps a healthy main thread from ever tripping the detector.
         val pollGranularity = 500L
         assertTrue(
-            "threshold ($thresholdms) must exceed the heartbeat interval " +
-                "($intervalms) plus the watchdog poll granularity " +
+            "threshold (${threshold}ms) must exceed the heartbeat interval " +
+                "(${interval}ms) plus the watchdog poll granularity " +
                 "(${pollGranularity}ms), otherwise scheduling jitter alone " +
                 "reports a hang",
             threshold >= interval + pollGranularity,
