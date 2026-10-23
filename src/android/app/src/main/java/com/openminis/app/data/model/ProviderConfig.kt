@@ -309,3 +309,33 @@ data class ProviderConfig(
     // and avoids double-storing the same data.
     @kotlinx.serialization.Transient val agentGraphs: MutableList<AgentGraph> = mutableListOf(),
 )
+
+/**
+ * A detached copy whose lists no longer alias this one's.
+ *
+ * [T-config-cme-published-mutation] The published config must never be
+ * mutated in place: readers hold a reference to it and iterate its lists, and
+ * a writer that adds to one between their `find` and their `next` throws
+ * ConcurrentModificationException (crash-2026-10-22_21-24-14.log). Writers
+ * take a copy, change it, and republish it.
+ *
+ * The copy is deep where it has to be. `modelGroups` holds ModelGroup elements
+ * whose own `memberEntryIds` is mutable, so a shallow copy would leave the
+ * nested list published and `group.memberEntryIds.removeAll {}` would keep
+ * corrupting it - which is exactly what happened before this existed.
+ *
+ * Scalars are `var` and are copied by value, so changing one on the detached
+ * copy behaves the same as changing it on the original.
+ *
+ * Every list here is a fresh ArrayList, so replacing an element
+ * (`modelGroups[i] = ...`) edits the copy rather than the published one.
+ */
+fun ProviderConfig.detachedMutable(): ProviderConfig = copy(
+    instances = instances.toMutableList(),
+    modelEntries = modelEntries.toMutableList(),
+    modelGroups = modelGroups
+        .map { group -> group.copy(memberEntryIds = group.memberEntryIds.toMutableList()) }
+        .toMutableList(),
+    agentLoopModelEntryIds = agentLoopModelEntryIds.toMutableList(),
+    agentLoopGroupIds = agentLoopGroupIds.toMutableList(),
+)

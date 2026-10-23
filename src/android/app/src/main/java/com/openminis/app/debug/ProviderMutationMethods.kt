@@ -84,7 +84,7 @@ internal object ProviderMutationMethods {
         // Inline copy of repo.addInstance with the seedBuiltInModels switch —
         // we want to support both "create empty for custom-base endpoints"
         // and the standard "seed with built-ins" path.
-        val cfg = repo.config.value
+        val cfg = repo.mutableConfig()
         cfg.instances.add(instance)
         if (seedBuiltInModels) {
             for (m in instance.providerType.builtInModels) {
@@ -277,7 +277,7 @@ internal object ProviderMutationMethods {
     }
 
     private fun instanceToJson(repo: ProviderRepository, inst: ProviderInstance): JSONObject {
-        val cfg = repo.config.value
+        val cfg = repo.mutableConfig()
         val entryCount = cfg.modelEntries.count { it.providerInstanceId == inst.id }
         return JSONObject().apply {
             put("id", inst.id)
@@ -347,7 +347,7 @@ internal object ProviderMutationMethods {
         val entryId = params.optString("entryId", "").ifEmpty {
             throw RPCException(-32602, "Missing 'entryId' param")
         }
-        val cfg = repo.config.value
+        val cfg = repo.mutableConfig()
         val current = cfg.modelEntries.firstOrNull { it.id == entryId }
             ?: throw RPCException(-32602, "Entry not found: $entryId")
 
@@ -388,7 +388,7 @@ internal object ProviderMutationMethods {
         if (!params.optBoolean("confirm", false)) {
             throw RPCException(-32602, "Pass confirm=true to delete an entry")
         }
-        val current = repo.config.value.modelEntries.firstOrNull { it.id == entryId }
+        val current = repo.mutableConfig().modelEntries.firstOrNull { it.id == entryId }
             ?: throw RPCException(-32602, "Entry not found: $entryId")
         if (!current.isCustom) {
             throw RPCException(-32602, "Built-in entries can't be deleted — set isHidden=true via provider.models.update instead")
@@ -434,7 +434,7 @@ internal object ProviderMutationMethods {
         }
         if (!params.has("inLoop")) throw RPCException(-32602, "Missing 'inLoop' param")
         val want = params.optBoolean("inLoop", false)
-        val cfg = repo.config.value
+        val cfg = repo.mutableConfig()
         if (cfg.modelEntries.none { it.id == entryId }) {
             throw RPCException(-32602, "Entry not found: $entryId")
         }
@@ -479,7 +479,7 @@ internal object ProviderMutationMethods {
         val membersRaw = params.optJSONArray("memberEntryIds")
         val members = mutableListOf<String>()
         if (membersRaw != null) {
-            val knownEntryIds = repo.config.value.modelEntries.map { it.id }.toSet()
+            val knownEntryIds = repo.mutableConfig().modelEntries.map { it.id }.toSet()
             for (i in 0 until membersRaw.length()) {
                 val id = membersRaw.optString(i)
                 if (id.isNotEmpty() && id in knownEntryIds) members.add(id)
@@ -513,7 +513,7 @@ internal object ProviderMutationMethods {
         }
         if (params.has("memberEntryIds")) {
             val arr = params.optJSONArray("memberEntryIds") ?: JSONArray()
-            val knownIds = repo.config.value.modelEntries.map { it.id }.toSet()
+            val knownIds = repo.mutableConfig().modelEntries.map { it.id }.toSet()
             current.memberEntryIds.clear()
             for (i in 0 until arr.length()) {
                 val mid = arr.optString(i)
@@ -536,7 +536,7 @@ internal object ProviderMutationMethods {
         }
         val current = repo.group(id)
             ?: throw RPCException(-32602, "Group not found: $id")
-        val wasDefault = repo.config.value.defaultPrimaryGroupId == id
+        val wasDefault = repo.mutableConfig().defaultPrimaryGroupId == id
         repo.removeGroup(id)
         return JSONObject().apply {
             put("groupId", id)
@@ -564,7 +564,7 @@ internal object ProviderMutationMethods {
         if (!params.has("inLoop")) throw RPCException(-32602, "Missing 'inLoop' param")
         val want = params.optBoolean("inLoop", false)
         if (repo.group(id) == null) throw RPCException(-32602, "Group not found: $id")
-        val current = repo.config.value.agentLoopGroupIds.toMutableList()
+        val current = repo.mutableConfig().agentLoopGroupIds.toMutableList()
         current.removeAll { it == id }
         if (want) current.add(id)
         repo.setAgentLoopGroupIds(current)
@@ -585,7 +585,7 @@ internal object ProviderMutationMethods {
     }
 
     private fun groupToJson(repo: ProviderRepository, group: ModelGroup): JSONObject {
-        val cfg = repo.config.value
+        val cfg = repo.mutableConfig()
         return JSONObject().apply {
             put("id", group.id)
             put("name", group.name)

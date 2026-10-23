@@ -102,10 +102,16 @@ class GroupsCollection(
         repo.config.value.modelGroups.firstOrNull { it.id == id }
 
     private fun mutate(id: String, apply: (ModelGroup) -> Unit) {
-        val g = group(id) ?: throw ConfigError.UnknownPath("groups.$id")
-        // ModelGroup fields used here (name/strategy/fallbackStrategy/
-        // memberEntryIds) are all `var`, so an in-place mutate followed
-        // by updateGroup persists the change.
+        val current = group(id) ?: throw ConfigError.UnknownPath("groups.$id")
+        // [T-config-cme-published-mutation] `group(id)` hands back the
+        // ModelGroup still sitting inside the published config, so applying a
+        // change to its memberEntryIds in place mutated the very list readers
+        // were iterating. Detaching first costs one list copy and makes the
+        // published element untouchable from here.
+        //
+        // ModelGroup's scalar fields are `var`, so an in-place change on the
+        // detached copy still persists through updateGroup as before.
+        val g = current.copy(memberEntryIds = current.memberEntryIds.toMutableList())
         apply(g)
         repo.updateGroup(g)
     }

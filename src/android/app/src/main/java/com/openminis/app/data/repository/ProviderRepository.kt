@@ -12,6 +12,7 @@ import com.openminis.app.data.db.toProviderConfig
 import com.openminis.app.data.db.toSnapshot
 import com.openminis.app.data.model.AgentGraph
 import com.openminis.app.data.model.ImageEndpointMode
+import com.openminis.app.data.model.detachedMutable
 import com.openminis.app.data.model.LLMModel
 import com.openminis.app.data.model.ModelEntry
 import com.openminis.app.data.model.ModelOverrides
@@ -494,7 +495,37 @@ class ProviderRepository(private val context: Context) {
         if (!configLoadComplete.isCompleted) configLoadComplete.complete(Unit)
     }
 
-    private fun saveConfig(config: ProviderConfig) {
+    /**
+ * A detached, fully mutable copy of the current config, for writers.
+ *
+ * [T-config-cme-published-mutation] Writers used to take `_config.value` and
+ * mutate its lists in place, then call [saveConfig]. Between those two lines
+ * the lists being mutated are the very ones a reader is iterating, which is
+ * what produced the ConcurrentModificationException in
+ * crash-2026-10-22_21-24-14.log:
+ *
+ *     at java.util.ArrayList$Itr.checkForComodification(ArrayList.java:1111)
+ *     at ChatViewModel$showEnhancedCacheToggle$1.invokeSuspend(ChatViewModel.kt:2264)
+ *
+ * saveConfig already publishes fresh lists, so the exposure was only that
+ * window - but a window is all a crash needs, and it fires under exactly the
+ * conditions where refreshes overlap UI reads.
+ *
+ * The copy is deep where it has to be: `modelGroups` holds ModelGroup elements
+ * whose own `memberEntryIds` is mutable, so a shallow copy would leave the
+ * nested list published and `group.memberEntryIds.removeAll {}` would keep
+ * corrupting it. Every list here is a fresh ArrayList, so `modelGroups[i] =`
+ * inside the detached copy replaces the element rather than the published one.
+ *
+ * Returns a detached copy even before the first load completes, mirroring
+ * `_config.value`'s own empty default, so a caller that reads too early still
+ * gets a usable object instead of a new failure mode.
+ */
+fun mutableConfig(): ProviderConfig = synchronized(configLock) {
+    _config.value.detachedMutable()
+}
+
+private fun saveConfig(config: ProviderConfig) {
         // [T-android-provider-room-store] Double-write: DB + legacy JSON
         // mirror, both produced inside the same configLock window. The
         // mirror keeps older app builds able to read current config on
@@ -555,7 +586,7 @@ class ProviderRepository(private val context: Context) {
 
     fun addInstance(instance: ProviderInstance) {
         ensureConfigLoaded()
-        val config = _config.value
+        val config = mutableConfig()
         config.instances.add(instance)
         // Seed built-in model entries ONLY when the seed is appropriate for this
         // instance. Mirrors iOS ProviderConfigStore.addInstance:
@@ -627,7 +658,7 @@ class ProviderRepository(private val context: Context) {
      */
     fun ensureVoiceTemplateModels() = synchronized(configLock) {
         ensureConfigLoaded()
-        val config = _config.value
+        val config = mutableConfig()
         var changed = false
         for (instance in config.instances) {
             val tpl = VoiceProviderTemplate.template(instance.customBaseURL) ?: continue
@@ -692,7 +723,7 @@ class ProviderRepository(private val context: Context) {
 
     fun updateInstance(instance: ProviderInstance) {
         ensureConfigLoaded()
-        val config = _config.value
+        val config = mutableConfig()
         val idx = config.instances.indexOfFirst { it.id == instance.id }
         if (idx >= 0) {
             val prior = config.instances[idx]
@@ -726,7 +757,7 @@ class ProviderRepository(private val context: Context) {
     fun removeInstance(instanceId: String) {
         ensureConfigLoaded()
         invalidateModelCache(instanceId)
-        val config = _config.value
+        val config = mutableConfig()
         val removedEntryIds = config.modelEntries
             .filter { it.providerInstanceId == instanceId }
             .map { it.id }
@@ -762,7 +793,7 @@ class ProviderRepository(private val context: Context) {
      */
     fun setImageEndpointResolved(instanceId: String, endpoint: ImageEndpointMode) {
         ensureConfigLoaded()
-        val config = _config.value
+        val config = mutableConfig()
         val idx = config.instances.indexOfFirst { it.id == instanceId }
         if (idx < 0) return
         if (config.instances[idx].imageEndpointResolved == endpoint) return
@@ -876,7 +907,7 @@ class ProviderRepository(private val context: Context) {
      * from the next provider rather than returning null.
      */
     fun newestProviderNewestTextEntry(): ModelEntry? {
-        val config = _config.value
+        val config = mutableConfig()
         val enabledProviders = config.instances
             .filter { it.isEnabled }
             .sortedByDescending { it.createdAt }
@@ -904,7 +935,7 @@ class ProviderRepository(private val context: Context) {
      * group to a model that can't be instantiated.
      */
     fun enabledMemberEntries(group: ModelGroup): List<ModelEntry> {
-        val config = _config.value
+        val config = mutableConfig()
         val enabledIds = config.instances.filter { it.isEnabled }.map { it.id }.toSet()
         return group.memberEntryIds.mapNotNull { entryId ->
             val entry = config.modelEntries.find { it.id == entryId }
@@ -937,7 +968,7 @@ class ProviderRepository(private val context: Context) {
      * settings UI to dim members that won't be reachable at runtime.
      */
     fun isEntryProviderEnabled(entryId: String): Boolean {
-        val config = _config.value
+        val config = mutableConfig()
         val entry = config.modelEntries.find { it.id == entryId } ?: return false
         val instance = config.instances.find { it.id == entry.providerInstanceId } ?: return false
         return instance.isEnabled
@@ -948,7 +979,7 @@ class ProviderRepository(private val context: Context) {
         // Hot path for concurrent autoRefreshModels coroutines (one per
         // enabled instance) — without this lock, two replaceEntries() calls
         // race on the shared config.modelEntries ArrayList.
-        val config = _config.value
+        val config = mutableConfig()
         val existing = config.modelEntries.filter { it.providerInstanceId == instanceId }
         val existingEntryIds = existing.map { it.id }.toSet()
 
@@ -1058,7 +1089,7 @@ class ProviderRepository(private val context: Context) {
 
     fun addEntry(entry: ModelEntry) {
         ensureConfigLoaded()
-        val config = _config.value
+        val config = mutableConfig()
         if (!entry.isCustom) {
             val exists = config.modelEntries.any {
                 it.providerInstanceId == entry.providerInstanceId && it.baseModel.id == entry.baseModel.id
@@ -1071,7 +1102,7 @@ class ProviderRepository(private val context: Context) {
 
     fun updateEntry(entry: ModelEntry) {
         ensureConfigLoaded()
-        val config = _config.value
+        val config = mutableConfig()
         val idx = config.modelEntries.indexOfFirst { it.id == entry.id }
         if (idx >= 0) {
             config.modelEntries[idx] = entry.copy(userModifiedAt = System.currentTimeMillis())
@@ -1081,7 +1112,7 @@ class ProviderRepository(private val context: Context) {
 
     fun removeEntry(entryId: String) {
         ensureConfigLoaded()
-        val config = _config.value
+        val config = mutableConfig()
         config.modelEntries.removeAll { it.id == entryId }
         config.modelGroups.forEach { group ->
             group.memberEntryIds.removeAll { it == entryId }
@@ -1098,14 +1129,14 @@ class ProviderRepository(private val context: Context) {
 
     fun addGroup(group: ModelGroup) {
         ensureConfigLoaded()
-        val config = _config.value
+        val config = mutableConfig()
         config.modelGroups.add(group)
         saveConfig(config)
     }
 
     fun updateGroup(group: ModelGroup) {
         ensureConfigLoaded()
-        val config = _config.value
+        val config = mutableConfig()
         val idx = config.modelGroups.indexOfFirst { it.id == group.id }
         if (idx >= 0) {
             config.modelGroups[idx] = group
@@ -1115,7 +1146,7 @@ class ProviderRepository(private val context: Context) {
 
     fun removeGroup(groupId: String) {
         ensureConfigLoaded()
-        val config = _config.value
+        val config = mutableConfig()
         config.modelGroups.removeAll { it.id == groupId }
         if (config.defaultPrimaryGroupId == groupId) {
             config.defaultPrimaryGroupId = null
@@ -1136,7 +1167,7 @@ class ProviderRepository(private val context: Context) {
     /** Set the agent-loop-visible entry ID list (individual model entries). */
     fun setAgentLoopEntryIds(ids: List<String>) {
         ensureConfigLoaded()
-        val config = _config.value
+        val config = mutableConfig()
         config.agentLoopModelEntryIds.clear()
         // [T-android-agentloop-dup-key-crash] Dedup at the sink (preserving
         // first-seen order). addAgentLoopEntry guards against dups, but any
@@ -1151,7 +1182,7 @@ class ProviderRepository(private val context: Context) {
     /** Set the agent-loop-visible group ID list. */
     fun setAgentLoopGroupIds(ids: List<String>) {
         ensureConfigLoaded()
-        val config = _config.value
+        val config = mutableConfig()
         config.agentLoopGroupIds.clear()
         // [T-android-agentloop-dup-key-crash] Dedup at the sink (see above) so
         // no write path can persist duplicate group ids → duplicate LazyColumn
@@ -1219,7 +1250,7 @@ class ProviderRepository(private val context: Context) {
      * ProviderConfigStore.resolvedAgentLoopEntries.
      */
     fun resolvedAgentLoopEntries(): List<ModelEntry> {
-        val config = _config.value
+        val config = mutableConfig()
         val enabledIds = config.instances.filter { it.isEnabled }.map { it.id }.toSet()
         val seen = mutableSetOf<String>()
         val out = mutableListOf<ModelEntry>()
@@ -1250,7 +1281,7 @@ class ProviderRepository(private val context: Context) {
     var defaultPrimaryGroupId: String?
         get() = _config.value.defaultPrimaryGroupId
         set(value) {
-            val config = _config.value
+            val config = mutableConfig()
             config.defaultPrimaryGroupId = value
             saveConfig(config)
         }
@@ -1258,7 +1289,7 @@ class ProviderRepository(private val context: Context) {
     var defaultSubGroupId: String?
         get() = _config.value.defaultSubGroupId
         set(value) {
-            val config = _config.value
+            val config = mutableConfig()
             config.defaultSubGroupId = value
             saveConfig(config)
         }
@@ -1269,7 +1300,7 @@ class ProviderRepository(private val context: Context) {
         get() = _config.value.voiceInputGroupId
         set(value) {
             ensureConfigLoaded()
-            val config = _config.value
+            val config = mutableConfig()
             config.voiceInputGroupId = value
             saveConfig(config)
         }
@@ -1278,7 +1309,7 @@ class ProviderRepository(private val context: Context) {
         get() = _config.value.voiceOutputGroupId
         set(value) {
             ensureConfigLoaded()
-            val config = _config.value
+            val config = mutableConfig()
             config.voiceOutputGroupId = value
             saveConfig(config)
         }
@@ -1293,7 +1324,7 @@ class ProviderRepository(private val context: Context) {
      */
     fun ensureDefaultVoiceInputGroup(): String? {
         ensureConfigLoaded()
-        val config = _config.value
+        val config = mutableConfig()
         config.voiceInputGroupId?.let { gid ->
             if (config.modelGroups.any { it.id == gid }) return gid
         }
@@ -1319,7 +1350,7 @@ class ProviderRepository(private val context: Context) {
      */
     fun ensureDefaultVoiceOutputGroup(): String? {
         ensureConfigLoaded()
-        val config = _config.value
+        val config = mutableConfig()
         config.voiceOutputGroupId?.let { gid ->
             if (config.modelGroups.any { it.id == gid }) return gid
         }
@@ -1347,7 +1378,7 @@ class ProviderRepository(private val context: Context) {
         set(value) {
             prefs.edit().putString("voice.input.overrideEntryId", value).apply()
             synchronized(configLock) {
-                val config = _config.value
+                val config = mutableConfig()
                 _config.value = config.copy(revision = config.revision + 1)
             }
         }
@@ -1369,7 +1400,7 @@ class ProviderRepository(private val context: Context) {
 
     fun resolveVoiceInputChoice(): VoiceInputChoice {
         ensureConfigLoaded()
-        val config = _config.value
+        val config = mutableConfig()
 
         fun systemChoice(memberId: String): VoiceInputChoice = VoiceInputChoice(
             systemPreferOffline = memberId.endsWith("/${SystemVoiceIds.SYSTEM_ASR_OFFLINE}"),
@@ -1428,7 +1459,7 @@ class ProviderRepository(private val context: Context) {
      */
     fun resolveVoiceInputCandidates(loadBalanceSeed: Int = 0): List<Pair<ProviderInstance, ModelEntry>> {
         ensureConfigLoaded()
-        val config = _config.value
+        val config = mutableConfig()
 
         fun providerEntry(memberId: String): Pair<ProviderInstance, ModelEntry>? {
             val entry = config.modelEntries.find { it.id == memberId } ?: return null
@@ -1482,7 +1513,7 @@ class ProviderRepository(private val context: Context) {
         set(value) {
             prefs.edit().putString("voice.output.overrideEntryId", value).apply()
             synchronized(configLock) {
-                val config = _config.value
+                val config = mutableConfig()
                 _config.value = config.copy(revision = config.revision + 1)
             }
         }
@@ -1512,7 +1543,7 @@ class ProviderRepository(private val context: Context) {
      */
     fun resolveVoiceOutputChoice(): VoiceOutputChoice {
         ensureConfigLoaded()
-        val config = _config.value
+        val config = mutableConfig()
 
         fun providerEntry(memberId: String): Pair<ProviderInstance, ModelEntry>? {
             val entry = config.modelEntries.find { it.id == memberId } ?: return null
@@ -1579,7 +1610,7 @@ class ProviderRepository(private val context: Context) {
     fun setVoiceShadowDisabled(instanceId: String, disabled: Boolean) {
         prefs.edit().putBoolean("voiceShadowDisabled.$instanceId", disabled).apply()
         // Bump revision so Compose collectors re-read the shadow list.
-        val config = _config.value
+        val config = mutableConfig()
         synchronized(configLock) {
             _config.value = config.copy(revision = config.revision + 1)
         }
@@ -1603,7 +1634,7 @@ class ProviderRepository(private val context: Context) {
      */
     fun shadowVoiceProviders(): List<ShadowVoiceProvider> {
         ensureConfigLoaded()
-        val config = _config.value
+        val config = mutableConfig()
         val candidates = config.instances.filter { inst ->
             inst.isEnabled && hasVoiceModels(inst.id) && !isVoiceShadowDisabled(inst.id) &&
                 com.openminis.app.provider.voice.VoiceProviderFactory.supports(inst, loadApiKey(inst.id))
@@ -2419,7 +2450,7 @@ class ProviderRepository(private val context: Context) {
         graphRepo.saveGraph(graph)
         // Also update in-memory config
         synchronized(configLock) {
-            val config = _config.value
+            val config = mutableConfig()
             val updatedGraphs = config.agentGraphs.toMutableList()
             val idx = updatedGraphs.indexOfFirst { it.id == graph.id }
             if (idx >= 0) updatedGraphs[idx] = graph else updatedGraphs.add(graph)
@@ -2438,7 +2469,7 @@ class ProviderRepository(private val context: Context) {
         graphRepo.saveGraphSync(graph)
         // Also update in-memory config
         synchronized(configLock) {
-            val config = _config.value
+            val config = mutableConfig()
             val updatedGraphs = config.agentGraphs.toMutableList()
             val idx = updatedGraphs.indexOfFirst { it.id == graph.id }
             if (idx >= 0) updatedGraphs[idx] = graph else updatedGraphs.add(graph)
@@ -2463,7 +2494,7 @@ class ProviderRepository(private val context: Context) {
     suspend fun deleteAgentGraph(id: String) {
         graphRepo.deleteGraph(id)
         synchronized(configLock) {
-            val config = _config.value
+            val config = mutableConfig()
             _config.value = config.copy(
                 agentGraphs = config.agentGraphs.filter { it.id != id }.toMutableList(),
                 revision = config.revision + 1,
@@ -2477,7 +2508,7 @@ class ProviderRepository(private val context: Context) {
     fun deleteAgentGraphSync(id: String) {
         graphRepo.deleteGraphSync(id)
         synchronized(configLock) {
-            val config = _config.value
+            val config = mutableConfig()
             _config.value = config.copy(
                 agentGraphs = config.agentGraphs.filter { it.id != id }.toMutableList(),
                 revision = config.revision + 1,
@@ -2562,7 +2593,7 @@ class ProviderRepository(private val context: Context) {
         resolutionLog: ((String) -> Unit)? = null,
     ): ModelEntry? {
         awaitConfigLoaded()
-        val config = _config.value
+        val config = mutableConfig()
 
         // 1. Per-role key (the configured path).
         val keyName = ROLE_TO_KEY[role.lowercase()]
