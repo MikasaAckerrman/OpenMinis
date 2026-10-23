@@ -9,7 +9,7 @@ import com.openminis.app.data.model.ProviderInstance
 import com.openminis.app.data.model.ProviderType
 import com.openminis.app.data.model.detachedMutable
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.atomic.AtomicBoolean
@@ -158,7 +158,7 @@ class ProviderConfigConcurrentLookupTest {
         }
 
         assertEquals(setOf(10, 20), seen)
-        assertNull("a published list is never empty mid-flight", before.modelEntries.firstOrNull())
+        assertNotNull("a published list is never empty mid-flight", before.modelEntries.firstOrNull())
     }
 
     /**
