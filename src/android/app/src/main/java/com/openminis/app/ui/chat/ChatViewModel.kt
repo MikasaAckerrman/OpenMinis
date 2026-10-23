@@ -2260,9 +2260,15 @@ class ChatViewModel(
         kotlinx.coroutines.flow.combine(
             _activeEntryId,
             providerRepository.config,
-        ) { entryId, config ->
-            val entry = entryId?.let { id -> config.modelEntries.find { it.id == id } }
-            val instance = entry?.let { e -> config.instances.find { it.id == e.providerInstanceId } }
+        ) { entryId, _ ->
+            // [T-provider-config-cme] Snapshot-safe lookups; a bare
+            // config.modelEntries.find {} inside a combine callback is what
+            // produced the ConcurrentModificationException captured in
+            // crash-2026-10-22_21-24-14.log.
+            val entry = entryId?.let { providerRepository.entryById(it) }
+            val instance = entry?.let {
+                providerRepository.instanceById(it.providerInstanceId)
+            }
             instance != null &&
                 instance.providerType == com.openminis.app.data.model.ProviderType.anthropic &&
                 instance.customBaseURL.isNullOrBlank()
@@ -2327,9 +2333,13 @@ class ChatViewModel(
         kotlinx.coroutines.flow.combine(
             _activeEntryId,
             providerRepository.config,
-        ) { entryId, config ->
-            val entry = entryId?.let { id -> config.modelEntries.find { it.id == id } }
-            val instance = entry?.let { e -> config.instances.find { it.id == e.providerInstanceId } }
+        ) { entryId, _ ->
+            // [T-provider-config-cme] Same snapshot-safe lookups as
+            // showEnhancedCacheToggle above.
+            val entry = entryId?.let { providerRepository.entryById(it) }
+            val instance = entry?.let {
+                providerRepository.instanceById(it.providerInstanceId)
+            }
             val isCodexOAuth = instance != null &&
                 instance.providerType == com.openminis.app.data.model.ProviderType.openAI &&
                 instance.credentialType == com.openminis.app.data.model.ProviderCredential.oauth &&
@@ -2439,9 +2449,8 @@ class ChatViewModel(
      */
     private val currentModelMaxThinkingLevel: ThinkingLevel
         get() {
-            val entry = _activeEntryId.value?.let { id ->
-                providerRepository.config.value.modelEntries.find { it.id == id }
-            }
+            // [T-provider-config-cme] Snapshot-safe lookup.
+            val entry = _activeEntryId.value?.let { providerRepository.entryById(it) }
             if (entry != null) {
                 return entry.effectiveMaxThinkingLevel
             }
@@ -2489,16 +2498,15 @@ class ChatViewModel(
     private fun effectiveContextWindowFor(model: LLMModel): Int {
         val window = model.contextWindowTokens
         val groupLimit = _selectedGroupId.value
-            ?.let { gid -> providerRepository.config.value.modelGroups
-                .find { it.id == gid }?.contextLimitTokens }
+            ?.let { gid -> providerRepository.groupById(gid)?.contextLimitTokens }
             ?.takeIf { it > 0 }
         return if (groupLimit != null) minOf(window, groupLimit) else window
     }
 
     private fun effectiveContextWindowTokens(): Int? {
-        val config = providerRepository.config.value
+        // [T-provider-config-cme] Snapshot-safe lookup.
         val liveModel = _activeEntryId.value
-            ?.let { id -> config.modelEntries.find { it.id == id }?.model }
+            ?.let { providerRepository.entryById(it)?.model }
             ?: currentModel
             ?: return null
         return effectiveContextWindowFor(liveModel)
@@ -16814,12 +16822,50 @@ class ChatViewModel(
      * if already within bounds. Mirrors iOS AIChatViewModel.resizedImageData.
      */
     private fun resizeJpegToMaxEdge(data: ByteArray, maxEdge: Int): ByteArray? {
-        val bmp = android.graphics.BitmapFactory.decodeByteArray(data, 0, data.size) ?: return null
+        // [T-bitmap-sample] Two-pass decode. `decodeByteArray(data, 0,
+        // data.size)` with no Options decodes the FULL bitmap before a
+        // single pixel is examined — a 4000x3000 JPEG is 48MB ARGB_8888
+        // allocated only to find out that the next line throws it away
+        // (`if (longest <= maxEdge) { bmp.recycle(); return null }`). The
+        // bounds pass costs a header parse, and `inSampleSize` makes the
+        // real decode allocate 1/sample^2 of that.
+        //
+        // `DisplayBitmapLimits.calculateInSampleSize` is the existing,
+        // already-tested helper (same one `PhotosOffloadHandler` and
+        // `decodeFileForDisplay` use) — no new arithmetic to get wrong.
+        val bounds = android.graphics.BitmapFactory.Options().apply {
+            inJustDecodeBounds = true
+        }
+        android.graphics.BitmapFactory.decodeByteArray(data, 0, data.size, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        // Nothing to do at all for an image already within bounds: the old
+        // code decoded it in full to discover exactly this.
+        if (maxOf(bounds.outWidth, bounds.outHeight) <= maxEdge) return null
+
+        val sample = com.openminis.app.ui.DisplayBitmapLimits.calculateInSampleSize(
+            bounds.outWidth, bounds.outHeight, maxEdge,
+        )
+        val options = android.graphics.BitmapFactory.Options().apply {
+            inSampleSize = sample
+            inPreferredConfig = android.graphics.Bitmap.Config.ARGB_8888
+        }
+        val bmp = android.graphics.BitmapFactory.decodeByteArray(
+            data, 0, data.size, options,
+        ) ?: return null
         val longest = maxOf(bmp.width, bmp.height)
-        if (longest <= maxEdge) { bmp.recycle(); return null }
+        if (longest <= 0) { bmp.recycle(); return null }
+        // Sampling alone can undershoot maxEdge (power-of-two steps), and it
+        // never overshoots. Scale down to land on it, never up — an upscale
+        // would invent pixels the source never had.
+        if (longest <= maxEdge) {
+            val out = java.io.ByteArrayOutputStream()
+            bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
+            bmp.recycle()
+            return out.toByteArray()
+        }
         val scale = maxEdge.toFloat() / longest
-        val w = (bmp.width * scale).toInt()
-        val h = (bmp.height * scale).toInt()
+        val w = (bmp.width * scale).toInt().coerceAtLeast(1)
+        val h = (bmp.height * scale).toInt().coerceAtLeast(1)
         val resized = android.graphics.Bitmap.createScaledBitmap(bmp, w, h, true)
         bmp.recycle()
         val out = java.io.ByteArrayOutputStream()
@@ -18191,21 +18237,45 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         maxEdge: Int = 2000,
     ): ByteArray? {
         return try {
-            val original = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size) ?: return null
-            if (original.width <= maxEdge && original.height <= maxEdge) {
-                original.recycle()
-                return null
+            // [T-bitmap-sample] Same two-pass decode as resizeJpegToMaxEdge.
+            // This is the ATTACHMENT path — a single 12MP photo from the
+            // camera decoded here used to allocate ~48MB ARGB_8888 up front
+            // just to decide whether to resize, and the "already small
+            // enough" branch allocated and recycled it for nothing.
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, bounds)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+            if (bounds.outWidth <= maxEdge && bounds.outHeight <= maxEdge) return null
+
+            val sample = com.openminis.app.ui.DisplayBitmapLimits.calculateInSampleSize(
+                bounds.outWidth, bounds.outHeight, maxEdge,
+            )
+            val decodeOptions = BitmapFactory.Options().apply {
+                inSampleSize = sample
+                inPreferredConfig = Bitmap.Config.ARGB_8888
             }
-            val scale = maxEdge.toFloat() / maxOf(original.width, original.height)
-            val w = (original.width * scale).toInt()
-            val h = (original.height * scale).toInt()
-            val scaled = Bitmap.createScaledBitmap(original, w, h, true)
-            val out = ByteArrayOutputStream()
+            val original = BitmapFactory.decodeByteArray(
+                rawBytes, 0, rawBytes.size, decodeOptions,
+            ) ?: return null
+            val longest = maxOf(original.width, original.height)
+            if (longest <= 0) { original.recycle(); return null }
             val format = if (mimeType.contains("png")) Bitmap.CompressFormat.PNG
             else Bitmap.CompressFormat.JPEG
-            scaled.compress(format, 85, out)
-            if (scaled !== original) scaled.recycle()
-            original.recycle()
+            val out = ByteArrayOutputStream()
+            if (longest <= maxEdge) {
+                // Sampling already brought it under the ceiling; scaling up
+                // to exactly maxEdge would invent detail that is not there.
+                original.compress(format, 85, out)
+                original.recycle()
+            } else {
+                val scale = maxEdge.toFloat() / longest
+                val w = (original.width * scale).toInt().coerceAtLeast(1)
+                val h = (original.height * scale).toInt().coerceAtLeast(1)
+                val scaled = Bitmap.createScaledBitmap(original, w, h, true)
+                original.recycle()
+                scaled.compress(format, 85, out)
+                if (scaled !== original) scaled.recycle()
+            }
             out.toByteArray()
         } catch (_: Exception) {
             null

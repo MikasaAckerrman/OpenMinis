@@ -773,6 +773,59 @@ class ProviderRepository(private val context: Context) {
     fun instance(id: String): ProviderInstance? =
         _config.value.instances.find { it.id == id }
 
+    /**
+     * [T-provider-config-cme] Snapshot-safe lookups by id.
+     *
+     * `ProviderConfig` holds **MutableList** fields (`instances`,
+     * `modelEntries`, `modelGroups`) and mutators rewrite them IN PLACE
+     * under [configLock] — `replaceEntries` even calls out the race in a
+     * comment. Readers did not take that lock, so any
+     * `config.modelEntries.find { … }` executed from a coroutine could see
+     * `modCount` change mid-iteration and throw
+     * `ConcurrentModificationException`. That is not hypothetical: a real
+     * device crash log captured it at
+     * `ChatViewModel$showEnhancedCacheToggle$1.invokeSuspend` inside a
+     * `combine(_activeEntryId, config)` block — i.e. it killed the flow,
+     * not merely one call.
+     *
+     * Two things make these safe, and both are needed:
+     *  1. the lock, so a reader cannot interleave with a mutator's
+     *     `removeAll`/`addAll` sequence; and
+     *  2. an **index loop instead of an iterator** — `find {}` allocates an
+     *     `Itr` whose `checkForComodification` is precisely what threw. An
+     *     index loop reads `list[i]` directly, which cannot CME, so it
+     *     stays correct even if a future caller forgets the lock.
+     *
+     * Zero-allocation by design: these run on every `combine` emission, so
+     * a defensive `toList()` copy per call would trade a crash for churn.
+     */
+    fun entryById(entryId: String): ModelEntry? = synchronized(configLock) {
+        val list = _config.value.modelEntries
+        for (i in list.indices) {
+            val e = list[i]
+            if (e.id == entryId) return@synchronized e
+        }
+        null
+    }
+
+    fun instanceById(instanceId: String): ProviderInstance? = synchronized(configLock) {
+        val list = _config.value.instances
+        for (i in list.indices) {
+            val inst = list[i]
+            if (inst.id == instanceId) return@synchronized inst
+        }
+        null
+    }
+
+    fun groupById(groupId: String): ModelGroup? = synchronized(configLock) {
+        val list = _config.value.modelGroups
+        for (i in list.indices) {
+            val g = list[i]
+            if (g.id == groupId) return@synchronized g
+        }
+        null
+    }
+
     fun enabledInstances(providerType: ProviderType): List<ProviderInstance> =
         _config.value.instances.filter { it.providerType == providerType && it.isEnabled }
 

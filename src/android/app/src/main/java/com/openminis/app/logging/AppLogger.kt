@@ -94,6 +94,19 @@ object AppLogger {
     private var enabled: Boolean = false
 
     /**
+     * [T-logging-gate-before-logcat] Whether `log()` forwards to logcat.
+     *
+     * Kept apart from [enabled] (the file switch) so the two costs can be
+     * paid separately: the file is what the user asked for, logcat is what
+     * a developer needs from a debug build. Defaults from the build type —
+     * debug keeps `adb logcat` usable with the file switch off, release
+     * stays silent — and follows [enabled] once the user touches the
+     * toggle, because someone who turned logging ON expects both sinks.
+     */
+    @Volatile
+    private var logcatEnabled: Boolean = com.openminis.app.BuildConfig.DEBUG
+
+    /**
      * Flush policy shared by ALL writers (log(), writeFileLine(),
      * writeLogcatLine()).
      *
@@ -160,6 +173,10 @@ object AppLogger {
 
     fun setEnabled(context: Context, value: Boolean) {
         enabled = value
+        // [T-logging-gate-before-logcat] Turning the switch ON means "I want
+        // diagnostics", which reads as both sinks; turning it OFF must silence
+        // both. Before this, the logcat side ignored the switch entirely.
+        logcatEnabled = value || com.openminis.app.BuildConfig.DEBUG
         context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
             .edit().putBoolean(KEY_ENABLED, value).apply()
         // [T-android-perf-diag-costs-perf] The perf breadcrumb stream rides the
@@ -452,24 +469,46 @@ object AppLogger {
     }
 
     private fun log(level: String, category: String, message: String) {
-        val f = formattersTls.get()!!
+        // [T-logging-gate-before-logcat] The gate used to sit BELOW the
+        // `when (level)` block, so `Log.*` fired on every call while the
+        // user-facing "logging" switch only suppressed the FILE. Evidence
+        // from a real device with `logging_enabled=false`: 61 545 lines
+        // under `Minis.*` tags in logcat (ChatViewModel 30 417,
+        // OkHttpNetTrace 16 099, OpenAIProvider 5 854) — all of them paid
+        // for, and none of them visible to the user who turned logging off.
+        // The string itself is built by the CALLER before this function is
+        // entered, so the real saving at the hot call sites comes from
+        // guarding them with [isDebugEnabled] (see ChatViewModel), but this
+        // gate stops the native write that no caller can avoid.
+        //
+        // `logcatEnabled` is separate from `enabled` on purpose: dropping
+        // logcat output outright would delete the only diagnostics channel
+        // when file logging is off. It defaults to the build type, so a
+        // debug build keeps `adb logcat` usable while a release build stays
+        // silent unless logging is explicitly switched on.
+        if (!enabled && !logcatEnabled) return
 
-        // Also output to logcat
         // [T-logging-hot-path] The tag was rebuilt as "Minis.$category" on
         // every call. ChatViewModel alone issues 265 log calls, several of
         // them per streamed token, so that concatenation was one String per
         // call for the whole session. The categories are code constants, so
         // the map stays bounded.
-        val logcatTag = logcatTags.getOrPut(category) { "Minis.$category" }
-        when (level) {
-            "ERROR" -> Log.e(logcatTag, message)
-            "WARN" -> Log.w(logcatTag, message)
-            "DEBUG" -> Log.d(logcatTag, message)
-            else -> Log.i(logcatTag, message)
+        if (logcatEnabled) {
+            val logcatTag = logcatTags.getOrPut(category) { "Minis.$category" }
+            when (level) {
+                "ERROR" -> Log.e(logcatTag, message)
+                "WARN" -> Log.w(logcatTag, message)
+                "DEBUG" -> Log.d(logcatTag, message)
+                else -> Log.i(logcatTag, message)
+            }
         }
 
         // Write to file (only if enabled)
         if (!enabled) return
+        // [T-logging-hot-path-gate] formattersTls.get() is only needed to
+        // stamp the FILE line, so it is fetched after both gates instead of
+        // before them — one ThreadLocal lookup saved per suppressed call.
+        val f = formattersTls.get()!!
         try {
             // [T-logging-hot-path] The timestamp and the day label are only
             // needed for the FILE line. Building them before the enabled
