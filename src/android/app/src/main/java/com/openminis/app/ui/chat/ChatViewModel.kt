@@ -12963,6 +12963,10 @@ class ChatViewModel(
                 mutableListOf(),
                 assistantId,
                 "",
+                // The turn may belong to a subagent's own session; the
+                // allowlist is registered against that id, not against the
+                // main chat this ViewModel was created for.
+                realSessionId.ifEmpty { sessionId },
             )
             com.openminis.app.engine.EngineAgentLoop.ToolOutcome(res.output, res.success)
         }
@@ -15426,6 +15430,7 @@ class ChatViewModel(
         toolBlocks: MutableList<AssistantBlock>,
         assistantId: String,
         currentText: String,
+        policySessionId: String = sessionId,
     ): ToolExecutionResult {
         // [T-agent-graph] Second line of defence for the per-agent allowlist.
         // The primary barrier is schema-level: a tool absent from
@@ -15433,7 +15438,16 @@ class ChatViewModel(
         // the residual cases — a model replaying a tool name from earlier
         // history, or a provider that ignores the schema — and refuses at the
         // executor instead of silently doing the work.
-        val policy = com.openminis.app.tools.AgentToolPolicyStore.policyFor(sessionId)
+        //
+        // [T-allowlist-session-id] The lookup is keyed on the session that
+        // actually runs the turn, not on this ViewModel's own `sessionId`.
+        // A subagent gets its own session, and the engine path drives that
+        // session through the same ChatViewModel instance, so reading the
+        // field here asked for the MAIN chat's policy: it came back null for
+        // every worker, the `policy != null` guard fell through, and the
+        // allowlist a graph node was restricted to was never checked at
+        // execution time at all. The caller passes the real id.
+        val policy = com.openminis.app.tools.AgentToolPolicyStore.policyFor(policySessionId)
         if (policy != null && !com.openminis.app.tools.AgentTools.isToolPermitted(name, policy)) {
             return ToolExecutionResult(
                 "Tool '$name' is not in this agent's allowlist (${policy.joinToString(", ")}). " +

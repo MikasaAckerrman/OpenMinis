@@ -230,10 +230,20 @@ class EngineAgentLoop(
     ): List<Pair<EngineToolCall, ToolOutcome>> {
         val preflighted = calls.map { call ->
             val def = schema.firstOrNull { it.name == call.name }
-            if (def != null) {
-                val reason = preflightArgs(call, def)
-                if (reason != null) return@map call to ToolOutcome(reason, success = false)
+            if (def == null) {
+                // A tool that is not in this turn's schema has no permission
+                // attached to it, so it cannot be preflighted - and it must not
+                // run either. The schema is the allowlist: dropping the call
+                // here is what keeps a subagent restricted to file_read from
+                // reaching file_write through a name the model invented or
+                // replayed from an earlier turn.
+                return@map call to ToolOutcome(
+                    "Tool not available in this session: ${call.name}",
+                    success = false,
+                )
             }
+            val reason = preflightArgs(call, def)
+            if (reason != null) return@map call to ToolOutcome(reason, success = false)
             call to null
         }
         val toRun = preflighted.mapNotNull { (call, outcome) ->
