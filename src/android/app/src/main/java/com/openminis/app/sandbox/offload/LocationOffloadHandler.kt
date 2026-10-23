@@ -238,13 +238,22 @@ class LocationOffloadHandler(private val context: Context) : NativeOffloadHandle
             val holder = arrayOfNulls<android.location.Location>(1)
             val cancel = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) CancellationSignal() else null
 
+            // [T-loc-offload-executor] Held so it can be closed again.
+            // The executor used to be passed inline, which left no reference
+            // to it and made shutdown impossible: a single-thread
+            // ThreadPoolExecutor keeps its worker thread alive until
+            // shutdown(), so every provider attempt of every location call
+            // left one OS thread behind for the life of the process. Declared
+            // outside the try so the finally below can reach it.
+            var callbackExecutor: java.util.concurrent.ExecutorService? = null
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                     @Suppress("MissingPermission")
+                    val exec = Executors.newSingleThreadExecutor().also { callbackExecutor = it }
                     lm.getCurrentLocation(
                         provider,
                         cancel,
-                        Executors.newSingleThreadExecutor(),
+                        exec,
                     ) { loc ->
                         holder[0] = loc
                         latch.countDown()
@@ -279,6 +288,9 @@ class LocationOffloadHandler(private val context: Context) : NativeOffloadHandle
                 }
             } catch (e: Throwable) {
                 AppLogger.debug(TAG, "fresh fix via '$provider' failed: ${e.message}")
+            } finally {
+                // Runs on the success return, on timeout and on failure alike.
+                callbackExecutor?.shutdown()
             }
         }
         return null
