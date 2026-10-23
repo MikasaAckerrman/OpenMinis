@@ -113,4 +113,57 @@ class LlmDispatchGateTest {
         val ok = withTimeoutOrNull(500) { LlmDispatchGate.withStreamPermit { 42 } }
         assertEquals(42, ok)
     }
+
+    /**
+     * [race-keyed-registry] One bucket per key, even when many threads race
+     * for the very first one.
+     *
+     * The bucket registry used ConcurrentHashMap.getOrPut, which is a
+     * get-then-put and therefore not atomic. Two threads opening a bucket for
+     * a key nobody has used yet could each build their own TokenBucket. The
+     * loser's bucket is thrown away, but it has already consumed its token -
+     * so more requests pass than the configured burst allows.
+     *
+     * The observable is the burst itself: a fresh bucket holds exactly one
+     * token, so exactly one request may pass without waiting. Anything more
+     * means two buckets existed.
+     *
+     * The race is made as wide as possible - every coroutine is released at
+     * the same moment by a latch, and the race is repeated over fresh keys so
+     * that one unlucky run cannot hide the bug.
+     */
+    @Test
+    fun `concurrent first use of a key shares one bucket`() = runBlocking {
+        LlmDispatchGate.resetForTest()
+        LlmDispatchGate.jitterFraction = { 0.0 }
+        var t = 0L
+        LlmDispatchGate.clock = { t }
+        // One token, one second to refill: a fresh bucket admits exactly one
+        // request and then makes everyone else wait.
+        LlmDispatchGate.enablePacing(rpm = 1.0, burst = 1.0)
+
+        repeat(25) { round ->
+            val key = "race-key-$round"
+            val admitted = AtomicInteger(0)
+            val start = java.util.concurrent.CountDownLatch(1)
+            val jobs = (1..16).map {
+                launch(Dispatchers.Default) {
+                    // Everyone waits at the gate, then hits the map at once.
+                    start.await()
+                    val passed = withTimeoutOrNull(400) {
+                        LlmDispatchGate.awaitRateSlot(key)
+                        true
+                    } ?: false
+                    if (passed) admitted.incrementAndGet()
+                }
+            }
+            start.countDown()
+            jobs.forEach { it.join() }
+            assertEquals(
+                "round $round: a fresh burst-1 bucket must admit exactly one request",
+                1,
+                admitted.get(),
+            )
+        }
+    }
 }

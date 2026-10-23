@@ -107,7 +107,18 @@ class BrowserTabPool(private val context: Context) {
      */
     private val tabLocks = ConcurrentHashMap<Int, Mutex>()
 
-    private fun lockForTab(id: Int): Mutex = tabLocks.getOrPut(id) { Mutex() }
+    /**
+     * The lock that serialises work on one tab.
+     *
+     * computeIfAbsent, not getOrPut: ConcurrentHashMap.getOrPut is a
+     * get-then-put, so two threads opening the same tab for the first time
+     * could each install their own Mutex and both proceed. A WebView is not
+     * safe against concurrent use - it throws "WebView methods must be
+     * called on the UI thread" and can corrupt its own state - so the two
+     * callers have to end up on the same lock. computeIfAbsent runs the
+     * factory exactly once per key and publishes that one instance.
+     */
+    private fun lockForTab(id: Int): Mutex = tabLocks.computeIfAbsent(id) { Mutex() }
 
     data class Tab(
         val id: Int,

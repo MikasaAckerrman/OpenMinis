@@ -80,8 +80,22 @@ class ClaudeOAuthManager(context: Context, instanceId: String) : OAuthManager(co
          */
         private val refreshMutexes = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
 
+        /**
+         * computeIfAbsent, not getOrPut.
+         *
+         * ConcurrentHashMap.getOrPut is a get-then-put: two coroutines
+         * discovering an expired token at the same time can each install
+         * their own Mutex for the same instance and both proceed to the
+         * network. That is exactly the burst of parallel refreshes this
+         * mutex exists to prevent - one HTTP refresh per caller, and the
+         * slower one can overwrite the newer token with the older one.
+         *
+         * computeIfAbsent runs the factory exactly once per key and
+         * publishes that one instance, so every caller waits on the same
+         * lock and only one of them hits the network.
+         */
         private fun mutexFor(instanceId: String): Mutex =
-            refreshMutexes.getOrPut(instanceId) { Mutex() }
+            refreshMutexes.computeIfAbsent(instanceId) { Mutex() }
 
         /**
          * Static helper: perform full login flow and save the API key.

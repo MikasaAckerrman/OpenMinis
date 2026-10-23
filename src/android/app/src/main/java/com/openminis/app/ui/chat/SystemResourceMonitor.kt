@@ -72,8 +72,15 @@ class SystemResourceMonitor {
      * number keeps its 2-second cadence, because it is the one that is
      * supposed to look live.
      */
-    @Volatile var cpuSampleCount: Long = 0L
-    @Volatile var memorySampleCount: Long = 0L
+    // AtomicLong, not @Volatile Long: a `count++` on a volatile field is a
+    // read-modify-write and two samplers can lose an increment between them.
+    // The counters are read from the debug surface on another thread, so
+    // the loss would be visible there as a count that does not match the
+    // number of samples that were actually taken.
+    private val cpuSamples = java.util.concurrent.atomic.AtomicLong(0L)
+    private val memorySamples = java.util.concurrent.atomic.AtomicLong(0L)
+    val cpuSampleCount: Long get() = cpuSamples.get()
+    val memorySampleCount: Long get() = memorySamples.get()
     @Volatile var lastCpuSampleMs: Long = 0L
     @Volatile var lastMemorySampleMs: Long = 0L
 
@@ -116,12 +123,12 @@ class SystemResourceMonitor {
         val cpuStart = System.nanoTime()
         sampleCpu()
         lastCpuSampleMs = (System.nanoTime() - cpuStart) / 1_000_000L
-        cpuSampleCount++
+        cpuSamples.incrementAndGet()
         if (!includeMemory) return
         val memStart = System.nanoTime()
         sampleMemory(context)
         lastMemorySampleMs = (System.nanoTime() - memStart) / 1_000_000L
-        memorySampleCount++
+        memorySamples.incrementAndGet()
     }
 
     /**

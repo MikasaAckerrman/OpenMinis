@@ -30,8 +30,21 @@ class GeminiOAuthManager(context: Context, instanceId: String) : OAuthManager(co
         /** Per-instance refresh mutex — serializes concurrent refresh calls. */
         private val refreshMutexes = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
 
+        /**
+         * computeIfAbsent, not getOrPut.
+         *
+         * ConcurrentHashMap.getOrPut is a get-then-put, so two coroutines
+         * refreshing the same instance concurrently could each install their
+         * own Mutex and both proceed to the network - the parallel refresh
+         * burst this mutex exists to prevent, and the older response can
+         * overwrite the newer token.
+         *
+         * computeIfAbsent runs the factory exactly once per key and
+         * publishes that one instance, so every caller waits on the same
+         * lock and only one of them hits the network.
+         */
         private fun mutexFor(instanceId: String): Mutex =
-            refreshMutexes.getOrPut(instanceId) { Mutex() }
+            refreshMutexes.computeIfAbsent(instanceId) { Mutex() }
     }
 
     /**

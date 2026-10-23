@@ -105,8 +105,18 @@ object ExecutionCoordinator {
         timeout: Long = 600_000L,
         lineCallback: ((String) -> Unit)? = null
     ): CommandResult {
-        // ConcurrentHashMap.getOrPut is not atomic, use putIfAbsent pattern
-        val mutex = mutexes.getOrPut(sessionId) { Mutex() }
+        // computeIfAbsent, not getOrPut.
+        //
+        // ConcurrentHashMap.getOrPut is a get-then-put: two threads racing
+        // on a session that has no mutex yet can each install their own
+        // Mutex, and both then hold a different lock for the same session.
+        // That defeats the whole point of this registry - two commands in
+        // one session would run concurrently and interleave their output in
+        // the same PTY.
+        //
+        // computeIfAbsent runs the factory exactly once per key and
+        // publishes the result, so every caller gets the same Mutex.
+        val mutex = mutexes.computeIfAbsent(sessionId) { Mutex() }
 
         return mutex.withLock {
             val startTime = System.currentTimeMillis()

@@ -120,8 +120,22 @@ object LlmDispatchGate {
     @Volatile
     var clock: () -> Long = { System.currentTimeMillis() }
 
+    /**
+     * The token bucket for one throttle key.
+     *
+     * computeIfAbsent, not getOrPut: ConcurrentHashMap.getOrPut is a
+     * get-then-put, so two threads opening a bucket for the same key at the
+     * same time can each build their own TokenBucket. The loser's bucket is
+     * thrown away, but it has already consumed tokens - so the bucket that
+     * survives has under-counted them and the rate limit lets more requests
+     * through than configured, which is the exact opposite of what this gate
+     * is for.
+     *
+     * computeIfAbsent runs the factory exactly once per key and publishes
+     * that one bucket.
+     */
     private fun bucketFor(key: String): TokenBucket =
-        buckets.getOrPut(key) {
+        buckets.computeIfAbsent(key) {
             TokenBucket(
                 capacity = burstCapacity,
                 refillPerSec = defaultRpm / 60.0,
