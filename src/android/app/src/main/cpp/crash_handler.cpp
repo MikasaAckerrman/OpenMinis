@@ -158,10 +158,10 @@ static void write_fault_context(int fd, void* ctx) {
     ucontext_t* uc = static_cast<ucontext_t*>(ctx);
 
 #if defined(__aarch64__)
-    const uintptr_t pc = reinterpret_cast<uintptr_t>(uc->uc_mcontext.pc);
-    const uintptr_t sp = reinterpret_cast<uintptr_t>(uc->uc_mcontext.sp);
-    uintptr_t fp = reinterpret_cast<uintptr_t>(uc->uc_mcontext.regs[29]);
-    const uintptr_t lr = reinterpret_cast<uintptr_t>(uc->uc_mcontext.regs[30]);
+    const uintptr_t pc = static_cast<uintptr_t>(uc->uc_mcontext.pc);
+    const uintptr_t sp = static_cast<uintptr_t>(uc->uc_mcontext.sp);
+    uintptr_t fp = static_cast<uintptr_t>(uc->uc_mcontext.regs[29]);
+    const uintptr_t lr = static_cast<uintptr_t>(uc->uc_mcontext.regs[30]);
 #else
     // The app is arm64-only (abiFilters), so this branch is never built.
     // It is left without register access on purpose: the field names for the
@@ -419,10 +419,10 @@ Java_com_openminis_app_crash_NativeCrashHandler_nativeSelfTest(
     ucontext_t uc;
     memset(&uc, 0, sizeof(uc));
 #if defined(__aarch64__)
-    uc.uc_mcontext.pc = reinterpret_cast<uintptr_t>(&write_fault_context);
-    uc.uc_mcontext.sp = reinterpret_cast<uintptr_t>(&chain[0]) - 256;
-    uc.uc_mcontext.regs[29] = reinterpret_cast<uintptr_t>(&chain[0]);
-    uc.uc_mcontext.regs[30] = reinterpret_cast<uintptr_t>(&pc_module);
+    uc.uc_mcontext.pc = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&write_fault_context));
+    uc.uc_mcontext.sp = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&chain[0]) - 256);
+    uc.uc_mcontext.regs[29] = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&chain[0]));
+    uc.uc_mcontext.regs[30] = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&pc_module));
 #else
     uc.uc_mcontext.__gregs[29] = reinterpret_cast<uintptr_t>(&chain[0]);
     uc.uc_mcontext.__gregs[30] = reinterpret_cast<uintptr_t>(&pc_module);
