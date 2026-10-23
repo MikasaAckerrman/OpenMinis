@@ -56,11 +56,23 @@ object AllocProbe {
      * Measure the allocation rate over [intervalMs].
      *
      * Adds to [snapshot]:
-     *   allocDeltaMB   - bytes allocated during the window (sum of positive steps)
+     *   allocDeltaMB   - bytes allocated during the window
      *   allocRateMBps  - allocDeltaMB per second — THE number to look at
      *   liveSetMinMB   - lowest heap-in-use seen (the post-GC floor)
      *   liveSetMaxMB   - highest heap-in-use seen (the pre-GC peak)
-     *   gcCount        - sawtooth drops observed in the window
+     *   gcCount        - GC cycles observed in the window
+     *   reclaimedMB    - bytes the GC cycles gave back
+     *
+     * Counting rule: ONLY positive steps count as allocation. A GC does not
+     * create allocations, it reclaims memory that was allocated earlier, so
+     * adding the drop to the allocation total double-counted every byte:
+     * the same bytes were counted once when allocated and again when
+     * reclaimed, which inflated the reported rate roughly twofold.
+     *
+     * The measure under-counts in one direction: if the app allocates and
+     * frees inside a single SAMPLE_MS window, the net step can be smaller
+     * than the true traffic. That makes the figure a LOWER bound, which is
+     * the safe direction — it never claims more churn than happened.
      *
      * Call it repeatedly during one long session: a rising liveSetMinMB across
      * calls is a leak; a flat liveSetMinMB with a large allocRateMBps is churn.
@@ -73,6 +85,7 @@ object AllocProbe {
         var min = prev
         var max = prev
         var allocated = 0L
+        var reclaimed = 0L
         var gcCount = 0
 
         while (SystemClock.elapsedRealtime() < deadline) {
@@ -82,8 +95,9 @@ object AllocProbe {
             if (delta > 0) {
                 allocated += delta
             } else if (delta < 0) {
-                // Heap dropped: a GC reclaimed. That drop IS the churn.
-                allocated += -delta
+                // Heap dropped: a GC reclaimed memory allocated earlier.
+                // This is NOT new allocation — it is reported separately.
+                reclaimed += -delta
                 gcCount++
             }
             if (now < min) min = now
@@ -99,5 +113,6 @@ object AllocProbe {
             .put("liveSetMinMB", min / 1048576.0)
             .put("liveSetMaxMB", max / 1048576.0)
             .put("gcCount", gcCount)
+            .put("reclaimedMB", reclaimed / 1048576.0)
     }
 }

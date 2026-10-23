@@ -46,18 +46,23 @@ object DebugMethodRegistry {
     private val DEBUG_ONLY_METHODS: List<MethodSpec> = listOf(
         MethodSpec(
             name = "debug.alloc.measure",
-            description = "DEBUG-only: measure the live allocation RATE over a window and report it with the live set. Separates GC churn (high rate, flat live set) from a leak (live set grows) — the question logcat GC lines cannot answer.",
+            description = "DEBUG-only: measure the live allocation RATE over a window and report it with the live set. Separates GC churn (high rate, flat live set) from a leak (live set grows) — the question logcat GC lines cannot answer. Blocks the calling thread for the whole window (it samples with sleeps), so keep the window short. Only positive heap steps count as allocation; GC drops are reported separately as reclaimedMB, so the rate is a lower bound and never inflated by counting reclaimed bytes twice.",
             params = listOf(
-                ParamSpec("intervalMs", "number", required = false, default = 3000L, description = "Sampling window, clamped to [200, 60000]. Default 3000."),
+                ParamSpec("intervalMs", "number", required = false, default = 3000L, description = "Sampling window in ms, clamped to [300, 120000]. Default 3000."),
             ),
-            returns = "{javaHeapUsedMB, javaHeapMaxMB, nativeHeapMB, allocatedTotalMB, allocDeltaMB, allocRateMBps, liveSetStartMB, liveSetEndMB, liveSetDeltaMB}",
+            // The 'returns' string is a CONTRACT: it must list exactly the
+            // keys AllocProbe.measure() puts into the result. It used to
+            // promise allocatedTotalMB / liveSetStartMB / liveSetEndMB /
+            // liveSetDeltaMB, none of which exist in the output, and claimed
+            // a [200, 60000] clamp while the code clamps to [300, 120000].
+            returns = "{javaHeapUsedMB, javaHeapTotalMB, javaHeapMaxMB, javaHeapFreePct, nativeHeapMB, uptimeMs, intervalMs, allocDeltaMB, allocRateMBps, liveSetMinMB, liveSetMaxMB, gcCount, reclaimedMB}",
             example = ex("intervalMs" to 3000L),
         ),
         MethodSpec(
             name = "debug.alloc.snapshot",
-            description = "DEBUG-only: instantaneous heap counters (java used/max/free%, native heap, process-lifetime allocated bytes). Zero cost, safe to poll.",
+            description = "DEBUG-only: instantaneous heap counters (java used/total/max/free%, native heap, uptime). Zero cost, safe to poll.",
             params = emptyList(),
-            returns = "{javaHeapUsedMB, javaHeapTotalMB, javaHeapMaxMB, javaHeapFreePct, nativeHeapMB, allocatedTotalMB, uptimeMs}",
+            returns = "{javaHeapUsedMB, javaHeapTotalMB, javaHeapMaxMB, javaHeapFreePct, nativeHeapMB, uptimeMs}",
             example = ex(),
         ),
         MethodSpec(

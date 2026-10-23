@@ -138,4 +138,57 @@ class PartialJsonToolArgsTest {
             perCall < 8_192,
         )
     }
+
+    @Test
+    fun differentKeysDoNotLeakIntoEachOther() {
+        // The patterns used to live in a cached field keyed by the last key.
+        // Two callers with different keys could interleave between writing
+        // the key and reading the pattern array, so one of them would search
+        // with the OTHER key's patterns and miss its own value.
+        val title = json("\"tool_title\": \"AAA\"")
+        val path = json("\"file_path\": \"BBB\"")
+        repeat(200) {
+            assertEquals("AAA", PartialJsonToolArgs.extract("tool_title", title))
+            assertEquals("BBB", PartialJsonToolArgs.extract("file_path", path))
+        }
+    }
+
+    @Test
+    fun concurrentCallersWithDifferentKeysStayCorrect() {
+        // Same invariant, but with two threads hammering the shared object:
+        // the result must depend only on (key, json), never on what another
+        // caller did a moment earlier.
+        val title = json("\"tool_title\": \"AAA\"")
+        val path = json("\"file_path\": \"BBB\"")
+        val failure = java.util.concurrent.atomic.AtomicReference<String?>(null)
+        val t1 = Thread {
+            repeat(500) {
+                if (PartialJsonToolArgs.extract("tool_title", title) != "AAA") {
+                    failure.compareAndSet(null, "tool_title")
+                }
+            }
+        }
+        val t2 = Thread {
+            repeat(500) {
+                if (PartialJsonToolArgs.extract("file_path", path) != "BBB") {
+                    failure.compareAndSet(null, "file_path")
+                }
+            }
+        }
+        t1.start()
+        t2.start()
+        t1.join(10_000)
+        t2.join(10_000)
+        assertNull("a caller got the other caller's value: " + failure.get(), failure.get())
+    }
+
+    @Test
+    fun spacedFormIsPreferredAcrossTheWholeDocument() {
+        // The original loop searched the spaced pattern across the entire
+        // document first and only then the tight one, so a document holding
+        // both forms resolves to the spaced occurrence even when the tight
+        // one appears EARLIER in the text.
+        val s = "{\"tool_title\":\"tight\",\"tool_title\": \"spaced\"}"
+        assertEquals("spaced", PartialJsonToolArgs.extract("tool_title", s))
+    }
 }

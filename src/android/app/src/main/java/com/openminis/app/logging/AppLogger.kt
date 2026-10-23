@@ -9,8 +9,10 @@ import java.io.OutputStream
 import java.io.PrintStream
 import java.io.PrintWriter
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
 
 /**
  * Daily-rotating file logger that mirrors iOS LoggingManager.
@@ -37,22 +39,42 @@ object AppLogger {
      * day label twice per line (the day label is cached until the epoch day
      * rolls over, so only the millisecond stamp is rebuilt).
      */
-    internal class Formatters {
-        val day = SimpleDateFormat("yyyy-MM-dd", Locale.US)
-        val stamp = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
+    internal class Formatters(
+        private val zone: TimeZone = TimeZone.getDefault(),
+    ) {
+        val day = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = zone }
+        val stamp = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).apply { timeZone = zone }
+        /**
+         * Local-timezone calendar, used ONLY to derive the day key.
+         *
+         * The day key MUST be a local day: the label is rendered by [day],
+         * which formats in the device's timezone. Keying the cache on
+         * `millis / 86_400_000` (UTC days) invalidated it at UTC midnight,
+         * so between local midnight and UTC midnight the cached label was
+         * YESTERDAY's date — and since getWriter() names the file
+         * `minis-$date.log`, log lines landed in the wrong daily file.
+         * At UTC+4 that window is 4 hours a day; at negative offsets up to
+         * 19 hours.
+         *
+         * The calendar and both formatters share [zone], so the key and the
+         * label can never disagree about which day it is.
+         */
+        private val cal = Calendar.getInstance(zone)
         @Volatile var dayKey: Long = Long.MIN_VALUE
         @Volatile var dayLabel: String = ""
 
         /** Day label for [millis], formatted only when the day changed. */
         fun dayLabel(millis: Long): String {
-            val key = millis / 86_400_000L
+            cal.timeInMillis = millis
+            // year * 1000 + dayOfYear is unique per year (dayOfYear <= 366).
+            val key = cal.get(Calendar.YEAR).toLong() * 1000L +
+                cal.get(Calendar.DAY_OF_YEAR).toLong()
             if (key != dayKey) {
-                dayLabel = synchronized(this) {
+                synchronized(this) {
                     if (key != dayKey) {
                         dayLabel = day.format(Date(millis))
                         dayKey = key
                     }
-                    dayLabel
                 }
             }
             return dayLabel
@@ -70,6 +92,24 @@ object AppLogger {
     private var currentDate: String = ""
     private var writer: PrintWriter? = null
     private var enabled: Boolean = false
+
+    /**
+     * Flush policy shared by ALL writers (log(), writeFileLine(),
+     * writeLogcatLine()).
+     *
+     * `PrintWriter.flush()` is a synchronous I/O round trip on the calling
+     * thread. Doing it per line turned every captured stdout line and every
+     * logcat tail line into one disk round trip — in the 19.10 incident
+     * `System.out` alone produced 14 927 lines, and the logcat tail carries
+     * tens of thousands more. The bounded policy keeps the data on disk
+     * within one flush interval while removing the per-line cost.
+     *
+     * The counter is atomic because the three writers run on different
+     * threads (UI, coroutine dispatchers, the logcat tailer) and a plain
+     * int would lose increments.
+     */
+    private val pendingWrites = java.util.concurrent.atomic.AtomicInteger(0)
+    @Volatile private var lastFlushMs: Long = 0L
 
     // Saved references to the JVM's original stdout/stderr. Captured on the
     // first startCapture() so stopCapture() can restore them — without this we
@@ -164,13 +204,6 @@ object AppLogger {
     }
 
     /**
-     * Append a logcat tail line to today's log file. Lines that AppLogger
-     * itself produced (tag prefix `Minis.`) are skipped — [log] already wrote
-     * them via [writer], so without this filter every `info()` / `warning()`
-     * / etc. call would appear twice in the file (once from [log], once
-     * echoed back through logcat).
-     */
-    /**
      * Tags whose lines AppLogger has ALREADY written to the file itself, so
      * the logcat tail must not write them a second time.
      *
@@ -193,6 +226,15 @@ object AppLogger {
         tag.startsWith("Minis.") || tag == "AppLogger" ||
             tag == "System.out" || tag == "System.err"
 
+    /**
+     * Append a logcat tail line to today's log file.
+     *
+     * Lines AppLogger itself produced are skipped — [log] already wrote them
+     * via the file writer, so without this filter every `info()` /
+     * `warning()` call appeared twice (once from [log], once echoed back
+     * through logcat). The same applies to `System.out` / `System.err`,
+     * which [install] captures into the file itself.
+     */
     private fun writeLogcatLine(rawLine: String) {
         if (!enabled) return
         // logcat -v time format: "MM-DD HH:MM:SS.mmm L/Tag(pid): message"
@@ -205,10 +247,14 @@ object AppLogger {
         }
         try {
             val now = Date()
-            val today = formattersTls.get()!!.dayLabel(now.time)
+            val nowMs = now.time
+            val today = formattersTls.get()!!.dayLabel(nowMs)
             val w = getWriter(today)
             w.println("[LOGCAT] $rawLine")
-            w.flush()
+            // [T-logging-hot-path] Bounded flush, same as the other writers:
+            // the tail carries every framework log line, so a flush per line
+            // was tens of thousands of disk round trips over a long session.
+            maybeFlush(w, nowMs)
         } catch (_: Exception) {
             // Swallow — must not feed back into logcat or we loop forever.
         }
@@ -281,10 +327,13 @@ object AppLogger {
             val nowMs = now.time
             val f = formattersTls.get()!!
             val today = f.dayLabel(nowMs)
-            val timestamp = f.stamp.format(Date(nowMs))
+            val timestamp = f.stamp.format(now)
             val w = getWriter(today)
             w.println("[$timestamp] [$channel] $line")
-            w.flush()
+            // [T-logging-hot-path] Same bounded policy as log(): the
+            // captured-stdout path produced 14 927 lines in the 19.10
+            // incident, and a flush per line was one disk round trip each.
+            maybeFlush(w, nowMs)
         } catch (e: Exception) {
             Log.w(TAG, "Failed to write captured line: ${e.message}")
         }
@@ -334,11 +383,7 @@ object AppLogger {
     }
 
     private fun log(level: String, category: String, message: String) {
-        val now = Date()
         val f = formattersTls.get()!!
-        val nowMs = now.time
-        val today = f.dayLabel(nowMs)
-        val timestamp = f.stamp.format(Date(nowMs))
 
         // Also output to logcat
         val logcatTag = "Minis.$category"
@@ -352,6 +397,15 @@ object AppLogger {
         // Write to file (only if enabled)
         if (!enabled) return
         try {
+            // [T-logging-hot-path] The timestamp and the day label are only
+            // needed for the FILE line. Building them before the enabled
+            // check formatted a timestamp on every log call even when file
+            // logging was off — the default state — and the app issues
+            // thousands of log calls per session.
+            val now = Date()
+            val nowMs = now.time
+            val today = f.dayLabel(nowMs)
+            val timestamp = f.stamp.format(now)
             val w = getWriter(today)
             w.println("[$timestamp] [$level] [$category] $message")
             // [T-logging-hot-path] println() is buffered by the Writer; a
@@ -361,20 +415,24 @@ object AppLogger {
             // lag floor the user felt on long sessions. Flush is bounded by
             // count AND age instead: worst case loses the last second of
             // entries on a crash — acceptable for diagnostics.
-            pendingWrites++
-            val now = System.currentTimeMillis()
-            if (pendingWrites >= 32 || now - lastFlushMs >= 1000) {
-                w.flush()
-                pendingWrites = 0
-                lastFlushMs = now
-            }
+            maybeFlush(w, nowMs)
         } catch (e: Exception) {
             Log.w(TAG, "Failed to write log: ${e.message}")
         }
     }
 
-    private var pendingWrites: Int = 0
-    private var lastFlushMs: Long = 0
+    /** Flush [w] if enough entries piled up or the last flush is too old. */
+    private fun maybeFlush(w: PrintWriter, nowMs: Long) {
+        val n = pendingWrites.incrementAndGet()
+        if (n >= FLUSH_EVERY || nowMs - lastFlushMs >= FLUSH_INTERVAL_MS) {
+            w.flush()
+            pendingWrites.set(0)
+            lastFlushMs = nowMs
+        }
+    }
+
+    private const val FLUSH_EVERY = 32
+    private const val FLUSH_INTERVAL_MS = 1000L
 
     @Synchronized
     private fun getWriter(date: String): PrintWriter {

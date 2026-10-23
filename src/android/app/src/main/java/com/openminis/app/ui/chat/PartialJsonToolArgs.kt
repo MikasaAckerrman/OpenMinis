@@ -17,7 +17,7 @@ package com.openminis.app.ui.chat
  *     an index.
  *  2. `extractPartialStringValue` rebuilt `listOf("\"$key\": \"", …)` on every
  *     call, allocating a List plus two interpolated Strings for a key that is
- *     constant at the only call site. The patterns are now built once per key.
+ *     constant at the only call site. The patterns are now built per call.
  *
  * Semantics are unchanged: the returned value is the unescaped text of the
  * first occurrence of `key`, truncated at the first unescaped `"`, or the
@@ -25,31 +25,37 @@ package com.openminis.app.ui.chat
  */
 internal object PartialJsonToolArgs {
 
-    private var lastKey: String? = null
-    private var lastPatterns: Array<String> = emptyArray()
-
-    /** Patterns for [key], rebuilt only when the key actually changes. */
-    private fun patternsFor(key: String): Array<String> {
-        if (key != lastKey) {
-            lastKey = key
-            lastPatterns = arrayOf("\"$key\": \"", "\"$key\":\"")
-        }
-        return lastPatterns
-    }
-
     /**
      * Value of [key] in the (possibly incomplete) [json], or null when the
      * key has not streamed in yet.
+     *
+     * The two accepted shapes are `"key": "` and `"key":"`. The spaced form
+     * is searched for FIRST across the whole document, exactly as the
+     * original `listOf(...)` loop did, and only if it is absent the tight
+     * form is tried — so a document holding both forms resolves to the
+     * spaced one, as before.
+     *
+     * The patterns are built per call instead of being cached in a field:
+     * the cache was a data race. Two callers with different keys could
+     * interleave between the write of the key and the read of the pattern
+     * array, so one of them would search with the OTHER key's patterns.
+     * Each pattern is a dozen characters, so building it costs nothing
+     * compared with the indexOf scan that follows.
      */
     fun extract(key: String, json: String): String? {
-        for (p in patternsFor(key)) {
-            val at = json.indexOf(p)
-            if (at < 0) continue
-            val from = at + p.length
-            val end = findUnescapedEnd(json, from)
-            return unescape(json.substring(from, end))
-        }
+        val spaced = "\"$key\": \""
+        var at = json.indexOf(spaced)
+        if (at >= 0) return valueFrom(json, at + spaced.length)
+        val tight = "\"$key\":\""
+        at = json.indexOf(tight)
+        if (at >= 0) return valueFrom(json, at + tight.length)
         return null
+    }
+
+    /** The value starting at [from], up to the first unescaped `"`. */
+    private fun valueFrom(json: String, from: Int): String {
+        val end = findUnescapedEnd(json, from)
+        return unescape(json.substring(from, end))
     }
 
     /** Index of the first unescaped `"` at or after [from], or [json].length. */
