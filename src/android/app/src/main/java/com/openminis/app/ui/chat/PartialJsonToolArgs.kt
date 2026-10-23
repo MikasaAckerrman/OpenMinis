@@ -77,15 +77,51 @@ internal object PartialJsonToolArgs {
         return n
     }
 
-    /** Unescape the common JSON string escapes. */
+    /**
+     * Unescape JSON string escapes in a single pass.
+ *
+     * The previous version chained five `replace()` calls, which is wrong
+ * *and* allocation-heavy: a literal `\n` inside the string (that is, the
+ * two characters `\\` `n` in the JSON text) matched the first rule and
+ * became a real newline, so the pill title showed a line break where the
+ * payload had an escaped backslash. A single left-to-right walk consumes
+ * each escape exactly once and cannot re-interpret its own output.
+ *
+ * Unknown escapes (`\q`) yield the escaped character itself, matching the
+ * lenient behaviour of the original chain, and `\uXXXX` is passed through
+ * as the literal backslash-u form rather than being silently dropped.
+ */
     private fun unescape(s: String): String {
-        // Five chained replace() calls allocate five Strings even when there
-        // is nothing to unescape; nothing can be escaped without a backslash.
         if (s.indexOf('\\') < 0) return s
-        return s.replace("\\n", "\n")
-            .replace("\\t", "\t")
-            .replace("\\\"", "\"")
-            .replace("\\/", "/")
-            .replace("\\\\", "\\")
+        val out = StringBuilder(s.length)
+        var i = 0
+        val n = s.length
+        while (i < n) {
+            val c = s[i]
+            if (c != '\\' || i + 1 >= n) {
+                out.append(c)
+                i++
+                continue
+            }
+            when (val e = s[i + 1]) {
+                'n' -> { out.append('\n'); i += 2 }
+                't' -> { out.append('\t'); i += 2 }
+                'r' -> { out.append('\r'); i += 2 }
+                '"' -> { out.append('"'); i += 2 }
+                '/' -> { out.append('/'); i += 2 }
+                '\\' -> { out.append('\\'); i += 2 }
+                'b' -> { out.append('\b'); i += 2 }
+                'f' -> { out.append('\u000C'); i += 2 }
+                'u' -> {
+                    // Keep the escape verbatim: this helper feeds a title
+                    // label, and decoding \uXXXX here would allocate a Char
+                    // per code unit for text the model will render itself.
+                    out.append('\\').append('u')
+                    i += 2
+                }
+                else -> { out.append(e); i += 2 }
+            }
+        }
+        return out.toString()
     }
 }

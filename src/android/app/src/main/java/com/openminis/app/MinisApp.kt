@@ -287,6 +287,15 @@ class MinisApp : Application(), ImageLoaderFactory {
         // touched in the last hour; if THRESHOLD+ are present, stash the
         // list so MainActivity.onCreate can prompt to share them.
         com.openminis.app.crash.CrashFrequencyDetector.checkAtLaunch(this)
+        // [T-minsisapp-safemode-logger] Logging is initialised BEFORE the
+        // safe-mode short-circuit below. It used to run after it, so
+        // safe-mode left logDir null: every AppLogger call hit
+        // `logDir ?: throw IllegalStateException`, log() swallowed it, and
+        // each attempt logged its own failure. Safe-mode is precisely the
+        // state where the log is the only evidence left, so it is the worst
+        // possible place to have it switched off by a missing init.
+        AppLogger.init(this)
+
 
         // Hard short-circuit: when checkAtLaunch flips safe-mode ON, skip
         // every heavy subsystem (DB, repositories, offload server, PRoot
@@ -301,12 +310,6 @@ class MinisApp : Application(), ImageLoaderFactory {
             return
         }
 
-        // Initialize the daily-rotating file logger first. When the user has
-        // logging enabled in Settings, this also kicks off stdout/stderr
-        // capture so subsequent println / Throwable.printStackTrace lines from
-        // the rest of onCreate land in today's log file. Mirrors iOS
-        // `LoggingManager.startIfEnabled()` (called from MinisApp.swift:143).
-        AppLogger.init(this)
 
         // [T-mutation-journal] Deliberately independent of AppLogger's on/off
         // preference: AppLogger defaults to DISABLED, which is why the 2c7ae861
