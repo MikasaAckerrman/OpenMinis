@@ -28,6 +28,14 @@ class DebugServer(
         private const val TAG = "DebugServer"
 
         /**
+         * [T-android-debugserver-bodycap] Upper bound on a single request
+         * body. Generous for every real RPC here (the largest is a JSON tool
+         * invocation or a log excerpt) while small enough that a hostile or
+         * buggy `Content-Length` cannot exhaust the heap.
+         */
+        private const val MAX_BODY_CHARS = 8 * 1024 * 1024
+
+        /**
          * [T-android-debugserver-auth] Remote-connection auth decision, kept
          * pure for unit testing. Loopback connections (adb forward — the
          * developer's own machine over USB) stay token-free so the local
@@ -87,15 +95,36 @@ class DebugServer(
     @Volatile
     private var stopped = false
 
+    /**
+     * [T-android-debugserver-start-race] Guards [start] against a second
+     * call racing the first.
+     *
+     * `serverSocket` used to be assigned INSIDE the launched coroutine, while
+     * the "already running" check sat before the launch. Two calls in quick
+     * succession both passed the check, both opened a ServerSocket, and the
+     * second overwrote the field — the first socket then kept its accept
+     * loop forever (nothing ever stopped it, and `stop()` only closes the
+     * one it can see). The field is now assigned before the launch, so the
+     * check is authoritative.
+     */
+    private val startLock = Any()
+    private var starting = false
+
     fun start() {
-        if (serverSocket != null) return
+        synchronized(startLock) {
+            if (serverSocket != null || starting) return
+            starting = true
+        }
         stopped = false
 
         acceptJob = scope.launch {
             try {
                 // Listen on all interfaces (0.0.0.0) for network access
                 val ss = ServerSocket(port, 10)
-                serverSocket = ss
+                synchronized(startLock) {
+                    serverSocket = ss
+                    starting = false
+                }
                 Log.i(TAG, "Debug server listening on port $port (all interfaces)")
                 Log.i(TAG, "Remote (non-loopback) clients must send X-Minis-Token: $authToken")
 
@@ -108,6 +137,7 @@ class DebugServer(
                     }
                 }
             } catch (e: Exception) {
+                synchronized(startLock) { starting = false }
                 Log.e(TAG, "Failed to start server on port $port: ${e.message}")
             }
         }
@@ -233,11 +263,29 @@ class DebugServer(
                     return
                 }
 
-                // Read body
-                val body = CharArray(contentLength)
+                // [T-android-debugserver-bodycap] A declared Content-Length was
+                // allocated verbatim (`CharArray(contentLength)`), so any
+                // client could ask for 2 GB and take the whole process down
+                // with an OutOfMemoryError. The debug server is reachable from
+                // the LAN whenever a token is configured, so the cap belongs
+                // here rather than in the handlers.
+                if (contentLength > MAX_BODY_CHARS) {
+                    sendResponse(
+                        writer, 413,
+                        rpcHandler.errorJSON(-32600, "Body too large: $contentLength > $MAX_BODY_CHARS"),
+                    )
+                    return
+                }
+
+                // Read body. The declared length counts BYTES; the reader is a
+                // character reader, so counting it as characters made
+                // multi-byte UTF-8 bodies terminate early or read past the end.
+                // Read until the terminator instead and keep the declared value
+                // only as an upper bound on the buffer.
+                val body = CharArray(minOf(contentLength, MAX_BODY_CHARS))
                 var totalRead = 0
-                while (totalRead < contentLength) {
-                    val n = reader.read(body, totalRead, contentLength - totalRead)
+                while (totalRead < body.size) {
+                    val n = reader.read(body, totalRead, body.size - totalRead)
                     if (n < 0) break
                     totalRead += n
                 }

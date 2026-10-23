@@ -669,6 +669,23 @@ object PRootKernel {
     private val perSessionSubdirs = setOf("attachments", "offloads", "workspace", "browser")
 
     /**
+     * True when [sessionId] is a single path segment that stays inside the
+     * sessions root.
+     *
+     * Observed ids look like `bg-t092648-3-замерыаллок` and plain uuids, so
+     * letters, digits, dashes, underscores, dots and non-ASCII letters are
+     * all legitimate; what must never appear is a separator or a `..`.
+     */
+    private fun isSafeSessionId(sessionId: String): Boolean {
+        if (sessionId.isEmpty() || sessionId.length > 128) return false
+        if (sessionId == "." || sessionId == "..") return false
+        if (sessionId.contains('/') || sessionId.contains('\\')) return false
+        // NUL and control characters have no business in a directory name
+        // and would truncate the path in native code that does not expect them.
+        return sessionId.none { it.code < 0x20 || it.code == 0x7F }
+    }
+
+    /**
      * Resolve a `/var/minis/...` Linux path directly against a specific session's
      * host directory, bypassing the global [bindMounts] map. Use this when the
      * caller knows the owning session (chat link resolver, file preview, etc.) —
@@ -684,6 +701,20 @@ object PRootKernel {
         val slash = rest.indexOf('/')
         val subdir = if (slash < 0) rest else rest.substring(0, slash)
         if (subdir !in perSessionSubdirs) return resolveHostPath(linuxPath)
+        // [T-sandbox-session-id] The traversal guard below validates the TAIL
+        // against the base, but the base itself is built by interpolating
+        // sessionId verbatim. A sessionId of "../../minis-global" moved the
+        // base out of minis-sessions/, and because canonicalBase was derived
+        // from that same string the `inside` check stayed self-consistent and
+        // passed - the guard would have happily accepted a path under
+        // minis-global/shared or minis-global/memory. Today sessionId is
+        // app-generated, so this is defence in depth, not an open hole: it
+        // becomes one the moment session ids can arrive from an import or a
+        // restore.
+        if (!isSafeSessionId(sessionId)) {
+            Log.w(TAG, "resolveSessionHostPath rejected sessionId: ${sessionId.take(64)}")
+            return null
+        }
         val sessionBase = File(context.filesDir, "minis-sessions/$sessionId/$subdir")
         val tail = if (slash < 0) "" else rest.substring(slash + 1)
         val target = if (tail.isEmpty()) sessionBase else File(sessionBase, tail)

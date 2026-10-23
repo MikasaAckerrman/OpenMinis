@@ -278,20 +278,59 @@ object AppLogger {
      *      complete line — prefixed with `[HH:mm:ss.SSS] [LEVEL] [tag]` — to
      *      the daily log file. Partial lines are flushed on close().
      */
-    private class LineCapturingStream(
+    // [T-test] internal rather than private so a unit test can drive the
+    // capture buffer directly - the truncation cap and the close() flush are
+    // impossible to reach through System.out without spawning a process.
+    internal class LineCapturingStream(
         private val delegate: PrintStream,
         private val tag: String,
+        // [T-test] Indirection so a unit test can observe the emitted lines
+        // (and the truncation marker) without AppLogger being initialised -
+        // writeFileLine needs filesDir and enabled, neither of which exist in
+        // a plain JVM test.
+        private val onLine: (String) -> Unit = { writeFileLine(tag, it) },
     ) : OutputStream() {
         private val buffer = ByteArrayOutputStream(256)
+        private var overflowed = false
 
         override fun write(b: Int) {
             // Always forward first; any failure to capture must NOT swallow output.
             delegate.write(b)
             if (b == '\n'.code) {
                 emitLine()
-            } else {
+            } else if (buffer.size() < MAX_CAPTURED_BYTES) {
                 buffer.write(b)
+            } else {
+                overflowed = true
             }
+        }
+
+        /**
+         * Append `b[from, until)` unless the per-line cap is reached.
+         *
+         * [STDOUT-CAPTURE] The buffer drains only when a newline arrives, so a
+         * writer that emits none grows it without bound — and
+         * ByteArrayOutputStream doubles its backing array on every overflow,
+         * so newline-free output from a child process is an
+         * OutOfMemoryError. The line is cut at the cap and the truncation is
+         * reported, so the reader sees that something was dropped instead of
+         * an unexplained gap.
+         */
+        private fun appendRange(b: ByteArray, from: Int, until: Int) {
+            if (from >= until) return
+            val room = MAX_CAPTURED_BYTES - buffer.size()
+            if (room <= 0) {
+                overflowed = true
+                return
+            }
+            val n = minOf(until - from, room)
+            buffer.write(b, from, n)
+            if (n < until - from) overflowed = true
+        }
+
+        private companion object {
+            /** 64 KB per unterminated line — far above any real log line. */
+            const val MAX_CAPTURED_BYTES = 64 * 1024
         }
 
         override fun write(b: ByteArray, off: Int, len: Int) {
@@ -300,28 +339,48 @@ object AppLogger {
             val end = off + len
             for (i in off until end) {
                 if (b[i] == '\n'.code.toByte()) {
-                    if (i > lineStart) buffer.write(b, lineStart, i - lineStart)
+                    appendRange(b, lineStart, i)
                     emitLine()
                     lineStart = i + 1
                 }
             }
-            if (lineStart < end) buffer.write(b, lineStart, end - lineStart)
+            appendRange(b, lineStart, end)
         }
 
         override fun flush() {
             delegate.flush()
         }
 
+        /**
+         * Flush whatever is left, then close the delegate.
+         *
+         * The previous version had no `close()` at all while its KDoc
+         * promised "Partial lines are flushed on close()", so a program that
+         * ended without a trailing newline lost that line for good.
+         */
+        override fun close() {
+            emitLine()
+            try {
+                delegate.flush()
+            } catch (_: Throwable) {
+                // Nothing useful to do; close must never throw into the caller.
+            }
+        }
+
         private fun emitLine() {
-            val line = try {
+            var line = try {
                 buffer.toString("UTF-8")
             } catch (_: Exception) {
                 buffer.toString()
             }
             buffer.reset()
+            if (overflowed) {
+                line += "…[line truncated at $MAX_CAPTURED_BYTES bytes]"
+                overflowed = false
+            }
             // Drop empty lines so the file isn't full of bare timestamps.
             if (line.isEmpty()) return
-            writeFileLine(tag, line)
+            onLine(line)
         }
     }
 
@@ -451,14 +510,36 @@ object AppLogger {
 
     @Synchronized
     private fun getWriter(date: String): PrintWriter {
-        if (date != currentDate || writer == null) {
-            writer?.close()
-            val dir = logDir ?: throw IllegalStateException("AppLogger not initialized")
-            val file = File(dir, "minis-$date.log")
-            writer = PrintWriter(FileWriter(file, true))
-            currentDate = date
+        // [T-applogger-getwriter] Fast path must not re-stamp the writers.
+        // Two threads logging for the SAME day must get the SAME instance:
+        // printing into a PrintWriter that another thread is closing
+        // interleaves output, and closing drops whatever is still buffered
+        // in that PrintWriter - which is the only copy of those lines.
+        val existing = writer
+        if (existing != null && date == currentDate) return existing
+
+        // Publish nothing until the replacement exists. The previous code
+        // closed the old writer and left it in `writer`, so a failing
+        // FileWriter (no space, missing dir, `logDir` still null in
+        // safe-mode) left the field pointing at a CLOSED writer while
+        // currentDate stayed stale. Every later call then re-ran the same
+        // failing branch: silent log loss plus a Log.w per line until the
+        // next day rolled over. With the field cleared first, a failure
+        // leaves writer == null and the next call simply retries.
+        writer = null
+        try {
+            existing?.close()
+        } catch (_: Throwable) {
+            // A PrintWriter swallows IOException, but never let a close()
+            // failure block the rollover - the data is unrecoverable either
+            // way and the new file is what matters.
         }
-        return writer!!
+        val dir = logDir ?: throw IllegalStateException("AppLogger not initialized")
+        val file = File(dir, "minis-$date.log")
+        val fresh = PrintWriter(FileWriter(file, true))
+        writer = fresh
+        currentDate = date
+        return fresh
     }
 
     /**
