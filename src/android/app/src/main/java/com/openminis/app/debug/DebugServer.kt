@@ -148,7 +148,19 @@ class DebugServer(
                     starting = false
                 }
                 Log.i(TAG, "Debug server listening on port $port (all interfaces)")
-                Log.i(TAG, "Remote (non-loopback) clients must send X-Minis-Token: $authToken")
+                // [T-debugserver-token-in-log] The token is not logged.
+                //
+                // It used to be printed here in full, and this tag is not
+                // filtered by AppLogger.isOwnOutputTag, so the value ended up
+                // in whatever consumed the app's own logcat - including the
+                // daily log file, where it would have sat for the retention
+                // window. The token is the only barrier between a host on the
+                // network and a server that can run shell commands, and a
+                // token that has been written down somewhere is no longer a
+                // barrier. The retrieval command is printed instead: it is
+                // the same instruction the 401 response gives, and it does not
+                // hand the secret to anyone who can read a log.
+                Log.i(TAG, "Remote (non-loopback) clients must send X-Minis-Token; get it with: adb shell run-as com.openminis.app cat files/debug_server_token")
 
                 while (!stopped) {
                     try {
