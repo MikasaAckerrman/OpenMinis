@@ -875,9 +875,22 @@ object SubagentExecutor {
             }
             "Graph '$graphId' failed: ${e.message}"
         } finally {
-            // [T-graph-cancel] Only if the registry still holds this very
-            // entry: a late finally must never remove the registration of a
-            // newer run that happens to carry the same id.
+            // [T-graph-cancel] The graph's job has to be finished, not only
+            // cancelled.
+            //
+            // A job that is a child of the caller's keeps the caller from
+            // completing until the child is done - that is what a parent
+            // waits for. The graph's work is over at this point, but the
+            // job was never completed, so the chat turn that started it
+            // would have kept waiting for a child that has nothing left to
+            // do. Completing it releases the caller.
+            //
+            // On the cancelled path the job is already finished by the
+            // cancellation, and completing a finished job does nothing.
+            graphJob.complete()
+            // Only if the registry still holds this very entry: a late
+            // finally must never remove the registration of a newer run
+            // that happens to carry the same id.
             activeGraphs.remove(taskId, entry)
         }
     }
