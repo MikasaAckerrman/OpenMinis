@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -37,11 +38,47 @@ import com.openminis.app.ui.theme.ChatColors
  * Shows one row per agent SEEN so far. Deliberately not a fixed list of the
  * graph's nodes: a graph skips whole branches, so a pre-rendered roster would
  * show rows that never run and a progress count that never completes.
+ *
+ * [T-agent-panel] The pieces of this card are separate composables now: the
+ * surface, the header, the node rows and the status line. The agent panel
+ * shows tasks, and a task card is the same frame with a different title, a
+ * different status and - when the run is still alive - the same node rows.
+ * Sharing the pieces is what keeps the two cards from drifting apart; the
+ * card below is a thin arrangement of them and renders exactly as it did
+ * before the split.
  */
 @Composable
 internal fun AgentRunProgressCard(
     snapshot: AgentRunProgress.Snapshot,
     onOpenShowcase: (() -> Unit)? = null,
+) {
+    AgentProgressCardSurface(onClick = onOpenShowcase) {
+        AgentRunProgressHeader(
+            title = snapshot.graphName,
+            counter = "${snapshot.completedCount}/${snapshot.seenCount}",
+            isRunning = snapshot.isRunning,
+        )
+        if (snapshot.nodes.isNotEmpty()) {
+            AgentRunProgressNodeRows(snapshot.nodes)
+        }
+        snapshot.finalStatus?.let { status ->
+            AgentRunProgressStatusText(status)
+        }
+    }
+}
+
+/**
+ * [T-agent-panel] The card's frame: background, shape, padding and the
+ * optional tap target.
+ *
+ * The spacing between the blocks is 6dp, and the node rows carry the same
+ * spacing between themselves - so a card with N node rows has the same
+ * total height as it had when every row was a direct child of the column.
+ */
+@Composable
+internal fun AgentProgressCardSurface(
+    onClick: (() -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -50,41 +87,69 @@ internal fun AgentRunProgressCard(
             .clip(RoundedCornerShape(12.dp))
             .background(ChatColors.secondaryBg)
             .then(
-                if (onOpenShowcase != null) Modifier.clickable(onClick = onOpenShowcase)
+                if (onClick != null) Modifier.clickable(onClick = onClick)
                 else Modifier,
             )
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            if (snapshot.isRunning) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(12.dp),
-                    strokeWidth = 1.5.dp,
-                    color = ChatColors.tertiaryText,
-                )
-                Spacer(Modifier.width(8.dp))
-            }
-            Text(
-                text = snapshot.graphName,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = ChatColors.primaryText,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false),
+        content()
+    }
+}
+
+/**
+ * [T-agent-panel] The card's title row: an optional spinner, the title and
+ * an optional counter.
+ *
+ * The title and the counter are arguments rather than read from a snapshot,
+ * because the two cards do not get them from the same place: the live card
+ * takes the graph's name and the seen count, while the panel's task card
+ * takes the task's saved title and shows the counter only while a run is
+ * actually alive. A finished task has no progress to count, and a "0/0"
+ * that never was true would be a lie.
+ */
+@Composable
+internal fun AgentRunProgressHeader(
+    title: String,
+    counter: String?,
+    isRunning: Boolean,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        if (isRunning) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(12.dp),
+                strokeWidth = 1.5.dp,
+                color = ChatColors.tertiaryText,
             )
             Spacer(Modifier.width(8.dp))
-            // Denominator is what has been SEEN, never the graph's node count —
-            // with skipped branches the latter would stall at "2 of 7" forever.
+        }
+        Text(
+            text = title,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = ChatColors.primaryText,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false),
+        )
+        if (counter != null) {
+            Spacer(Modifier.width(8.dp))
             Text(
-                text = "${snapshot.completedCount}/${snapshot.seenCount}",
+                text = counter,
                 fontSize = 12.sp,
                 color = ChatColors.tertiaryText,
             )
         }
+    }
+}
 
-        for (node in snapshot.nodes) {
+/**
+ * [T-agent-panel] One row per agent seen so far.
+ */
+@Composable
+internal fun AgentRunProgressNodeRows(nodes: List<AgentRunProgress.Node>) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        for (node in nodes) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = glyph(node.state),
@@ -122,16 +187,20 @@ internal fun AgentRunProgressCard(
                 }
             }
         }
-
-        snapshot.finalStatus?.let { status ->
-            Text(
-                text = status,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Medium,
-                color = ChatColors.tertiaryText,
-            )
-        }
     }
+}
+
+/**
+ * [T-agent-panel] The status line under the rows.
+ */
+@Composable
+internal fun AgentRunProgressStatusText(status: String) {
+    Text(
+        text = status,
+        fontSize = 12.sp,
+        fontWeight = FontWeight.Medium,
+        color = ChatColors.tertiaryText,
+    )
 }
 
 /**
