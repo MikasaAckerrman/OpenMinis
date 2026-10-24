@@ -198,8 +198,8 @@ internal object AgentGraphRunner {
         // first node, for the same reason the showcase is created first: an event
         // arriving for an unknown taskId is dropped, so a late begin() would lose
         // the entry node's start.
-        AgentRunProgress.begin(taskId, graph.name)
         try {
+            AgentRunProgress.begin(taskId, graph.name)
 
             // Prepare artifact directory.
             //
