@@ -5,6 +5,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
+import kotlinx.coroutines.flow.Flow
 
 /**
  * [T-task-board] DAO for the agent task board. CRUD stays trivial (compile-
@@ -173,9 +174,17 @@ interface AgentBoardDao {
      * push the live ones out; this query serves only the live ones, and
      * their number is small by nature. A limit would be an arbitrary
      * number that could hide a task.
+     *
+     * [T-board-panel] A Flow, not a one-shot list. The panel has to show
+     * what is happening now: a task that starts, finishes or is
+     * cancelled while the sheet is open has to appear and change by
+     * itself. A list would have to be fetched again by hand, and the
+     * panel would show a stale board - the user would press "stop" on a
+     * run that had already ended, or would not see a run that had just
+     * started.
      */
     @Query(SQL_ACTIVE_TASKS)
-    suspend fun activeTasksForTeam(teamId: String): List<AgentTaskEntity>
+    fun activeTasksForTeam(teamId: String): Flow<List<AgentTaskEntity>>
 
     /**
      * [T-board-panel] The finished tasks of a team, newest first.
@@ -186,12 +195,16 @@ interface AgentBoardDao {
      *
      * Ordered by when the task was last touched, so the run the user just
      * stopped is the first one it sees.
+     *
+     * [T-board-panel] A Flow, like [activeTasksForTeam]: a task that ends
+     * while the panel is open has to move from the live list to the
+     * finished one on its own.
      */
     @Query(SQL_RECENT_FINISHED)
-    suspend fun recentFinishedTasksForTeam(
+    fun recentFinishedTasksForTeam(
         teamId: String,
         limit: Int = 20,
-    ): List<AgentTaskEntity>
+    ): Flow<List<AgentTaskEntity>>
 
     /**
      * [T-task-board] Statuses of SPECIFIC task ids — the dependency gate's
