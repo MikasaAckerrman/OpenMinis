@@ -43,6 +43,21 @@ object SubagentExecutor {
     const val MAX_BACKGROUND = 3
     private val parallelLimiter = Semaphore(MAX_PARALLEL)
 
+    /**
+     * [T-subagent-background-ceiling] The background ceiling, enforced.
+     *
+     * The check used to be `activeBackground.size >= MAX_BACKGROUND` followed
+     * by the launch, which is a test-then-act: two spawns that arrive at the
+     * same time both see a size below the ceiling and both start, so the
+     * ceiling was not a ceiling. On a phone, background agents are live
+     * model calls, live view models and live sessions, and the whole point
+     * of the limit is to bound them.
+     *
+     * A semaphore makes the test and the reservation one step, the same way
+     * parallelLimiter already does for the foreground limit.
+     */
+    private val backgroundLimiter = Semaphore(MAX_BACKGROUND)
+
     /** [T-spawn-many] One agent of a spawn_many batch. */
     data class SpawnSpec(val role: String, val task: String)
 
@@ -179,6 +194,28 @@ object SubagentExecutor {
                         )
                     }
                     formatResult(role, result)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    // [T-subagent-background-ceiling] A cancelled run is not a
+                    // failed run.
+                    //
+                    // CancellationException is an Exception, so the general
+                    // handler below would swallow it: the cancellation would
+                    // stop propagating, which is the one thing structured
+                    // concurrency depends on, and the task would be recorded
+                    // on the board as FAILED - a claim about the run that is
+                    // not true.
+                    //
+                    // The board is told the truth first, so the row does not
+                    // stay RUNNING for a run that no longer exists, and then
+                    // the cancellation is rethrown.
+                    if (teamId != null) {
+                        AgentBoardRecorder.taskFinished(
+                            context, taskId = spawnId, teamId = teamId,
+                            assignedAgentId = null, succeeded = false,
+                            result = "background run cancelled",
+                        )
+                    }
+                    throw e
                 } catch (e: Exception) {
                     com.openminis.app.logging.AppLogger.warning(
                         TAG, "background subagent $spawnId failed: ${e.message}",
@@ -200,6 +237,7 @@ object SubagentExecutor {
                     }
             } finally {
                 activeBackground.remove(spawnId)
+                backgroundLimiter.release()
                 runCatching { app.providerRepository.deleteAgentGraph(graph.id) }
             }
         }
@@ -290,7 +328,7 @@ object SubagentExecutor {
         return if (foreground) {
             runSingle(context, app, graph, node, label, task, teamId = spawnerSessionId, dependsOnJson = dependsOnJson)
         } else {
-            if (activeBackground.size >= MAX_BACKGROUND) {
+            if (!backgroundLimiter.tryAcquire()) {
                 runCatching { app.providerRepository.deleteAgentGraph(graph.id) }
                 return "spawn refused: $MAX_BACKGROUND background subagents are already " +
                     "running (phone ceiling). Wait for their result notifications first, " +
@@ -650,7 +688,7 @@ object SubagentExecutor {
             // [T-spawn-many] Phone ceiling: unbounded background spawns would
             // multiply live sessions, VMs and model calls on a device with
             // one radio and one battery.
-            if (activeBackground.size >= MAX_BACKGROUND) {
+            if (!backgroundLimiter.tryAcquire()) {
                 runCatching { app.providerRepository.deleteAgentGraph(graph.id) }
                 return "spawn refused: $MAX_BACKGROUND background subagents are already " +
                     "running (phone ceiling). Wait for their result notifications first, " +

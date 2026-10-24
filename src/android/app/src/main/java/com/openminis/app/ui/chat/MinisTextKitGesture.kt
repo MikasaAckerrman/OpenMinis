@@ -385,6 +385,20 @@ fun MinisSelectionHandlesHost(
         while (true) {
             androidx.compose.runtime.withFrameNanos { /* no-op */ }
             tick.value = tick.value + 1
+            if (!listState.isScrollInProgress) {
+                // The anchors only move because of a scroll, or because the
+                // message behind the selection changed size. While neither is
+                // happening, a tick per frame is a recomposition per frame
+                // and two cross-layout positionInWindow() queries per frame,
+                // for as long as the user keeps the selection alive - which
+                // they do after copying text.
+                //
+                // So: a frame at a time while the list scrolls, and a tenth
+                // of a second while it does not. A static selection still
+                // catches up with a layout change, just not within one
+                // frame - which nobody can see, because nothing moved.
+                kotlinx.coroutines.delay(100)
+            }
         }
     }
     // Read the tick so the next two anchor reads invalidate every frame.
@@ -660,6 +674,20 @@ fun MinisSelectionToolbarHost(
         while (true) {
             androidx.compose.runtime.withFrameNanos { /* no-op */ }
             tick.value = tick.value + 1
+            if (!listState.isScrollInProgress) {
+                // The anchors only move because of a scroll, or because the
+                // message behind the selection changed size. While neither is
+                // happening, a tick per frame is a recomposition per frame
+                // and two cross-layout positionInWindow() queries per frame,
+                // for as long as the user keeps the selection alive - which
+                // they do after copying text.
+                //
+                // So: a frame at a time while the list scrolls, and a tenth
+                // of a second while it does not. A static selection still
+                // catches up with a layout change, just not within one
+                // frame - which nobody can see, because nothing moved.
+                kotlinx.coroutines.delay(100)
+            }
         }
     }
     @Suppress("UNUSED_VARIABLE") val t = tick.value

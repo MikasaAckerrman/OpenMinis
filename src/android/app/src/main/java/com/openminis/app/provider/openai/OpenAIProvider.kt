@@ -1444,8 +1444,11 @@ class OpenAIProvider private constructor(
             // use { } rather than a close() call: reading the body can
             // throw, and then the close was skipped and the connection was
             // never returned to the pool.
-            val (statusCode, responseBody) = client.newCall(request).execute().use { response ->
-                response.code to (response.body?.string() ?: "")
+            // Retry-After is read inside the block: once the response has
+            // been closed it is gone, and the header is only there while it
+            // is open.
+            val (statusCode, responseBody, retryAfter) = client.newCall(request).execute().use { response ->
+                Triple(response.code, response.body?.string() ?: "", response.header("Retry-After"))
             }
 
             // Some providers (xAI) don't support b64_json — retry without it once.
@@ -1465,7 +1468,7 @@ class OpenAIProvider private constructor(
                     "OpenAIProvider",
                     "[ModelUseRoute] images/generations HTTP $statusCode body=${responseBody.take(300)}",
                 )
-                throw mapHttpError(statusCode, responseBody, response.header("Retry-After"))
+                throw mapHttpError(statusCode, responseBody, retryAfter)
             }
 
             val json = try {
