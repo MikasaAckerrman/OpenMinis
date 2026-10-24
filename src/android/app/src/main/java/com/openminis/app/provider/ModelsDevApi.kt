@@ -250,8 +250,11 @@ object ModelsDevApi {
                 response.close()
                 return
             }
-            val body = response.body?.string() ?: return
+            // Close before deciding: the empty-body case used to return
+            // without closing, which kept the connection out of the pool.
+            val body = response.body?.string()
             response.close()
+            if (body == null) return
 
             val parsed = parseRegistry(body)
             if (parsed != null) {

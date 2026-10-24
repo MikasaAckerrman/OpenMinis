@@ -1441,10 +1441,12 @@ class OpenAIProvider private constructor(
                     "size=$size quality=$quality respFormat=${if (triedWithoutFormat) "<none>" else "b64_json"}",
             )
 
-            val response = client.newCall(request).execute()
-            val statusCode = response.code
-            val responseBody = response.body?.string() ?: ""
-            response.close()
+            // use { } rather than a close() call: reading the body can
+            // throw, and then the close was skipped and the connection was
+            // never returned to the pool.
+            val (statusCode, responseBody) = client.newCall(request).execute().use { response ->
+                response.code to (response.body?.string() ?: "")
+            }
 
             // Some providers (xAI) don't support b64_json — retry without it once.
             if (!triedWithoutFormat && statusCode == 400 &&
@@ -1520,10 +1522,9 @@ class OpenAIProvider private constructor(
                 if (urlStr.isNotEmpty()) {
                     try {
                         val dlReq = Request.Builder().url(urlStr).get().build()
-                        val dlResp = client.newCall(dlReq).execute()
-                        val dlBytes = dlResp.body?.bytes()
-                        val ctMime = dlResp.header("Content-Type")
-                        dlResp.close()
+                        val (dlBytes, ctMime) = client.newCall(dlReq).execute().use { dlResp ->
+                            dlResp.body?.bytes() to dlResp.header("Content-Type")
+                        }
                         if (dlBytes != null && dlBytes.isNotEmpty()) {
                             val mime = hintMime ?: ctMime ?: detectImageMime(dlBytes)
                             attachments.add(LLMMediaAttachment(LLMMediaAttachment.MediaType.IMAGE, mime, dlBytes))

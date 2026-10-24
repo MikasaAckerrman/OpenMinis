@@ -8,12 +8,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
+import com.openminis.app.provider.ProviderHttpClients
 import okhttp3.Request
 import okhttp3.Response
 import org.json.JSONObject
 
 object AnthropicModelsApi {
-    private val client = OkHttpClient()
+    private val client = ProviderHttpClients.catalog
 
     /**
      * Fetch models from Anthropic API.
@@ -94,33 +95,44 @@ object AnthropicModelsApi {
             val request = requestBuilder.build()
             android.util.Log.d("AnthropicModels", "Fetching models (level=$idx): ${request.url} isOAuth=$isOAuth headers=${request.headers}")
 
-            val response: Response = try {
-                client.newCall(request).execute()
+            // The response is read inside use { } and the decision is made
+            // there too, because the response used to be closed on no path
+            // at all: not on the empty body, not on the error, not on the
+            // success. Every fetch of the catalogue therefore left its
+            // connection out of the pool, and the pool is what the next
+            // request waits on.
+            //
+            // null means the attempt failed and the next candidate base
+            // should be tried; a non-null body is what gets parsed.
+            val body = try {
+                client.newCall(request).execute().use { response ->
+                    val text = response.body?.string() ?: run {
+                        android.util.Log.w("AnthropicModels", "Empty response body (level=$idx)")
+                        ""
+                    }
+                    if (!response.isSuccessful) {
+                        android.util.Log.e("AnthropicModels", "Fetch failed (level=$idx): ${response.code} ${text.take(200)}")
+                        // 401/403 almost always means the credential rotated; drop any stale
+                        // cache entry so the next lookup hits the network again.
+                        if (context != null && (response.code == 401 || response.code == 403)) {
+                            AnthropicModelsCache.invalidate(context, cacheKey)
+                        }
+                        lastFailureCode = response.code
+                        lastFailureBody = text
+                        null
+                    } else {
+                        if (idx > 0) {
+                            android.util.Log.i("AnthropicModels", "Parent-path fallback succeeded at level=$idx base=$candidate")
+                        }
+                        android.util.Log.d("AnthropicModels", "Response ${response.code}, body length: ${text.length}")
+                        text
+                    }
+                }
             } catch (e: Exception) {
                 android.util.Log.e("AnthropicModels", "Fetch error (level=$idx): ${e.message}")
                 continue
             }
-            val body = response.body?.string() ?: run {
-                android.util.Log.w("AnthropicModels", "Empty response body (level=$idx)")
-                ""
-            }
-
-            if (!response.isSuccessful) {
-                android.util.Log.e("AnthropicModels", "Fetch failed (level=$idx): ${response.code} ${body.take(200)}")
-                // 401/403 almost always means the credential rotated; drop any stale
-                // cache entry so the next lookup hits the network again.
-                if (context != null && (response.code == 401 || response.code == 403)) {
-                    AnthropicModelsCache.invalidate(context, cacheKey)
-                }
-                lastFailureCode = response.code
-                lastFailureBody = body
-                continue
-            }
-
-            if (idx > 0) {
-                android.util.Log.i("AnthropicModels", "Parent-path fallback succeeded at level=$idx base=$candidate")
-            }
-            android.util.Log.d("AnthropicModels", "Response ${response.code}, body length: ${body.length}")
+            if (body == null) continue
             return@withContext parseAndCache(body, isCustomEndpoint, context, cacheKey)
         }
 

@@ -9,12 +9,13 @@ import com.openminis.app.provider.ProviderModelsCache
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
+import com.openminis.app.provider.ProviderHttpClients
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
 
 object OpenRouterModelsApi {
-    private val client = OkHttpClient()
+    private val client = ProviderHttpClients.catalog
     private val cache = ProviderModelsCache("openrouter")
 
     /**
@@ -47,14 +48,19 @@ object OpenRouterModelsApi {
             .applyUserAgentOverride(null)
             .build()
 
-        val response = client.newCall(request).execute()
-        val body = response.body?.string() ?: return@withContext emptyList()
-
-        if (!response.isSuccessful) {
-            if (context != null && (response.code == 401 || response.code == 403)) {
-                cache.invalidate(context, cacheKey)
+        // Read inside use { } so every path out closes the response. Both
+        // early returns below used to leave it open, and so did the success
+        // path, which never closed it at all - a connection that is not
+        // returned to the pool is a connection the next request waits for.
+        val body = client.newCall(request).execute().use { response ->
+            val text = response.body?.string() ?: return@withContext emptyList()
+            if (!response.isSuccessful) {
+                if (context != null && (response.code == 401 || response.code == 403)) {
+                    cache.invalidate(context, cacheKey)
+                }
+                return@withContext emptyList()
             }
-            return@withContext emptyList()
+            text
         }
 
         val models = try {

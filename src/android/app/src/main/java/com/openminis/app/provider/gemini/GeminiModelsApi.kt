@@ -8,11 +8,12 @@ import com.openminis.app.provider.applyUserAgentOverride
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
+import com.openminis.app.provider.ProviderHttpClients
 import okhttp3.Request
 import org.json.JSONObject
 
 object GeminiModelsApi {
-    private val client = OkHttpClient()
+    private val client = ProviderHttpClients.catalog
     private val cache = ProviderModelsCache("gemini")
 
     /**
@@ -62,18 +63,25 @@ object GeminiModelsApi {
 
         // [T-android-default-ua] brand outbound /v1beta/models request.
         builder.applyUserAgentOverride(null)
-        val response = client.newCall(builder.build()).execute()
-        val body = response.body?.string() ?: return@withContext LLMModel.allGemini
-
-        if (!response.isSuccessful) {
-            // 403 on OAuth almost always means the token lacks the
-            // generative-language scope. Falling back to the built-in list
-            // matches iOS and keeps Cloud Code Assist users functional.
-            if (isOAuth && response.code == 403) return@withContext LLMModel.allGemini
-            if (context != null && (response.code == 401 || response.code == 403)) {
-                cache.invalidate(context, cacheKey)
+        // The response is read inside use { } so that every path out of
+        // here closes it - the three early returns below all used to leave
+        // the connection open, and so did the success path, which never
+        // closed it at all. A response that is not closed keeps its
+        // connection out of the pool, and the pool is what the next request
+        // waits on.
+        val body = client.newCall(builder.build()).execute().use { response ->
+            val text = response.body?.string() ?: return@withContext LLMModel.allGemini
+            if (!response.isSuccessful) {
+                // 403 on OAuth almost always means the token lacks the
+                // generative-language scope. Falling back to the built-in list
+                // matches iOS and keeps Cloud Code Assist users functional.
+                if (isOAuth && response.code == 403) return@withContext LLMModel.allGemini
+                if (context != null && (response.code == 401 || response.code == 403)) {
+                    cache.invalidate(context, cacheKey)
+                }
+                return@withContext LLMModel.allGemini
             }
-            return@withContext LLMModel.allGemini
+            text
         }
 
         val models = try {

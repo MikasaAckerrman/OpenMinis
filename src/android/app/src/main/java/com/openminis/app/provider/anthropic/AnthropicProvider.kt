@@ -111,11 +111,18 @@ class AnthropicProvider(
         com.openminis.app.provider.LlmDispatchGate.withStreamPermit {
         val body = buildRequestBody(messages, systemPrompt, maxTokens, stream = false, temperature = temperature, imageParts = imageParts, tools = tools, thinkingLevel = thinkingLevel)
         val request = buildRequest(body.toString(), body)
-        val response = client.newCall(request).execute()
-        val responseBody = response.body?.string() ?: ""
-
-        if (!response.isSuccessful) {
-            throw mapHttpError(response.code, responseBody, response.header("Retry-After"))
+        // Read inside use { } so the response is closed on every path. It
+        // was not closed at all before: the error path threw out of here
+        // with the response still open, and the success path never closed it
+        // either. A response that is not closed keeps its connection out of
+        // the pool - and the pool is what the next request waits on, so this
+        // is a request that never finishes, not just a wasted socket.
+        val responseBody = client.newCall(request).execute().use { response ->
+            val text = response.body?.string() ?: ""
+            if (!response.isSuccessful) {
+                throw mapHttpError(response.code, text, response.header("Retry-After"))
+            }
+            text
         }
 
         val json = JSONObject(responseBody)
