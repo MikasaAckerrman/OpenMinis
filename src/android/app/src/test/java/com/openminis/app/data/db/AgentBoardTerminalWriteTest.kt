@@ -8,6 +8,9 @@ import org.junit.Test
 import java.io.File
 import java.sql.Connection
 import java.sql.DriverManager
+import java.sql.SQLException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * [T-board-terminal-write] The contract of a run's terminal write, proved
@@ -26,8 +29,15 @@ import java.sql.DriverManager
  *  - rollback when the write fails in the middle,
  *  - the decision that tells a cancellation from a failure.
  *
- * What this does NOT cover: Room's own code generation, and the entity
- * mapping. Those need a device.
+ * What this does NOT cover: Room's own code generation, the entity mapping,
+ * and the @Transaction wiring in the app itself. Those are compile-time
+ * artefacts - Room's annotations are retained at CLASS level and are not
+ * visible at runtime, so no reflection can check them here. The only honest
+ * proof for those is a device.
+ *
+ * What IS covered structurally: the app and this test run the same SQL
+ * constant, so they cannot drift apart. And the guarded update is the one
+ * the app executes - the guard is inside the constant, not beside it.
  */
 class AgentBoardTerminalWriteTest {
 
@@ -184,18 +194,98 @@ class AgentBoardTerminalWriteTest {
         assertEquals(1, count(conn, "agent_mailbox"))
     }
 
-    // 3. Конкурирующие завершения: побеждает только одно.
+    // 3. КОНКУРЕНЦИЯ: два потока стартуют одновременно по барьеру.
+    //
+    // Последовательные вызовы проверяли бы идемпотентность, а не гонку.
+    // Здесь оба потока стартуют по одному барьеру и пишут в одну базу из
+    // двух соединений, поэтому проигравший видит уже изменённый статус -
+    // ровно та гонка, ради которой переход и был защищён.
     @Test
-    fun `of two competing finishes only one may write`() = withBoard { board, conn ->
-        val completed = board.finish("task-1", AgentBoardLogic.STATUS_RUNNING, AgentBoardLogic.STATUS_COMPLETED, "ok")
-        val failed = board.finish("task-1", AgentBoardLogic.STATUS_RUNNING, AgentBoardLogic.STATUS_FAILED, "boom")
+    fun `of two genuinely concurrent finishes only one may write`() {
+        val file = File(
+            System.getProperty("java.io.tmpdir") ?: "/tmp",
+            "board-race-${System.nanoTime()}.db",
+        )
+        val setup = DriverManager.getConnection("jdbc:sqlite:${file.absolutePath}")
+        try {
+            setup.createStatement().use { s ->
+                s.executeUpdate("PRAGMA busy_timeout = 5000")
+                s.executeUpdate(
+                    "CREATE TABLE agent_tasks(" +
+                        "id TEXT PRIMARY KEY, status TEXT NOT NULL, " +
+                        "result_artifact TEXT, updated_at INTEGER)",
+                )
+                s.executeUpdate(
+                    "CREATE TABLE task_status_history(" +
+                        "task_id TEXT, from_status TEXT, to_status TEXT, reason TEXT)",
+                )
+                s.executeUpdate(
+                    "CREATE TABLE agent_mailbox(" +
+                        "task_id TEXT, message_type TEXT, body TEXT)",
+                )
+            }
+            setup.prepareStatement("INSERT INTO agent_tasks(id, status) VALUES(?,?)").use {
+                it.setString(1, "task-1")
+                it.setString(2, AgentBoardLogic.STATUS_RUNNING)
+                it.executeUpdate()
+            }
+        } finally {
+            setup.close()
+        }
 
-        assertTrue(completed)
-        assertTrue("the second, competing finish must not write", !failed)
-        assertEquals(AgentBoardLogic.STATUS_COMPLETED, statusOf(conn))
-        assertEquals("ok", resultOf(conn))
-        assertEquals(1, count(conn, "task_status_history"))
-        assertEquals(1, count(conn, "agent_mailbox"))
+        val a = DriverManager.getConnection("jdbc:sqlite:${file.absolutePath}")
+        val b = DriverManager.getConnection("jdbc:sqlite:${file.absolutePath}")
+        try {
+            listOf(a, b).forEach { c ->
+                c.createStatement().use { it.executeUpdate("PRAGMA busy_timeout = 5000") }
+            }
+            val start = CountDownLatch(1)
+            val winners = AtomicInteger(0)
+
+            fun racer(conn: Connection, to: String, payload: String) = Thread {
+                start.await()
+                try {
+                    if (Board(conn).finish("task-1", AgentBoardLogic.STATUS_RUNNING, to, payload)) {
+                        winners.incrementAndGet()
+                    }
+                } catch (e: SQLException) {
+                    // SQLite refused the write outright because the other
+                    // transaction held the lock. That is a loss too: this
+                    // caller did not write anything.
+                }
+            }
+
+            val t1 = racer(a, AgentBoardLogic.STATUS_COMPLETED, "ok")
+            val t2 = racer(b, AgentBoardLogic.STATUS_FAILED, "boom")
+            t1.start()
+            t2.start()
+            start.countDown()
+            t1.join(10_000)
+            t2.join(10_000)
+
+            assertEquals("exactly one of the two concurrent finishes may write", 1, winners.get())
+            val reader = DriverManager.getConnection("jdbc:sqlite:${file.absolutePath}")
+            try {
+                assertEquals("the ledger must hold exactly one move", 1, count(reader, "task_status_history"))
+                assertEquals("the spawning session must get exactly one letter", 1, count(reader, "agent_mailbox"))
+                val status = statusOf(reader)
+                assertTrue(
+                    "the surviving status must be one of the two outcomes, was $status",
+                    status == AgentBoardLogic.STATUS_COMPLETED || status == AgentBoardLogic.STATUS_FAILED,
+                )
+                val stored = resultOf(reader)
+                assertTrue(
+                    "the stored result must belong to the winner, was $stored",
+                    stored == "ok" || stored == "boom",
+                )
+            } finally {
+                reader.close()
+            }
+        } finally {
+            a.close()
+            b.close()
+            file.delete()
+        }
     }
 
     // 4. Отмена против успешного завершения: один согласованный исход.
@@ -260,5 +350,39 @@ class AgentBoardTerminalWriteTest {
         assertEquals("completed", outcome.reason)
         assertEquals("result", outcome.messageType)
         assertEquals("RUN_COMPLETED", outcome.eventType)
+    }
+
+    // 9. Противоречивые входные данные: приоритет зафиксирован, а не случаен.
+    @Test
+    fun `a run that is both successful and cancelled resolves to one documented status`() {
+        val outcome = AgentBoardLogic.terminalOutcome(succeeded = true, cancelled = true)
+
+        // The contract is that cancellation wins: a run the user stopped did
+        // not run to completion, whatever the caller believes about it. The
+        // point of the test is that the answer is fixed, not that it is any
+        // particular value.
+        assertEquals(AgentBoardLogic.STATUS_CANCELLED, outcome.status)
+        assertEquals("cancelled", outcome.reason)
+        assertEquals("cancelled", outcome.messageType)
+        assertEquals("RUN_CANCELLED", outcome.eventType)
+    }
+
+    // 10. Общий SQL - это СТРУКТУРНАЯ гарантия, а не проверка копии.
+    //
+    // Приложение и тест ссылаются на одну константу, поэтому разойтись они
+    // не могут: если константа изменится, изменится и запрос в приложении.
+    // Проверяем, что эта общая константа действительно несёт гард.
+    @Test
+    fun `the shared query carries the guard`() {
+        val sql = AgentBoardDao.SQL_SET_STATUS_IF
+
+        assertTrue(
+            "the shared query must be conditional on the current status",
+            sql.contains("AND status = :from"),
+        )
+        assertTrue(
+            "the shared query must be bound to one task",
+            sql.contains("WHERE id = :taskId"),
+        )
     }
 }
