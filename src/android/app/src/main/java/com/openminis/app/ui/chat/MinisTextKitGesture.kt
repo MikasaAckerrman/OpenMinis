@@ -646,6 +646,17 @@ fun MinisSelectionToolbarHost(
     controller: SelectionController,
     actions: SelectionToolbarActions? = null,
     /**
+     * The list the selection lives in, when the caller has one.
+     *
+     * The toolbar follows the selection while the list scrolls, so the
+     * frame tick is needed at frame rate then. When nothing is scrolling
+     * the position cannot change on its own, so the tick runs at a tenth
+     * of a second - a tick per frame is a recomposition per frame, for as
+     * long as the user keeps the selection alive, which they do after
+     * copying text.
+     */
+    listState: LazyListState? = null,
+    /**
      * Window-space rect inside which the toolbar's vertical position should
      * be clamped (typically the LazyColumn's window bounds). When provided,
      * the toolbar will never float above the rect's top or below its bottom
@@ -674,7 +685,7 @@ fun MinisSelectionToolbarHost(
         while (true) {
             androidx.compose.runtime.withFrameNanos { /* no-op */ }
             tick.value = tick.value + 1
-            if (!listState.isScrollInProgress) {
+            if (listState?.isScrollInProgress != true) {
                 // The anchors only move because of a scroll, or because the
                 // message behind the selection changed size. While neither is
                 // happening, a tick per frame is a recomposition per frame

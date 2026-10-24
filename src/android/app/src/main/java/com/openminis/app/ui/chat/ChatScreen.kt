@@ -4342,6 +4342,7 @@ fun ChatScreen(
                 // MinisTextKit floating toolbar — driven by selectionController.
                 MinisSelectionToolbarHost(
                     controller = selectionController,
+                    listState = listState,
                     // Clamp the menu's vertical position inside the
                     // LazyColumn's viewport in window coords, so it can't
                     // float above the chat header or below the composer /
