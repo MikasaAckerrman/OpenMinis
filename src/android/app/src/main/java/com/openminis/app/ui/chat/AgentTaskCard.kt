@@ -8,9 +8,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.annotation.StringRes
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.sp
+import com.openminis.app.R
 import com.openminis.app.data.db.AgentTaskEntity
 import com.openminis.app.offload.AgentBoardLogic
 import com.openminis.app.offload.AgentRunProgress
@@ -63,7 +66,7 @@ internal fun AgentTaskCard(
         if (live != null && live.nodes.isNotEmpty()) {
             AgentRunProgressNodeRows(live.nodes)
         }
-        AgentRunProgressStatusText(taskStatusLabel(status, stale))
+        AgentRunProgressStatusText(stringResource(statusLabel(status, stale)))
 
         val artifact = task.resultArtifact
         when {
@@ -73,7 +76,7 @@ internal fun AgentTaskCard(
                 Row {
                     TextButton(onClick = { onOpenSession(resultSessionId) }) {
                         Text(
-                            "Показать результат",
+                            stringResource(R.string.agent_panel_show_result),
                             fontSize = 12.sp,
                             color = ChatColors.primaryText,
                         )
@@ -100,7 +103,7 @@ internal fun AgentTaskCard(
                     Row {
                         TextButton(onClick = { expanded = !expanded }) {
                             Text(
-                                if (expanded) "Свернуть" else "Показать полностью",
+                                if (expanded) stringResource(R.string.agent_panel_collapse) else stringResource(R.string.agent_panel_show_full),
                                 fontSize = 12.sp,
                                 color = ChatColors.primaryText,
                             )
@@ -118,7 +121,7 @@ internal fun AgentTaskCard(
             Row {
                 TextButton(onClick = { onCancel(task.id) }) {
                     Text(
-                        "Остановить",
+                        stringResource(R.string.agent_panel_stop),
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Medium,
                         color = ChatColors.primaryText,
@@ -137,13 +140,14 @@ internal fun AgentTaskCard(
  * than as running, because a task that never finishes on its own is
  * something the user can act on.
  */
-private fun taskStatusLabel(status: String, stale: Boolean): String = when {
-    stale -> "Прервано"
-    status == AgentBoardLogic.STATUS_RUNNING -> "Выполняется"
-    status == AgentBoardLogic.STATUS_PENDING -> "В очереди"
-    status == AgentBoardLogic.STATUS_BLOCKED -> "Ждёт зависимостей"
-    status == AgentBoardLogic.STATUS_COMPLETED -> "Завершено"
-    status == AgentBoardLogic.STATUS_FAILED -> "Ошибка"
-    status == AgentBoardLogic.STATUS_CANCELLED -> "Отменено"
-    else -> status
+@StringRes
+private fun statusLabel(status: String, stale: Boolean): Int = when {
+    stale -> R.string.agent_status_interrupted
+    status == AgentBoardLogic.STATUS_RUNNING -> R.string.agent_status_running
+    status == AgentBoardLogic.STATUS_PENDING -> R.string.agent_status_pending
+    status == AgentBoardLogic.STATUS_BLOCKED -> R.string.agent_status_blocked
+    status == AgentBoardLogic.STATUS_COMPLETED -> R.string.agent_status_completed
+    status == AgentBoardLogic.STATUS_FAILED -> R.string.agent_status_failed
+    status == AgentBoardLogic.STATUS_CANCELLED -> R.string.agent_status_cancelled
+    else -> R.string.agent_status_completed
 }

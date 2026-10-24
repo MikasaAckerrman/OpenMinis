@@ -1704,4 +1704,20 @@
     <string name="browser_perm_mic">Microphone for sites"</string>
     <string name="browser_downloads_action">Downloads</string>
     <string name="browser_desktop_toggle">Desktop mode</string>
+    <!-- [T-agent-panel] The panel of the agent board. -->
+    <string name="agent_panel_empty">No agents have been started yet</string>
+    <string name="agent_panel_active_header">In progress</string>
+    <string name="agent_panel_finished_header">Recent</string>
+    <string name="agent_panel_entry">Agents: %1$d</string>
+    <string name="agent_panel_show_result">Show result</string>
+    <string name="agent_panel_show_full">Show full</string>
+    <string name="agent_panel_collapse">Collapse</string>
+    <string name="agent_panel_stop">Stop</string>
+    <string name="agent_status_running">Running</string>
+    <string name="agent_status_pending">Queued</string>
+    <string name="agent_status_blocked">Waiting for dependencies</string>
+    <string name="agent_status_completed">Finished</string>
+    <string name="agent_status_failed">Failed</string>
+    <string name="agent_status_cancelled">Cancelled</string>
+    <string name="agent_status_interrupted">Interrupted</string>
 </resources>
