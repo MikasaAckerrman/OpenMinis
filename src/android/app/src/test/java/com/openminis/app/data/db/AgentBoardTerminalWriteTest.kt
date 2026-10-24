@@ -42,6 +42,14 @@ import java.util.concurrent.atomic.AtomicInteger
 class AgentBoardTerminalWriteTest {
 
     /**
+     * SQLite's result code for "the database is busy" - another connection
+     * holds the write lock. Only this one is an expected race.
+     */
+    private companion object {
+        const val SQLITE_BUSY = 5
+    }
+
+    /**
      * A stand-in for AgentBoardDao.finishTask: the same guarded update,
      * the same "nothing happens unless the move happened" rule, inside one
      * transaction.
@@ -249,9 +257,16 @@ class AgentBoardTerminalWriteTest {
                         winners.incrementAndGet()
                     }
                 } catch (e: SQLException) {
-                    // SQLite refused the write outright because the other
-                    // transaction held the lock. That is a loss too: this
-                    // caller did not write anything.
+                    // Only an EXPECTED write conflict counts as a loss. Any
+                    // other database error is a fault in the test itself -
+                    // a broken schema, a missing table, a bad connection -
+                    // and must not be silently mistaken for "the other
+                    // thread won". Otherwise a broken test would keep
+                    // passing the invariant.
+                    val conflict = e.errorCode == SQLITE_BUSY ||
+                        (e.message ?: "").contains("database is locked") ||
+                        (e.message ?: "").contains("SQLITE_BUSY")
+                    if (!conflict) throw e
                 }
             }
 

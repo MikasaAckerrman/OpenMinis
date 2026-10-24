@@ -144,7 +144,23 @@ object SubagentExecutor {
                 description = task, workspaceDir = null, dependsOnJson = dependsOnJson,
             )
         }
-        val result = AgentGraphRunner.run(context, graph.id, task, taskId = node.id, ephemeral = true)
+        // [T-board-cancelled-status] A run that is cancelled must still
+        // close its task. Before, the cancellation propagated straight out
+        // of this function and the board row stayed RUNNING for good - a
+        // zombie that no one would ever finish.
+        val result = try {
+            AgentGraphRunner.run(context, graph.id, task, taskId = node.id, ephemeral = true)
+        } catch (e: CancellationException) {
+            if (teamId != null) {
+                AgentBoardRecorder.taskFinished(
+                    context, taskId = node.id, teamId = teamId,
+                    assignedAgentId = null, succeeded = false,
+                    result = "run cancelled",
+                    cancelled = true,
+                )
+            }
+            throw e
+        }
         if (teamId != null) {
             AgentBoardRecorder.taskFinished(
                 context, taskId = node.id, teamId = teamId,
@@ -785,6 +801,21 @@ object SubagentExecutor {
                 )
             }
             formatResult(graphId, result)
+        } catch (e: CancellationException) {
+            // [T-board-cancelled-status] CancellationException is an
+            // Exception in Kotlin, so the catch below would have taken it:
+            // the run would have been recorded as a failure, and - worse -
+            // the cancellation would have been swallowed, so the caller's
+            // own cancellation would never have taken effect.
+            if (teamId != null) {
+                AgentBoardRecorder.taskFinished(
+                    context, taskId = taskId, teamId = teamId,
+                    assignedAgentId = null, succeeded = false,
+                    result = "graph run cancelled",
+                    cancelled = true,
+                )
+            }
+            throw e
         } catch (e: Exception) {
             if (teamId != null) {
                 AgentBoardRecorder.taskFinished(
