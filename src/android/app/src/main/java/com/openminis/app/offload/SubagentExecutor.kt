@@ -227,6 +227,10 @@ object SubagentExecutor {
                             context, taskId = spawnId, teamId = teamId,
                             assignedAgentId = null, succeeded = false,
                             result = "background run cancelled",
+                            // [T-board-cancelled-status] The user stopped
+                            // it. Recording that as FAILED would say the run
+                            // broke, which is not what happened.
+                            cancelled = true,
                         )
                     }
                     throw e

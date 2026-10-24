@@ -24,6 +24,19 @@ object AgentBoardLogic {
     const val STATUS_RUNNING = "RUNNING"
     const val STATUS_COMPLETED = "COMPLETED"
     const val STATUS_FAILED = "FAILED"
+
+    /**
+     * [T-board-cancelled-status] A run that was stopped on purpose.
+     *
+     * Cancelled is not a flavour of failed. The user stopped it, so telling
+     * them it failed is a lie about who did what - and the board's own
+     * history is the record of that.
+     *
+     * The column is a plain string, so introducing the value needs no
+     * schema migration; the states that matter are the ones the UI has to
+     * name.
+     */
+    const val STATUS_CANCELLED = "CANCELLED"
     const val STATUS_BLOCKED = "BLOCKED"
 
     /**

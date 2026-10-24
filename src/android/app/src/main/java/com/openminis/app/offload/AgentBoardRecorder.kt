@@ -87,38 +87,45 @@ internal object AgentBoardRecorder {
         assignedAgentId: String?,
         succeeded: Boolean,
         result: String,
+        cancelled: Boolean = false,
     ): Unit = withContext(Dispatchers.IO) {
         runCatching {
             val now = System.currentTimeMillis()
             val dao = ProviderDatabase.getInstance(context).agentBoardDao()
-            val to = if (succeeded) AgentBoardLogic.STATUS_COMPLETED else AgentBoardLogic.STATUS_FAILED
-            dao.transition(
+            val to = when {
+                // [T-board-cancelled-status] Stopped on purpose is not the
+                // same thing as broken. The board records which happened.
+                cancelled -> AgentBoardLogic.STATUS_CANCELLED
+                succeeded -> AgentBoardLogic.STATUS_COMPLETED
+                else -> AgentBoardLogic.STATUS_FAILED
+            }
+            // [T-board-atomic-finish] One transaction: the status move, the
+            // ledger row, the stored result, the letter to the spawning
+            // session and the mission event either all happen or none do.
+            dao.finishTask(
                 taskId = taskId,
                 from = AgentBoardLogic.STATUS_RUNNING,
                 to = to,
                 byAgentId = assignedAgentId,
-                reason = if (succeeded) "completed" else "failed",
+                reason = when {
+                    cancelled -> "cancelled"
+                    succeeded -> "completed"
+                    else -> "failed"
+                },
+                result = result.take(RESULT_CAP),
+                toAgentId = teamId,
+                messageType = when {
+                    cancelled -> "cancelled"
+                    succeeded -> "result"
+                    else -> "error"
+                },
+                eventType = when {
+                    cancelled -> "RUN_CANCELLED"
+                    succeeded -> "RUN_COMPLETED"
+                    else -> "RUN_FAILED"
+                },
+                eventPayload = if (succeeded) "ok" else result.take(200),
                 now = now,
-            )
-            dao.setResult(taskId, assignedAgentId, result.take(RESULT_CAP), now)
-            dao.insertMailbox(
-                AgentMailboxEntity(
-                    fromAgentId = assignedAgentId ?: taskId,
-                    toAgentId = teamId,
-                    taskId = taskId,
-                    messageType = if (succeeded) "result" else "error",
-                    body = result.take(RESULT_CAP),
-                    createdAt = now,
-                ),
-            )
-            dao.insertMissionEvent(
-                MissionLogEntity(
-                    eventType = if (succeeded) "RUN_COMPLETED" else "RUN_FAILED",
-                    agentId = assignedAgentId,
-                    taskId = taskId,
-                    payload = if (succeeded) "ok" else result.take(200),
-                    timestamp = now,
-                ),
             )
             // [T-task-board] Board maintenance rides on the terminal write —
             // no separate lifecycle, no new call sites to forget.

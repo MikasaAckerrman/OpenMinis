@@ -59,6 +59,69 @@ interface AgentBoardDao {
      * ledger therefore stays a true history instead of recording transitions
      * that never happened.
      */
+    /**
+     * [T-board-atomic-finish] The whole terminal write, as one transaction.
+     *
+     * The status move and its consequences were four separate DAO calls,
+     * each its own transaction. A crash between them left a task marked
+     * COMPLETED with no result stored and no letter delivered to the
+     * session that spawned it - the board said the run finished and nobody
+     * could tell what it produced.
+     *
+     * The move is still conditional on the task being in [from]. If it is
+     * not - a second completion for the same task - nothing happens at all:
+     * no status change, no history row, no second result, and no second
+     * letter in the mailbox. The spawning session receives one result, not
+     * two, and the result it receives is the one that completed the task.
+     */
+    @Transaction
+    suspend fun finishTask(
+        taskId: String,
+        from: String,
+        to: String,
+        byAgentId: String?,
+        reason: String,
+        result: String,
+        toAgentId: String,
+        messageType: String,
+        eventType: String,
+        eventPayload: String,
+        now: Long,
+    ) {
+        val changed = setStatusIf(taskId, from, to, now)
+        if (changed == 0) return
+        insertHistory(
+            TaskStatusHistoryEntity(
+                taskId = taskId,
+                fromStatus = from,
+                toStatus = to,
+                changedByAgentId = byAgentId,
+                reason = reason,
+                changedAt = now,
+            ),
+        )
+        setResult(taskId, byAgentId, result, now)
+        insertMailbox(
+            AgentMailboxEntity(
+                fromAgentId = byAgentId ?: taskId,
+                toAgentId = toAgentId,
+                taskId = taskId,
+                messageType = messageType,
+                body = result,
+                createdAt = now,
+            ),
+        )
+        insertMissionEvent(
+            MissionLogEntity(
+                eventType = eventType,
+                agentId = byAgentId,
+                taskId = taskId,
+                payload = eventPayload,
+                timestamp = now,
+            ),
+        )
+    }
+
     @Transaction
     suspend fun transition(
         taskId: String,
