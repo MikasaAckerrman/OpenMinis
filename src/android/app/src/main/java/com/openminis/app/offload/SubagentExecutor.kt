@@ -312,9 +312,17 @@ object SubagentExecutor {
         if (unmet.isEmpty()) return null
         val detail = unmet.joinToString { dep ->
             val row = teamTasks.find { it.id == dep }
+            // [T-board-stale-exact] A run still visible in this process is
+            // alive, however old its row is: the row's updated_at is a birth
+            // stamp, not a heartbeat, and treating it as one told the
+            // orchestrator to re-spawn an agent that was still working.
             val stale = row != null &&
-                row.status == AgentBoardLogic.STATUS_RUNNING &&
-                now - row.updatedAt > AgentBoardLogic.STALE_AFTER_MS
+                AgentBoardLogic.isStale(
+                    status = row.status,
+                    updatedAt = row.updatedAt,
+                    nowMs = now,
+                    hasLiveProgress = AgentRunProgress.snapshots.value.containsKey(dep),
+                )
             when {
                 row == null -> "$dep (unknown/pruned)"
                 stale -> "$dep (RUNNING >1h — the run likely died with its process; re-spawn it or drop the dependency)"

@@ -244,7 +244,7 @@ object AgentBoardLogic {
         val items = tasks.filter { t ->
             t.status == STATUS_FAILED ||
                 t.status == STATUS_BLOCKED ||
-                (t.status == STATUS_RUNNING && now - t.updatedAt > STALE_AFTER_MS)
+                isStale(t.status, t.updatedAt, now)
         }.sortedBy(severity)
         if (items.isEmpty()) return ""
         val overflow = items.size - maxLines
@@ -293,7 +293,7 @@ object AgentBoardLogic {
         if (pending > 0) sb.append(", $pending pending")
         tasks.take(tail).forEach { t ->
             val depNote = if (t.dependsOnTaskIds != "[]") " deps:${t.dependsOnTaskIds}" else ""
-            val stale = if (t.status == STATUS_RUNNING && now - t.updatedAt > STALE_AFTER_MS) {
+            val stale = if (isStale(t.status, t.updatedAt, now)) {
                 " ⚠ stale (started >1h ago — the run likely died with its process; treat as failed or re-spawn)"
             } else ""
             sb.appendLine()
