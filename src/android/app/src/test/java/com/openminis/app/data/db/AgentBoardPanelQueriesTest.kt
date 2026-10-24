@@ -79,6 +79,18 @@ class AgentBoardPanelQueriesTest {
                         "is_agent_showcase INTEGER NOT NULL DEFAULT 0, " +
                         "created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
                 )
+                // [T-board-prune-history] The prune deletes the history of
+                // the tasks it removes, so the table has to be here. The
+                // app gets it from Room; the test creates it by hand, and
+                // the first run failed with "no such table" because it was
+                // missing here - the production SQL was right, the test
+                // schema was not.
+                s.executeUpdate(
+                    "CREATE TABLE task_status_history(" +
+                        "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+                        "task_id TEXT NOT NULL, from_status TEXT, to_status TEXT, " +
+                        "changed_by_agent_id TEXT, reason TEXT, changed_at INTEGER)",
+                )
             }
             conn.prepareStatement(
                 "INSERT INTO agent_tasks(" +
