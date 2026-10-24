@@ -58,6 +58,49 @@ data class AgentRunsUiState(
 }
 
 /**
+ * [T-agent-panel] The status the panel shows for a task.
+ *
+ * A pure rule, so it can be tested on its own: the panel's correctness
+ * rests on it, and a rule that only exists inside a combine block is a
+ * rule nobody can check.
+ *
+ * Two sides, one idea:
+ *
+ *  - a TERMINAL status in the database wins over anything the progress
+ *    says. The board is the durable record of how the run ended, and a
+ *    snapshot that still says "running" is a leftover.
+ *  - a terminal status in the progress wins over a NON-terminal status in
+ *    the database. The run says it finished; the board just did not hear
+ *    about it, because the write was lost. The run's own testimony is
+ *    newer than the row.
+ *
+ * So a terminal status always wins, and only a conflict between two
+ * terminal statuses is settled in favour of the database.
+ *
+ * The second side is only safe because a finished run does not leave a
+ * snapshot behind: an ephemeral run is cleared right after it is marked
+ * settled, and a task id belongs to one run. A stale snapshot of an
+ * earlier run therefore cannot arrive here for a new one.
+ */
+internal fun resolveAgentTaskStatus(
+    dbStatus: String,
+    snapshotFinalStatus: String?,
+): String = when {
+    dbStatus in AGENT_TASK_TERMINAL_STATUSES -> dbStatus
+    snapshotFinalStatus != null -> snapshotFinalStatus
+    else -> dbStatus
+}
+
+/**
+ * [T-agent-panel] The statuses a task does not come back from.
+ */
+internal val AGENT_TASK_TERMINAL_STATUSES = setOf(
+    AgentBoardLogic.STATUS_COMPLETED,
+    AgentBoardLogic.STATUS_FAILED,
+    AgentBoardLogic.STATUS_CANCELLED,
+)
+
+/**
  * [T-agent-panel] The state of the agent panel.
  *
  * It combines three sources, and they do not agree with each other by
@@ -149,11 +192,10 @@ class AgentRunsViewModel(
 
         for (task in activeTasks) {
             val live = liveMap[task.id]
-            val status = when {
-                task.status in TERMINAL_STATUSES -> task.status
-                live != null && live.finalStatus != null -> live.finalStatus
-                else -> task.status
-            }
+            val status = resolveAgentTaskStatus(
+                dbStatus = task.status,
+                snapshotFinalStatus = live?.finalStatus,
+            )
             val row = buildRow(task, status, live, showcases, now)
             if (task.status in TERMINAL_STATUSES || live?.finalStatus != null) {
                 finished += row
@@ -204,10 +246,6 @@ class AgentRunsViewModel(
         const val SUBSCRIPTION_TIMEOUT_MS = 5_000L
 
         /** The statuses a task does not come back from. */
-        val TERMINAL_STATUSES = setOf(
-            AgentBoardLogic.STATUS_COMPLETED,
-            AgentBoardLogic.STATUS_FAILED,
-            AgentBoardLogic.STATUS_CANCELLED,
-        )
+        val TERMINAL_STATUSES: Set<String> get() = AGENT_TASK_TERMINAL_STATUSES
     }
 }
