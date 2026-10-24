@@ -158,6 +158,42 @@ interface AgentBoardDao {
     suspend fun tasksForTeam(teamId: String, limit: Int = 50): List<AgentTaskEntity>
 
     /**
+     * [T-board-panel] The tasks of a team that are still in flight.
+     *
+     * PENDING, RUNNING and BLOCKED. BLOCKED belongs here and not with the
+     * finished ones: a blocked task has not ended, it is waiting for its
+     * dependencies and it can still proceed.
+     *
+     * Ordered oldest first, so the task that has been waiting longest is
+     * the one the user sees at the top - that is the one that needs
+     * attention.
+     *
+     * There is no window here on purpose. [tasksForTeam] needs a limit
+     * because it serves a mixed list, where fifty finished tasks would
+     * push the live ones out; this query serves only the live ones, and
+     * their number is small by nature. A limit would be an arbitrary
+     * number that could hide a task.
+     */
+    @Query(SQL_ACTIVE_TASKS)
+    suspend fun activeTasksForTeam(teamId: String): List<AgentTaskEntity>
+
+    /**
+     * [T-board-panel] The finished tasks of a team, newest first.
+     *
+     * Every terminal state: COMPLETED, FAILED and CANCELLED. A cancelled
+     * task is finished, and the panel has to be able to say so - hiding it
+     * would make a cancelled run look like one that never happened.
+     *
+     * Ordered by when the task was last touched, so the run the user just
+     * stopped is the first one it sees.
+     */
+    @Query(SQL_RECENT_FINISHED)
+    suspend fun recentFinishedTasksForTeam(
+        teamId: String,
+        limit: Int = 20,
+    ): List<AgentTaskEntity>
+
+    /**
      * [T-task-board] Statuses of SPECIFIC task ids — the dependency gate's
      * read. Deep-analysis fix: the gate previously read the newest-100 team
      * window; a depends_on citing an OLDER completed task fell out of the
@@ -176,8 +212,19 @@ interface AgentBoardDao {
     @Query("SELECT * FROM mission_log ORDER BY timestamp DESC LIMIT :limit")
     suspend fun recentMissionEvents(limit: Int = 100): List<MissionLogEntity>
 
-    /** Board maintenance: drop closed tasks (and, by cascade, their history). */
-    @Query("DELETE FROM agent_tasks WHERE updated_at < :cutoff AND status IN ('COMPLETED', 'FAILED')")
+    /**
+     * Board maintenance: drop closed tasks (and, by cascade, their history).
+     *
+     * [T-board-panel] CANCELLED is closed too. The name and the comment said
+     * "closed tasks" while the query covered only COMPLETED and FAILED, so
+     * every cancelled task stayed in the table forever: the board grew
+     * without bound and the finished list filled up with cancellations.
+     *
+     * BLOCKED and RUNNING are deliberately not here - they are not closed.
+     * A task that is still waiting for its dependencies must survive the
+     * prune; a running one must survive it even more so.
+     */
+    @Query(SQL_PRUNE_CLOSED)
     suspend fun pruneClosedBefore(cutoff: Long): Int
 
     @Query("DELETE FROM mission_log WHERE timestamp < :cutoff")
@@ -204,5 +251,26 @@ interface AgentBoardDao {
         const val SQL_SET_STATUS_IF =
             "UPDATE agent_tasks SET status = :to, updated_at = :now " +
                 "WHERE id = :taskId AND status = :from"
+
+        /**
+         * [T-board-panel] The queries the agent panel reads.
+         *
+         * Constants rather than strings inside the annotations, so the
+         * tests run the very queries the app runs instead of copies that
+         * can drift away from the real thing.
+         */
+        const val SQL_ACTIVE_TASKS =
+            "SELECT * FROM agent_tasks WHERE team_id = :teamId " +
+                "AND status IN ('PENDING', 'RUNNING', 'BLOCKED') " +
+                "ORDER BY created_at ASC"
+
+        const val SQL_RECENT_FINISHED =
+            "SELECT * FROM agent_tasks WHERE team_id = :teamId " +
+                "AND status IN ('COMPLETED', 'FAILED', 'CANCELLED') " +
+                "ORDER BY updated_at DESC LIMIT :limit"
+
+        const val SQL_PRUNE_CLOSED =
+            "DELETE FROM agent_tasks WHERE updated_at < :cutoff " +
+                "AND status IN ('COMPLETED', 'FAILED', 'CANCELLED')"
     }
 }

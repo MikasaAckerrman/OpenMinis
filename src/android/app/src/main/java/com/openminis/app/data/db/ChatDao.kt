@@ -114,6 +114,27 @@ interface ChatDao {
     )
     suspend fun markAsAgentShowcase(id: String, runId: String)
 
+    /**
+     * [T-board-panel] The showcase session of a run - the one chat that
+     * holds the run's messages and is therefore the thing a panel entry
+     * opens.
+     *
+     * A run tags its sessions with the run id; the worker sessions of the
+     * same run carry that id too but are hidden from the list, and the
+     * showcase flag is what tells them apart. So the query has to ask for
+     * the showcase explicitly - asking for the run id alone would return a
+     * hidden worker session.
+     *
+     * Newest first, so that a run that somehow has more than one showcase
+     * resolves to the same one every time instead of an arbitrary one.
+     *
+     * Null is a normal answer: a run that produced no messages never got a
+     * showcase session, and the panel then shows the task's own result
+     * instead of a link that opens nothing.
+     */
+    @Query(SQL_SHOWCASE_FOR_RUN)
+    suspend fun showcaseSessionForRun(runId: String): String?
+
     @Query("SELECT * FROM sessions WHERE id = :id")
     suspend fun getSession(id: String): ChatSessionEntity?
 
@@ -592,4 +613,15 @@ interface ChatDao {
      *  alongside the paginated slice so callers can compute `hasMore`. */
     @Query("SELECT COUNT(*) FROM messages WHERE session_id = :sessionId")
     suspend fun messageCountForSession(sessionId: String): Int
+
+    companion object {
+        /**
+         * [T-board-panel] A constant rather than a string inside the
+         * annotation, so the test can run the very query the app runs
+         * instead of a copy that can drift away from the real thing.
+         */
+        const val SQL_SHOWCASE_FOR_RUN =
+            "SELECT id FROM sessions WHERE agent_run_id = :runId " +
+                "AND is_agent_showcase = 1 ORDER BY created_at DESC LIMIT 1"
+    }
 }
