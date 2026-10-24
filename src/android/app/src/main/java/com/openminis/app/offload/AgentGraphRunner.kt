@@ -199,135 +199,145 @@ internal object AgentGraphRunner {
         // arriving for an unknown taskId is dropped, so a late begin() would lose
         // the entry node's start.
         AgentRunProgress.begin(taskId, graph.name)
+        try {
 
-        // Prepare artifact directory.
-        //
-        // ARTIFACT_DIR_BASE is a Linux path inside the PRoot rootfs, so it must be
-        // translated before any host-side File call. Doing it once here keeps
-        // every later write honest; `File("/var/minis/…")` silently points at a
-        // non-existent host directory and every write throws ENOENT.
-        //
-        // Resolved against the showcase session when there is one: `workspace` is
-        // a per-session subdir, and the global mount map is last-writer-wins
-        // across sessions, so the session-scoped resolver is the only one that
-        // reliably answers "where will the link in THIS chat point".
-        val artifactDir = "$ARTIFACT_DIR_BASE/$taskId"
-        val artifactHostDir = (
-            if (showcaseId != null) {
-                com.openminis.app.sandbox.PRootKernel
-                    .resolveSessionHostPath(showcaseId, artifactDir, context)
-            } else {
-                com.openminis.app.sandbox.PRootKernel.resolveHostPath(artifactDir)
+            // Prepare artifact directory.
+            //
+            // ARTIFACT_DIR_BASE is a Linux path inside the PRoot rootfs, so it must be
+            // translated before any host-side File call. Doing it once here keeps
+            // every later write honest; `File("/var/minis/…")` silently points at a
+            // non-existent host directory and every write throws ENOENT.
+            //
+            // Resolved against the showcase session when there is one: `workspace` is
+            // a per-session subdir, and the global mount map is last-writer-wins
+            // across sessions, so the session-scoped resolver is the only one that
+            // reliably answers "where will the link in THIS chat point".
+            val artifactDir = "$ARTIFACT_DIR_BASE/$taskId"
+            val artifactHostDir = (
+                if (showcaseId != null) {
+                    com.openminis.app.sandbox.PRootKernel
+                        .resolveSessionHostPath(showcaseId, artifactDir, context)
+                } else {
+                    com.openminis.app.sandbox.PRootKernel.resolveHostPath(artifactDir)
+                }
+                )?.also { it.mkdirs() }
+            if (artifactHostDir == null) {
+                com.openminis.app.logging.AppLogger.warning(
+                    LOG_TAG,
+                    "[${taskId.take(8)}] cannot resolve host path for $artifactDir — " +
+                        "artifacts will not be persisted (run continues)",
+                )
             }
-            )?.also { it.mkdirs() }
-        if (artifactHostDir == null) {
-            com.openminis.app.logging.AppLogger.warning(
-                LOG_TAG,
-                "[${taskId.take(8)}] cannot resolve host path for $artifactDir — " +
-                    "artifacts will not be persisted (run continues)",
+
+            // Initialize state
+            val state = GraphState(
+                graph = graph,
+                taskId = taskId,
+                artifactDir = artifactDir,
+                artifactHostDir = artifactHostDir,
+                input = input,
+                showcaseId = showcaseId,
+                ephemeral = ephemeral,
             )
-        }
 
-        // Initialize state
-        val state = GraphState(
-            graph = graph,
-            taskId = taskId,
-            artifactDir = artifactDir,
-            artifactHostDir = artifactHostDir,
-            input = input,
-            showcaseId = showcaseId,
-            ephemeral = ephemeral,
-        )
-
-        // Initialize all nodes as PENDING
-        for (node in graph.nodes) {
-            // Replicated nodes get one status slot per replica.
-            for (rid in node.replicaIds()) {
-                state.nodeStatus[rid] = NodeStatus.PENDING
+            // Initialize all nodes as PENDING
+            for (node in graph.nodes) {
+                // Replicated nodes get one status slot per replica.
+                for (rid in node.replicaIds()) {
+                    state.nodeStatus[rid] = NodeStatus.PENDING
+                }
             }
-        }
 
-        val execContext = ExecutionContext(state, context, providerRepo, json)
+            val execContext = ExecutionContext(state, context, providerRepo, json)
 
-        // Execute graph
-        val result = executeGraph(execContext)
+            // Execute graph
+            val result = executeGraph(execContext)
 
-        AgentRunShowcase.noteFinish(
-            context = context,
-            showcaseId = state.showcaseId,
-            status = result.status.name,
-            nodeStatuses = state.nodeStatus.mapValues { it.value.name },
-            artifactDir = artifactDir,
-            artifactCount = result.artifacts.size,
-            scopeViolations = state.scopeViolations,
-        )
-        // Mark the run settled. NOT cleared here: the chat still has to render
-        // the final card and commit its message, and clearing now would make the
-        // card vanish mid-commit. Ownership of the cleanup sits with the caller
-        // that showed the card.
-        AgentRunProgress.finish(taskId, result.status.name)
-        // [T-spawn-subagent-ephemeral] An ephemeral run has no chat card pinned
-        // to its taskId (that ownership belongs to the chat-decision path,
-        // which clears after committing its message), so the record is dropped
-        // here rather than left to accumulate one entry per tool call.
-        if (ephemeral) {
-            AgentRunProgress.clear(taskId)
-        }
+            AgentRunShowcase.noteFinish(
+                context = context,
+                showcaseId = state.showcaseId,
+                status = result.status.name,
+                nodeStatuses = state.nodeStatus.mapValues { it.value.name },
+                artifactDir = artifactDir,
+                artifactCount = result.artifacts.size,
+                scopeViolations = state.scopeViolations,
+            )
+            // Mark the run settled. The record is NOT dropped here for a run
+            // with a card: the chat still has to render the final card and
+            // commit its message, and clearing now would make the card vanish
+            // mid-commit. Ownership of that cleanup sits with the caller that
+            // showed the card.
+            AgentRunProgress.finish(taskId, result.status.name)
 
-        // Tool policies are keyed by session id in a process-wide map. Without
-        // this the map grows by one entry per node per run and never shrinks —
-        // small, but a leak that also means a deleted session's policy lingers
-        // and could apply to a recycled id. Same for the role prompt store.
-        for (sid in state.sessionMap.values + state.sessionByGroup.values) {
+            // Tool policies are keyed by session id in a process-wide map. Without
+            // this the map grows by one entry per node per run and never shrinks —
+            // small, but a leak that also means a deleted session's policy lingers
+            // and could apply to a recycled id. Same for the role prompt store.
+            for (sid in state.sessionMap.values + state.sessionByGroup.values) {
+                if (ephemeral) {
+                    // [T-spawn-subagent-ephemeral] A tool-initiated run has no
+                    // showcase and no reader for its worker sessions once the tool
+                    // result is built. Without this, every spawn_subagent call
+                    // leaked one hidden session row per agent, forever: every list
+                    // query filters on agent_run_id, so nothing could ever show
+                    // or delete them.
+                    AgentSessionManager.deleteSession(context, sid)
+                } else {
+                    com.openminis.app.tools.AgentToolPolicyStore.clearPolicy(sid)
+                    com.openminis.app.tools.AgentSystemPromptStore.clearPrompt(sid)
+                    com.openminis.app.tools.AgentRuntimePolicyStore.clear(sid)
+                    com.openminis.app.tools.AgentWorkspaceStore.clear(sid)
+                }
+                com.openminis.app.tools.AgentNodeBinding.unbind(sid)
+                com.openminis.app.tools.AgentToolBudgetStore.clear(sid)
+            }
+
+            // Write trace
+            if (graph.config.enableTracing) {
+                writeTrace(taskId, result.trace, json)
+            }
+
+            // Write final artifacts summary
+            writeArtifactIndex(state, result.artifacts)
+
+            // A per-node status summary is the single most useful line when a run
+            // did not do what was expected: it shows at a glance which stage was
+            // skipped, blocked, or never reached.
+            val summary = state.nodeStatus.entries
+                .sortedBy { it.key }
+                .joinToString(", ") { "${it.key}=${it.value}" }
+            com.openminis.app.logging.AppLogger.info(
+                LOG_TAG,
+                "[${taskId.take(8)}] RUN END status=${result.status} " +
+                    "artifacts=${result.artifacts.size} traceEvents=${result.trace.size}\n" +
+                    "  nodes: $summary\n" +
+                    "  artifacts dir: $artifactDir\n" +
+                    "  trace: $TRACE_DIR/agent_graph_$taskId.json",
+            )
+            if (state.scopeViolations.isNotEmpty()) {
+                com.openminis.app.logging.AppLogger.error(
+                    LOG_TAG,
+                    "[${taskId.take(8)}] SCOPE VIOLATIONS: " +
+                        state.scopeViolations.entries.joinToString("; ") { "${it.key}: ${it.value}" },
+                )
+            }
+
+            result
+        } finally {
+            // [T-board-snapshot-cleanup] An ephemeral run has no card
+            // and no other owner of its progress record, so this is the
+            // only place that can drop it. It has to happen on every way
+            // out of the run, including an exception and a cancellation:
+            // a record left behind says to the board that the run is still
+            // alive, and the rule that decides a run has died would never
+            // fire for it.
+            //
+            // The clear cannot throw - it only removes one key from a map -
+            // so it cannot mask the exception that is on its way out.
             if (ephemeral) {
-                // [T-spawn-subagent-ephemeral] A tool-initiated run has no
-                // showcase and no reader for its worker sessions once the tool
-                // result is built. Without this, every spawn_subagent call
-                // leaked one hidden session row per agent, forever: every list
-                // query filters on agent_run_id, so nothing could ever show
-                // or delete them.
-                AgentSessionManager.deleteSession(context, sid)
-            } else {
-                com.openminis.app.tools.AgentToolPolicyStore.clearPolicy(sid)
-                com.openminis.app.tools.AgentSystemPromptStore.clearPrompt(sid)
-                com.openminis.app.tools.AgentRuntimePolicyStore.clear(sid)
-                com.openminis.app.tools.AgentWorkspaceStore.clear(sid)
+                AgentRunProgress.clear(taskId)
             }
-            com.openminis.app.tools.AgentNodeBinding.unbind(sid)
-            com.openminis.app.tools.AgentToolBudgetStore.clear(sid)
         }
-
-        // Write trace
-        if (graph.config.enableTracing) {
-            writeTrace(taskId, result.trace, json)
-        }
-
-        // Write final artifacts summary
-        writeArtifactIndex(state, result.artifacts)
-
-        // A per-node status summary is the single most useful line when a run
-        // did not do what was expected: it shows at a glance which stage was
-        // skipped, blocked, or never reached.
-        val summary = state.nodeStatus.entries
-            .sortedBy { it.key }
-            .joinToString(", ") { "${it.key}=${it.value}" }
-        com.openminis.app.logging.AppLogger.info(
-            LOG_TAG,
-            "[${taskId.take(8)}] RUN END status=${result.status} " +
-                "artifacts=${result.artifacts.size} traceEvents=${result.trace.size}\n" +
-                "  nodes: $summary\n" +
-                "  artifacts dir: $artifactDir\n" +
-                "  trace: $TRACE_DIR/agent_graph_$taskId.json",
-        )
-        if (state.scopeViolations.isNotEmpty()) {
-            com.openminis.app.logging.AppLogger.error(
-                LOG_TAG,
-                "[${taskId.take(8)}] SCOPE VIOLATIONS: " +
-                    state.scopeViolations.entries.joinToString("; ") { "${it.key}: ${it.value}" },
-            )
-        }
-
-        result
     }
 
     /** Main graph execution loop. */
