@@ -6,6 +6,7 @@ import com.openminis.app.data.db.AgentTaskEntity
 import com.openminis.app.data.db.MissionLogEntity
 import com.openminis.app.data.db.ProviderDatabase
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 
 /**
@@ -35,7 +36,7 @@ internal object AgentBoardRecorder {
         description: String,
         workspaceDir: String?,
         dependsOnJson: String = "[]",
-    ): Unit = withContext(Dispatchers.IO) {
+    ): Unit = withContext(NonCancellable + Dispatchers.IO) {
         runCatching {
             val now = System.currentTimeMillis()
             val dao = ProviderDatabase.getInstance(context).agentBoardDao()
@@ -88,7 +89,20 @@ internal object AgentBoardRecorder {
         succeeded: Boolean,
         result: String,
         cancelled: Boolean = false,
-    ): Unit = withContext(Dispatchers.IO) {
+        // [T-board-cancelled-status] The terminal write must survive the
+        // cancellation that caused it.
+        //
+        // This function is called from the catch block of a cancelled
+        // coroutine, and withContext checks the caller's context before it
+        // runs the block: in a cancelled coroutine it throws immediately and
+        // the block never executes. The board would then keep the task as
+        // RUNNING for good - exactly the zombie the CANCELLED status exists
+        // to prevent.
+        //
+        // NonCancellable makes this one write uninterruptible. The
+        // cancellation itself is still rethrown by the caller afterwards;
+        // only the record of what happened survives it.
+    ): Unit = withContext(NonCancellable + Dispatchers.IO) {
         runCatching {
             val now = System.currentTimeMillis()
             val dao = ProviderDatabase.getInstance(context).agentBoardDao()
