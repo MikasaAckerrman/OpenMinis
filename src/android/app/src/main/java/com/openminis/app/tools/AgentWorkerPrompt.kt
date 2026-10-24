@@ -63,6 +63,10 @@ object AgentWorkerPrompt {
         // and reviewers have these; the notes state the traps that actually
         // waste turns (incomplete task text, invisible workers, duplicate
         // spawns of already-done work).
+        "cancel_subagent" to
+            "- cancel_subagent: stop a BACKGROUND subagent you started. Give the spawn id " +
+            "from the 'spawned: spawn-xxxx' text. Use it when the agent is looping or waiting for " +
+            "something that will not arrive. Cancelling one that already finished is not an error.",
         "spawn_subagent" to
             "- spawn_subagent: delegate ONE subtask to a specialist. The worker " +
             "sees ONLY the task text you pass — not this conversation — so include " +

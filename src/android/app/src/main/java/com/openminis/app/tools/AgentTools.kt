@@ -238,6 +238,9 @@ object AgentTools {
                 if (permitted(com.openminis.app.tools.SubagentTools.SPAWN_TOOL_NAME)) {
                     add(com.openminis.app.tools.SubagentTools.spawnSubagentDefinition())
                 }
+                if (permitted(com.openminis.app.tools.SubagentTools.CANCEL_TOOL_NAME)) {
+                    add(com.openminis.app.tools.SubagentTools.cancelSubagentDefinition())
+                }
                 if (permitted(com.openminis.app.tools.SubagentTools.SPAWN_MANY_TOOL_NAME)) {
                     add(com.openminis.app.tools.SubagentTools.spawnManyDefinition())
                 }

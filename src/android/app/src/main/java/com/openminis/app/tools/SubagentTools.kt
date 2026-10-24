@@ -29,6 +29,8 @@ object SubagentTools {
     const val LIST_AGENTS_TOOL_NAME = "list_agents"
     /** [T-task-board] The durable board view — cross-turn team memory. */
     const val TASK_BOARD_TOOL_NAME = "task_board"
+    /** [T-agent-cancel] Cancels a running background subagent by its spawn id. */
+    const val CANCEL_TOOL_NAME = "cancel_subagent"
 
     /**
      * [T-agent-file] Discovery for user-defined agents (Codex v2 pattern:
@@ -112,6 +114,25 @@ object SubagentTools {
         ),
         required = listOf("tool_title"),
         propertyOrdering = listOf("tool_title", "limit"),
+    )
+
+    /**
+     * [T-agent-cancel] Cancels a running BACKGROUND subagent.
+     */
+    fun cancelSubagentDefinition(): AgentToolDefinition = AgentToolDefinition(
+        name = CANCEL_TOOL_NAME,
+        description = "Cancel a BACKGROUND subagent by its spawn id. " +
+            "Use it when a background agent is going the wrong way: stuck in a loop, " +
+            "waiting for something that will never arrive, or working on something no longer needed. " +
+            "The agent stops and its slot is released. " +
+            "Get the ids from task_board, or from the 'spawned: spawn-xxxx' text a background spawn returned. " +
+            "Cancelling an agent that already finished is not an error - there is simply nothing left to stop.",
+        parameters = mapOf(
+            "tool_title" to AgentToolParam("string", "A concise 5-10 word summary shown to the user (e.g. 'Cancel the stuck review agent'). Use the user's language."),
+            "spawn_id" to AgentToolParam("string", "The spawn id of the background subagent to cancel, e.g. 'spawn-ab12cd34'."),
+        ),
+        required = listOf("tool_title", "spawn_id"),
+        propertyOrdering = listOf("tool_title", "spawn_id"),
     )
 
     fun spawnManyDefinition(): AgentToolDefinition = AgentToolDefinition(

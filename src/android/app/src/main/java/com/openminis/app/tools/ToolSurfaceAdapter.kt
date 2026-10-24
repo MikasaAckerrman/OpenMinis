@@ -104,6 +104,11 @@ object ToolSurfaceAdapter {
                 )
                 register(
                     this,
+                    SubagentTools.CANCEL_TOOL_NAME,
+                    SubagentTools.cancelSubagentDefinition(),
+                )
+                register(
+                    this,
                     SubagentTools.SPAWN_MANY_TOOL_NAME,
                     SubagentTools.spawnManyDefinition(),
                 )

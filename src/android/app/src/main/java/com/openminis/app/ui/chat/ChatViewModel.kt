@@ -15745,6 +15745,7 @@ class ChatViewModel(
             "browser_use" -> executeBrowserUseTool(argsJson)
             // [T-spawn-subagent] Runtime subagent spawning (Claude Code pattern).
             com.openminis.app.tools.SubagentTools.SPAWN_TOOL_NAME -> executeSpawnSubagent(argsJson)
+            com.openminis.app.tools.SubagentTools.CANCEL_TOOL_NAME -> executeCancelSubagent(argsJson)
             com.openminis.app.tools.SubagentTools.SPAWN_MANY_TOOL_NAME -> executeSpawnMany(argsJson)
             com.openminis.app.tools.SubagentTools.LIST_AGENTS_TOOL_NAME -> executeListAgents(argsJson)
             com.openminis.app.tools.TurnTimerTool.NAME -> executeTurnTimer(argsJson)
@@ -16245,6 +16246,27 @@ class ChatViewModel(
      * specialist agent at runtime. Foreground blocks until done; background
      * runs concurrently and delivers the result via a system message.
      */
+    /**
+     * [T-agent-cancel] Cancels a background subagent by its spawn id.
+     */
+    private suspend fun executeCancelSubagent(argsJson: String): ToolExecutionResult {
+        val args = runCatching { JSONObject(argsJson) }.getOrNull()
+            ?: return ToolExecutionResult("Invalid JSON for cancel_subagent", false)
+        val spawnId = args.optString("spawn_id").trim()
+        if (spawnId.isEmpty()) {
+            return ToolExecutionResult("cancel_subagent: 'spawn_id' is required", false)
+        }
+        val cancelled = com.openminis.app.offload.SubagentExecutor.cancelBackground(spawnId)
+        return if (cancelled) {
+            ToolExecutionResult("Cancelled background subagent $spawnId.", true)
+        } else {
+            ToolExecutionResult(
+                "No running background subagent with id $spawnId - it has already finished, or it was never started.",
+                false,
+            )
+        }
+    }
+
     private suspend fun executeSpawnSubagent(argsJson: String): ToolExecutionResult {
         val args = runCatching { JSONObject(argsJson) }.getOrNull()
             ?: return ToolExecutionResult("Invalid JSON for spawn_subagent", false)
@@ -20237,6 +20259,7 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         "file_edit" -> "Edit File"
         "browser_use" -> "Browse Web"
         "spawn_subagent" -> "Spawn Subagent"
+        "cancel_subagent" -> "Cancel Subagent"
         "run_graph" -> "Run Agent Graph"
         "read_image" -> "Read Image"
         "memory_write" -> "Write Memory"

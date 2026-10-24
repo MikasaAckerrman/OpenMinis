@@ -95,7 +95,7 @@ object SubagentExecutor {
             // level deep, exactly as designed.
             allowedTools = defaultToolsForRole(agentRole).let { tools ->
                 if (allowNesting) tools
-                else tools.filterNot { it == "spawn_subagent" || it == "spawn_many" }
+                else tools.filterNot { it == "spawn_subagent" || it == "spawn_many" || it == "cancel_subagent" }
             },
             maxTurns = 8,
             modelRole = modelRoleFor(agentRole),
@@ -389,7 +389,7 @@ object SubagentExecutor {
             allowedTools = (agent.tools ?: defaultToolsForRole(AgentRole.DOCUMENTATION_AGENT))
                 .let { tools ->
                     if (allowNesting) tools
-                    else tools.filterNot { it == "spawn_subagent" || it == "spawn_many" }
+                    else tools.filterNot { it == "spawn_subagent" || it == "spawn_many" || it == "cancel_subagent" }
                 },
             maxTurns = agent.maxTurns,
             modelEntryId = agent.modelEntryId.orEmpty(),
@@ -638,8 +638,22 @@ object SubagentExecutor {
      */
     fun cancelBackground(spawnId: String): Boolean {
         val entry = activeBackground[spawnId] ?: return false
+        // A job that is no longer active has already finished, or has already
+        // been cancelled. Reporting that as "cancelled" would be a lie: there
+        // was nothing left to stop. It also makes a second cancel of the
+        // same agent honest - the first one stopped it, so the second one
+        // finds it already stopped.
+        if (!entry.job.isActive) return false
         entry.job.cancel()
         return true
+    }
+
+    /**
+     * [T-agent-cancel-test] Registers a background entry for tests, so the
+     * cancellation contract can be exercised without running a real agent.
+     */
+    internal fun registerBackgroundForTest(spawnId: String, job: kotlinx.coroutines.Job) {
+        activeBackground[spawnId] = ActiveBackground("test", job)
     }
 
     fun activeBackgroundCount(): Int = activeBackground.size
@@ -1145,12 +1159,12 @@ object SubagentRoles {
         // REVIEWER -> leaf). The matrix that grants these tools lives in
         // mayDelegate() — see the depth-cap comment there.
         AgentRole.ORCHESTRATOR ->
-            listOf("shell_execute", "file_read", "spawn_subagent", "spawn_many", "task_board")
+            listOf("shell_execute", "file_read", "spawn_subagent", "spawn_many", "cancel_subagent", "task_board")
         AgentRole.CODE_CORRECTNESS_REVIEWER,
         AgentRole.SECURITY_REVIEWER,
         AgentRole.PERFORMANCE_REVIEWER,
         AgentRole.TEST_QUALITY_AUDITOR ->
-            listOf("shell_execute", "file_read", "browser_use", "spawn_subagent")
+            listOf("shell_execute", "file_read", "browser_use", "spawn_subagent", "cancel_subagent")
         else ->
             listOf("shell_execute", "file_read", "browser_use")
     }
