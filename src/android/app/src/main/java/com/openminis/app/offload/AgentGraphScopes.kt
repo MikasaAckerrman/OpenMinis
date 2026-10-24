@@ -1,7 +1,7 @@
 package com.openminis.app.offload
 
+import kotlinx.coroutines.CompletableJob
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.complete
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
@@ -85,5 +85,5 @@ internal class AgentGraphScopes {
 
 /** One run's scope. Identity matters: the registry compares by it. */
 internal class AgentGraphScope(val taskId: String, parent: Job?) {
-    val job: Job = Job(parent)
+    val job: CompletableJob = Job(parent)
 }
