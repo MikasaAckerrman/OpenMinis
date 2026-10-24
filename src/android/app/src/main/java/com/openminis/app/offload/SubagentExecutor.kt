@@ -35,8 +35,19 @@ object SubagentExecutor {
     private const val RESULT_CAP_CHARS = 24_000
     private const val HANDOFF_CAP = 6_000
 
-    /** Active background subagents: spawnId → role + task preview. */
-    private val activeBackground = ConcurrentHashMap<String, String>()
+    /**
+     * Active background subagents: spawnId → preview + the job that runs it.
+     *
+     * [T-subagent-cancel-by-id] The job is kept here so a background agent
+     * can be cancelled by its spawn id. The map used to hold the preview
+     * string alone, which meant the only way to stop a background agent was
+     * to let it finish - a spawn that had gone wrong kept its slot, its
+     * model calls and its share of the concurrency budget until the whole
+     * task was over.
+     */
+    private val activeBackground = ConcurrentHashMap<String, ActiveBackground>()
+
+    private class ActiveBackground(val preview: String, val job: kotlinx.coroutines.Job)
 
     /** [T-spawn-many] Phone ceilings: parallel tool agents + background spawns. */
     const val MAX_PARALLEL = 3
@@ -169,9 +180,12 @@ object SubagentExecutor {
         teamId: String? = null,
         /** [T-task-board] JSON array of predecessor task ids (enforced before the run). */
         dependsOnJson: String = "[]",
+        parentJob: kotlinx.coroutines.Job? = null,
     ): String {
-        activeBackground[spawnId] = "$role: ${task.take(80)}"
-        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+        val scope = kotlinx.coroutines.CoroutineScope(
+            kotlinx.coroutines.Dispatchers.IO + (parentJob ?: kotlinx.coroutines.Job())
+        )
+        val job = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
             try {
                 // [T-task-board] Durable ledger for background runs too — a
                 // background agent that dies with the process leaves a
@@ -241,6 +255,8 @@ object SubagentExecutor {
                 runCatching { app.providerRepository.deleteAgentGraph(graph.id) }
             }
         }
+        activeBackground[spawnId] = ActiveBackground("$role: ${task.take(80)}", job)
+        job.start()
         return "spawned: $spawnId ($role, running in background — result will arrive as notification)"
     }
 
@@ -613,6 +629,19 @@ object SubagentExecutor {
         null
     }
 
+    /**
+     * [T-subagent-cancel-by-id] Cancels a background agent by its spawn id.
+     *
+     * Returns false when there is no such run, or when it has already
+     * finished - cancelling a finished run is not an error, it simply has
+     * nothing left to stop.
+     */
+    fun cancelBackground(spawnId: String): Boolean {
+        val entry = activeBackground[spawnId] ?: return false
+        entry.job.cancel()
+        return true
+    }
+
     fun activeBackgroundCount(): Int = activeBackground.size
 
     /**
@@ -694,7 +723,7 @@ object SubagentExecutor {
                     "running (phone ceiling). Wait for their result notifications first, " +
                     "then spawn again."
             }
-            return launchBackground(context, app, graph, spawnId, role, task, onBackgroundResult, spawnerSessionId, depsJson(dependsOn))
+            return launchBackground(context, app, graph, spawnId, role, task, onBackgroundResult, spawnerSessionId, depsJson(dependsOn), parentJob = null)
         }
     }
 
