@@ -37,6 +37,46 @@ object AgentBoardLogic {
      * name.
      */
     const val STATUS_CANCELLED = "CANCELLED"
+
+    /**
+     * [T-board-terminal-outcome] How a run ended, decided in one place.
+     *
+     * The four things a terminal write needs - the status the task moves
+     * to, the reason recorded in the ledger, the kind of letter the
+     * spawning session receives and the mission event - are one decision,
+     * not four independent ifs that can disagree with each other.
+     *
+     * Cancelled is deliberately not folded into failed. "The user stopped
+     * it" and "it broke" are different facts, and the board is the record
+     * of who did what.
+     */
+    data class TerminalOutcome(
+        val status: String,
+        val reason: String,
+        val messageType: String,
+        val eventType: String,
+    )
+
+    fun terminalOutcome(succeeded: Boolean, cancelled: Boolean): TerminalOutcome = when {
+        cancelled -> TerminalOutcome(
+            status = STATUS_CANCELLED,
+            reason = "cancelled",
+            messageType = "cancelled",
+            eventType = "RUN_CANCELLED",
+        )
+        succeeded -> TerminalOutcome(
+            status = STATUS_COMPLETED,
+            reason = "completed",
+            messageType = "result",
+            eventType = "RUN_COMPLETED",
+        )
+        else -> TerminalOutcome(
+            status = STATUS_FAILED,
+            reason = "failed",
+            messageType = "error",
+            eventType = "RUN_FAILED",
+        )
+    }
     const val STATUS_BLOCKED = "BLOCKED"
 
     /**

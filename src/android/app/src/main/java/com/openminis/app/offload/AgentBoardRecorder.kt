@@ -92,13 +92,9 @@ internal object AgentBoardRecorder {
         runCatching {
             val now = System.currentTimeMillis()
             val dao = ProviderDatabase.getInstance(context).agentBoardDao()
-            val to = when {
-                // [T-board-cancelled-status] Stopped on purpose is not the
-                // same thing as broken. The board records which happened.
-                cancelled -> AgentBoardLogic.STATUS_CANCELLED
-                succeeded -> AgentBoardLogic.STATUS_COMPLETED
-                else -> AgentBoardLogic.STATUS_FAILED
-            }
+            // [T-board-terminal-outcome] One decision, four consequences.
+            val outcome = AgentBoardLogic.terminalOutcome(succeeded, cancelled)
+            val to = outcome.status
             // [T-board-atomic-finish] One transaction: the status move, the
             // ledger row, the stored result, the letter to the spawning
             // session and the mission event either all happen or none do.
@@ -107,23 +103,11 @@ internal object AgentBoardRecorder {
                 from = AgentBoardLogic.STATUS_RUNNING,
                 to = to,
                 byAgentId = assignedAgentId,
-                reason = when {
-                    cancelled -> "cancelled"
-                    succeeded -> "completed"
-                    else -> "failed"
-                },
+                reason = outcome.reason,
                 result = result.take(RESULT_CAP),
                 toAgentId = teamId,
-                messageType = when {
-                    cancelled -> "cancelled"
-                    succeeded -> "result"
-                    else -> "error"
-                },
-                eventType = when {
-                    cancelled -> "RUN_CANCELLED"
-                    succeeded -> "RUN_COMPLETED"
-                    else -> "RUN_FAILED"
-                },
+                messageType = outcome.messageType,
+                eventType = outcome.eventType,
                 eventPayload = if (succeeded) "ok" else result.take(200),
                 now = now,
             )

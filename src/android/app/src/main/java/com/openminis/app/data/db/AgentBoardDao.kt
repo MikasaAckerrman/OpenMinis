@@ -36,7 +36,7 @@ interface AgentBoardDao {
      * move actually happened. A transition whose precondition does not hold
      * is a no-op, not a silent overwrite.
      */
-    @Query("UPDATE agent_tasks SET status = :to, updated_at = :now WHERE id = :taskId AND status = :from")
+    @Query(SQL_SET_STATUS_IF)
     suspend fun setStatusIf(taskId: String, from: String, to: String, now: Long): Int
 
     @Query("UPDATE agent_tasks SET assigned_agent_id = :agentId, result_artifact = :result, updated_at = :now WHERE id = :taskId")
@@ -191,4 +191,18 @@ interface AgentBoardDao {
      */
     @Query("DELETE FROM agent_mailbox WHERE created_at < :cutoff")
     suspend fun pruneMailboxBefore(cutoff: Long): Int
+
+    companion object {
+        /**
+         * [T-board-guarded-transition] The status move, conditional on the
+         * status the task is actually in.
+         *
+         * This is a constant rather than a string inside the annotation so
+         * that the test can run the very query the app runs, instead of a
+         * copy of it that can drift away from the real thing.
+         */
+        const val SQL_SET_STATUS_IF =
+            "UPDATE agent_tasks SET status = :to, updated_at = :now " +
+                "WHERE id = :taskId AND status = :from"
+    }
 }
