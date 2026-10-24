@@ -135,6 +135,19 @@ interface ChatDao {
     @Query(SQL_SHOWCASE_FOR_RUN)
     suspend fun showcaseSessionForRun(runId: String): String?
 
+    /**
+     * [T-board-panel] The showcase sessions of several runs at once.
+     *
+     * The panel shows up to twenty finished tasks, and asking for the
+     * session of each one separately would be twenty queries for one
+     * screen. One query with the list of run ids answers all of them.
+     *
+     * Newest first per run, so that a run with more than one showcase
+     * resolves to the same one every time.
+     */
+    @Query(SQL_SHOWCASE_FOR_RUNS)
+    suspend fun showcaseSessionsForRuns(runIds: List<String>): List<ShowcaseSessionRow>
+
     @Query("SELECT * FROM sessions WHERE id = :id")
     suspend fun getSession(id: String): ChatSessionEntity?
 
@@ -620,8 +633,23 @@ interface ChatDao {
          * annotation, so the test can run the very query the app runs
          * instead of a copy that can drift away from the real thing.
          */
+        const val SQL_SHOWCASE_FOR_RUNS =
+            "SELECT agent_run_id AS runId, id AS sessionId FROM sessions " +
+                "WHERE agent_run_id IN (:runIds) AND is_agent_showcase = 1 " +
+                "ORDER BY created_at DESC"
         const val SQL_SHOWCASE_FOR_RUN =
             "SELECT id FROM sessions WHERE agent_run_id = :runId " +
                 "AND is_agent_showcase = 1 ORDER BY created_at DESC LIMIT 1"
     }
 }
+
+/**
+ * [T-board-panel] One showcase session and the run it belongs to.
+ *
+ * The run id is nullable because a session may have none, and the panel
+ * only reads the rows whose run id it asked for.
+ */
+data class ShowcaseSessionRow(
+    val runId: String?,
+    val sessionId: String,
+)

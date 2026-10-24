@@ -41,6 +41,7 @@ import com.openminis.app.ui.theme.ChatColors
 @Composable
 internal fun AgentTaskCard(
     task: AgentTaskEntity,
+    status: String,
     live: AgentRunProgress.Snapshot?,
     stale: Boolean,
     resultSessionId: String?,
@@ -62,7 +63,7 @@ internal fun AgentTaskCard(
         if (live != null && live.nodes.isNotEmpty()) {
             AgentRunProgressNodeRows(live.nodes)
         }
-        AgentRunProgressStatusText(taskStatusLabel(task.status, stale))
+        AgentRunProgressStatusText(taskStatusLabel(status, stale))
 
         val artifact = task.resultArtifact
         when {

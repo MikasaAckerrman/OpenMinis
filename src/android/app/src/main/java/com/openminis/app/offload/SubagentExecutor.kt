@@ -664,6 +664,23 @@ object SubagentExecutor {
      * finished - cancelling a finished run is not an error, it simply has
      * nothing left to stop.
      */
+    /**
+     * [T-board-panel] Can this run still be stopped?
+     *
+     * A read-only answer about the state of the registry, not a way to stop
+     * anything: the panel needs to know whether to offer a stop button at
+     * all. A button that does nothing is worse than no button - the user
+     * presses it, nothing happens, and they learn nothing about whether the
+     * agent is still working.
+     *
+     * Today nothing is in the registry in production, so this answers false
+     * for every task. That is the truth, and the panel shows it.
+     */
+    fun isCancellable(spawnId: String): Boolean {
+        val entry = activeBackground[spawnId] ?: return false
+        return entry.job.isActive
+    }
+
     fun cancelBackground(spawnId: String): Boolean {
         val entry = activeBackground[spawnId] ?: return false
         // A job that is no longer active has already finished, or has already
