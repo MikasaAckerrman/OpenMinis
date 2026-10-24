@@ -162,6 +162,20 @@ class AgentRunsViewModel(
     )
 
     /**
+     * [T-agent-panel] Stop a run.
+     *
+     * The request is not the outcome: the task's status is read from the
+     * board, and a task that was really stopped turns up as cancelled there
+     * - the panel shows what happened, not what was asked for.
+     *
+     * The executor answers whether the run was stoppable at all. A task
+     * that cannot be stopped is not offered the button, so this is normally
+     * a request that succeeds; if it does not, nothing changes on screen
+     * and the task keeps its status.
+     */
+    fun cancel(taskId: String): Boolean = SubagentExecutor.cancelBackground(taskId)
+
+    /**
      * The panel's state, built from the three sources.
      *
      * The status is resolved here and not in the card, because the card is
