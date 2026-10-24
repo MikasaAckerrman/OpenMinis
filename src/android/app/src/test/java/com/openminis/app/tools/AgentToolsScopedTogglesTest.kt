@@ -66,6 +66,10 @@ class AgentToolsScopedTogglesTest {
             SubagentTools.LIST_AGENTS_TOOL_NAME,
             SubagentTools.RUN_GRAPH_TOOL_NAME,
             SubagentTools.TASK_BOARD_TOOL_NAME,
+            // [T-agent-cancel] Cancelling a background agent is part of the
+            // same family: it is meaningless without the spawn tools that
+            // create the agent it would cancel, and it rides with them.
+            SubagentTools.CANCEL_TOOL_NAME,
         )
         assertTrue(
             "gate must strip exactly the delegation family, got diff=$diff",
