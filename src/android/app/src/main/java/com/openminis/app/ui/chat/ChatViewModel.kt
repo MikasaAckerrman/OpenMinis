@@ -76,6 +76,7 @@ import com.openminis.app.service.SessionActivityTracker
 import com.openminis.app.service.SessionConcurrencyManager
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.sync.Mutex
@@ -16800,12 +16801,30 @@ class ChatViewModel(
         if (graphId.isEmpty() || input.isEmpty()) {
             return ToolExecutionResult("run_graph: 'graph_id' and 'input' are required", false)
         }
-        val result = com.openminis.app.offload.SubagentExecutor.runGraph(
-            context, graphId, input,
-            // [T-task-board] The run lands on THIS chat's team board — the
-            // cross-turn history covers the full delegation surface.
-            teamId = activeSessionId,
-        )
+        // [T-graph-cancel] A graph that was stopped on purpose must not
+        // take the turn with it.
+        //
+        // Here the caller's coroutine is the whole chat turn, and the
+        // model's answer is still streaming in it. The cancellation comes
+        // from the graph's own scope, so the turn itself is not cancelled
+        // and may continue - but the exception that leaves the graph looks
+        // exactly like the one that means "this turn is over".
+        //
+        // The two are told apart by the caller's own state: if the caller
+        // is still active, the graph was stopped and the turn goes on; if
+        // the caller was cancelled too, that cancellation keeps travelling
+        // and must not be swallowed.
+        val result = try {
+            com.openminis.app.offload.SubagentExecutor.runGraph(
+                context, graphId, input,
+                // [T-task-board] The run lands on THIS chat's team board — the
+                // cross-turn history covers the full delegation surface.
+                teamId = activeSessionId,
+            )
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            if (!currentCoroutineContext().isActive) throw e
+            "run_graph: the graph was cancelled"
+        }
         return ToolExecutionResult(result, true)
     }
 
