@@ -22,8 +22,22 @@ interface AgentBoardDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertTask(task: AgentTaskEntity)
 
-    @Query("UPDATE agent_tasks SET status = :to, updated_at = :now WHERE id = :taskId")
-    suspend fun setStatus(taskId: String, to: String, now: Long)
+    /**
+     * [T-board-guarded-transition] The status move is CONDITIONAL on the
+     * status the caller believes the task is in.
+     *
+     * The unguarded form ("WHERE id = :taskId") let two concurrent
+     * transitions both apply: the task could be recorded as RUNNING ->
+     * COMPLETED and then RUNNING -> FAILED, a history that cannot happen.
+     * The ledger was faithful to what the database did, but the database did
+     * something impossible.
+     *
+     * Returns the number of rows changed, so the caller can tell whether the
+     * move actually happened. A transition whose precondition does not hold
+     * is a no-op, not a silent overwrite.
+     */
+    @Query("UPDATE agent_tasks SET status = :to, updated_at = :now WHERE id = :taskId AND status = :from")
+    suspend fun setStatusIf(taskId: String, from: String, to: String, now: Long): Int
 
     @Query("UPDATE agent_tasks SET assigned_agent_id = :agentId, result_artifact = :result, updated_at = :now WHERE id = :taskId")
     suspend fun setResult(taskId: String, agentId: String?, result: String?, now: Long)
@@ -31,6 +45,20 @@ interface AgentBoardDao {
     @Insert
     suspend fun insertHistory(entry: TaskStatusHistoryEntity)
 
+    /**
+     * [T-board-guarded-transition] Moves a task from one status to another,
+     * recording the move in the ledger.
+     *
+     * The status update and the history row are one transaction: a task that
+     * moved without a ledger entry is a board bug, and a ledger entry
+     * without a task update is a race.
+     *
+     * The move is also conditional on the task actually being in [from]. If
+     * it is not - another transition already moved it, or the task was
+     * never started - nothing happens and no ledger row is written. The
+     * ledger therefore stays a true history instead of recording transitions
+     * that never happened.
+     */
     @Transaction
     suspend fun transition(
         taskId: String,
@@ -40,7 +68,8 @@ interface AgentBoardDao {
         reason: String,
         now: Long,
     ) {
-        setStatus(taskId, to, now)
+        val changed = setStatusIf(taskId, from, to, now)
+        if (changed == 0) return
         insertHistory(
             TaskStatusHistoryEntity(
                 taskId = taskId,
