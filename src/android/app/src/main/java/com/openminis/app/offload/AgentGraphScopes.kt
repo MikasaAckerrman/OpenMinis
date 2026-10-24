@@ -47,14 +47,19 @@ internal class AgentGraphScopes {
             //
             // On the cancelled path the job is already finished by the
             // cancellation, and completing a finished job does nothing.
-            scope.job.complete()
-            // Only if the registry still holds this very scope: a late
-            // finally must never remove the registration of a newer run
-            // that happens to carry the same id.
-            //
-            // This runs whatever the completion above did - a failure there
-            // must not leave the registration behind.
-            active.remove(taskId, scope)
+            try {
+                scope.job.complete()
+            } finally {
+                // Only if the registry still holds this very scope: a late
+                // finally must never remove the registration of a newer run
+                // that happens to carry the same id.
+                //
+                // The removal is in its own finally, so it does not depend
+                // on the completion above: whatever that does, the
+                // registration goes, and a run that cannot be stopped
+                // leaves nothing behind.
+                active.remove(taskId, scope)
+            }
         }
     }
 

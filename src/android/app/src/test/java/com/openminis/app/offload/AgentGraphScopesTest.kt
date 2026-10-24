@@ -61,6 +61,30 @@ class AgentGraphScopesTest {
         }
 
     @Test
+    fun cancelling_a_graph_does_not_cancel_the_caller() = runBlocking {
+        val scopes = AgentGraphScopes()
+        val caller = currentCoroutineContext()[Job]!!
+        val inside = CompletableDeferred<Unit>()
+
+        val block = launch {
+            scopes.run("task-2b") {
+                inside.complete(Unit)
+                delay(Long.MAX_VALUE)
+            }
+        }
+        inside.await()
+
+        scopes.cancel("task-2b")
+        block.join()
+
+        assertTrue(
+            "stopping the graph must not stop the caller's coroutine - in " +
+                "the tool path the caller is the whole chat turn",
+            caller.isActive,
+        )
+    }
+
+    @Test
     fun stopping_a_run_that_already_finished_answers_false() = runBlocking {
         val scopes = AgentGraphScopes()
         scopes.run("task-3") { "done" }
