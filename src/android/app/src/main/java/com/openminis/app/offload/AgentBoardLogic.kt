@@ -88,6 +88,61 @@ object AgentBoardLogic {
     const val STALE_AFTER_MS = 60L * 60 * 1000
 
     /**
+     * [T-board-stale-exact] When this process started, in wall-clock millis.
+     *
+     * A RUNNING row written before this moment belongs to a process that is
+     * gone: the run died with it. That is an exact fact, not a guess.
+     *
+     * [T-board-stale-exact] The older rule - "a RUNNING row untouched for
+     * an hour is stale" - cannot tell a dead run from a live one, because
+     * updated_at is only written on a status change, on setResult and on
+     * insert. It is a BIRTH stamp, not a heartbeat. An agent that has been
+     * working for 61 minutes looked dead to it, and the dependency check
+     * would then tell the orchestrator to re-spawn an agent that was still
+     * running - duplicated work, two agents on the same task.
+     *
+     * There is no heartbeat on purpose: a periodic write per running task
+     * costs more than the question is worth, and the process start is a
+     * better answer than any age.
+     */
+    @Volatile
+    var processStartMs: Long = 0L
+
+    /**
+     * Record the process start. Call once, at application start.
+     */
+    fun markProcessStart(nowMs: Long) {
+        processStartMs = nowMs
+    }
+
+    /**
+     * [T-board-stale-exact] Is this task a run that died with its process?
+     *
+     * [hasLiveProgress] is true when the run is still visible in this
+     * process - the caller knows that, the board does not.
+     *
+     * Two ways to be dead:
+     *  - the row was written before this process started, so the process
+     *    that owned it is gone;
+     *  - the row has been untouched for longer than [STALE_AFTER_MS] and
+     *    nothing in this process says the run is still going.
+     *
+     * A run that is still visible in this process is never stale, however
+     * old its row is: it is alive, and the row is merely a birth stamp.
+     */
+    fun isStale(
+        status: String,
+        updatedAt: Long,
+        nowMs: Long,
+        hasLiveProgress: Boolean = false,
+    ): Boolean {
+        if (status != STATUS_RUNNING) return false
+        if (hasLiveProgress) return false
+        if (processStartMs > 0L && updatedAt < processStartMs) return true
+        return nowMs - updatedAt > STALE_AFTER_MS
+    }
+
+    /**
      * Ids of tasks whose dependencies are all COMPLETED. A task listing a
      * missing dep id is NOT ready (the dep may have been pruned — treat
      * pruned as unsatisfied, the honest reading, and say so in [unmetDeps]).
