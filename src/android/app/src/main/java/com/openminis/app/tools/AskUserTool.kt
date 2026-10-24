@@ -28,6 +28,9 @@ object AskUserTool {
     const val NAME = "ask_user"
     private const val MAX_OPTIONS = 6
 
+    /** [T-ask-user-timeout] How long to wait when the model asks for no timeout. */
+    private const val DEFAULT_TIMEOUT_SEC = 300
+
     fun definition(): AgentToolDefinition = AgentToolDefinition(
         name = NAME,
         description = "Ask the user a question with tappable options and WAIT for the " +
@@ -74,7 +77,23 @@ object AskUserTool {
                 "Error: 'options' is required — JSON array or 'A;B;C'",
                 false)
         val allowFreeText = args.optString("allow_free_text", "true") != "false"
-        val timeoutSec = args.optInt("timeout", 0).coerceIn(0, 3600)
+        // [T-ask-user-timeout] A timeout of 0 meant "wait forever".
+        //
+        // The model does not have to pass a timeout, and when it did not,
+        // the tool suspended with no bound: the dialog waited for a user who
+        // might not be there, and while it waited the chat could not
+        // proceed - the question sheet is deliberately blocking, so the
+        // whole turn was stuck behind one tool call.
+        //
+        // Five minutes is long enough for a person to notice a question and
+        // short enough that an agent cannot sit on a tool call
+        // indefinitely. An explicit positive timeout is still honoured, up
+        // to the hour the cap allows; anything else falls back to the
+        // default rather than to "never".
+        val requestedTimeoutSec = args.optInt("timeout", 0)
+        val timeoutSec =
+            if (requestedTimeoutSec > 0) requestedTimeoutSec.coerceIn(1, 3600)
+            else DEFAULT_TIMEOUT_SEC
         // The gate suspends on the MAIN context by design — the dialog
         // renders from Compose; withContext keeps the dispatcher hop honest
         // regardless of the caller's dispatcher.
