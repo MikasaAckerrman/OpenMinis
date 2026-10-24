@@ -10,10 +10,8 @@ import com.openminis.app.data.model.RunStatus
 import com.openminis.app.MinisApp
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
-import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import java.util.UUID
@@ -57,7 +55,7 @@ object SubagentExecutor {
      * things with different limits, and one run of one kind must not be
      * able to hide a run of the other kind behind the same id.
      */
-    private val activeGraphs = ConcurrentHashMap<String, ActiveBackground>()
+    private val graphScopes = AgentGraphScopes()
 
     private class ActiveBackground(val preview: String, val job: kotlinx.coroutines.Job)
 
@@ -689,12 +687,14 @@ object SubagentExecutor {
      * for every task. That is the truth, and the panel shows it.
      */
     fun isCancellable(spawnId: String): Boolean {
-        val entry = activeBackground[spawnId] ?: activeGraphs[spawnId] ?: return false
+        if (graphScopes.isCancellable(spawnId)) return true
+        val entry = activeBackground[spawnId] ?: return false
         return entry.job.isActive
     }
 
     fun cancelBackground(spawnId: String): Boolean {
-        val entry = activeBackground[spawnId] ?: activeGraphs[spawnId] ?: return false
+        if (graphScopes.cancel(spawnId)) return true
+        val entry = activeBackground[spawnId] ?: return false
         // A job that is no longer active has already finished, or has already
         // been cancelled. Reporting that as "cancelled" would be a lie: there
         // was nothing left to stop. It also makes a second cancel of the
@@ -815,16 +815,6 @@ object SubagentExecutor {
         teamId: String? = null,
     ): String {
         val taskId = "graph-${UUID.randomUUID().toString().take(16)}"
-        // [T-graph-cancel] The graph gets a job of its own, a child of the
-        // caller's.
-        //
-        // The caller's cancellation still reaches the graph - that is what a
-        // child is for. The other direction must not exist: in the tool path
-        // the caller's job is the whole chat turn, so stopping the graph
-        // that way would have stopped the model's answer as well.
-        val graphJob = Job(currentCoroutineContext()[Job])
-        val entry = ActiveBackground("graph:$graphId", graphJob)
-        activeGraphs[taskId] = entry
         if (teamId != null) {
             AgentBoardRecorder.taskStarted(
                 context, taskId = taskId, teamId = teamId,
@@ -834,7 +824,7 @@ object SubagentExecutor {
             )
         }
         return try {
-            withContext(graphJob) {
+            graphScopes.run(taskId) {
                 // [T-spawn-subagent-ephemeral] A graph invoked as a TOOL narrates
                 // through the tool result and the live progress card in the
                 // originating chat; a showcase session would be an invisible,
@@ -874,24 +864,6 @@ object SubagentExecutor {
                 )
             }
             "Graph '$graphId' failed: ${e.message}"
-        } finally {
-            // [T-graph-cancel] The graph's job has to be finished, not only
-            // cancelled.
-            //
-            // A job that is a child of the caller's keeps the caller from
-            // completing until the child is done - that is what a parent
-            // waits for. The graph's work is over at this point, but the
-            // job was never completed, so the chat turn that started it
-            // would have kept waiting for a child that has nothing left to
-            // do. Completing it releases the caller.
-            //
-            // On the cancelled path the job is already finished by the
-            // cancellation, and completing a finished job does nothing.
-            graphJob.complete()
-            // Only if the registry still holds this very entry: a late
-            // finally must never remove the registration of a newer run
-            // that happens to carry the same id.
-            activeGraphs.remove(taskId, entry)
         }
     }
 
