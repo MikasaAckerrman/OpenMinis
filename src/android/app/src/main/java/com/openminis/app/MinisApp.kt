@@ -183,6 +183,14 @@ class MinisApp : Application(), ImageLoaderFactory {
 
     override fun onCreate() {
         super.onCreate()
+        // [T-board-stale-exact] A RUNNING task row written before this
+        // moment belongs to a process that is gone, so the run died with it.
+        // Recording the process start is what makes that an exact fact
+        // instead of a guess based on how long the row has been untouched.
+        //
+        // It has to happen before any agent can start, and onCreate is
+        // before everything the app does.
+        com.openminis.app.offload.AgentBoardLogic.markProcessStart(System.currentTimeMillis())
         // [T-cold-start-trace] Stamp #1 — everything above this line is
         // ART/classload we cannot influence.
         com.openminis.app.diagnostics.ColdStartTrace.appCreateStart()
