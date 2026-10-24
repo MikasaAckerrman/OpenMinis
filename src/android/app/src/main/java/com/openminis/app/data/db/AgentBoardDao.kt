@@ -224,8 +224,31 @@ interface AgentBoardDao {
      * A task that is still waiting for its dependencies must survive the
      * prune; a running one must survive it even more so.
      */
+    @Transaction
+    suspend fun pruneClosedBefore(cutoff: Long): Int {
+        // [T-board-prune-history] The history rows go FIRST, while the
+        // tasks are still there to be matched against.
+        //
+        // The history table DOES have a foreign key with ON DELETE
+        // CASCADE, so the delete below would take the history with it -
+        // but only while foreign key enforcement is on. Doing it
+        // explicitly does not depend on that, and the subquery is the
+        // same predicate the delete uses, so the history of exactly the
+        // deleted tasks goes with them and the two cannot disagree.
+        deleteHistoryForClosedBefore(cutoff)
+        return deleteClosedBefore(cutoff)
+    }
+
+    /**
+     * [T-board-prune-history] The history of the tasks that are about to
+     * be pruned. Uses a subquery rather than a second pass, so the two
+     * statements cannot disagree about which tasks those are.
+     */
+    @Query(SQL_PRUNE_HISTORY)
+    suspend fun deleteHistoryForClosedBefore(cutoff: Long): Int
+
     @Query(SQL_PRUNE_CLOSED)
-    suspend fun pruneClosedBefore(cutoff: Long): Int
+    suspend fun deleteClosedBefore(cutoff: Long): Int
 
     @Query("DELETE FROM mission_log WHERE timestamp < :cutoff")
     suspend fun pruneMissionBefore(cutoff: Long): Int
@@ -272,5 +295,15 @@ interface AgentBoardDao {
         const val SQL_PRUNE_CLOSED =
             "DELETE FROM agent_tasks WHERE updated_at < :cutoff " +
                 "AND status IN ('COMPLETED', 'FAILED', 'CANCELLED')"
+
+        /**
+         * [T-board-prune-history] The history of exactly the tasks the
+         * prune removes - the same predicate, expressed as a subquery over
+         * the tasks that still exist.
+         */
+        const val SQL_PRUNE_HISTORY =
+            "DELETE FROM task_status_history WHERE task_id IN (" +
+                "SELECT id FROM agent_tasks WHERE updated_at < :cutoff " +
+                "AND status IN ('COMPLETED', 'FAILED', 'CANCELLED'))"
     }
 }

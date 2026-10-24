@@ -224,17 +224,31 @@ class AgentBoardPanelQueriesTest {
 
     // --- the prune --------------------------------------------------------
 
+    /**
+     * The prune, exactly as the DAO runs it: history first, then the
+     * tasks. The order matters - the history delete matches the tasks
+     * that still exist.
+     */
+    private fun prune(conn: Connection, cutoff: Long): Int {
+        conn.prepareStatement(AgentBoardDao.SQL_PRUNE_HISTORY).use { p ->
+            p.setLong(1, cutoff)
+            p.executeUpdate()
+        }
+        return conn.prepareStatement(AgentBoardDao.SQL_PRUNE_CLOSED).use { p ->
+            p.setLong(1, cutoff)
+            p.executeUpdate()
+        }
+    }
+
     @Test
     fun prune_removesEveryClosedTask_andKeepsTheLiveOnes() {
         withDb { conn ->
-            // Cutoff 500: everything older than it goes.
-            val cut = conn.prepareStatement(AgentBoardDao.SQL_PRUNE_CLOSED).use { p ->
-                p.setLong(1, 500L)
-                p.executeUpdate()
-            }
-            // a-completed (900), a-failed (800), a-cancelled (700) go;
-            // a-running, a-pending, a-blocked stay, and the other team's
-            // task stays.
+            // Cutoff 1000: every task is older than it, so the ones that
+            // are closed go and the live ones stay.
+            val cut = prune(conn, 1000L)
+            // a-completed, a-failed and a-cancelled go; a-running,
+            // a-pending and a-blocked stay, and so does the other team's
+            // task - a prune is about age, not about the team.
             assertEquals(3, cut)
             val left = conn.createStatement().use { s ->
                 s.executeQuery("SELECT id FROM agent_tasks ORDER BY id").use { rs ->
@@ -251,16 +265,69 @@ class AgentBoardPanelQueriesTest {
     }
 
     @Test
-    fun prune_leavesCancelledThatIsNotOldYet() {
+    fun prune_keepsTasksThatAreNotOldEnough() {
         withDb { conn ->
-            // The cancelled task was touched at 700 - a cutoff of 500
-            // removes it, a cutoff of 800 does not.
-            val kept = conn.prepareStatement(AgentBoardDao.SQL_PRUNE_CLOSED).use { p ->
-                p.setLong(1, 800L)
-                p.executeUpdate()
+            // Cutoff 650: the closed tasks were touched at 700, 800 and
+            // 900, so none of them is old enough to go yet.
+            assertEquals(0, prune(conn, 650L))
+            val count = conn.createStatement().use { s ->
+                s.executeQuery("SELECT COUNT(*) FROM agent_tasks").use { rs ->
+                    rs.next()
+                    rs.getInt(1)
+                }
             }
-            // Only a-completed (900) is older than 800.
-            assertEquals(1, kept)
+            assertEquals(7, count)
+        }
+    }
+
+    @Test
+    fun prune_removesCancelledOnceItIsOldEnough() {
+        withDb { conn ->
+            // Cutoff 750: only the cancelled task (touched at 700) is old
+            // enough. A cancelled task is closed, so it has to go with the
+            // others - otherwise the board fills up with cancellations
+            // that never leave.
+            assertEquals(1, prune(conn, 750L))
+            val left = conn.createStatement().use { s ->
+                s.executeQuery("SELECT id FROM agent_tasks WHERE status = 'CANCELLED'").use { rs ->
+                    val out = ArrayList<String>()
+                    while (rs.next()) out.add(rs.getString(1))
+                    out
+                }
+            }
+            assertTrue("the cancelled task survived the prune", left.isEmpty())
+        }
+    }
+
+    @Test
+    fun prune_takesTheHistoryOfThePrunedTasks_withIt() {
+        withDb { conn ->
+            conn.createStatement().use { s ->
+                s.executeUpdate(
+                    "INSERT INTO task_status_history(task_id, from_status, to_status, reason) " +
+                        "VALUES('a-completed','RUNNING','COMPLETED','ok')",
+                )
+                s.executeUpdate(
+                    "INSERT INTO task_status_history(task_id, from_status, to_status, reason) " +
+                        "VALUES('a-cancelled','RUNNING','CANCELLED','cancelled')",
+                )
+                s.executeUpdate(
+                    "INSERT INTO task_status_history(task_id, from_status, to_status, reason) " +
+                        "VALUES('a-running','PENDING','RUNNING','started')",
+                )
+            }
+            prune(conn, 1000L)
+            val history = conn.createStatement().use { s ->
+                s.executeQuery("SELECT task_id FROM task_status_history ORDER BY task_id").use { rs ->
+                    val out = ArrayList<String>()
+                    while (rs.next()) out.add(rs.getString(1))
+                    out
+                }
+            }
+            // The history of the pruned tasks is gone with them; the history
+            // of the task that stayed is still there. A history row for a
+            // task that does not exist is a row nobody will ever read.
+            assertEquals(listOf("a-running"), history)
         }
     }
 
