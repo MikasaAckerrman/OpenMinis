@@ -82,7 +82,7 @@ object SubagentExecutor {
         allowNesting: Boolean = true,
     ): Pair<AgentGraph, AgentNode> {
         val node = AgentNode(
-            id = "spawn-${UUID.randomUUID().toString().take(8)}",
+            id = "spawn-${UUID.randomUUID().toString().take(16)}",
             role = agentRole,
             // [T-spawn-subagent-to] A single-node run has no next agent, so the
             // generic "TO: whichever role is next" leaves the model guessing a
@@ -399,7 +399,7 @@ object SubagentExecutor {
         allowNesting: Boolean = true,
     ): Pair<AgentGraph, AgentNode> {
         val node = AgentNode(
-            id = "spawn-${UUID.randomUUID().toString().take(8)}",
+            id = "spawn-${UUID.randomUUID().toString().take(16)}",
             role = AgentRole.DOCUMENTATION_AGENT,
             systemPrompt = agent.instructions + handoffToGuidance(AgentRole.DOCUMENTATION_AGENT),
             // [T-subagent-nesting] A custom agent file may list spawn tools,
@@ -777,7 +777,7 @@ object SubagentExecutor {
         input: String,
         teamId: String? = null,
     ): String {
-        val taskId = "graph-${UUID.randomUUID().toString().take(8)}"
+        val taskId = "graph-${UUID.randomUUID().toString().take(16)}"
         if (teamId != null) {
             AgentBoardRecorder.taskStarted(
                 context, taskId = taskId, teamId = teamId,
