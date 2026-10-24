@@ -224,7 +224,7 @@ object SubagentExecutor {
                         )
                     }
                     formatResult(role, result)
-                } catch (e: kotlinx.coroutines.CancellationException) {
+                } catch (e: CancellationException) {
                     // [T-subagent-background-ceiling] A cancelled run is not a
                     // failed run.
                     //
