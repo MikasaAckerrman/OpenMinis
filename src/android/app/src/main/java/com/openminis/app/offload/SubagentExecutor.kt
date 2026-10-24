@@ -150,7 +150,7 @@ object SubagentExecutor {
         // zombie that no one would ever finish.
         val result = try {
             AgentGraphRunner.run(context, graph.id, task, taskId = node.id, ephemeral = true)
-        } catch (e: CancellationException) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
             if (teamId != null) {
                 AgentBoardRecorder.taskFinished(
                     context, taskId = node.id, teamId = teamId,
@@ -224,7 +224,7 @@ object SubagentExecutor {
                         )
                     }
                     formatResult(role, result)
-                } catch (e: CancellationException) {
+                } catch (e: kotlinx.coroutines.CancellationException) {
                     // [T-subagent-background-ceiling] A cancelled run is not a
                     // failed run.
                     //
@@ -801,7 +801,7 @@ object SubagentExecutor {
                 )
             }
             formatResult(graphId, result)
-        } catch (e: CancellationException) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
             // [T-board-cancelled-status] CancellationException is an
             // Exception in Kotlin, so the catch below would have taken it:
             // the run would have been recorded as a failure, and - worse -
