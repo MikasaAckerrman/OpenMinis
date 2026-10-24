@@ -67,7 +67,7 @@ class AgentBoardTerminalWriteTest {
         ): Boolean {
             conn.autoCommit = false
             try {
-                val ps = conn.prepareStatement(SQL_SET_STATUS_IF)
+                val ps = conn.prepareStatement(AgentBoardDao.SQL_SET_STATUS_IF)
                 ps.setString(1, to)
                 ps.setLong(2, 1_700_000_000_000L)
                 ps.setString(3, taskId)
