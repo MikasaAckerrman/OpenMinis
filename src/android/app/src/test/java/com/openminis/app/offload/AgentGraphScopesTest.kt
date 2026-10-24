@@ -85,6 +85,48 @@ class AgentGraphScopesTest {
     }
 
     @Test
+    fun a_late_finally_does_not_remove_a_newer_run_with_the_same_key() = runBlocking {
+        val scopes = AgentGraphScopes()
+        val firstInside = CompletableDeferred<Unit>()
+        val firstRelease = CompletableDeferred<Unit>()
+
+        // The first run holds the key and waits.
+        val first = launch {
+            scopes.run("shared-key") {
+                firstInside.complete(Unit)
+                firstRelease.await()
+            }
+        }
+        firstInside.await()
+
+        // A second run takes the same key. This is the one that must
+        // survive: it is the one the user is looking at.
+        val secondInside = CompletableDeferred<Unit>()
+        val second = launch {
+            scopes.run("shared-key") {
+                secondInside.complete(Unit)
+                delay(Long.MAX_VALUE)
+            }
+        }
+        secondInside.await()
+
+        // The first run ends now. Its finally must not take the second
+        // run's registration with it.
+        firstRelease.complete(Unit)
+        first.join()
+
+        assertTrue(
+            "the newer run must still be stoppable after the older run's finally",
+            scopes.isCancellable("shared-key"),
+        )
+        assertTrue(
+            "stopping the newer run must report that it stopped",
+            scopes.cancel("shared-key"),
+        )
+        second.join()
+    }
+
+    @Test
     fun stopping_a_run_that_already_finished_answers_false() = runBlocking {
         val scopes = AgentGraphScopes()
         scopes.run("task-3") { "done" }
