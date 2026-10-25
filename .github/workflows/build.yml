@@ -193,10 +193,10 @@ jobs:
         if: always()
         run: |
           cd src/android
-          for f in app/build/test-results/testCloneUnitTest/TEST-*.xml; do
+          find app/build/test-results -name 'TEST-*.xml' 2>/dev/null | while read -r f; do
             if grep -q "<failure" "$f" 2>/dev/null; then
               echo "=== $f ==="
-              sed -n '1,80p' "$f"
+              sed -n '1,60p' "$f"
             fi
           done
 
