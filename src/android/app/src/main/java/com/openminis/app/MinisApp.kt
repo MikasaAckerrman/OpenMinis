@@ -191,6 +191,33 @@ class MinisApp : Application(), ImageLoaderFactory {
         // It has to happen before any agent can start, and onCreate is
         // before everything the app does.
         com.openminis.app.offload.AgentBoardLogic.markProcessStart(System.currentTimeMillis())
+        // [T-board-orphan-sweep] The rows the previous process left behind
+        // are not runs: nothing is running them, and nothing ever will.
+        // Closing them here - once, at the start, where "the old process
+        // is gone" is an exact fact rather than a guess - keeps the board
+        // honest from the first frame instead of letting the dead rows
+        // pile up for good. The prune does not do this: it only removes
+        // rows that are already closed.
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            runCatching {
+                val dao = com.openminis.app.data.db.ProviderDatabase
+                    .getInstance(this@MinisApp).agentBoardDao()
+                val closed = dao.cancelOrphansBefore(
+                    cutoff = com.openminis.app.offload.AgentBoardLogic.processStartMs,
+                    now = System.currentTimeMillis(),
+                )
+                if (closed > 0) {
+                    com.openminis.app.logging.AppLogger.info(
+                        "AgentBoard",
+                        "closed $closed task row(s) left behind by a dead process",
+                    )
+                }
+            }.onFailure {
+                com.openminis.app.logging.AppLogger.warning(
+                    "AgentBoard", "orphan sweep failed (non-fatal): ${it.message}",
+                )
+            }
+        }
         // [T-cold-start-trace] Stamp #1 — everything above this line is
         // ART/classload we cannot influence.
         com.openminis.app.diagnostics.ColdStartTrace.appCreateStart()

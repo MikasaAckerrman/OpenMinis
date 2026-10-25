@@ -146,6 +146,51 @@ interface AgentBoardDao {
         )
     }
 
+    /**
+     * [T-board-orphan-sweep] Rows left in a non-terminal state by a
+     * process that is gone.
+     *
+     * Such a row is not a run: nothing is running it. The only writer
+     * that could have closed it died with its process, and the prune
+     * does not reach it - it removes rows that are already closed. So
+     * the row would read "running" for good, and every count that
+     * includes it would be wrong.
+     */
+    @Query(
+        "SELECT * FROM agent_tasks WHERE status IN ('PENDING','RUNNING','BLOCKED') " +
+            "AND updated_at < :cutoff"
+    )
+    suspend fun orphanedBefore(cutoff: Long): List<AgentTaskEntity>
+
+    /**
+     * [T-board-orphan-sweep] Close the rows a dead process left behind.
+     *
+     * The task is cancelled, not completed: it was not finished, and
+     * saying so is the honest reading. The history gets the reason, so
+     * the board says why the row closed rather than just that it did.
+     */
+    @Transaction
+    suspend fun cancelOrphansBefore(cutoff: Long, now: Long): Int {
+        val orphans = orphanedBefore(cutoff)
+        var closed = 0
+        for (row in orphans) {
+            val changed = setStatusIf(row.id, row.status, "CANCELLED", now)
+            if (changed == 0) continue
+            insertHistory(
+                TaskStatusHistoryEntity(
+                    taskId = row.id,
+                    fromStatus = row.status,
+                    toStatus = "CANCELLED",
+                    changedByAgentId = null,
+                    reason = "the process that owned this run is gone",
+                    changedAt = now,
+                ),
+            )
+            closed++
+        }
+        return closed
+    }
+
     @Insert
     suspend fun insertMailbox(message: AgentMailboxEntity)
 
