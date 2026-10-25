@@ -97,7 +97,12 @@ jobs:
           # build — the release-grade gate. [quick] keeps the smoke list.
           if echo "$COMMIT_MSG" | grep -q '\[full\]'; then
             echo "FULL mode: running the entire unit-test suite"
-            ./gradlew :app:testCloneUnitTest --no-daemon -Dorg.gradle.jvmargs="-Xmx4g"
+            # [T-ci-androidtest-compile] The instrumented tests need a
+            # device, so they cannot run here - but they can be compiled,
+            # and a test that does not compile is worse than no test: it
+            # looks like coverage and is not. The recorder's tests against
+            # a real database live there.
+            ./gradlew :app:testCloneUnitTest :app:compileCloneAndroidTestKotlin --no-daemon -Dorg.gradle.jvmargs="-Xmx4g"
           else
             ./gradlew :app:testCloneUnitTest --no-daemon -Dorg.gradle.jvmargs="-Xmx4g" \
             --tests 'com.openminis.app.offload.*' \
