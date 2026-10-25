@@ -45,24 +45,41 @@ class ExecutionCoordinatorInstrumentedTest {
     // ==================== Session mounting ====================
 
     @Test
-    fun executeSetsMountedSessionId() = runBlocking {
+    fun executeGivesTheSessionALiveShellOfItsOwn() = runBlocking {
         skipIfNoBoot()
 
         val sessionId = "session-mount-test"
         ExecutionCoordinator.execute(sessionId, "echo hello")
 
-        assertEquals(sessionId, ExecutionCoordinator.mountedSessionId)
+        assertTrue(
+            "the session must hold a shell of its own",
+            ExecutionCoordinator.liveShellSessionIds().contains(sessionId),
+        )
     }
 
     @Test
-    fun executeSwitchesSessionMounts() = runBlocking {
+    fun executeKeepsAShellPerSessionAndMovesTheMounts() = runBlocking {
         skipIfNoBoot()
 
         ExecutionCoordinator.execute("session-A", "echo a")
-        assertEquals("session-A", ExecutionCoordinator.mountedSessionId)
+        assertTrue(
+            "the first session must keep its own shell",
+            ExecutionCoordinator.liveShellSessionIds().contains("session-A"),
+        )
+        val mountAfterA = PRootKernel.bindMounts["/var/minis/workspace"]
 
         ExecutionCoordinator.execute("session-B", "echo b")
-        assertEquals("session-B", ExecutionCoordinator.mountedSessionId)
+        assertTrue(
+            "the second session must have a shell of its own",
+            ExecutionCoordinator.liveShellSessionIds().contains("session-B"),
+        )
+        // The mounts follow the session that ran last: the paths a session
+        // shares with the others are rewritten for it.
+        assertNotEquals(
+            "the mounts must follow the session that ran last",
+            mountAfterA,
+            PRootKernel.bindMounts["/var/minis/workspace"],
+        )
     }
 
     @Test
@@ -78,7 +95,10 @@ class ExecutionCoordinatorInstrumentedTest {
 
         // Mounts should remain the same (not cleared and re-added)
         assertEquals(mountCount, PRootKernel.bindMounts.size)
-        assertEquals("session-X", ExecutionCoordinator.mountedSessionId)
+        assertTrue(
+            "the session must still hold its shell",
+            ExecutionCoordinator.liveShellSessionIds().contains("session-X"),
+        )
     }
 
     @Test
@@ -230,17 +250,21 @@ class ExecutionCoordinatorInstrumentedTest {
     // ==================== sessionDidTerminate ====================
 
     @Test
-    fun sessionDidTerminateClearsMountsForMatchingSession() = runBlocking {
+    fun sessionDidTerminateReleasesThatSessionShell() = runBlocking {
         skipIfNoBoot()
 
         ExecutionCoordinator.execute("session-terminate", "echo test")
-        assertEquals("session-terminate", ExecutionCoordinator.mountedSessionId)
-        assertTrue(PRootKernel.bindMounts.isNotEmpty())
+        assertTrue(
+            "the session must hold a shell before it is terminated",
+            ExecutionCoordinator.liveShellSessionIds().contains("session-terminate"),
+        )
 
         ExecutionCoordinator.sessionDidTerminate("session-terminate")
 
-        assertNull(ExecutionCoordinator.mountedSessionId)
-        assertTrue(PRootKernel.bindMounts.isEmpty())
+        assertFalse(
+            "a terminated session must not keep a shell",
+            ExecutionCoordinator.liveShellSessionIds().contains("session-terminate"),
+        )
     }
 
     @Test
@@ -252,14 +276,22 @@ class ExecutionCoordinatorInstrumentedTest {
 
         ExecutionCoordinator.sessionDidTerminate("session-other")
 
-        assertEquals("session-keep", ExecutionCoordinator.mountedSessionId)
+        assertTrue(
+            "another session's shell must survive",
+            ExecutionCoordinator.liveShellSessionIds().contains("session-keep"),
+        )
         assertEquals(mountsBefore, PRootKernel.bindMounts.size)
     }
 
     @Test
     fun sessionDidTerminateIsNoOpWhenNoSession() {
+        val before = ExecutionCoordinator.liveShellSessionIds()
         ExecutionCoordinator.sessionDidTerminate("any-session")
-        assertNull(ExecutionCoordinator.mountedSessionId)
+        assertEquals(
+            "terminating an unknown session must change nothing",
+            before,
+            ExecutionCoordinator.liveShellSessionIds(),
+        )
     }
 
     // ==================== stopCurrentCommand ====================
@@ -349,12 +381,11 @@ class ExecutionCoordinatorInstrumentedTest {
         PRootKernel.clearBindMounts()
         PRootKernel.customEnvironment.clear()
 
-        // Reset ExecutionCoordinator mountedSessionId
-        try {
-            val field = ExecutionCoordinator::class.java.getDeclaredField("mountedSessionId")
-            field.isAccessible = true
-            field.set(ExecutionCoordinator, null)
-        } catch (_: Exception) { }
+        // Release any shell a previous test left behind. The coordinator
+        // keeps one shell per session, so they are released by name.
+        ExecutionCoordinator.liveShellSessionIds().forEach {
+            ExecutionCoordinator.sessionDidTerminate(it)
+        }
     }
 
     private fun cleanupSessionDirs() {
