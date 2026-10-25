@@ -921,7 +921,15 @@ internal fun buildFlatChatItems(
         val hasCancelledTool = blocks.any {
             it.kind == "tool_use" && it.toolStatus == ToolBlockStatus.CANCELLED
         }
-        val turnFolds = !hasCancelledTool && blocks.any { it.kind == "tool_use" }
+        // [T-agent-card-visible] An agent's line is not a finished tool: it
+        // is the one thing the reader is waiting for, so it stays on screen
+        // instead of folding away under the turn's summary row. Same
+        // exemption a cancelled tool already has, and for the same reason:
+        // work in flight must not disappear from the transcript.
+        val hasSubagentBlock = blocks.any {
+            it.kind == "tool_use" && it.toolName == "spawn_subagent"
+        }
+        val turnFolds = !hasCancelledTool && !hasSubagentBlock && blocks.any { it.kind == "tool_use" }
         val turnToolBlocks = if (turnFolds) blocks.filter { it.kind == "tool_use" } else emptyList()
         // [T-inject-attach-group] Split-turn fold GROUP (user report 09.10
         // "две кнопки — мусор"): after an inject split the turn is two DB

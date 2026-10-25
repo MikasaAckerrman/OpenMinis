@@ -16334,6 +16334,14 @@ class ChatViewModel(
             // the delegation tools from the child when the spawner is itself
             // an agent worker (one nesting level, structural cap).
             spawnerSessionId = activeSessionId,
+            // [T-agent-card-live] The run's id, so the line can follow the
+            // live progress of this exact agent.
+            onSpawned = { taskId ->
+                val blockId = backgroundBlockId ?: return@onSpawned
+                viewModelScope.launch(kotlinx.coroutines.Dispatchers.Main) {
+                    setSubagentTaskId(assistantId, toolBlocks, blockId, taskId)
+                }
+            },
             onBackgroundResult = if (background) { { _, subRole, subResult ->
                 // Deliver the background result as a system info line the
                 // next turn will see. The callback runs on an IO coroutine;
@@ -16381,7 +16389,14 @@ class ChatViewModel(
      * the agent's own output - there is no separate "the agent finished"
      * line to look for.
      */
-    private fun subagentBlock(id: String, role: String, task: String): AssistantBlock =
+    private fun subagentBlock(
+        id: String,
+        role: String,
+        task: String,
+        /** [T-agent-card-live] The run's task id — the key the live progress
+         *  of THIS agent is filed under. Empty until the run reports it. */
+        taskId: String? = null,
+    ): AssistantBlock =
         AssistantBlock(
             id = id,
             kind = "tool_use",
@@ -16391,10 +16406,35 @@ class ChatViewModel(
             toolArgs = JSONObject().apply {
                 put("role", role)
                 put("task", task)
+                if (!taskId.isNullOrEmpty()) put("taskId", taskId)
             }.toString(),
             content = "",
             startTimeMs = System.currentTimeMillis(),
         )
+
+    /**
+     * [T-agent-card-live] Bind a run's task id to an agent's line.
+     *
+     * The line is created before the run exists, because the reader must
+     * see the agent start working at once. The id arrives a moment later,
+     * and this is where it is attached: the line then points at the live
+     * progress of that exact run.
+     */
+    private fun setSubagentTaskId(
+        assistantId: String,
+        toolBlocks: MutableList<AssistantBlock>,
+        blockId: String,
+        taskId: String,
+    ) {
+        val pos = toolBlocks.indexOfFirst { it.id == blockId }
+        if (pos < 0) return
+        val prev = toolBlocks[pos]
+        val args = runCatching { JSONObject(prev.toolArgs) }.getOrElse { JSONObject() }
+        if (args.optString("taskId") == taskId) return
+        args.put("taskId", taskId)
+        toolBlocks[pos] = prev.copy(toolArgs = args.toString())
+        publishToolBlocks(assistantId, toolBlocks)
+    }
 
     /**
      * [T-subagent-block-live] The id of an agent's line, so that the

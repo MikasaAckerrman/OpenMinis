@@ -143,6 +143,16 @@ object SubagentExecutor {
         teamId: String? = null,
         /** [T-task-board] JSON array of predecessor task ids (enforced before the run). */
         dependsOnJson: String = "[]",
+        /**
+         * [T-agent-card-live] The run's task id, the moment the run starts.
+         *
+         * The chat draws a line per agent, and the line has to show what
+         * that agent is doing RIGHT NOW. The live progress of a run is
+         * filed under its task id, so the line cannot find it without
+         * being told the id. It is the same id the board row is filed
+         * under, and the same one the progress registry is keyed by.
+         */
+        onStarted: ((taskId: String) -> Unit)? = null,
     ): String = try {
         // [T-task-board] Durable ledger: the run exists from THIS moment, not
         // from completion — a crash mid-run leaves a RUNNING row with history
@@ -154,6 +164,10 @@ object SubagentExecutor {
                 description = task, workspaceDir = null, dependsOnJson = dependsOnJson,
             )
         }
+        // [T-agent-card-live] The id is known BEFORE the run starts, so
+        // the line can be attached to the live progress from the first
+        // moment - not from the moment the agent says something.
+        onStarted?.invoke(node.id)
         // [T-board-cancelled-status] A run that is cancelled must still
         // close its task. Before, the cancellation propagated straight out
         // of this function and the board row stayed RUNNING for good - a
@@ -484,6 +498,13 @@ object SubagentExecutor {
          */
         onAgentDone: (index: Int, role: String, result: String, ok: Boolean) -> Unit =
             { _, _, _, _ -> },
+        /**
+         * [T-agent-card-live] The run's task id, per agent, the moment that
+         * agent starts. The batch runs agents concurrently, so each one
+         * reports its own id - the line for agent N is filed under agent
+         * N's progress, not under the batch's.
+         */
+        onAgentStarted: ((index: Int, taskId: String) -> Unit)? = null,
     ): String {
         if (agents.isEmpty()) return "spawn_many: no agents given"
         val app = context.applicationContext as MinisApp
@@ -583,6 +604,9 @@ object SubagentExecutor {
                                     context, app, graph, node, spec.role,
                                     TaskBoard.inject(spec.task, snapshot),
                                     teamId = spawnerSessionId,
+                                    onStarted = { taskId ->
+                                        onAgentStarted?.invoke(task.index, taskId)
+                                    },
                                 )
                             }.let { outcome ->
                                 // [T-subagent-block-live] This agent is done
@@ -757,6 +781,14 @@ object SubagentExecutor {
         foreground: Boolean,
         onBackgroundResult: ((spawnId: String, role: String, result: String) -> Unit)? = null,
         /**
+         * [T-agent-card-live] The run's task id, the moment it is known.
+         *
+         * Same contract as runSingle's onStarted, but for the caller that
+         * owns the chat line: the id is handed over before the run starts,
+         * so the line can follow the agent's live progress.
+         */
+        onSpawned: ((taskId: String) -> Unit)? = null,
+        /**
          * [T-subagent-nesting] The CALLER's session id — the structural depth
          * cap. When the caller is itself an agent worker (a spawned
          * subagent session), the child's tool set is stripped of the
@@ -809,7 +841,9 @@ object SubagentExecutor {
         val (graph, node) = buildEphemeralGraph(agentRole, task, allowNesting)
         app.providerRepository.saveAgentGraph(graph)
         val spawnId = node.id
-
+        // [T-agent-card-live] Hand the id over before the run starts: the
+        // chat's line needs it to find the live progress of THIS agent.
+        onSpawned?.invoke(spawnId)
         return if (foreground) {
             runSingle(context, app, graph, node, role, task, teamId = spawnerSessionId, dependsOnJson = depsJson(dependsOn))
         } else {
