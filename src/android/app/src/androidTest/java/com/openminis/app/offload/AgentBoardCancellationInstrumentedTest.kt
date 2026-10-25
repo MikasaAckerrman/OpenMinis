@@ -9,6 +9,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -48,9 +49,28 @@ class AgentBoardCancellationInstrumentedTest {
                 .firstOrNull { it.id == taskId }
         }
 
+    /**
+     * The rows this test made. The recorder writes into the app's own
+     * database, so the test has to take its rows with it - a test that
+     * leaves tasks behind would put ghosts on the user's board.
+     */
+    private val touchedTaskIds = mutableListOf<String>()
+
+    @After
+    fun cleanUp() {
+        val db = ProviderDatabase.getInstance(context).openHelper.writableDatabase
+        for (id in touchedTaskIds) {
+            db.execSQL("DELETE FROM mission_log WHERE task_id = ?", arrayOf<Any>(id))
+            db.execSQL("DELETE FROM agent_mailbox WHERE task_id = ?", arrayOf<Any>(id))
+            db.execSQL("DELETE FROM task_status_history WHERE task_id = ?", arrayOf<Any>(id))
+            db.execSQL("DELETE FROM agent_tasks WHERE id = ?", arrayOf<Any>(id))
+        }
+    }
+
     @Test
     fun a_terminal_write_survives_the_cancellation_that_caused_it() = runBlocking {
         val taskId = "task-${UUID.randomUUID()}"
+        touchedTaskIds += taskId
 
         // The task is started normally.
         AgentBoardRecorder.taskStarted(
@@ -89,6 +109,7 @@ class AgentBoardCancellationInstrumentedTest {
     @Test
     fun a_late_cancellation_does_not_overwrite_a_finished_task() = runBlocking {
         val taskId = "task-${UUID.randomUUID()}"
+        touchedTaskIds += taskId
 
         AgentBoardRecorder.taskStarted(
             context, taskId = taskId, teamId = teamId,
