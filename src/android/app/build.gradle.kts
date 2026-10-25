@@ -191,6 +191,9 @@ android {
 
     testOptions {
         unitTests.isReturnDefaultValues = true
+        // [T-robolectric-room] Robolectric reads the merged manifest and
+        // the resources, so they have to be part of the unit test task.
+        unitTests.isIncludeAndroidResources = true
     }
 
     lint {
@@ -349,6 +352,15 @@ dependencies {
     // [T-m13-fts-memory] JVM suite runs the REAL FTS5 SQL (the identical
     // statements the Android SQLite executes) against sqlite-jdbc.
     testImplementation("org.xerial:sqlite-jdbc:3.47.1.0")
+
+    // [T-robolectric-room] The recorder's terminal write goes into a real
+    // Room database, and a real database needs a real Android runtime.
+    // Robolectric provides one on the JVM, so the test that proves a
+    // cancelled write still lands can run on every push instead of waiting
+    // for a device that may never be attached.
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("androidx.test:core-ktx:1.6.1")
+    testImplementation("androidx.test.ext:junit:1.2.1")
 
     // Testing — Instrumented (on-device) tests
     androidTestImplementation("androidx.test:runner:1.6.2")
