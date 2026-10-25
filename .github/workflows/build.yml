@@ -102,7 +102,7 @@ jobs:
             # and a test that does not compile is worse than no test: it
             # looks like coverage and is not. The recorder's tests against
             # a real database live there.
-            ./gradlew :app:testCloneUnitTest :app:compileCloneAndroidTestKotlin --no-daemon -Dorg.gradle.jvmargs="-Xmx4g"
+            ./gradlew :app:testCloneUnitTest :app:compileDebugAndroidTestKotlin --no-daemon -Dorg.gradle.jvmargs="-Xmx4g"
           else
             ./gradlew :app:testCloneUnitTest --no-daemon -Dorg.gradle.jvmargs="-Xmx4g" \
             --tests 'com.openminis.app.offload.*' \
