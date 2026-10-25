@@ -15,7 +15,11 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import org.junit.Rule
 import org.junit.runner.RunWith
+import org.junit.rules.TestRule
+import org.junit.runner.Description
+import org.junit.runners.model.Statement
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.util.UUID
@@ -37,6 +41,26 @@ import java.util.UUID
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class AgentBoardCancellationTest {
+
+    /**
+     * The build log keeps only the first frame of a failure. This prints
+     * the whole one - and it wraps the setup too, which is where a
+     * failure in the test's own setup would otherwise hide.
+     */
+    @get:Rule
+    val traceRule = object : TestRule {
+        override fun apply(base: Statement, description: Description): Statement =
+            object : Statement() {
+                override fun evaluate() {
+                    try {
+                        base.evaluate()
+                    } catch (t: Throwable) {
+                        println("[AgentBoardCancellationTest] FULL TRACE " + t.stackTraceToString())
+                        throw t
+                    }
+                }
+            }
+    }
 
     private lateinit var context: Context
     private var previousInstance: ProviderDatabase? = null
