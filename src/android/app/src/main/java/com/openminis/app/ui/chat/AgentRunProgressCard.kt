@@ -19,6 +19,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -58,8 +59,22 @@ internal fun AgentRunProgressCard(
             counter = "${snapshot.completedCount}/${snapshot.seenCount}",
             isRunning = snapshot.isRunning,
         )
-        if (snapshot.nodes.isNotEmpty()) {
-            AgentRunProgressNodeRows(snapshot.nodes)
+        // [T-agent-panel] While the run is alive, only the agents that are
+        // working right now are worth a line. The ones that already
+        // settled are history, and a transcript that lists them makes the
+        // running one hard to find - which is the one thing the reader
+        // came for. Once the run is over, every node is the result, and
+        // all of them are shown.
+        val visibleNodes = if (snapshot.isRunning) {
+            snapshot.nodes.filter {
+                it.state == AgentRunProgress.NodeState.RUNNING ||
+                    it.state == AgentRunProgress.NodeState.BLOCKED
+            }
+        } else {
+            snapshot.nodes
+        }
+        if (visibleNodes.isNotEmpty()) {
+            AgentRunProgressNodeRows(visibleNodes)
         }
         snapshot.finalStatus?.let { status ->
             AgentRunProgressStatusText(status)
@@ -152,7 +167,7 @@ internal fun AgentRunProgressNodeRows(nodes: List<AgentRunProgress.Node>) {
         for (node in nodes) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = glyph(node.state),
+                    text = stateWord(node.state),
                     fontSize = 12.sp,
                     color = stateColor(node.state),
                 )
@@ -225,15 +240,23 @@ private fun runningDetail(node: AgentRunProgress.Node): String? {
 }
 
 /**
- * Text glyphs, not icons: this card sits inside a chat transcript that is
- * selectable text, and vector icons there fight the selection container.
+ * [T-agent-panel] The state of a node, in words.
+ *
+ * This used to be a glyph - a triangle for running, a tick for done. The
+ * glyph said nothing to a reader who does not know what a node is, and it
+ * was the loudest thing on the card. A word says what it is, and the
+ * colour still says how it went.
+ *
+ * Not an icon: the card sits inside a chat transcript that is selectable
+ * text, and vector icons there fight the selection container.
  */
-private fun glyph(state: AgentRunProgress.NodeState): String = when (state) {
-    AgentRunProgress.NodeState.RUNNING -> "▶"
-    AgentRunProgress.NodeState.COMPLETED -> "✓"
-    AgentRunProgress.NodeState.BLOCKED -> "■"
-    AgentRunProgress.NodeState.FAILED -> "✕"
-    AgentRunProgress.NodeState.SKIPPED -> "⊘"
+@Composable
+private fun stateWord(state: AgentRunProgress.NodeState): String = when (state) {
+    AgentRunProgress.NodeState.RUNNING -> stringResource(R.string.agent_node_running)
+    AgentRunProgress.NodeState.COMPLETED -> stringResource(R.string.agent_node_completed)
+    AgentRunProgress.NodeState.BLOCKED -> stringResource(R.string.agent_node_blocked)
+    AgentRunProgress.NodeState.FAILED -> stringResource(R.string.agent_node_failed)
+    AgentRunProgress.NodeState.SKIPPED -> stringResource(R.string.agent_node_skipped)
 }
 
 @Composable

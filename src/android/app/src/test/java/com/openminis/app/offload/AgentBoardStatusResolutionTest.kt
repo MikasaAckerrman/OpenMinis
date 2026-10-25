@@ -1,15 +1,15 @@
-package com.openminis.app.ui.chat
+package com.openminis.app.offload
 
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
 /**
- * [T-agent-panel] The rule that decides the status the panel shows.
+ * [T-agent-panel] The rule that decides the status a board row is shown with.
  *
- * The panel's correctness rests on this rule, and a rule that only exists
- * inside a combine block is a rule nobody can check. It is tested here on
- * its own, with plain strings, so nothing about the device can influence
- * the result.
+ * Whatever shows a board row gets its correctness from this rule, and a
+ * rule that only exists inside a combine block is a rule nobody can
+ * check. It is tested here on its own, with plain strings, so nothing
+ * about the device can influence the result.
  *
  * The dangerous direction is the one that must never happen: a task that
  * the board says is finished must never be shown as running again because

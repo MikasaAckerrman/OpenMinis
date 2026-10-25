@@ -309,4 +309,43 @@ object AgentBoardLogic {
             .split(',')
             .map { it.trim().trim('"') }
             .filter { it.isNotEmpty() }
+
+/**
+ * [T-agent-panel] The status a board row is shown with.
+ *
+ * A pure rule, so it can be tested on its own: whatever reads the board
+ * gets its correctness from this, and a rule that only exists inside a
+ * combine block is a rule nobody can check.
+ *
+ * Two sides, one idea:
+ *
+ *  - a TERMINAL status in the database wins over anything the progress
+ *    says. The board is the durable record of how the run ended, and a
+ *    snapshot that still says "running" is a leftover.
+ *  - a terminal status in the progress wins over a NON-terminal status in
+ *    the database. The run says it finished; the board just did not hear
+ *    about it, because the write was lost. The run's own testimony is
+ *    newer than the row.
+ *
+ * So a terminal status always wins, and only a conflict between two
+ * terminal statuses is settled in favour of the database.
+ */
+internal fun resolveAgentTaskStatus(
+    dbStatus: String,
+    snapshotFinalStatus: String?,
+): String = when {
+    dbStatus in AGENT_TASK_TERMINAL_STATUSES -> dbStatus
+    snapshotFinalStatus != null -> snapshotFinalStatus
+    else -> dbStatus
+}
+
+/**
+ * [T-agent-panel] The statuses a task does not come back from.
+ */
+internal val AGENT_TASK_TERMINAL_STATUSES = setOf(
+    STATUS_COMPLETED,
+    STATUS_FAILED,
+    STATUS_CANCELLED,
+)
+
 }

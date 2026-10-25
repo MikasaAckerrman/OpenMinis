@@ -415,7 +415,6 @@ fun ChatScreen(
     /** [T-agent-panel] Open another chat by its id. The agent panel uses it
      *  to show the session that holds a run's result. The caller navigates;
      *  this screen does not know how. */
-    onOpenSession: (sessionId: String) -> Unit = {},
 ) {
     val context = LocalContext.current
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -2356,13 +2355,6 @@ fun ChatScreen(
                     }
                 },
                 actions = {
-                    // [T-agent-panel] The entry point of the agent board. It
-                    // and the panel itself are one component, so the chip
-                    // and the list can never disagree about what is running.
-                    AgentRunsPanelHost(
-                        sessionId = sessionId,
-                        onOpenSession = onOpenSession,
-                    )
                     // Live context pressure. The numerator is the provider's
                     // latest input/context usage; the denominator is the same
                     // effective window used by compaction policy (model window,

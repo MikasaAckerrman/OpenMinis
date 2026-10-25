@@ -557,13 +557,6 @@ fun AppNavigation(
                         Routes.terminal(initCommand = command, sessionId = sessionId),
                     )
                 },
-                onOpenSession = { targetId ->
-                    // [T-agent-panel] The session that holds a run's result.
-                    // The same route the "move to session" action uses.
-                    navController.safeNavigate(Routes.chat(targetId)) {
-                        popUpTo(Routes.SESSION_LIST) { inclusive = false }
-                    }
-                },
                 onMoveToSession = { targetId ->
                     navController.safeNavigate(Routes.chat(targetId)) {
                         popUpTo(Routes.SESSION_LIST) { inclusive = false }
