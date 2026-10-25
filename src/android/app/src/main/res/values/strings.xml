@@ -1717,4 +1717,7 @@
     <string name="agent_node_blocked">Blocked</string>
     <string name="agent_node_failed">Failed</string>
     <string name="agent_node_skipped">Skipped</string>
+    <!-- [T-reasoning-degeneracy] shown in the Deep Thinking block when the
+         model's reasoning turned into a token loop -->
+    <string name="thinking_degenerate_warning">Рассуждение вырождено — показать фрагмент?</string>
 </resources>

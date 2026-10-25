@@ -309,6 +309,18 @@ data class AssistantBlock(
     val toolTitle: String = "",
     val toolName: String = "",
     val toolArgs: String = "",   // raw JSON args for UI rendering (command, path, old_string, etc.)
+    /**
+     * [T-reasoning-degeneracy] True when the model's thinking turned into
+     * a token loop and the engine stopped it. The UI shows a warning
+     * instead of the long broken block.
+     */
+    val reasoningDegenerate: Boolean = false,
+    /**
+     * [T-reasoning-degeneracy] The piece of text that repeated. It is
+     * kept out of the reasoning content on purpose - the provider must
+     * get back what it sent - so the UI offers it here instead.
+     */
+    val reasoningDegenerateFragment: String = "",
     val durationMs: Long = 0L,
     val startTimeMs: Long = 0L,
     /** Page URL at time of browser action execution (mirrors iOS AssistantBlock.browserURL). */

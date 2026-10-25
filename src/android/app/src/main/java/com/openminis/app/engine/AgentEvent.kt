@@ -20,6 +20,16 @@ sealed interface AgentEvent {
      */
     data class ThinkingDelta(val text: String) : AgentEvent
 
+    /**
+     * [T-reasoning-degeneracy] The model's thinking turned into a token
+     * loop and the engine stopped it.
+     *
+     * The fragment is the piece of text that repeated. It is kept out of
+     * the reasoning content on purpose: the content the provider gets
+     * back must be what the provider sent.
+     */
+    data class ThinkingDegenerate(val fragment: String) : AgentEvent
+
     /** A tool call's argument JSON is arriving fragment-by-fragment. */
     data class ToolInputDelta(val callId: String, val fragment: String) : AgentEvent
 

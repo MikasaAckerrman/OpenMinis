@@ -1209,6 +1209,12 @@ internal fun ThinkingBlock(block: AssistantBlock, isStreaming: Boolean, isLast: 
     val thinkingHardCap = 100_000
     val overHardCap = charCount > thinkingHardCap
     var showFullContent by remember(block.id) { mutableStateOf(false) }
+    // [T-reasoning-degeneracy] The engine stopped a token loop in the
+    // thinking. The good text stays as it is; the warning says what
+    // happened and the repeated fragment is offered on demand - it is
+    // kept out of the reasoning content on purpose, so it can only be
+    // shown here.
+    var showDegenerateFragment by remember(block.id) { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -1219,6 +1225,16 @@ internal fun ThinkingBlock(block: AssistantBlock, isStreaming: Boolean, isLast: 
             .clip(RoundedCornerShape(12.dp))
             .padding(horizontal = 12.dp, vertical = 8.dp),
     ) {
+        // [T-reasoning-degeneracy] The repeated fragment, on demand.
+        if (block.reasoningDegenerate && showDegenerateFragment) {
+            Text(
+                text = block.reasoningDegenerateFragment,
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace,
+                color = thinkingBlue.copy(alpha = 0.7f),
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
         // Header row — only the header reacts to taps. Mirrors iOS, where
         // .onTapGesture is on the header HStack, not the whole VStack. With
         // clickable on the outer Column, a release after dragging in the
@@ -1260,6 +1276,19 @@ internal fun ThinkingBlock(block: AssistantBlock, isStreaming: Boolean, isLast: 
                 fontWeight = FontWeight.SemiBold,
                 color = thinkingBlue,
             )
+            if (block.reasoningDegenerate) {
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = stringResource(R.string.thinking_degenerate_warning),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = Color(0xFFD97706),
+                    modifier = Modifier.clickable {
+                        userTouched = true
+                        showDegenerateFragment = !showDegenerateFragment
+                    },
+                )
+            }
             Spacer(modifier = Modifier.weight(1f))
             if (charCount > 0) {
                 Text(

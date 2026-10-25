@@ -102,6 +102,20 @@ class ChatTurnReducer(
                 return listOf(ui())
             }
 
+            // [T-reasoning-degeneracy] The engine stopped a token loop in
+            // the thinking. The block is flagged, not rewritten: the text
+            // that was good stays, and the UI shows a warning.
+            is AgentEvent.ThinkingDegenerate -> {
+                val idx = blocks.indexOfFirst { it.kind == "thinking" }
+                if (idx >= 0) {
+                    blocks[idx] = blocks[idx].copy(
+                        reasoningDegenerate = true,
+                        reasoningDegenerateFragment = event.fragment,
+                    )
+                }
+                return listOf(ui())
+            }
+
             is AgentEvent.TextDelta -> {
                 // seal the thinking card once the answer starts
                 val thinkIdx = blocks.indexOfFirst { it.kind == "thinking" }

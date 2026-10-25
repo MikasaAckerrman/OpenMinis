@@ -9,6 +9,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.Dispatchers
+import com.openminis.app.logging.AppLogger
 
 /**
  * [T-m7-agent-loop] The engine-side agent loop (M7 slice 4) — the round
@@ -103,6 +104,12 @@ class EngineAgentLoop(
             // the assistant history message carries them as
             // reasoningContent (the DeepSeek thinking-history invariant).
             val turnReasoning = StringBuilder()
+            // [T-reasoning-degeneracy] Set once per round when the model's
+            // thinking turned into a token loop. After that the reasoning
+            // is not accumulated and not shown: it must not reach the
+            // stored reasoning_content, and it must not go back to the
+            // provider as part of the history.
+            var reasoningDegenerate = false
             val pendingCalls = mutableListOf<EngineToolCall>()
             var failure: AgentEvent.Error? = null
 
@@ -123,8 +130,46 @@ class EngineAgentLoop(
                         // drops a production feature silently.
                         is StreamEvent.ReasoningDelta -> {
                             if (failure == null) {
-                                turnReasoning.append(event.text)
-                                emit(AgentEvent.ThinkingDelta(event.text))
+                                // [T-reasoning-degeneracy] The text is
+                                // checked before it is accumulated and
+                                // before it reaches the screen. A loop is
+                                // dropped here, so it is stored nowhere and
+                                // the provider never sees it again.
+                                val candidate = turnReasoning.toString() + event.text
+                                val loop = ReasoningDegeneracy.detect(candidate)
+                                if (loop == null) {
+                                    turnReasoning.append(event.text)
+                                    emit(AgentEvent.ThinkingDelta(event.text))
+                                } else if (!reasoningDegenerate) {
+                                    reasoningDegenerate = true
+                                    AppLogger.warning(
+                                        "Reasoning",
+                                        "degenerate reasoning dropped: fragment=" +
+                                            "'${loop.fragment}' x${loop.occurrences} " +
+                                            "coverage=${loop.coverage} at ${turnReasoning.length} chars",
+                                    )
+                                    // The UI is told first, so it can say why
+                                    // the turn stops instead of showing an
+                                    // empty answer.
+                                    emit(AgentEvent.ThinkingDegenerate(loop.fragment))
+                                    // Stop the generation. CancellationException
+                                    // is the project's own cancellation
+                                    // mechanism: it propagates out of runTurn
+                                    // to the driver's cleanup path, the
+                                    // provider stream is unwound (the OkHttp
+                                    // call is cancelled), and the driver
+                                    // rethrows it - a cancelled turn, not a
+                                    // failed one.
+                                    //
+                                    // The reasoning that was good and already
+                                    // streamed stays visible in the live
+                                    // block; this round's message is not
+                                    // written, exactly like a turn the user
+                                    // stopped by hand.
+                                    throw kotlinx.coroutines.CancellationException(
+                                        "degenerate reasoning: '${loop.fragment}'",
+                                    )
+                                }
                             }
                         }
                         is StreamEvent.ToolUseStarted ->
