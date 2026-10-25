@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.openminis.app.offload.AgentRunProgress
 import com.openminis.app.ui.theme.ChatColors
+import com.openminis.app.R
 
 /**
  * [T-agent-graph-live-progress] Live card for a running agent graph, shown in
