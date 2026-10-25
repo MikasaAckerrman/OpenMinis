@@ -156,5 +156,9 @@ class AgentBoardCancellationTest {
             "the result must be left alone",
             row.resultArtifact?.contains("the real result") == true,
         )
+        } catch (t: Throwable) {
+            println("[AgentBoardCancellationTest] TRACE " + t.stackTraceToString())
+            throw t
+        }
     }
 }
