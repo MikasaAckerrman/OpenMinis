@@ -469,6 +469,21 @@ object SubagentExecutor {
         review: Boolean = false,
         /** [T-subagent-nesting] Depth cap — see spawn(spawnerSessionId). */
         spawnerSessionId: String? = null,
+        /**
+         * [T-subagent-block-live] Called once per agent, the moment that
+         * agent is done.
+         *
+         * The chat draws a line per agent, and the line has to stop when
+         * THAT agent stops - not when the batch is through, which for
+         * agents of different length is a different moment entirely. So
+         * the call is made from inside the agent's own coroutine, where
+         * its result exists.
+         *
+         * It runs on an IO thread: whatever receives it has to reach the
+         * main thread on its own.
+         */
+        onAgentDone: (index: Int, role: String, result: String, ok: Boolean) -> Unit =
+            { _, _, _, _ -> },
     ): String {
         if (agents.isEmpty()) return "spawn_many: no agents given"
         val app = context.applicationContext as MinisApp
@@ -569,8 +584,21 @@ object SubagentExecutor {
                                     TaskBoard.inject(spec.task, snapshot),
                                     teamId = spawnerSessionId,
                                 )
-                            }.getOrElse { e ->
-                                "Subagent (${spec.role.lowercase()}) error: ${e.message}"
+                            }.let { outcome ->
+                                // [T-subagent-block-live] This agent is done
+                                // with ITS line; say so now, not when the
+                                // whole batch is through.
+                                onAgentDone(
+                                    task.index,
+                                    spec.role,
+                                    outcome.getOrElse { e ->
+                                        "Subagent (${spec.role.lowercase()}) error: ${e.message}"
+                                    },
+                                    outcome.isSuccess,
+                                )
+                                outcome.getOrElse { e ->
+                                    "Subagent (${spec.role.lowercase()}) error: ${e.message}"
+                                }
                             }
                         }
                     }

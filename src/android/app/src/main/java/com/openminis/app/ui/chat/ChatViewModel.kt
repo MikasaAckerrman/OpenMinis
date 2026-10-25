@@ -15745,9 +15745,11 @@ class ChatViewModel(
             "shell_execute" -> executeShellCommand(argsJson, toolId, toolBlocks, assistantId, currentText)
             "browser_use" -> executeBrowserUseTool(argsJson)
             // [T-spawn-subagent] Runtime subagent spawning (Claude Code pattern).
-            com.openminis.app.tools.SubagentTools.SPAWN_TOOL_NAME -> executeSpawnSubagent(argsJson)
+            com.openminis.app.tools.SubagentTools.SPAWN_TOOL_NAME ->
+                executeSpawnSubagent(argsJson, toolBlocks, assistantId)
             com.openminis.app.tools.SubagentTools.CANCEL_TOOL_NAME -> executeCancelSubagent(argsJson)
-            com.openminis.app.tools.SubagentTools.SPAWN_MANY_TOOL_NAME -> executeSpawnMany(argsJson)
+            com.openminis.app.tools.SubagentTools.SPAWN_MANY_TOOL_NAME ->
+                executeSpawnMany(argsJson, toolBlocks, assistantId)
             com.openminis.app.tools.SubagentTools.LIST_AGENTS_TOOL_NAME -> executeListAgents(argsJson)
             com.openminis.app.tools.TurnTimerTool.NAME -> executeTurnTimer(argsJson)
             com.openminis.app.tools.SubagentTools.RUN_GRAPH_TOOL_NAME -> executeRunGraph(argsJson)
@@ -16268,7 +16270,11 @@ class ChatViewModel(
         }
     }
 
-    private suspend fun executeSpawnSubagent(argsJson: String): ToolExecutionResult {
+    private suspend fun executeSpawnSubagent(
+        argsJson: String,
+        toolBlocks: MutableList<AssistantBlock>,
+        assistantId: String,
+    ): ToolExecutionResult {
         val args = runCatching { JSONObject(argsJson) }.getOrNull()
             ?: return ToolExecutionResult("Invalid JSON for spawn_subagent", false)
         val role = args.optString("role").trim()
@@ -16309,6 +16315,15 @@ class ChatViewModel(
                 }
             }
         }
+        // [T-subagent-block-live] A background agent outlives the call
+        // that started it: the call returns at once and the work goes
+        // on. So it gets a line of its own, in the same shape as a tool
+        // call, and that line stops when the agent stops.
+        val backgroundBlockId = if (background) "subagent_bg_$role" else null
+        if (backgroundBlockId != null) {
+            toolBlocks.add(subagentBlock(backgroundBlockId, role, task))
+            publishToolBlocks(assistantId, toolBlocks)
+        }
         val result = com.openminis.app.offload.SubagentExecutor.spawn(
             context = context,
             role = role,
@@ -16332,10 +16347,12 @@ class ChatViewModel(
                 // удалить такую ячейку»).
                 val appCtx = context.applicationContext
                 appCtx.mainExecutor.execute {
-                    appendSystemInfo(
-                        text = "[subagent ${subRole.lowercase()}] завершён — отчёт ${subResult.length} симв.",
-                        iconKind = "compact",
-                        payload = subResult,
+                    // [T-subagent-block-live] The line stops here. There is
+                    // no separate "the agent finished" line to look for:
+                    // the reader sees the block stop, and taps it for the
+                    // report.
+                    updateSubagentBlock(
+                        assistantId, toolBlocks, "subagent_bg_$subRole", subResult,
                     )
                     // [T-subagent-wake-bridge] ZCode semantics: the parent
                     // agent WAKES UP with the worker's result — a real
@@ -16352,6 +16369,82 @@ class ChatViewModel(
             } } else null,
         )
         return ToolExecutionResult(result, true)
+    }
+
+
+    /**
+     * [T-subagent-block-live] The line an agent works on.
+     *
+     * One per agent, in the same shape as a tool call: the reader sees
+     * who is working and what it was given, and the line stops when that
+     * agent stops. The result goes into the block, so tapping it opens
+     * the agent's own output - there is no separate "the agent finished"
+     * line to look for.
+     */
+    private fun subagentBlock(id: String, role: String, task: String): AssistantBlock =
+        AssistantBlock(
+            id = id,
+            kind = "tool_use",
+            toolName = "spawn_subagent",
+            toolTitle = role,
+            toolStatus = ToolBlockStatus.RUNNING,
+            toolArgs = JSONObject().apply {
+                put("role", role)
+                put("task", task)
+            }.toString(),
+            content = "",
+            startTimeMs = System.currentTimeMillis(),
+        )
+
+    /**
+     * [T-subagent-block-live] The id of an agent's line, so that the
+     * agent's own result finds the block it belongs to.
+     */
+    private fun subagentBlockId(assistantId: String, index: Int): String =
+        "subagent_${assistantId}_$index"
+
+    /**
+     * [T-subagent-block-live] Stop an agent's line, with its result.
+     *
+     * The block is found by its id and replaced in place, and the turn's
+     * blocks are published again so the change reaches the screen.
+     */
+    private fun updateSubagentBlock(
+        assistantId: String,
+        toolBlocks: MutableList<AssistantBlock>,
+        blockId: String,
+        result: String,
+        ok: Boolean = true,
+    ) {
+        val pos = toolBlocks.indexOfFirst { it.id == blockId }
+        if (pos < 0) return
+        val prev = toolBlocks[pos]
+        toolBlocks[pos] = prev.copy(
+            toolStatus = if (ok) ToolBlockStatus.SUCCESS else ToolBlockStatus.FAILED,
+            content = result,
+            durationMs = (System.currentTimeMillis() - prev.startTimeMs).coerceAtLeast(0L),
+        )
+        publishToolBlocks(assistantId, toolBlocks)
+    }
+
+    /**
+     * [T-subagent-block-live] Publish the turn's blocks again.
+     *
+     * The text is taken from the streaming side channel rather than from
+     * a value captured earlier: that channel holds what was last
+     * published, and publishing an older text would move the flush
+     * marker backwards and cut the streamed text off.
+     *
+     * While the turn is live the side channel is the right place. Once
+     * the turn is over the change has to reach the canonical message,
+     * or it is gone the next time the session is loaded.
+     */
+    private fun publishToolBlocks(assistantId: String, toolBlocks: List<AssistantBlock>) {
+        val streaming = _streamingById.value[assistantId]
+        val text = streaming?.content
+            ?: _messages.value.firstOrNull { it.id == assistantId }?.content
+            ?: ""
+        updateAssistantMessage(assistantId, text, streaming != null, toolBlocks)
     }
 
     /**
@@ -16752,7 +16845,11 @@ class ChatViewModel(
      * [T-spawn-many] Batch spawn: N subagents, one tool result. See
      * SubagentExecutor.spawnMany for the conflict serialization contract.
      */
-    private suspend fun executeSpawnMany(argsJson: String): ToolExecutionResult {
+    private suspend fun executeSpawnMany(
+        argsJson: String,
+        toolBlocks: MutableList<AssistantBlock>,
+        assistantId: String,
+    ): ToolExecutionResult {
         val args = runCatching { JSONObject(argsJson) }.getOrNull()
             ?: return ToolExecutionResult("Invalid JSON for spawn_many", false)
         val agentsRaw = args.optString("agents").trim()
@@ -16781,10 +16878,27 @@ class ChatViewModel(
         val serial = args.optString("mode").trim().lowercase() == "serial"
         val synthesize = args.optBoolean("synthesize", false)
         val review = args.optBoolean("review", false)
+        // [T-subagent-block-live] One line per agent, in the same shape
+        // as a tool call. The reader sees which agents are working at
+        // the same time, and each line stops when ITS agent stops.
+        specs.forEachIndexed { index, spec ->
+            toolBlocks.add(subagentBlock(subagentBlockId(assistantId, index), spec.role, spec.task))
+        }
+        publishToolBlocks(assistantId, toolBlocks)
+
         val result = com.openminis.app.offload.SubagentExecutor.spawnMany(
             context, specs, serial, synthesize, review,
             // [T-subagent-nesting] Depth cap — see spawn(spawnerSessionId).
             spawnerSessionId = activeSessionId,
+            onAgentDone = { index, agentRole, agentResult, ok ->
+                val appCtx = context.applicationContext
+                appCtx.mainExecutor.execute {
+                    updateSubagentBlock(
+                        assistantId, toolBlocks, subagentBlockId(assistantId, index),
+                        agentResult, ok,
+                    )
+                }
+            },
         )
         return ToolExecutionResult(result, true)
     }
