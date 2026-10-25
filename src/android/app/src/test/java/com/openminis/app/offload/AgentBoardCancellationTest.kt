@@ -62,6 +62,7 @@ class AgentBoardCancellationTest {
 
     @Test
     fun a_terminal_write_survives_the_cancellation_that_caused_it() = runBlocking {
+        try {
         val taskId = "task-${UUID.randomUUID()}"
         val teamId = "team-${UUID.randomUUID()}"
 
@@ -101,10 +102,15 @@ class AgentBoardCancellationTest {
             AgentBoardLogic.STATUS_CANCELLED,
             row!!.status,
         )
+        } catch (t: Throwable) {
+            println("[AgentBoardCancellationTest] TRACE " + t.stackTraceToString())
+            throw t
+        }
     }
 
     @Test
     fun a_late_cancellation_does_not_overwrite_a_finished_task() = runBlocking {
+        try {
         val taskId = "task-${UUID.randomUUID()}"
         val teamId = "team-${UUID.randomUUID()}"
 
