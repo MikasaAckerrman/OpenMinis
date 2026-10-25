@@ -15,11 +15,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
-import org.junit.Rule
 import org.junit.runner.RunWith
-import org.junit.rules.TestRule
-import org.junit.runner.Description
-import org.junit.runners.model.Statement
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.util.UUID
@@ -41,26 +37,6 @@ import java.util.UUID
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class AgentBoardCancellationTest {
-
-    /**
-     * The build log keeps only the first frame of a failure. This prints
-     * the whole one - and it wraps the setup too, which is where a
-     * failure in the test's own setup would otherwise hide.
-     */
-    @get:Rule
-    val traceRule = object : TestRule {
-        override fun apply(base: Statement, description: Description): Statement =
-            object : Statement() {
-                override fun evaluate() {
-                    try {
-                        base.evaluate()
-                    } catch (t: Throwable) {
-                        println("[AgentBoardCancellationTest] FULL TRACE " + t.stackTraceToString())
-                        throw t
-                    }
-                }
-            }
-    }
 
     private lateinit var context: Context
     private var previousInstance: ProviderDatabase? = null
@@ -86,7 +62,6 @@ class AgentBoardCancellationTest {
 
     @Test
     fun a_terminal_write_survives_the_cancellation_that_caused_it() = runBlocking {
-        try {
         val taskId = "task-${UUID.randomUUID()}"
         val teamId = "team-${UUID.randomUUID()}"
 
@@ -126,15 +101,10 @@ class AgentBoardCancellationTest {
             AgentBoardLogic.STATUS_CANCELLED,
             row!!.status,
         )
-        } catch (t: Throwable) {
-            println("[AgentBoardCancellationTest] TRACE " + t.stackTraceToString())
-            throw t
-        }
     }
 
     @Test
     fun a_late_cancellation_does_not_overwrite_a_finished_task() = runBlocking {
-        try {
         val taskId = "task-${UUID.randomUUID()}"
         val teamId = "team-${UUID.randomUUID()}"
 
@@ -180,9 +150,5 @@ class AgentBoardCancellationTest {
             "the result must be left alone",
             row.resultArtifact?.contains("the real result") == true,
         )
-        } catch (t: Throwable) {
-            println("[AgentBoardCancellationTest] TRACE " + t.stackTraceToString())
-            throw t
-        }
     }
 }
