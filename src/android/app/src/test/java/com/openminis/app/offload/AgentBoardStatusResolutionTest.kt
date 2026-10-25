@@ -22,7 +22,7 @@ class AgentRunsStatusResolutionTest {
     fun aTerminalStatusInTheDatabaseBeatsTheSnapshot() {
         assertEquals(
             "COMPLETED",
-            resolveAgentTaskStatus(
+            AgentBoardLogic.resolveAgentTaskStatus(
                 dbStatus = "COMPLETED",
                 snapshotFinalStatus = "RUNNING",
             ),
@@ -36,7 +36,7 @@ class AgentRunsStatusResolutionTest {
         // one that is believed.
         assertEquals(
             "FAILED",
-            resolveAgentTaskStatus(
+            AgentBoardLogic.resolveAgentTaskStatus(
                 dbStatus = "FAILED",
                 snapshotFinalStatus = "COMPLETED",
             ),
@@ -49,7 +49,7 @@ class AgentRunsStatusResolutionTest {
         // write was lost. The run's own testimony is newer than the row.
         assertEquals(
             "COMPLETED",
-            resolveAgentTaskStatus(
+            AgentBoardLogic.resolveAgentTaskStatus(
                 dbStatus = "RUNNING",
                 snapshotFinalStatus = "COMPLETED",
             ),
@@ -60,14 +60,14 @@ class AgentRunsStatusResolutionTest {
     fun withoutATerminalStatusAnywhereTheDatabaseStands() {
         assertEquals(
             "RUNNING",
-            resolveAgentTaskStatus(
+            AgentBoardLogic.resolveAgentTaskStatus(
                 dbStatus = "RUNNING",
                 snapshotFinalStatus = null,
             ),
         )
         assertEquals(
             "PENDING",
-            resolveAgentTaskStatus(
+            AgentBoardLogic.resolveAgentTaskStatus(
                 dbStatus = "PENDING",
                 snapshotFinalStatus = null,
             ),
@@ -81,7 +81,7 @@ class AgentRunsStatusResolutionTest {
         for (terminal in listOf("COMPLETED", "FAILED", "CANCELLED")) {
             assertEquals(
                 terminal,
-                resolveAgentTaskStatus(
+                AgentBoardLogic.resolveAgentTaskStatus(
                     dbStatus = terminal,
                     snapshotFinalStatus = "RUNNING",
                 ),
@@ -96,7 +96,7 @@ class AgentRunsStatusResolutionTest {
         // the outcome, not a successful finish.
         assertEquals(
             "CANCELLED",
-            resolveAgentTaskStatus(
+            AgentBoardLogic.resolveAgentTaskStatus(
                 dbStatus = "CANCELLED",
                 snapshotFinalStatus = "COMPLETED",
             ),
