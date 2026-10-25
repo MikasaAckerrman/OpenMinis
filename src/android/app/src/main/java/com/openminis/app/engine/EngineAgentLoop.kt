@@ -110,6 +110,11 @@ class EngineAgentLoop(
             // stored reasoning_content, and it must not go back to the
             // provider as part of the history.
             var reasoningDegenerate = false
+            // [T-reasoning-degeneracy] The detector needs the recent text
+            // only, and copying the whole buffer on every delta would be
+            // quadratic: a long reasoning would copy itself over and over
+            // while it streams. This keeps the tail and nothing else.
+            val reasoningTail = StringBuilder()
             val pendingCalls = mutableListOf<EngineToolCall>()
             var failure: AgentEvent.Error? = null
 
@@ -135,8 +140,14 @@ class EngineAgentLoop(
                                 // before it reaches the screen. A loop is
                                 // dropped here, so it is stored nowhere and
                                 // the provider never sees it again.
-                                val candidate = turnReasoning.toString() + event.text
-                                val loop = ReasoningDegeneracy.detect(candidate)
+                                reasoningTail.append(event.text)
+                                if (reasoningTail.length > ReasoningDegeneracy.TAIL_CHARS) {
+                                    reasoningTail.delete(
+                                        0,
+                                        reasoningTail.length - ReasoningDegeneracy.TAIL_CHARS,
+                                    )
+                                }
+                                val loop = ReasoningDegeneracy.detect(reasoningTail)
                                 if (loop == null) {
                                     turnReasoning.append(event.text)
                                     emit(AgentEvent.ThinkingDelta(event.text))
@@ -151,7 +162,18 @@ class EngineAgentLoop(
                                     // The UI is told first, so it can say why
                                     // the turn stops instead of showing an
                                     // empty answer.
-                                    emit(AgentEvent.ThinkingDegenerate(loop.fragment))
+                                    // The repeated piece is the proof; for a
+                                    // sign flood the proof is the sign
+                                    // itself, which would tell the user
+                                    // nothing. The excerpt is the text
+                                    // itself, so the warning can show what
+                                    // the model actually wrote.
+                                    emit(
+                                        AgentEvent.ThinkingDegenerate(
+                                            reasoningTail.toString()
+                                                .takeLast(ReasoningDegeneracy.EXCERPT_CHARS),
+                                        ),
+                                    )
                                     // Stop the generation. CancellationException
                                     // is the project's own cancellation
                                     // mechanism: it propagates out of runTurn

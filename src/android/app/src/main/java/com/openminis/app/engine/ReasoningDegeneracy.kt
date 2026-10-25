@@ -56,6 +56,17 @@ internal object ReasoningDegeneracy {
     const val MIN_LINE_LENGTH = 4
 
     /**
+     * How much of the recent reasoning the detector looks at. The
+     * detector needs the recent text only, and the caller must not copy
+     * the whole buffer for it - that would be quadratic while the model
+     * streams.
+     */
+    const val TAIL_CHARS = 8192
+
+    /** How much of the broken text the diagnostic excerpt carries. */
+    const val EXCERPT_CHARS = 400
+
+    /**
      * Below this many characters there is nothing to judge. Twelve
      * repetitions of a sign are already a flood, and that is 24
      * characters - the barrier must catch the loop while it is still
