@@ -200,6 +200,24 @@ abstract class ProviderDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * [T-robolectric-room] Point the singleton at another database.
+         *
+         * A test that exercises the recorder needs a database it can throw
+         * away: the recorder reaches the database through this singleton, so
+         * without a way to redirect it, the test would write into the app's
+         * own database - the user's board - and would depend on the host
+         * filesystem, which the JVM test runtime does not provide the way a
+         * device does.
+         *
+         * The previous instance is returned so the caller can put it back.
+         */
+        internal fun overrideInstanceForTest(instance: ProviderDatabase?): ProviderDatabase? {
+            val previous = INSTANCE
+            INSTANCE = instance
+            return previous
+        }
+
         fun getInstance(context: Context): ProviderDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(

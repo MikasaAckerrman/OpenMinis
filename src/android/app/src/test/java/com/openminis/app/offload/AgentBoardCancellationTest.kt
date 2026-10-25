@@ -1,6 +1,7 @@
 package com.openminis.app.offload
 
 import android.content.Context
+import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.openminis.app.data.db.ProviderDatabase
 import kotlinx.coroutines.Dispatchers
@@ -29,37 +30,29 @@ import java.util.UUID
  * withContext, so the write silently never happened and the task stayed
  * running for good.
  *
- * The recorder reaches the database through a real context, so the test
- * runs on Robolectric: a real Android runtime and a real Room database,
- * without waiting for a device.
+ * The recorder reaches the database through the provider singleton, so the
+ * test points that singleton at a database of its own. Nothing is left on
+ * the user's board, and the test does not depend on the host filesystem.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class AgentBoardCancellationTest {
 
     private lateinit var context: Context
+    private var previousInstance: ProviderDatabase? = null
 
     @Before
     fun setUp() {
         context = ApplicationProvider.getApplicationContext()
+        val database = Room.inMemoryDatabaseBuilder(context, ProviderDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        previousInstance = ProviderDatabase.overrideInstanceForTest(database)
     }
 
-    /**
-     * The rows this test made. The recorder writes into the app's own
-     * database, so the test has to take its rows with it - a test that
-     * leaves tasks behind would put ghosts on the user's board.
-     */
-    private val touchedTaskIds = mutableListOf<String>()
-
     @After
-    fun cleanUp() {
-        val db = ProviderDatabase.getInstance(context).openHelper.writableDatabase
-        for (id in touchedTaskIds) {
-            db.execSQL("DELETE FROM mission_log WHERE task_id = ?", arrayOf<Any>(id))
-            db.execSQL("DELETE FROM agent_mailbox WHERE task_id = ?", arrayOf<Any>(id))
-            db.execSQL("DELETE FROM task_status_history WHERE task_id = ?", arrayOf<Any>(id))
-            db.execSQL("DELETE FROM agent_tasks WHERE id = ?", arrayOf<Any>(id))
-        }
+    fun tearDown() {
+        ProviderDatabase.overrideInstanceForTest(previousInstance)
     }
 
     private fun rowOf(taskId: String) =
@@ -70,7 +63,6 @@ class AgentBoardCancellationTest {
     @Test
     fun a_terminal_write_survives_the_cancellation_that_caused_it() = runBlocking {
         val taskId = "task-${UUID.randomUUID()}"
-        touchedTaskIds += taskId
         val teamId = "team-${UUID.randomUUID()}"
 
         AgentBoardRecorder.taskStarted(
@@ -114,7 +106,6 @@ class AgentBoardCancellationTest {
     @Test
     fun a_late_cancellation_does_not_overwrite_a_finished_task() = runBlocking {
         val taskId = "task-${UUID.randomUUID()}"
-        touchedTaskIds += taskId
         val teamId = "team-${UUID.randomUUID()}"
 
         AgentBoardRecorder.taskStarted(
