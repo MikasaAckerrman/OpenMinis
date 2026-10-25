@@ -38,8 +38,12 @@ class AgentGraphScopesTest {
 
         assertEquals("the run must return what the block returned", "done", result)
         // The caller can only finish if the run left nothing unfinished.
-        withTimeout(5_000) { caller.join() }
-        assertTrue("the caller must be able to finish", caller.isCompleted)
+        // A plain job never finishes on its own, so the test asks the
+        // question it actually means: did the run leave a child behind?
+        assertTrue(
+            "the run must not leave a child of the caller running",
+            caller.children.none { it.isActive },
+        )
     }
 
     @Test
