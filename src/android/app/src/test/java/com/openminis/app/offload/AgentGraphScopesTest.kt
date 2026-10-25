@@ -1,8 +1,12 @@
 package com.openminis.app.offload
 
 import kotlinx.coroutines.CompletableDeferred
+kotlinx.coroutines.Dispatchers
+kotlinx.coroutines.CoroutineScope
+kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
+kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -24,11 +28,16 @@ class AgentGraphScopesTest {
     @Test
     fun a_finished_run_returns_its_result_and_frees_the_caller() = runBlocking {
         val scopes = AgentGraphScopes()
-        val caller = currentCoroutineContext()[Job]!!
+        // The caller gets a job of its own. The test's own job is the one
+        // that runs the assertions, and joining it would wait for the test
+        // itself to end - which it cannot do while it is still running.
+        val callerScope = CoroutineScope(Job() + Dispatchers.Default)
+        val caller = callerScope.coroutineContext[Job]!!
 
-        val result = scopes.run("task-1") { "done" }
+        val result = callerScope.async { scopes.run("task-1") { "done" } }.await()
 
         assertEquals("the run must return what the block returned", "done", result)
+        // The caller can only finish if the run left nothing unfinished.
         withTimeout(5_000) { caller.join() }
         assertTrue("the caller must be able to finish", caller.isCompleted)
     }
@@ -145,10 +154,14 @@ class AgentGraphScopesTest {
     @Test
     fun cancelling_the_caller_cancels_the_graph() = runBlocking {
         val scopes = AgentGraphScopes()
-        val caller = currentCoroutineContext()[Job]!!
+        // A caller of its own: cancelling the test's own job would cancel
+        // the test rather than the graph, and the test would die before it
+        // could say anything about it.
+        val callerScope = CoroutineScope(Job() + Dispatchers.Default)
+        val caller = callerScope.coroutineContext[Job]!!
         val inside = CompletableDeferred<Unit>()
 
-        val block = launch {
+        val block = callerScope.async {
             scopes.run("task-4") {
                 inside.complete(Unit)
                 delay(Long.MAX_VALUE)
@@ -157,8 +170,12 @@ class AgentGraphScopesTest {
         inside.await()
 
         caller.cancel()
-        block.join()
 
+        val failure = runCatching { block.await() }.exceptionOrNull()
+        assertTrue(
+            "the graph must have been cancelled along with its caller",
+            failure is CancellationException,
+        )
         assertFalse(
             "the graph must not outlive the caller that started it",
             scopes.isCancellable("task-4"),
