@@ -140,6 +140,37 @@ class AgentBoardPanelQueriesTest {
 
     // --- the live tasks ---------------------------------------------------
 
+    /**
+     * [T-board-orphan-sweep] The rows a dead process left behind are
+     * exactly the ones that were still open when it died - and only
+     * those.
+     *
+     * The count that used to lie counted every open row, so the rows a
+     * dead process left behind were counted as work in progress. The
+     * sweep has to find exactly those: open, and untouched since before
+     * the process that owned them is gone. A fresh open row belongs to
+     * the process running now, and a closed row is history - neither is
+     * an orphan, and closing either would be a lie.
+     */
+    @Test
+    fun orphanSweepFindsOnlyTheRowsADeadProcessLeftBehind() {
+        withDb { conn ->
+            val orphans = conn.prepareStatement(AgentBoardDao.SQL_ORPHANED_BEFORE).use { p ->
+                p.setLong(1, 250L)
+                p.executeQuery().use { rs ->
+                    val out = ArrayList<String>()
+                    while (rs.next()) out.add(rs.getString("id"))
+                    out
+                }
+            }
+            assertEquals(
+                "only the open rows older than the cutoff are orphans",
+                listOf("a-pending", "a-running", "b-running"),
+                orphans.sorted(),
+            )
+        }
+    }
+
     @Test
     fun activeTasks_liveOnly_andOldestFirst() {
         withDb { conn ->

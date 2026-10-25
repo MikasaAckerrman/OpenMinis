@@ -156,10 +156,7 @@ interface AgentBoardDao {
      * the row would read "running" for good, and every count that
      * includes it would be wrong.
      */
-    @Query(
-        "SELECT * FROM agent_tasks WHERE status IN ('PENDING','RUNNING','BLOCKED') " +
-            "AND updated_at < :cutoff"
-    )
+    @Query(SQL_ORPHANED_BEFORE)
     suspend fun orphanedBefore(cutoff: Long): List<AgentTaskEntity>
 
     /**
@@ -349,6 +346,19 @@ interface AgentBoardDao {
             "SELECT * FROM agent_tasks WHERE team_id = :teamId " +
                 "AND status IN ('COMPLETED', 'FAILED', 'CANCELLED') " +
                 "ORDER BY updated_at DESC LIMIT :limit"
+
+        /**
+         * [T-board-orphan-sweep] The rows a dead process left behind:
+         * open, and untouched since before the process that owned them
+         * is gone.
+         *
+         * A constant, like the other board queries, so the test can run
+         * this exact string on a real SQLite engine - the app and the
+         * test cannot drift apart.
+         */
+        const val SQL_ORPHANED_BEFORE =
+            "SELECT * FROM agent_tasks WHERE status IN ('PENDING', 'RUNNING', 'BLOCKED') " +
+                "AND updated_at < :cutoff"
 
         const val SQL_PRUNE_CLOSED =
             "DELETE FROM agent_tasks WHERE updated_at < :cutoff " +
