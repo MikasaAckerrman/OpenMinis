@@ -80,6 +80,14 @@ object AgentBoardLogic {
     const val STATUS_BLOCKED = "BLOCKED"
 
     /**
+     * [T-board-orphan-sweep] How often the running process checks for rows
+     * whose executor is gone. A minute is short enough that the board does
+     * not lie for long, and long enough not to wake the database up for
+     * nothing.
+     */
+    const val ORPHAN_SWEEP_INTERVAL_MS = 60_000L
+
+    /**
      * [T-task-board] A RUNNING row whose updatedAt is older than this is
      * marked stale in summaries: in-memory progress dies with the process,
      * the durable row does not — the marker turns an eternally-busy zombie
@@ -140,6 +148,41 @@ object AgentBoardLogic {
         if (hasLiveProgress) return false
         if (processStartMs > 0L && updatedAt < processStartMs) return true
         return nowMs - updatedAt > STALE_AFTER_MS
+    }
+
+    /**
+     * [T-board-orphan-sweep] Is this row an active task whose executor is
+     * gone?
+     *
+     * The startup sweep can only see rows written before this process
+     * started - it uses the process start as a cutoff. A row created in
+     * this process whose executor died inside it stays active until the
+     * next process start, and the next process start may be never if the
+     * app is left open.
+     *
+     * [liveTaskIds] are the runs this process can still see. A row in that
+     * set is alive however old its timestamp is: the timestamp is a birth
+     * stamp, there is no heartbeat.
+     *
+     * PENDING and BLOCKED rows are orphaned only when they were written
+     * before this process started - inside this process they wait for an
+     * executor, not for a heartbeat.
+     */
+    fun isOrphan(
+        status: String,
+        updatedAt: Long,
+        taskId: String,
+        liveTaskIds: Set<String>,
+        nowMs: Long,
+    ): Boolean {
+        if (status == STATUS_COMPLETED || status == STATUS_FAILED || status == STATUS_CANCELLED) {
+            return false
+        }
+        if (taskId in liveTaskIds) return false
+        if (status == STATUS_RUNNING) {
+            return isStale(status, updatedAt, nowMs, hasLiveProgress = false)
+        }
+        return processStartMs > 0L && updatedAt < processStartMs
     }
 
     /**

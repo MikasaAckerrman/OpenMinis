@@ -198,6 +198,78 @@ class MinisApp : Application(), ImageLoaderFactory {
         // honest from the first frame instead of letting the dead rows
         // pile up for good. The prune does not do this: it only removes
         // rows that are already closed.
+        // [T-board-orphan-sweep] The startup sweep below can only see the
+        // rows the previous process left behind. A row whose executor died inside
+        // THIS process stays active for as long as the app is open, and
+        // the board would keep showing it as running. The predicate is
+        // pure and lives in AgentBoardLogic; the live runs are the ones
+        // this process can still see.
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            while (kotlinx.coroutines.isActive) {
+                kotlinx.coroutines.delay(
+                    com.openminis.app.offload.AgentBoardLogic.ORPHAN_SWEEP_INTERVAL_MS,
+                )
+                runCatching {
+                    val dao = com.openminis.app.data.db.ProviderDatabase
+                        .getInstance(this@MinisApp).agentBoardDao()
+                    // The registry is locked for the whole check and the
+                    // whole close. A task that becomes live while the
+                    // sweep runs must not be closed on a reading that is
+                    // already old, so a registration has to wait until the
+                    // close is done.
+                    com.openminis.app.offload.AgentBoardLiveness.withExclusive {
+                    val live = com.openminis.app.offload.AgentBoardLiveness.liveTaskIds()
+                    val now = System.currentTimeMillis()
+                    val orphans = dao.activeTasks().filter { row ->
+                        com.openminis.app.offload.AgentBoardLogic.isOrphan(
+                            status = row.status,
+                            updatedAt = row.updatedAt,
+                            taskId = row.id,
+                            liveTaskIds = live,
+                            nowMs = now,
+                        )
+                    }
+                    if (orphans.isNotEmpty()) {
+                        val closedNow = dao.cancelOrphans(
+                            rows = orphans,
+                            now = now,
+                            reason = "the executor of this run is gone",
+                            isStillOrphan = { row ->
+                                // The live set above is a reading from
+                                // before. Ask again with a fresh one, right
+                                // before the write: a task that became live
+                                // again in between must not be closed.
+                                com.openminis.app.offload.AgentBoardLogic.isOrphan(
+                                    status = row.status,
+                                    updatedAt = row.updatedAt,
+                                    taskId = row.id,
+                                    liveTaskIds = com.openminis.app.offload.AgentBoardLiveness.liveTaskIds(),
+                                    nowMs = System.currentTimeMillis(),
+                                )
+                            },
+                        )
+                        if (closedNow > 0) {
+                            com.openminis.app.logging.AppLogger.info(
+                                "AgentBoard",
+                                "orphan sweep closed $closedNow row(s) without an executor",
+                            )
+                        }
+                    }
+                    }
+                }.onFailure {
+                    // runCatching catches Throwable, and a cancelled
+                    // coroutine throws CancellationException. Swallowing it
+                    // here would keep the sweep running after the caller
+                    // asked it to stop, so it is passed on. Every other
+                    // failure is a warning and the next iteration runs.
+                    if (it is kotlinx.coroutines.CancellationException) throw it
+                    com.openminis.app.logging.AppLogger.warning(
+                        "AgentBoard",
+                        "orphan sweep failed: ${it.message}",
+                    )
+                }
+            }
+        }
         kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
             runCatching {
                 val dao = com.openminis.app.data.db.ProviderDatabase
@@ -213,6 +285,9 @@ class MinisApp : Application(), ImageLoaderFactory {
                     )
                 }
             }.onFailure {
+                // The same as the periodic sweep: a cancellation is not a
+                // failure of the sweep, it is the end of its work.
+                if (it is kotlinx.coroutines.CancellationException) throw it
                 com.openminis.app.logging.AppLogger.warning(
                     "AgentBoard", "orphan sweep failed (non-fatal): ${it.message}",
                 )

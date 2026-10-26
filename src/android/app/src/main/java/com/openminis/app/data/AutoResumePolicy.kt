@@ -23,11 +23,21 @@ package com.openminis.app.data
  *
  * ## What may be auto-resumed
  *
- * ONLY transport faults, and only when the model produced no answer. A turn that
- * failed because of the model's own decision (content filter), the account
- * (auth, quota), the request (400), or the user (cancel) must NOT be replayed:
+ * ONLY transport faults. A turn that failed because of the model's own
+ * decision (content filter), the account (auth, quota), the request (400),
+ * or the user (cancel) must NOT be replayed:
  * retrying it burns tokens to reach the identical failure, and in the cancel
  * case it overrides an explicit human decision.
+ *
+ * ## What may not be auto-resumed even on a transport fault
+ *
+ * A turn that had already called a tool. The call and its result live in the
+ * engine's own working history, and that history is gone when the request
+ * dies: the replay starts from the saved conversation, which does not contain
+ * the call. The model is therefore asked again with no memory of having run
+ * the tool, and a tool that writes a file or sends a message would do it
+ * twice. Until the engine can hand the unfinished history back, such a turn is
+ * left to the user - who can see what happened and decide.
  *
  * Pure and clock-free so every branch is testable; the caller owns the timer, the
  * connectivity wait and the actual [resume] call.
@@ -138,9 +148,15 @@ object AutoResumePolicy {
      * @param userSentNewMessage the human moved on. Resuming a superseded turn
      *   would interleave two conversations.
      * @param hasPartialAnswer whether the dead turn left text/tool output behind.
-     *   Does NOT gate the decision — [resume] continues from a partial answer just
-     *   as well as from an empty one — but is recorded here so callers cannot
-     *   invent their own rule about it.
+     *   Text alone does not gate the decision: a replayed turn that writes the
+     *   same answer again is harmless, and refusing to resume it would throw
+     *   away the recovery this policy exists for. The tool call does gate it,
+     *   and that is [hasToolCall]. Recorded here so callers cannot invent
+     *   their own rule about it.
+     * @param hasToolCall whether the dead turn had already called a tool.
+     *   Vetoes the automatic resume: the replay would run the tool a second
+     *   time, because the context of the interrupted round is not in the
+     *   conversation that gets replayed.
      */
     fun decide(
         cause: Cause,
@@ -148,10 +164,20 @@ object AutoResumePolicy {
         userCancelled: Boolean,
         userSentNewMessage: Boolean,
         @Suppress("UNUSED_PARAMETER") hasPartialAnswer: Boolean = false,
+        hasToolCall: Boolean = false,
     ): Decision {
         if (userCancelled) return Decision.Stop("user cancelled the turn")
         if (userSentNewMessage) return Decision.Stop("user already sent a new message")
         if (cause == Cause.OTHER) return Decision.Stop("not a transport failure")
+        if (hasToolCall) {
+            // The replay would not know that the tool already ran: the call
+            // and its result are in the engine's working history, which dies
+            // with the request. The model is asked again and may run the
+            // tool a second time, so the side effect would happen twice.
+            return Decision.Stop(
+                "the turn already called a tool; an automatic replay would repeat its effect",
+            )
+        }
         if (attemptsUsed >= MAX_ATTEMPTS) {
             return Decision.Stop("auto-resume budget spent ($attemptsUsed/$MAX_ATTEMPTS)")
         }

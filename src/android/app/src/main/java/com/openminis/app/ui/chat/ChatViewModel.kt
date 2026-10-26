@@ -9555,6 +9555,10 @@ class ChatViewModel(
                     val hasPartialAnswer = lastAssistantMsg?.let {
                         it.content.isNotBlank() || it.toolBlocks.isNotEmpty()
                     } ?: false
+                    // A tool call in the dead turn is a different matter from
+                    // text: replaying the turn would run the tool again, and
+                    // the replayed conversation does not contain the call.
+                    val hasToolCall = lastAssistantMsg?.toolBlocks?.isNotEmpty() == true
                     // The user cancelled or sent a new message DURING the failed
                     // attempt if the prompt queue gained an entry. Check it before
                     // deciding — a fresh prompt means the user has moved on.
@@ -9565,6 +9569,7 @@ class ChatViewModel(
                         userCancelled = false,  // cancel kills the job, never reaches here
                         userSentNewMessage = userSentNewMessage,
                         hasPartialAnswer = hasPartialAnswer,
+                        hasToolCall = hasToolCall,
                     )
                     
                     when (decision) {

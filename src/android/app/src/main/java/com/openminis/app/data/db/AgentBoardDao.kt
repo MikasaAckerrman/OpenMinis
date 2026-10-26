@@ -171,21 +171,64 @@ interface AgentBoardDao {
         val orphans = orphanedBefore(cutoff)
         var closed = 0
         for (row in orphans) {
-            val changed = setStatusIf(row.id, row.status, "CANCELLED", now)
-            if (changed == 0) continue
-            insertHistory(
-                TaskStatusHistoryEntity(
-                    taskId = row.id,
-                    fromStatus = row.status,
-                    toStatus = "CANCELLED",
-                    changedByAgentId = null,
-                    reason = "the process that owned this run is gone",
-                    changedAt = now,
-                ),
-            )
-            closed++
+            if (closeAsCancelled(row, now, "the process that owned this run is gone")) closed++
         }
         return closed
+    }
+
+    /**
+     * [T-board-orphan-sweep] Close the given rows as cancelled.
+     *
+     * The startup sweep uses the process start as a cutoff and can only
+     * see rows from a process that is gone. This one closes rows the
+     * caller has already decided are orphaned - a row whose executor died
+     * inside the running process.
+     */
+    @Transaction
+    suspend fun cancelOrphans(
+        rows: List<AgentTaskEntity>,
+        now: Long,
+        reason: String,
+        isStillOrphan: (AgentTaskEntity) -> Boolean,
+    ): Int {
+        var closed = 0
+        for (row in rows) {
+            // The rows were read a moment ago. The status is re-checked by
+            // the compare and set below, but the orphan condition is not
+            // part of that compare and set: a task that became live again
+            // in between would be closed on a stale reading. So the
+            // condition is asked again here, right before the write.
+            if (!isStillOrphan(row)) continue
+            if (closeAsCancelled(row, now, reason)) closed++
+        }
+        return closed
+    }
+
+    /**
+     * [T-board-orphan-sweep] Rows that are still active.
+     */
+    @Query("SELECT * FROM agent_tasks WHERE status IN ('PENDING','RUNNING','BLOCKED')")
+    suspend fun activeTasks(): List<AgentTaskEntity>
+
+    /**
+     * Close one row as cancelled, keeping the history entry. Returns true
+     * when this call is the one that changed the status - the compare and
+     * set makes a second caller a no-op instead of a double history row.
+     */
+    private suspend fun closeAsCancelled(row: AgentTaskEntity, now: Long, reason: String): Boolean {
+        val changed = setStatusIf(row.id, row.status, "CANCELLED", now)
+        if (changed == 0) return false
+        insertHistory(
+            TaskStatusHistoryEntity(
+                taskId = row.id,
+                fromStatus = row.status,
+                toStatus = "CANCELLED",
+                changedByAgentId = null,
+                reason = reason,
+                changedAt = now,
+            ),
+        )
+        return true
     }
 
     @Insert

@@ -17,7 +17,16 @@ class AutoResumePolicyTest {
         attemptsUsed: Int = 0,
         cancelled: Boolean = false,
         newMessage: Boolean = false,
-    ) = AutoResumePolicy.decide(cause, attemptsUsed, cancelled, newMessage)
+        hasPartialAnswer: Boolean = false,
+        hasToolCall: Boolean = false,
+    ) = AutoResumePolicy.decide(
+        cause = cause,
+        attemptsUsed = attemptsUsed,
+        userCancelled = cancelled,
+        userSentNewMessage = newMessage,
+        hasPartialAnswer = hasPartialAnswer,
+        hasToolCall = hasToolCall,
+    )
 
     // ── classification ──────────────────────────────────────────────────────
 
@@ -186,6 +195,84 @@ class AutoResumePolicyTest {
         )) {
             assertTrue("$c must be resumable", decide(c) is AutoResumePolicy.Decision.Resume)
         }
+    }
+
+    // ── the tool-call veto ─────────────────────────────────────────────────
+
+    @Test
+    fun `a transport fault before any tool call may be resumed`() {
+        // The failure happened before the model did anything: the replay starts
+        // from the same conversation and repeats nothing.
+        val d = decide(
+            AutoResumePolicy.Cause.NO_RESPONSE,
+            attemptsUsed = 0,
+            hasPartialAnswer = false,
+            hasToolCall = false,
+        )
+        assertTrue(d is AutoResumePolicy.Decision.Resume)
+    }
+
+    @Test
+    fun `a turn that already called a tool is never auto-resumed`() {
+        // The call and its result live in the engine's working history, which
+        // dies with the request. The replayed conversation does not contain the
+        // call, so the model is asked again and may run the tool a second time.
+        // A side effect that writes a file or sends a message must not happen
+        // twice, so this turn is left to the user.
+        val d = decide(
+            AutoResumePolicy.Cause.NO_RESPONSE,
+            attemptsUsed = 0,
+            hasPartialAnswer = true,
+            hasToolCall = true,
+        )
+        assertTrue(d is AutoResumePolicy.Decision.Stop)
+        assertTrue(
+            (d as AutoResumePolicy.Decision.Stop).reason.contains("tool"),
+        )
+    }
+
+    @Test
+    fun `a partial text answer alone does not stop the resume`() {
+        // Text is not a side effect: the replayed turn writes the same answer
+        // again and nothing is duplicated outside the transcript. Refusing to
+        // resume here would throw away the recovery this policy exists for.
+        val d = decide(
+            AutoResumePolicy.Cause.NO_RESPONSE,
+            attemptsUsed = 0,
+            hasPartialAnswer = true,
+            hasToolCall = false,
+        )
+        assertTrue(d is AutoResumePolicy.Decision.Resume)
+    }
+
+    @Test
+    fun `the tool veto applies to every transport cause`() {
+        for (c in listOf(
+            AutoResumePolicy.Cause.NO_RESPONSE,
+            AutoResumePolicy.Cause.BAD_GATEWAY,
+            AutoResumePolicy.Cause.CONNECTION,
+            AutoResumePolicy.Cause.OFFLINE,
+        )) {
+            assertTrue(
+                "$c must not be auto-resumed after a tool call",
+                decide(c, hasPartialAnswer = true, hasToolCall = true)
+                    is AutoResumePolicy.Decision.Stop,
+            )
+        }
+    }
+
+    @Test
+    fun `a user cancel still outranks the tool veto`() {
+        val d = decide(
+            AutoResumePolicy.Cause.NO_RESPONSE,
+            cancelled = true,
+            hasPartialAnswer = true,
+            hasToolCall = true,
+        )
+        assertEquals(
+            "user cancelled the turn",
+            (d as AutoResumePolicy.Decision.Stop).reason,
+        )
     }
 
     // ── connectivity gating ─────────────────────────────────────────────────

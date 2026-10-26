@@ -60,6 +60,13 @@ internal object AgentBoardRecorder {
                     updatedAt = now,
                 ),
             )
+            // [T-board-orphan-sweep] The row exists now, so the task is
+            // live. The mark goes in AFTER the write: a write that failed
+            // leaves no row, and a mark without a row would be garbage the
+            // registry keeps for ever. A row that is visible without a mark
+            // for a moment is harmless - the sweep only takes rows that are
+            // older than the stale threshold.
+            AgentBoardLiveness.markLive(taskId)
             dao.insertMissionEvent(
                 MissionLogEntity(
                     eventType = "SPAWNED",
@@ -134,6 +141,13 @@ internal object AgentBoardRecorder {
                 "taskFinished ledger write failed for $taskId (run continues): ${it.message}",
             )
         }
+        // [T-board-orphan-sweep] The executor of this task is done. The
+        // mark goes away after the terminal write: until the row carries a
+        // terminal status the sweep must not touch it, and a write that
+        // failed leaves the row unfinished on purpose - the executor is
+        // gone either way. This line is outside the runCatching block, so
+        // it runs even when that write failed.
+        AgentBoardLiveness.markDone(taskId)
     }
 
     /** Cross-turn team summary for the next spawn's result header. Null = no history. */
