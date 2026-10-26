@@ -20,8 +20,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
@@ -646,17 +646,14 @@ class OpenAIProvider private constructor(
 
         val call = client.newCall(request)
         // [T-cancel-http] OkHttp's execute() blocks the thread and does not
-        // observe coroutine cancellation, so the awaitClose block below - the
-        // only place that cancels the call - cannot run until execute()
-        // returns, which is up to the 600s read timeout. A cancelled turn
-        // therefore held the run slot for ten minutes and the next message
-        // could only start after that. Cancelling the call from the job's
-        // cancellation handler tears the socket down at once.
-        coroutineContext[Job]?.invokeOnCompletion { cause ->
-            if (cause is CancellationException) {
-                try { call.cancel() } catch (_: Exception) {}
-            }
-        }
+        // observe coroutine cancellation. The awaitClose block below - the
+        // only place that cancels the call - therefore could not run until
+        // execute() returned, which is up to the 600s read timeout: a
+        // cancelled turn kept its HTTP call and the session's run slot alive
+        // for ten minutes, and the next message could only start after that.
+        // The blocking call now runs on its own thread, and the coroutine's
+        // cancellation cancels the OkHttp call, which tears the socket down
+        // at once.
         // [T-android-stale-conn-retry-hang] Time-to-first-byte watchdog. A
         // request written into a dead pooled h2 tunnel (local proxy socket
         // survives a network flap) produces NO further events — no headers,
@@ -681,19 +678,28 @@ class OpenAIProvider private constructor(
             }
         }
         val response = try {
-            call.execute()
+            // [T-cancel-http] execute() blocks, so it runs on its own thread
+            // and the coroutine's cancellation cancels the OkHttp call.
+            // Without this the call lived until the read timeout (600s).
+            suspendCancellableCoroutine<Response> { cont ->
+                cont.invokeOnCancellation {
+                    try { call.cancel() } catch (_: Exception) {}
+                }
+                Thread({
+                    try {
+                        val r = call.execute()
+                        if (cont.isActive) cont.resume(r)
+                    } catch (e: Throwable) {
+                        if (cont.isActive) cont.resumeWithException(e)
+                    }
+                }, "openai-stream-call").apply { isDaemon = true }.start()
+            }
         } catch (e: IOException) {
             if (ttfbTimedOut.get()) {
                 throw LLMError.TransientError(
                     "no response from server (${STREAM_TTFB_TIMEOUT_MS / 1000}s) — check network/proxy",
                 )
             }
-            // [T-cancel-http] A cancelled turn cancels the OkHttp call, and
-            // execute() then fails with a plain IOException. That is the
-            // cancellation itself, not a transport error: report it as the
-            // cancellation it is, so the turn ends quietly instead of
-            // raising an error.
-            coroutineContext.ensureActive()
             throw e
         } finally {
             headersArrived.set(true)
