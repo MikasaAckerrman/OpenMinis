@@ -99,9 +99,22 @@ class ToolScheduler(
             return waves.size - 1
         }
 
-        for (call in calls) {
-            val effect = effectOf(call.name)
-            val keys = resourceKeysOf(call.name, call.argsJson)
+        for ((index, call) in calls.withIndex()) {
+            val declaredEffect = effectOf(call.name)
+            val declaredKeys = resourceKeysOf(call.name, call.argsJson)
+            // [T-parallel-agents] A spawn starts an agent and touches no
+            // shared resource. It used to be an undeclared (GLOBAL) call, and
+            // an undeclared call gets a sealed wave of its own, so two spawns
+            // in one turn never ran side by side - the whole point of asking
+            // for several agents at once. Each spawn now declares its own
+            // key, so the scheduler can put several of them into one wave
+            // and run them concurrently.
+            val effect: Effect = if (declaredKeys == null && call.name.startsWith("spawn_")) {
+                Effect.WRITE
+            } else declaredEffect
+            val keys: Set<String>? = if (declaredKeys == null && call.name.startsWith("spawn_")) {
+                setOf("agent-spawn:$index")
+            } else declaredKeys
             if (keys == null) {
                 // Undeclared resource: GLOBAL — a fresh, SEALED wave alone.
                 val w = openWave()

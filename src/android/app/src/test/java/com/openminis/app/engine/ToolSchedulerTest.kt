@@ -151,4 +151,28 @@ class ToolSchedulerTest {
         )
         assertEquals(2, w.size)
     }
+
+    @Test
+    fun `two spawns share one wave`() {
+        // [T-parallel-agents] A spawn used to be an undeclared (GLOBAL) call,
+        // so it got a sealed wave of its own and two spawns in one turn could
+        // never run side by side.
+        val w = planner().plan(listOf(sched("1", "spawn_subagent"), sched("2", "spawn_subagent")))
+        assertEquals("both spawns in one wave", 1, w.size)
+        assertEquals(2, w[0].calls.size)
+    }
+
+    @Test
+    fun `spawns do not split the file calls around them`() {
+        val w = planner().plan(
+            listOf(
+                sched("1", "file_read", "/a"),
+                sched("2", "spawn_subagent"),
+                sched("3", "spawn_subagent"),
+                sched("4", "file_write", "/b"),
+            ),
+        )
+        assertEquals("one wave for the whole turn", 1, w.size)
+        assertEquals(4, w[0].calls.size)
+    }
 }
