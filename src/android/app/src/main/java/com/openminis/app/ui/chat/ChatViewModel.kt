@@ -16341,8 +16341,11 @@ class ChatViewModel(
             spawnerSessionId = activeSessionId,
             // [T-agent-card-live] The run's id, so the line can follow the
             // live progress of this exact agent.
-            onSpawned = { taskId ->
-                val blockId = backgroundBlockId ?: return@onSpawned
+            // The label is explicit: a lambda that is an argument of a
+            // function gets the function name as its implicit label, not the
+            // name of the argument, so return@onSpawned did not resolve.
+            onSpawned = spawned@{ taskId ->
+                val blockId = backgroundBlockId ?: return@spawned
                 viewModelScope.launch(kotlinx.coroutines.Dispatchers.Main) {
                     setSubagentTaskId(assistantId, toolBlocks, blockId, taskId)
                 }
