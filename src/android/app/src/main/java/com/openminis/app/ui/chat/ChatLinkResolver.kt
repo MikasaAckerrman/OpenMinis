@@ -96,6 +96,15 @@ object ChatLinkResolver {
         // trip `shouldOverrideUrlLoading` for the initial URL, so without
         // this hop those schemes hit the WebView and surface as
         // ERR_UNKNOWN_URL_SCHEME.
+        // [T-telegram-in-app] Telegram links stay inside the app. A `tg://`
+        // deep link was dispatched to the system handler, which sent the
+        // user out into their Telegram client, and a `t.me` link was routed
+        // the same way. Both have a public web form, so the link is
+        // rewritten and opened in the in-app browser instead.
+        com.openminis.app.ui.browser.TelegramLink.toWebUrl(trimmed)?.let {
+            return ChatLinkAction.Web(it)
+        }
+
         if (com.openminis.app.ui.browser.BrowserExternalSchemeHandler.shouldHandleExternally(trimmed)) {
             return ChatLinkAction.ExternalApp(trimmed)
         }
