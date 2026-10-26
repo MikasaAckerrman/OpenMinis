@@ -31,7 +31,8 @@ class ChatToolFormattingTest {
 
     @Test
     fun `agent tool uses its own icon`() {
-        assertEquals("AccountTree", toolIconFor(AGENT_TOOL).name)
+        // The name of a Material icon carries its style: "Filled.AccountTree".
+        assertEquals("Filled.AccountTree", toolIconFor(AGENT_TOOL).name)
     }
 
     @Test
