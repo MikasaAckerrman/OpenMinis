@@ -15,7 +15,6 @@ import com.openminis.app.provider.ImageBudget
 import com.openminis.app.provider.LLMProvider
 import com.openminis.app.provider.applyUserAgentOverride
 import com.openminis.app.provider.safeOptString
-import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -689,9 +688,9 @@ class OpenAIProvider private constructor(
                 Thread({
                     try {
                         val r = call.execute()
-                        if (cont.isActive) cont.resume(r)
+                        if (cont.isActive) cont.resumeWith(Result.success(r))
                     } catch (e: Throwable) {
-                        if (cont.isActive) cont.resumeWithException(e)
+                        if (cont.isActive) cont.resumeWith(Result.failure(e))
                     }
                 }, "openai-stream-call").apply { isDaemon = true }.start()
             }
