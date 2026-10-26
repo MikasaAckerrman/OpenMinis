@@ -107,4 +107,30 @@ class TaskConflictDetectorTest {
         // "auth." style prose must not fabricate a path token.
         assertTrue(paths.none { it.contains("auth") })
     }
+
+    @Test
+    fun `cyrillic file names are recognised as paths`() {
+        // [T-task-conflict-unicode] \w is ASCII-only, so a Cyrillic path used
+        // to be invisible to the detector: two agents that both mentioned the
+        // same Russian-named file were seen as touching different files and
+        // ran on it in parallel.
+        val paths = TaskConflictDetector.extractPaths(
+            "Исправь /var/minis/workspace/Отчёт/Итог.md и проверь src/Документ/Заметка.kt",
+        )
+        assertTrue("/var/minis/workspace/отчёт/итог.md" in paths)
+        assertTrue("src/документ/заметка.kt" in paths)
+    }
+
+    @Test
+    fun `the same cyrillic file serializes two agents`() {
+        val plan = TaskConflictDetector.plan(
+            listOf(
+                task(0, "A", "Исправь /var/minis/workspace/Отчёт/Итог.md"),
+                task(1, "B", "Перепиши /var/minis/workspace/Отчёт/Итог.md"),
+            ),
+        )
+        assertEquals("two batches: serialized", 2, plan.batches.size)
+        assertEquals(1, plan.batches[0].size)
+        assertEquals(1, plan.batches[1].size)
+    }
 }

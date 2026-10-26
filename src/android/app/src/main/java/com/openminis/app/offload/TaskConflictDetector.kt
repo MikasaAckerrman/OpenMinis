@@ -45,7 +45,14 @@ object TaskConflictDetector {
      * A bare filename ("Login.kt") is deliberately NOT matched — too easy to
      * collide with prose.
      */
-    private val PATH_REGEX = Regex("""(?:/[\w@.+-]+){2,}|[\w@.+-]+(?:/[\w@.+-]+)+""")
+    // [T-task-conflict-unicode] \w is ASCII-only, so a path with Cyrillic
+    // (or any other non-Latin) letters was not recognised as a path at all:
+    // two agents that both mentioned the same Russian-named file were seen
+    // as touching different files and ran in parallel on it. \p{L} is any
+    // Unicode letter, \p{N} any Unicode digit.
+    private val PATH_REGEX = Regex(
+        """(?:/[\p{L}\p{N}_@.+-]+){2,}|[\p{L}\p{N}_@.+-]+(?:/[\p{L}\p{N}_@.+-]+)+""",
+    )
 
     private val FILE_EXT_REGEX = Regex("""\.[A-Za-z0-9]{1,6}$""")
 
