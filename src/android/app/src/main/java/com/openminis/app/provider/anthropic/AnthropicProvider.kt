@@ -22,10 +22,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
@@ -185,7 +187,26 @@ class AnthropicProvider(
                 }
             }
             try {
-                call.execute()
+                // [T-cancel-http] execute() blocks the thread and does not
+                // observe coroutine cancellation, so a cancelled turn kept the
+                // call alive until the read timeout (10 minutes) and the
+                // session's run slot stayed held that whole time. The
+                // blocking call runs on its own thread, and the coroutine's
+                // cancellation cancels the OkHttp call, so the socket goes
+                // down at once.
+                suspendCancellableCoroutine<Response> { cont ->
+                    cont.invokeOnCancellation {
+                        try { call.cancel() } catch (_: Exception) {}
+                    }
+                    Thread({
+                        try {
+                            val r = call.execute()
+                            if (cont.isActive) cont.resumeWith(Result.success(r))
+                        } catch (e: Throwable) {
+                            if (cont.isActive) cont.resumeWith(Result.failure(e))
+                        }
+                    }, "anthropic-stream-call").apply { isDaemon = true }.start()
+                }
             } catch (e: java.io.IOException) {
                 if (ttfbTimedOut.get()) {
                     throw LLMError.TransientError(
