@@ -204,8 +204,12 @@ class MinisApp : Application(), ImageLoaderFactory {
         // the board would keep showing it as running. The predicate is
         // pure and lives in AgentBoardLogic; the live runs are the ones
         // this process can still see.
-        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
-            while (kotlinx.coroutines.isActive) {
+        // The scope is kept in a name because isActive is an extension
+        // property of CoroutineScope, not a function that can be called
+        // with a qualified name.
+        val orphanSweepScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO)
+        orphanSweepScope.launch {
+            while (orphanSweepScope.isActive) {
                 kotlinx.coroutines.delay(
                     com.openminis.app.offload.AgentBoardLogic.ORPHAN_SWEEP_INTERVAL_MS,
                 )
