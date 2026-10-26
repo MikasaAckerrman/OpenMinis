@@ -584,6 +584,13 @@ class ChatViewModel(
     @Volatile private var liveTurnTextSb: LiveTurnBuffer? = null
     @Volatile private var liveStreamTurnText: String = ""
     @Volatile private var liveStreamId: String? = null
+
+    // [T-tool-call-veto] How many tool calls the running turn has made.
+    // The local counter of the turn cannot be read from the catch block
+    // that asks the resume policy, so the count of the running turn is
+    // kept here, next to the id of the message it belongs to. It is
+    // reset when a turn starts, so a call of an older turn never counts.
+    @Volatile private var liveToolCallCount: Int = 0
     @Volatile private var liveTurnThinkingSb: LiveTurnBuffer? = null
     // Opaque reasoning_content blob (DeepSeek/Kimi emit reasoning as a single
     // field, not ThinkingDelta events — the journal NEVER sees it). Round-end
@@ -9390,6 +9397,9 @@ class ChatViewModel(
         // internal fallback re-launch (the loop already owns a row).
         placeholderAssistantId: String? = null,
     ): Boolean {
+        // [T-auto-resume] The state of this turn. It is created per call,
+        // so the tool calls of one turn never leak into another one.
+        val turnState = com.openminis.app.data.TurnToolState()
         var provider = initialProvider
         // Refresh OAuth token if needed
         if ((provider as? com.openminis.app.provider.anthropic.AnthropicProvider)?.isOAuth == true) {
@@ -9463,6 +9473,7 @@ class ChatViewModel(
                                 placeholderAssistantId = placeholderAssistantId,
                                 provider = launchedProvider,
                                 systemPrompt = systemPrompt,
+                                turnState = turnState,
                             )
                             AppLogger.info(TAG_STREAM, "$label runEngineTurn RETURN normal")
                         } catch (e: Exception) {
@@ -9558,7 +9569,27 @@ class ChatViewModel(
                     // A tool call in the dead turn is a different matter from
                     // text: replaying the turn would run the tool again, and
                     // the replayed conversation does not contain the call.
-                    val hasToolCall = lastAssistantMsg?.toolBlocks?.isNotEmpty() == true
+                    //
+                    // The call must belong to THIS turn. The last assistant
+                    // message of the whole chat is not it: it can carry tool
+                    // blocks of a turn that finished long ago, and those must
+                    // not forbid the replay of a fresh one. The engine turn
+                    // reports the message it writes to in its own per-turn
+                    // state; the legacy loop keeps liveStreamId.
+                    //
+                    // The tool call count is read from both places and the
+                    // larger one wins: a tool call must never be missed,
+                    // because the whole point of the veto is to not run a
+                    // tool twice.
+                    val deadTurnMessageId = turnState.assistantId ?: liveStreamId
+                    val deadTurnToolCalls = maxOf(turnState.toolCalls, liveToolCallCount)
+                    val hasToolCall = com.openminis.app.data.AutoResumePolicy.hasToolCallInDeadTurn(
+                        deadTurnMessageId = deadTurnMessageId,
+                        toolBlocksByMessageId = _messages.value
+                            .filter { it.role == "assistant" }
+                            .associate { it.id to it.toolBlocks.size },
+                        engineToolCallsInDeadTurn = deadTurnToolCalls,
+                    )
                     // The user cancelled or sent a new message DURING the failed
                     // attempt if the prompt queue gained an entry. Check it before
                     // deciding — a fresh prompt means the user has moved on.
@@ -12673,6 +12704,10 @@ class ChatViewModel(
         provider: LLMProvider,
         systemPrompt: String?,
         imageParts: List<LLMMessage.ImagePart> = emptyList(),
+        // [T-auto-resume] The state of THIS turn. It is passed in so the
+        // caller can read it when the turn dies, and it is per turn so two
+        // turns that run at the same time never share a counter.
+        turnState: com.openminis.app.data.TurnToolState? = null,
     ) {
         // [T-engine-observability] Mirror of the legacy loop's stage markers
         // (ENTER/CALL/RETURN/FINALLY + per-stage detail). The engine chain
@@ -12687,6 +12722,10 @@ class ChatViewModel(
         // this var retargets all subsequent writes to the continuation row.
         var assistantId = placeholderAssistantId
             ?: "assistant_${System.currentTimeMillis()}"
+        // [T-auto-resume] This turn writes to this message and has not
+        // called a tool yet.
+        turnState?.onTurnStart(assistantId)
+        liveToolCallCount = 0
         var reducer = ChatTurnReducer(assistantId, 0)
         var splitCount = 0
         // [T-engine-incremental-persist] Declared with the reducer (the
@@ -12913,6 +12952,10 @@ class ChatViewModel(
                     splitCount++
                     val rowAId = assistantId
                     assistantId = "assistant_split_${System.currentTimeMillis()}"
+                    // [T-auto-resume] The turn continues in a new row: the
+                    // decision must look at the message the turn writes to
+                    // now. The tool calls of the first part still count.
+                    turnState?.onAssistantIdChanged(assistantId)
                     // [T-engine-incremental-persist] The split finalized row
                     // A and opens row B: the incremental upsert must follow
                     // row B now — without the reset, ToolCallFinished after
@@ -13077,6 +13120,12 @@ class ChatViewModel(
                         upsertEngineRow()
                         lastStreamActivityMs = System.currentTimeMillis()
                         toolCalls++
+                        // [T-auto-resume] The engine finished a tool call.
+                        // The tool result may not be in the message list
+                        // yet, so this is the only place that knows for
+                        // sure that a tool ran in this turn.
+                        turnState?.onToolCallFinished()
+                        liveToolCallCount++
                         effects.filterIsInstance<ChatTurnReducer.PersistToolResult>().forEach { eff ->
                             persistEffects++
                             val trParts = listOf(
@@ -13371,6 +13420,7 @@ class ChatViewModel(
         liveTurnThinkingSb = null
         liveTurnReasoningBlob = null
         liveStreamId = assistantId
+        liveToolCallCount = 0
         val turnThinkingLevel = _thinkingLevel.value
         withContext(Dispatchers.Main) {
             // [T-instant-thinking-indicator] The send path may have
@@ -15364,6 +15414,7 @@ class ChatViewModel(
                     // [T-partial-turn-durability] journal key follows the new
                     // bubble (old round's file was deleted at its persist).
                     liveStreamId = handled.newAssistantId
+                    liveToolCallCount = 0
                     // [T-journal-watermark-reset] New turn = new journal file
                     // under the new id, but the SHARED watermarks (loop-scope
                     // vars) still carry the previous turn's lengths — without

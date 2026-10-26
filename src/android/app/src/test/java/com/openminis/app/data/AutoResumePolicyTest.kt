@@ -232,6 +232,49 @@ class AutoResumePolicyTest {
     }
 
     @Test
+    fun `a tool call of an older turn does not forbid the replay of a fresh one`() {
+        // The dead turn called no tool. An older assistant message did, but
+        // the replay starts from the saved conversation, and that old call
+        // is not a call this turn would run again. The dead turn is picked
+        // by its id, so the old message must not count.
+        val hasToolCall = AutoResumePolicy.hasToolCallInDeadTurn(
+            deadTurnMessageId = "current-turn",
+            toolBlocksByMessageId = mapOf(
+                "old-turn" to 3,
+                "current-turn" to 0,
+            ),
+            engineToolCallsInDeadTurn = 0,
+        )
+        assertFalse(hasToolCall)
+        val decision = decide(
+            cause = AutoResumePolicy.Cause.CONNECTION,
+            attemptsUsed = 0,
+            cancelled = false,
+            newMessage = false,
+        )
+        assertTrue(decision is AutoResumePolicy.Decision.Resume)
+    }
+
+    fun `a tool call of the dead turn forbids the replay`() {
+        val hasToolCall = AutoResumePolicy.hasToolCallInDeadTurn(
+            deadTurnMessageId = "current-turn",
+            toolBlocksByMessageId = mapOf("current-turn" to 1),
+            engineToolCallsInDeadTurn = 0,
+        )
+        assertTrue(hasToolCall)
+    }
+
+    fun `a tool call that only the engine saw still forbids the replay`() {
+        // The call ran, but its result has not reached the agent history
+        // yet. The replay would run it again, so it is forbidden.
+        val hasToolCall = AutoResumePolicy.hasToolCallInDeadTurn(
+            deadTurnMessageId = "current-turn",
+            toolBlocksByMessageId = mapOf("current-turn" to 0),
+            engineToolCallsInDeadTurn = 1,
+        )
+        assertTrue(hasToolCall)
+    }
+
     fun `a partial text answer alone does not stop the resume`() {
         // Text is not a side effect: the replayed turn writes the same answer
         // again and nothing is duplicated outside the transcript. Refusing to

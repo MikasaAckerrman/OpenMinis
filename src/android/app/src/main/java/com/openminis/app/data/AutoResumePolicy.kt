@@ -158,6 +158,31 @@ object AutoResumePolicy {
      *   time, because the context of the interrupted round is not in the
      *   conversation that gets replayed.
      */
+    /**
+     * Whether the dead turn had already called a tool.
+     *
+     * Two sources, and the turn boundary matters for both of them:
+     *  - the tool blocks the assistant message of the dead turn carries -
+     *    they are the projection of the engine's tool events, so a call
+     *    that already ran is counted even when its result has not reached
+     *    the agent history yet;
+     *  - the tool calls the engine reported for that turn, which live in
+     *    the engine's working history.
+     *
+     * Older assistant messages say nothing: the replay starts from the
+     * saved conversation, and a call in an old message is not a call this
+     * turn would run again. That is why the message is picked by its id
+     * here, and not by being the last one of the chat.
+     */
+    fun hasToolCallInDeadTurn(
+        deadTurnMessageId: String?,
+        toolBlocksByMessageId: Map<String, Int>,
+        engineToolCallsInDeadTurn: Int,
+    ): Boolean {
+        val blocks = deadTurnMessageId?.let { toolBlocksByMessageId[it] } ?: 0
+        return blocks > 0 || engineToolCallsInDeadTurn > 0
+    }
+
     fun decide(
         cause: Cause,
         attemptsUsed: Int,
