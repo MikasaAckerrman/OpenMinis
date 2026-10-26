@@ -71,6 +71,8 @@ import com.openminis.app.tools.MemoryTools
 import com.openminis.app.tools.ReadImageTool
 import com.openminis.app.tools.ToolExecutionResult
 import com.openminis.app.offload.OffloadPermissionManager
+import com.openminis.app.offload.releaseStreamSlot
+import com.openminis.app.offload.tryClaimStreamSlot
 import com.openminis.app.offload.TurnTimerPolicy
 import com.openminis.app.service.SessionActivityTracker
 import com.openminis.app.service.SessionConcurrencyManager
@@ -8807,7 +8809,18 @@ class ChatViewModel(
      * of truth.
      */
     fun rerunFromToolBlock(assistantMessageId: String, blockId: String): Boolean {
-        if (_isStreaming.value) return false
+        // [T-stream-slot-claim] One run at a time. The claim is atomic, so a
+        // message that arrives while this path prepares cannot start a
+        // second turn on the same transcript.
+        if (!_isStreaming.tryClaimStreamSlot()) return false
+        val started = rerunFromToolBlockImpl(assistantMessageId, blockId)
+        // A path that gives up before the run owns the slot must give it
+        // back, otherwise the session stays busy for good.
+        if (!started) _isStreaming.releaseStreamSlot()
+        return started
+    }
+
+    private fun rerunFromToolBlockImpl(assistantMessageId: String, blockId: String): Boolean {
         val messages = _messages.value
         val asstIdx = messages.indexOfFirst { it.id == assistantMessageId }
         if (asstIdx < 0) return false
@@ -8874,8 +8887,9 @@ class ChatViewModel(
 
         // Claim the streaming flag synchronously so a rapid second tap is
         // rejected by the entry guard (same rationale as retryFromMessage T145).
-        AppLogger.info(TAG_STREAM, "rerunFromToolBlock _isStreaming=true (sync, sid=$activeSessionId)")
-        _isStreaming.value = true
+        AppLogger.info(TAG_STREAM, "rerunFromToolBlock claims the run slot (sync, sid=$activeSessionId)")
+        // [T-stream-slot-claim] The slot was claimed atomically at the top of
+        // this path; a plain write here could overwrite another run's claim.
         streamStartedAtMs = System.currentTimeMillis()
         lastStreamActivityMs = streamStartedAtMs
 
@@ -9224,8 +9238,11 @@ class ChatViewModel(
         // where two retries could slip through and spawn duplicate streamJobs.
         // The orphaned first job's `_isStreaming = false` at completion would
         // then flip the UI to "stopped" while the second job was still running.
-        AppLogger.info(TAG_STREAM, "retry _isStreaming=true (sync, sid=$activeSessionId)")
-        _isStreaming.value = true
+        AppLogger.info(TAG_STREAM, "retry claims the run slot (sync, sid=$activeSessionId)")
+        if (!_isStreaming.tryClaimStreamSlot()) {
+            AppLogger.warning(TAG_STREAM, "retry rejected: the run slot is taken")
+            return false
+        }
         streamStartedAtMs = System.currentTimeMillis()
         lastStreamActivityMs = streamStartedAtMs
 
@@ -10466,8 +10483,18 @@ class ChatViewModel(
         // budget: a long reasoning chain that needed 3 continuations last
         // time must not start this one already capped.
         outputLimitExtensions = 0
+        // [T-stream-slot-claim] The claim IS the entry test. It is atomic, so
+        // exactly one turn can start. Losing it means another turn owns the
+        // slot, and the message is queued instead of sent - the old
+        // read-based branch could not tell "busy" from "about to be busy",
+        // and a second turn could start in between the read and the write.
+        val slotClaimed = _isStreaming.tryClaimStreamSlot()
+        AppLogger.info(
+            TAG_STREAM,
+            "send claims the run slot (sync, sid=$activeSessionId, won=$slotClaimed)",
+        )
         // While streaming, enqueue instead of silently dropping (iOS: send vs enqueuePrompt).
-        if (_isStreaming.value) {
+        if (!slotClaimed) {
             // [T-send-trace] Queue acceptance now carries the age of the
             // turn that owns the stream slot: a parked/stale turn (phantom
             // resume, hung preamble) is the #1 way a queue parks forever —
@@ -10577,6 +10604,9 @@ class ChatViewModel(
         val initialProvider = currentProvider
         if (initialProvider == null) {
             _error.value = "No provider configured"
+            // [T-stream-slot-claim] The slot was taken at the top of this
+            // function, so a path that gives up here must give it back.
+            _isStreaming.releaseStreamSlot()
             return
         }
         var provider: LLMProvider = initialProvider
@@ -10588,8 +10618,8 @@ class ChatViewModel(
 
         // T145: claim _isStreaming synchronously so a rapid second tap can't
         // slip past the entry guard during DB/OAuth setup. See retryFromMessage.
-        AppLogger.info(TAG_STREAM, "send _isStreaming=true (sync, sid=$activeSessionId)")
-        _isStreaming.value = true
+        // [T-stream-slot-claim] The slot was claimed at the top of this
+        // function, atomically. Nothing may write it plainly from here on.
         streamStartedAtMs = System.currentTimeMillis()
         lastStreamActivityMs = streamStartedAtMs
         // Pin synchronously before any suspension. The StateFlow observer
@@ -11882,8 +11912,11 @@ class ChatViewModel(
         _error.value = null
 
         // T145: claim _isStreaming synchronously — see retryFromMessage for rationale.
-        AppLogger.info(TAG_STREAM, "retryLast _isStreaming=true (sync, sid=$activeSessionId)")
-        _isStreaming.value = true
+        AppLogger.info(TAG_STREAM, "retryLast claims the run slot (sync, sid=$activeSessionId)")
+        if (!_isStreaming.tryClaimStreamSlot()) {
+            AppLogger.warning(TAG_STREAM, "retryLast rejected: the run slot is taken")
+            return
+        }
         streamStartedAtMs = System.currentTimeMillis()
         lastStreamActivityMs = streamStartedAtMs
 
@@ -19508,7 +19541,7 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
             // T145: claim the streaming flag synchronously before launching
             // the streamJob so a concurrent send/retry tap is rejected by the
             // entry guard. Mirrors sendMessage discipline.
-            AppLogger.info(TAG_STREAM, "resumeQueueAfterCancel _isStreaming=true (sync, sid=$activeSessionId)")
+            AppLogger.info(TAG_STREAM, "resumeQueueAfterCancel takes the run slot (free by contract, sid=$activeSessionId)")
             _isStreaming.value = true
             streamStartedAtMs = System.currentTimeMillis()
         lastStreamActivityMs = streamStartedAtMs

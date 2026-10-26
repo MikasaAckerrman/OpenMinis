@@ -2,6 +2,7 @@ package com.openminis.app.provider.openai
 
 import com.openminis.app.data.model.LLMMessage
 import com.openminis.app.data.model.ThinkingLevel
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -41,8 +42,23 @@ class OpenAIProviderCancelTest {
 
     @After
     fun tearDown() {
-        // Must not block: the client released the connection.
-        server.shutdown()
+        // [T-t8-teardown] shutdown() waits for the connection the server still
+        // holds. That is exactly the condition this test exists to detect: if
+        // the cancelled request is not released, an unbounded wait hides the
+        // failure behind a ten-minute Gradle timeout. The wait is therefore
+        // bounded, and the condition is reported as the defect it is.
+        val finished = CountDownLatch(1)
+        val closer = Thread {
+            runCatching { server.shutdown() }
+            finished.countDown()
+        }
+        closer.isDaemon = true
+        closer.start()
+        if (!finished.await(10, TimeUnit.SECONDS)) {
+            throw AssertionError(
+                "the mock server still holds the connection: the cancelled request was not released",
+            )
+        }
     }
 
     @Test

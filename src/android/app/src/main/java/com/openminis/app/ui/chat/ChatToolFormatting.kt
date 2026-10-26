@@ -2,6 +2,7 @@ package com.openminis.app.ui.chat
 
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.NoteAdd
+import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.EditNote
@@ -80,8 +81,23 @@ internal fun assistantTurnFinishedLabel(createdAtMs: Long, finishedAtMs: Long): 
     }
 }
 
+/**
+ * [T-agent-pill] Виртуальное имя тула для строки субагента.
+ *
+ * ПОЧЕМУ ОТДЕЛЬНОЕ ИМЯ. Строка агента создаётся в `ChatViewModel.subagentBlock`
+ * с `toolName = "spawn_subagent"` — тем же именем, что и у вызова инструмента
+ * в схеме модели. Разводить их не нужно: у вызова `spawn_many` (одна плашка
+ * на всю пачку) вид остаётся обычным, а розовым с иконкой дерева помечается
+ * именно строка КАЖДОГО агента — чтобы в логе читалось «работают N агентов»,
+ * а не одна сводная плашка.
+ */
+internal const val AGENT_TOOL = "spawn_subagent"
+
 // Helper: tool accent color
 internal fun toolAccentColor(toolName: String): Color = when (toolName) {
+    // [T-agent-pill] розовый (тот же оттенок, что у инструментов памяти) —
+    // своя метка для строк субагентов.
+    AGENT_TOOL -> Color(0xFFFF2D55)
     "shell_execute" -> Color(0xFF34C759)
     "file_read" -> Color(0xFF32ADE6)
     "file_write" -> Color(0xFF007AFF)
@@ -97,6 +113,9 @@ internal fun toolAccentColor(toolName: String): Color = when (toolName) {
 
 // Helper: tool icon (iOS: distinct SF Symbols per tool type)
 internal fun toolIconFor(toolName: String) = when (toolName) {
+    // [T-agent-pill] дерево агентов: иконка не совпадает ни с одной другой
+    // плашкой тула (Build — дефолт, остальные заняты своими тулами).
+    AGENT_TOOL -> Icons.Default.AccountTree
     "shell_execute" -> Icons.Default.Terminal
     "file_read" -> Icons.Default.Description         // iOS: doc.text
     "file_write" -> Icons.AutoMirrored.Filled.NoteAdd   // iOS: doc.text.fill (filled variant)
@@ -111,6 +130,9 @@ internal fun toolIconFor(toolName: String) = when (toolName) {
 
 // Helper: tool display name for "Minis is using X"
 internal fun toolDisplayName(toolName: String): String = when (toolName) {
+    // [T-agent-pill] строка агента подписывается как агент, а не сырым
+    // именем инструмента.
+    AGENT_TOOL -> "agent"
     "shell_execute" -> "terminal"
     "file_read" -> "file reader"
     "file_write" -> "file writer"
@@ -129,6 +151,8 @@ internal fun toolDisplayName(toolName: String): String = when (toolName) {
  * Mirrors iOS ToolLiveSheet.toolTitle so the wording matches per tool.
  */
 internal fun toolTitleLabel(toolName: String): String = when (toolName) {
+    // [T-agent-pill] заголовок листа агента.
+    AGENT_TOOL -> "Minis is running an Agent"
     "shell_execute" -> "Minis is using Shell"
     "file_read" -> "Minis is reading File"
     "file_write" -> "Minis is using Editor"
