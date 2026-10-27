@@ -35,6 +35,19 @@ internal class ReasoningLoopWatch(
     private val minLineOccurrences: Int = ReasoningDegeneracy.MIN_LINE_OCCURRENCES,
     private val minLineLength: Int = ReasoningDegeneracy.MIN_LINE_LENGTH,
     private val windowChars: Int = ReasoningDegeneracy.WINDOW_CHARS,
+    /**
+     * How much of the reasoning a repeated line has to take before it
+     * counts as a loop. A line that shows up three times inside a long
+     * reasoning is normal text: a repeated header, a repeated checklist
+     * item, the same sentence in two sections.
+     */
+    private val minLineCoverage: Float = 0.04f,
+    /**
+     * A repeated line has to carry meaning. A short repeated line is
+     * formatting - a header, a separator, a label - and repeats in normal
+     * reasoning all the time.
+     */
+    private val minRepeatedLineLength: Int = 12,
 ) {
 
     private var totalChars = 0L
@@ -158,12 +171,19 @@ internal class ReasoningLoopWatch(
         }
         if (bestLine != null) {
             val coverage = bestCount.toFloat() / totalLines.toFloat().coerceAtLeast(1f)
-            return ReasoningDegeneracy.Finding(
-                ReasoningDegeneracy.Reason.REPEATED_LINE,
-                bestLine,
-                bestCount,
-                coverage,
-            )
+            // The coverage was computed but never used, so three identical
+            // lines anywhere in the reasoning killed a healthy turn. A real
+            // loop fills the stream with the same line, so the share of
+            // the stream has to carry the decision. The later rules below
+            // must still run when this branch does not fire.
+            if (coverage >= minLineCoverage && bestLine.length >= minRepeatedLineLength) {
+                return ReasoningDegeneracy.Finding(
+                    ReasoningDegeneracy.Reason.REPEATED_LINE,
+                    bestLine,
+                    bestCount,
+                    coverage,
+                )
+            }
         }
         // 3. A compact run of one sign: short, but still a loop.
         if (maxRun >= minSignOccurrences) {

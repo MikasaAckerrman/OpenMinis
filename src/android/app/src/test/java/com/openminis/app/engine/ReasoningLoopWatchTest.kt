@@ -67,6 +67,22 @@ class ReasoningLoopWatchTest {
     }
 
     @Test
+    fun `three identical lines inside a long reasoning are not a loop`() {
+        val watch = ReasoningLoopWatch()
+        val text = buildString {
+            for (i in 1..120) {
+                append("ordinary reasoning line number $i\n")
+                if (i % 40 == 0) append("the same checklist item\n")
+            }
+        }
+        val found = feed(watch, text)
+        assertTrue(
+            "a repeated line in a long reasoning is normal text, found $found",
+            found.isEmpty(),
+        )
+    }
+
+    @Test
     fun `ordinary reasoning with a sign as a marker is not a loop`() {
         val watch = ReasoningLoopWatch()
         val text = buildString {
