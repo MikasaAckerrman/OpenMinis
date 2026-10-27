@@ -93,13 +93,9 @@ data class TelegramLoginState(
  * through a temporary file and a rename, so a process kill in the middle
  * of a write leaves the previous state intact instead of a truncated file.
  */
-class TelegramLoginStafun save(state: TelegramLoginState) {
-        // The vault directory is created by the vault manager, but the
-        // sign-in screen can run before it. Create it here so the first
-        // save cannot fail on a missing parent.
-        file.parentFile?.mkdirs()
-        if (state.isEmpty) {
-te = try {
+class TelegramLoginStateStore(private val file: File) {
+
+    fun load(): TelegramLoginState = try {
         TelegramLoginState.fromJson(file.readText())
     } catch (_: Exception) {
         TelegramLoginState()
