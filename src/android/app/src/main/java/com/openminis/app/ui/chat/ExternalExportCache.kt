@@ -44,6 +44,23 @@ internal object ExternalExportCache {
         val lastDbId: String?,
     )
 
+    /**
+     * The range of the export, as the import side validates it.
+     *
+     * [T-compact-fast-path-range] The re-export fast path announces an
+     * existing file. It used to leave this chat's range keys untouched, so the
+     * export looked fine and the import then refused with "Активный экспорт -
+     * из другой сессии" because it requires the range of this chat. The pref
+     * write stays in the ViewModel (this object is pure), so the only decision
+     * here is "which range belongs to this file".
+     */
+    fun rangeOf(entry: Entry): Pair<String, String>? {
+        val first = entry.firstDbId
+        val last = entry.lastDbId
+        if (first.isNullOrBlank() || last.isNullOrBlank()) return null
+        return first to last
+    }
+
     fun uriKey(sessionId: String) = "exportUri::$sessionId"
     fun atMsKey(sessionId: String) = "exportAtMs::$sessionId"
     fun whereKey(sessionId: String) = "exportWhere::$sessionId"

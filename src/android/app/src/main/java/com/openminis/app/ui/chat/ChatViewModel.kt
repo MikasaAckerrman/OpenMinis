@@ -2922,6 +2922,20 @@ class ChatViewModel(
     private val _requestImportCompaction = MutableStateFlow(false)
     val requestImportCompaction: StateFlow<Boolean> = _requestImportCompaction.asStateFlow()
 
+    /**
+     * [T-compact-sid] The effective session id for the external-compaction
+     * cache. Everywhere else in this ViewModel the id is read through
+     * `realSessionId.ifEmpty { sessionId }` (a draft has no persisted row id
+     * yet, so realSessionId is empty; once the session is saved it becomes the
+     * real row id). The compaction cache was the only place that used the raw
+     * `sessionId`, so an export written while the chat was a draft and an
+     * import run after it was persisted addressed two different keys: the
+     * export looked fine, the import found no range and refused.
+     */
+    private val compactSid: String
+        get() = realSessionId.ifEmpty { sessionId }
+
+
     fun exportExternalCompaction() {
         // [T-compact-external] Fast re-export path: if a fresh export file
         // exists (< 15 minutes, still on disk), just re-announce its
@@ -2933,15 +2947,15 @@ class ChatViewModel(
         // A was refused with "свежий экспорт уже готов" pointing at A's file.
         val prefs = externalCompactionPrefs
         val remembered = ExternalExportCache.Entry(
-            sessionId = sessionId,
-            uri = prefs.getString(ExternalExportCache.uriKey(sessionId), null).orEmpty(),
-            atMs = prefs.getLong(ExternalExportCache.atMsKey(sessionId), 0L),
+            sessionId = compactSid,
+            uri = prefs.getString(ExternalExportCache.uriKey(compactSid), null).orEmpty(),
+            atMs = prefs.getLong(ExternalExportCache.atMsKey(compactSid), 0L),
             where = prefs.getString(
-                ExternalExportCache.whereKey(sessionId),
+                ExternalExportCache.whereKey(compactSid),
                 "Download/Minis/ExportCompact/",
             ).orEmpty(),
-            firstDbId = prefs.getString(ExternalExportCache.firstDbIdKey(sessionId), null),
-            lastDbId = prefs.getString(ExternalExportCache.lastDbIdKey(sessionId), null),
+            firstDbId = prefs.getString(ExternalExportCache.firstDbIdKey(compactSid), null),
+            lastDbId = prefs.getString(ExternalExportCache.lastDbIdKey(compactSid), null),
         )
         val fresh = ExternalExportCache.pickFresh(
             remembered,
@@ -2957,6 +2971,17 @@ class ChatViewModel(
                 false
             }
             if (exists) {
+                // [T-compact-fast-path-range] The fast path announces an
+                // existing file; it used to leave this chat's range keys
+                // untouched, so the import then refused with "Активный экспорт
+                // - из другой сессии" because it requires the range. Publish
+                // the range of the file we are about to announce.
+                ExternalExportCache.rangeOf(fresh)?.let { (first, last) ->
+                    externalCompactionPrefs.edit()
+                        .putString(ExternalExportCache.firstDbIdKey(compactSid), first)
+                        .putString(ExternalExportCache.lastDbIdKey(compactSid), last)
+                        .apply()
+                }
                 val where = fresh.where
                 val ageMin = (System.currentTimeMillis() - fresh.atMs) / 60000L
                 appendSystemInfo(
@@ -3023,11 +3048,11 @@ class ChatViewModel(
         // was written last. With one shared slot, exporting a second chat
         // invalidated the first chat's range and made its import impossible.
         val first = externalCompactionPrefs.getString(
-            ExternalExportCache.firstDbIdKey(sessionId),
+            ExternalExportCache.firstDbIdKey(compactSid),
             null,
         )
         val last = externalCompactionPrefs.getString(
-            ExternalExportCache.lastDbIdKey(sessionId),
+            ExternalExportCache.lastDbIdKey(compactSid),
             null,
         )
         // Kept for the refusal message: is some OTHER chat the one holding a
@@ -3035,7 +3060,7 @@ class ChatViewModel(
         val tracked = ExternalExportCache.parseIndex(
             externalCompactionPrefs.getString(ExternalExportCache.INDEX_KEY, null),
         )
-        val exportedSession = tracked.lastOrNull { it != sessionId }
+        val exportedSession = tracked.lastOrNull { it != compactSid }
         if (first == null || last == null) {
             viewModelScope.launch(Dispatchers.Main) {
                 appendSystemInfo(
@@ -3142,13 +3167,13 @@ class ChatViewModel(
         val previous = ExternalExportCache.parseIndex(
             prefs.getString(ExternalExportCache.INDEX_KEY, null),
         )
-        val kept = ExternalExportCache.remember(previous, sessionId)
+        val kept = ExternalExportCache.remember(previous, compactSid)
         val editor = prefs.edit()
-            .putString(ExternalExportCache.firstDbIdKey(sessionId), firstDbId)
-            .putString(ExternalExportCache.lastDbIdKey(sessionId), lastDbId)
-            .putString(ExternalExportCache.uriKey(sessionId), uri?.toString())
-            .putString(ExternalExportCache.whereKey(sessionId), whereText)
-            .putLong(ExternalExportCache.atMsKey(sessionId), System.currentTimeMillis())
+            .putString(ExternalExportCache.firstDbIdKey(compactSid), firstDbId)
+            .putString(ExternalExportCache.lastDbIdKey(compactSid), lastDbId)
+            .putString(ExternalExportCache.uriKey(compactSid), uri?.toString())
+            .putString(ExternalExportCache.whereKey(compactSid), whereText)
+            .putLong(ExternalExportCache.atMsKey(compactSid), System.currentTimeMillis())
             .putString(ExternalExportCache.INDEX_KEY, ExternalExportCache.formatIndex(kept))
         for (gone in ExternalExportCache.evicted(previous, kept)) {
             for (key in ExternalExportCache.keysFor(gone)) editor.remove(key)
