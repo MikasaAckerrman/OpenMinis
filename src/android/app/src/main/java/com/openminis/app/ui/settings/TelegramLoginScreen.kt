@@ -58,7 +58,13 @@ fun TelegramLoginScreen(
     // number, the API credentials and - the part that expires in minutes -
     // the verification code.
     val loginStore = remember(context) {
-        TelegramLoginStateStore(File(context.filesDir, "tg-login-state.json"))
+        TelegramLoginStateStore(
+            // [tg-login-vault] The sign-in state lives in the same isolated
+            // directory as the Telegram session: filesDir/tg-vault is not
+            // bind-mounted into any agent sandbox, so no agent process can
+            // read the phone number, the code or the api credentials.
+            File(File(context.filesDir, "tg-vault"), "login-state.json"),
+        )
     }
     val savedState = remember(loginStore) { loginStore.load() }
     var phone by remember { mutableStateOf(savedState.phone) }
