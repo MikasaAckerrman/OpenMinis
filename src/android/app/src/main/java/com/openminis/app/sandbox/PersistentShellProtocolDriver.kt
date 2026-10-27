@@ -92,6 +92,29 @@ internal class PersistentShellProtocolDriver(
         resumeRegistry.remove(marker)
     }
 
+    /**
+     * [lost-resume] Take the registry entry only when it still belongs to this
+     * callback.
+     *
+     * claimForResume removes the entry, so a caller that removes an entry of a
+     * DIFFERENT callback destroys that callback's only chance to resume: the
+     * command then waits for a result that never comes. The stop path and the
+     * EOF path both ran into this - they removed the entry and stayed silent
+     * when it was not theirs. A foreign entry stays armed for its own owner.
+     */
+    private fun claimForResumeIfSame(
+        marker: String,
+        cb: ShellProtocolEngine.CommandCallbackContract,
+    ): CommandCallback? = synchronized(resumeRegistry) {
+        val current = resumeRegistry[marker]
+        if (current === cb) {
+            resumeRegistry.remove(marker)
+            current
+        } else {
+            null
+        }
+    }
+
     fun claimForResume(marker: String): CommandCallback? = synchronized(resumeRegistry) {
         resumeRegistry.remove(marker)
     }
@@ -112,8 +135,8 @@ internal class PersistentShellProtocolDriver(
      */
     fun dropResumeIfArmed(cb: ShellProtocolEngine.CommandCallbackContract?) {
         if (cb == null) return
-        val armed = claimForResume(cb.marker)
-        if (armed != null && armed === cb) {
+        val armed = claimForResumeIfSame(cb.marker, cb)
+        if (armed != null) {
             armed.resume?.invoke(armed.output.toString(), -1)
         }
     }
@@ -221,8 +244,8 @@ internal class PersistentShellProtocolDriver(
             // complete it; emit it before the death resume so the subscriber
             // still sees the command's last (unterminated) output line.
             protocol.flushOnDeath(cb.lineCallback)
-            val armed = claimForResume(cb.marker)
-            if (armed != null && armed === cb) {
+            val armed = claimForResumeIfSame(cb.marker, cb)
+            if (armed != null) {
                 armed.resume?.invoke(armed.output.toString(), -1)
             }
         }

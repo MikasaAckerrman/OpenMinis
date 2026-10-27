@@ -520,7 +520,10 @@ class PersistentShell(
                 return Pair(shellNotRunningMessage(), -1)
             }
 
-            val marker = UUID.randomUUID().toString().take(8)
+            // [lost-resume] 16 hex characters = 64 bits. 8 characters were 32 bits, and a
+        // collision is not exotic over a long session: the collision made one
+        // command steal another command's resume, and the second one hung.
+        val marker = UUID.randomUUID().toString().take(16)
             val wrappedCommand = "$command\necho \"__MINIS_DONE_${marker}_EXIT_\$?__\"\n"
 
             // [D-2 companion] Flush queued env writes at the idle->busy
