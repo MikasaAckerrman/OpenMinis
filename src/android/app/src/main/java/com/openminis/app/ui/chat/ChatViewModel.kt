@@ -13073,7 +13073,8 @@ class ChatViewModel(
             registry,
             toolScheduler = com.openminis.app.engine.ToolScheduler(
                 resourceKeysOf = ::jsonObjectResourceKeys,
-                maxConcurrent = 4,
+                // [T-parallel-agents] The same ceiling the executor uses.
+                maxConcurrent = com.openminis.app.engine.AgentConcurrency.parallel,
             ),
             onEngineEvent = { msg ->
                 // [T-scheduler-observability] app-side adapter: the wave

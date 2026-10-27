@@ -60,8 +60,12 @@ object SubagentExecutor {
     private class ActiveBackground(val preview: String, val job: kotlinx.coroutines.Job)
 
     /** [T-spawn-many] Phone ceilings: parallel tool agents + background spawns. */
-    const val MAX_PARALLEL = 3
-    const val MAX_BACKGROUND = 3
+    // [T-parallel-agents] The ceilings come from AgentConcurrency so the
+    // executor and the scheduler agree. They used to be fixed at 3 while the
+    // scheduler allowed a wave of 4, which left a spawn waiting behind a
+    // gate nobody planned for.
+    val MAX_PARALLEL: Int = com.openminis.app.engine.AgentConcurrency.parallel
+    val MAX_BACKGROUND: Int = com.openminis.app.engine.AgentConcurrency.background
     private val parallelLimiter = Semaphore(MAX_PARALLEL)
 
     /**
