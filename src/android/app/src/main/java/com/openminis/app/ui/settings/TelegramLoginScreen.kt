@@ -78,7 +78,11 @@ fun TelegramLoginScreen(
     // verification code is only valid for a few minutes, so losing it to a
     // rotation or a process kill means starting the login over.
     // One key holding the whole set: any change of any field re-runs it.
-    LaunchedEffect(listOf(phone, code, apiId, apiHash, codeSent, needsPassword)) {
+    LaunchedEffect(listOf(phone, code, apiId, apiHash, codeSent, needsPassword, loggedIn)) {
+        // A finished sign-in leaves nothing behind, and the clearing effect
+        // below runs on its own key. Without this guard a later change of a
+        // field would write the phone and the code back onto the disk.
+        if (loggedIn == true) return@LaunchedEffect
         loginStore.save(
             TelegramLoginState(
                 phone = phone,

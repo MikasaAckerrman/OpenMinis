@@ -33,9 +33,16 @@ data class TelegramLoginState(
     /** The account has a cloud password; the flow is at the password step. */
     val needsPassword: Boolean = false,
 ) {
-    /** Nothing worth keeping: the flow can start from scratch. */
+    /**
+     * Nothing worth keeping: the flow can start from scratch.
+     *
+     * The phase flags count as content. A state that only says "a code was
+     * already sent" still carries the progress, and dropping it would send
+     * the user back to the phone number while a code is waiting.
+     */
     val isEmpty: Boolean
-        get() = phone.isBlank() && code.isBlank() && apiId.isBlank() && apiHash.isBlank()
+        get() = phone.isBlank() && code.isBlank() && apiId.isBlank() && apiHash.isBlank() &&
+            !codeSent && !needsPassword
 
     fun toJson(): JSONObject = JSONObject().apply {
         put(KEY_PHONE, phone)

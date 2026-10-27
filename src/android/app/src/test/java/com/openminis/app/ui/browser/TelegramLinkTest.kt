@@ -45,4 +45,37 @@ class TelegramLinkTest {
     fun `a deep link without a web form is left alone`() {
         assertNull(TelegramLink.toWebUrl("tg://openmessage?user_id=123"))
     }
+
+    // [T-telegram-in-app-safety] The values of a deep link must not be able
+    // to leave t.me: a path with ".." is normalised away by the browser and
+    // the host would change.
+
+    @Test
+    fun `a domain that climbs out of the path is refused`() {
+        assertNull(TelegramLink.toWebUrl("tg://resolve?domain=../../evil.com"))
+        assertNull(TelegramLink.toWebUrl("tg://resolve?domain=..%2F..%2Fevil.com"))
+        assertNull(TelegramLink.toWebUrl("tg://resolve?domain=/evil.com"))
+        assertNull(TelegramLink.toWebUrl("tg://resolve?domain=evil.com/x"))
+    }
+
+    @Test
+    fun `a domain that is not a telegram username is refused`() {
+        assertNull(TelegramLink.toWebUrl("tg://resolve?domain=ab"))
+        assertNull(TelegramLink.toWebUrl("tg://resolve?domain=durov!"))
+        assertNull(TelegramLink.toWebUrl("tg://resolve?domain=du rov"))
+    }
+
+    @Test
+    fun `an invite hash that is not base64url is refused`() {
+        assertNull(TelegramLink.toWebUrl("tg://joinchat/../../evil"))
+        assertNull(TelegramLink.toWebUrl("tg://joinchat/a b"))
+    }
+
+    @Test
+    fun `the deep link works with and without slashes`() {
+        assertEquals(
+            "https://t.me/durov",
+            TelegramLink.toWebUrl("tg:resolve?domain=durov"),
+        )
+    }
 }

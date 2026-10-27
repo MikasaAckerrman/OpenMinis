@@ -48,4 +48,24 @@ class TelegramLoginStateTest {
         assertTrue(TelegramLoginState().isEmpty)
         assertFalse(TelegramLoginState(phone = "+79991234567").isEmpty)
     }
+
+    @Test
+    fun `a state that only carries the phase is not empty`() {
+        // The phase is progress: dropping it would send the user back to
+        // the phone number while a code is already waiting in Telegram.
+        assertFalse(TelegramLoginState(codeSent = true).isEmpty)
+        assertFalse(TelegramLoginState(needsPassword = true).isEmpty)
+    }
+
+    @Test
+    fun `the cloud password is never part of the stored state`() {
+        val json = TelegramLoginState(
+            phone = "+79991234567",
+            code = "48213",
+            codeSent = true,
+            needsPassword = true,
+        ).toJson()
+        assertFalse(json.has("password"))
+        assertFalse(json.has("cloud_password"))
+    }
 }
