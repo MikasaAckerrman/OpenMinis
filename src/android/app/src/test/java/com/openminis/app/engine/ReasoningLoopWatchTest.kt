@@ -37,12 +37,14 @@ class ReasoningLoopWatchTest {
     }
 
     @Test
-    fun `a wide flood is caught although no window is dense`() {
+    fun `a wide flood in the middle is caught although the tail is clean`() {
         val watch = ReasoningLoopWatch()
-        // One sign per line, far below the coverage of a 128 character
-        // window, but a fifth of the whole text.
-        val flood = (1..40).joinToString("\n") { "step $it ⇒ next" }
-        val found = feed(watch, flood)
+        // The measured loop: many dense lines of signs, followed by text
+        // that has none. A window that only looks at the tail sees the
+        // prose and nothing else.
+        val flood = (1..40).joinToString("\n") { "⇒ ⇒ ⇒⇒ ⇒ ⇒⇒ ⇒⇒ ⇒" }
+        val text = flood + "\n" + prose.repeat(4)
+        val found = feed(watch, text)
         assertTrue("a wide flood must be found", found.isNotEmpty())
     }
 
