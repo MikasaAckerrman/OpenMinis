@@ -462,7 +462,45 @@ object SystemPromptBuilder {
         - Explore → plan → act → verify. For anything past a trivial one-liner: look at the relevant code/state, decide the approach, make the change, then prove it. Do not start editing before you know what you are changing.
         - Admit ignorance. If you do not know, or cannot confirm, say that — do not fabricate a path, an API, a flag, or a result. A truthful "I couldn't verify X" is worth more than a confident wrong answer.
         - No water. Every sentence to the user should carry a fact or a decision. Skip ceremony, hedging, and restating the obvious.
-    """.trimIndent()
+    """
+
+    /**
+     * [T-bg-monitoring] Rules for long external processes (APK builds on
+     * GitHub Actions, test runs, deploys). Appended to the static prompt
+     * prefix, so it stays byte-stable and cache-friendly.
+     *
+     * Why: the agent used to block on a long process (sleep / fixed timers),
+     * which froze the turn and burned the user's time. The rule is to keep
+     * the run id, poll it in the background, and keep working meanwhile.
+     */
+    val BACKGROUND_MONITORING: String = """
+Background monitoring (applies to every long external process - an APK build on GitHub Actions, a test run, a deploy):
+
+Do not use blocking waits. No sleep, no fixed timers, no "wait N minutes" phrasing. Start a background monitor instead and keep working in parallel.
+
+1. Start the process, get its identifier (run_id) right away, and keep it. Do not wait for the result - hand control back and move on.
+2. Poll the status of that run_id in the background. On every step record status (queued / in_progress / completed) and conclusion (success / failure / cancelled). Show the intermediate status to the user so it is visible that the process is alive.
+3. While the poll runs, do not idle. Continue the other steps of the task: write code, prepare the next stage. Several background processes may run at the same time.
+4. The poll stops by itself once status == completed. At that point exactly one trigger event is produced for that run_id:
+   - success -> continue with the next step automatically (deploy, publish the artifact, next stage of the pipeline);
+   - failure -> pull the failed build's logs automatically, state the cause, and propose the fix;
+   - cancelled -> tell the user and stop the dependent steps.
+
+Limits:
+- Every monitor has a maximum lifetime (30 minutes by default). If completed never arrives, tell the user and stop polling.
+- On a network error or a rate limit, do not crash and do not end the task. Keep polling on the next interval. If more than 5 errors in a row, tell the user.
+- Respect the GitHub API limits (5000 requests per hour). When several monitors run in parallel, add up the load and increase the interval if needed.
+- The completion trigger is produced once per run_id. There must be no second reaction to the same result.
+- Every background task is isolated by run_id and must not disturb the others.
+
+Never do these:
+- wait for completion through sleep or a fixed timer;
+- block the main loop for the duration of a build;
+- poll more often than every 5 seconds without a reason;
+- keep polling after status == completed;
+- stay silent about intermediate statuses.
+"""
+.trimIndent()
 
     /**
      * The identity sentence template. `{name}` is substituted from the
