@@ -21,6 +21,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import java.io.File
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -52,16 +53,48 @@ fun TelegramLoginScreen(
     val textSecondary = Color(0xFF708499)
 
     var loggedIn by remember { mutableStateOf<Boolean?>(null) }
-    var phone by remember { mutableStateOf("") }
-    var code by remember { mutableStateOf("") }
+    // [T-telegram-login-state] The sign-in state is kept on disk, so a
+    // rebuilt screen or a killed process does not throw away the phone
+    // number, the API credentials and - the part that expires in minutes -
+    // the verification code.
+    val loginStore = remember(context) {
+        TelegramLoginStateStore(File(context.filesDir, "tg-login-state.json"))
+    }
+    val savedState = remember(loginStore) { loginStore.load() }
+    var phone by remember { mutableStateOf(savedState.phone) }
+    var code by remember { mutableStateOf(savedState.code) }
+    // The cloud password is the account's second factor and is typed once;
+    // it is deliberately not kept on disk.
     var password by remember { mutableStateOf("") }
-    var apiId by remember { mutableStateOf("") }
-    var apiHash by remember { mutableStateOf("") }
+    var apiId by remember { mutableStateOf(savedState.apiId) }
+    var apiHash by remember { mutableStateOf(savedState.apiHash) }
     var showCreds by remember { mutableStateOf<Boolean?>(null) } // null = not checked yet
-    var needsPassword by remember { mutableStateOf(false) }
-    var codeSent by remember { mutableStateOf(false) }
+    var needsPassword by remember { mutableStateOf(savedState.needsPassword) }
+    var codeSent by remember { mutableStateOf(savedState.codeSent) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+
+    // [T-telegram-login-state] Keep the flow on disk as it advances: the
+    // verification code is only valid for a few minutes, so losing it to a
+    // rotation or a process kill means starting the login over.
+    // One key holding the whole set: any change of any field re-runs it.
+    LaunchedEffect(listOf(phone, code, apiId, apiHash, codeSent, needsPassword)) {
+        loginStore.save(
+            TelegramLoginState(
+                phone = phone,
+                code = code,
+                apiId = apiId,
+                apiHash = apiHash,
+                codeSent = codeSent,
+                needsPassword = needsPassword,
+            ),
+        )
+    }
+
+    // [T-telegram-login-state] A finished sign-in leaves nothing behind.
+    LaunchedEffect(loggedIn) {
+        if (loggedIn == true) loginStore.clear()
+    }
 
     // Check initial status
     LaunchedEffect(Unit) {
