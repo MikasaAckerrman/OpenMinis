@@ -17011,6 +17011,9 @@ class ChatViewModel(
         val serial = args.optString("mode").trim().lowercase() == "serial"
         val synthesize = args.optBoolean("synthesize", false)
         val review = args.optBoolean("review", false)
+        // [T-review-gate] The last checkpoint of the batch: a gatekeeper
+        // decides whether the work may be called done and names the blockers.
+        val gate = args.optBoolean("gate", false)
         // [T-subagent-block-live] One line per agent, in the same shape
         // as a tool call. The reader sees which agents are working at
         // the same time, and each line stops when ITS agent stops.
@@ -17020,7 +17023,7 @@ class ChatViewModel(
         publishToolBlocks(assistantId, toolBlocks)
 
         val result = com.openminis.app.offload.SubagentExecutor.spawnMany(
-            context, specs, serial, synthesize, review,
+            context, specs, serial, synthesize, review, gate,
             // [T-subagent-nesting] Depth cap — see spawn(spawnerSessionId).
             spawnerSessionId = activeSessionId,
             onAgentDone = { index, agentRole, agentResult, ok ->

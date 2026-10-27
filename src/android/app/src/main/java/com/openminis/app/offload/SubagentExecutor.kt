@@ -485,6 +485,13 @@ object SubagentExecutor {
         serial: Boolean = false,
         synthesize: Boolean = false,
         review: Boolean = false,
+        /**
+         * [T-review-gate] The last checkpoint of a batch. The reviewer says
+         * whether the synthesis holds; the gatekeeper says whether the work
+         * may be called done, and names the blockers it can point at in the
+         * code. It fixes nothing itself.
+         */
+        gate: Boolean = false,
         /** [T-subagent-nesting] Depth cap — see spawn(spawnerSessionId). */
         spawnerSessionId: String? = null,
         /**
@@ -667,6 +674,26 @@ object SubagentExecutor {
             sb.appendLine("### REVIEW (code_correctness_reviewer)")
             sb.appendLine(verdict)
             sb.appendLine()
+        }
+        // [T-review-gate] The gate runs after the reviewer and is the last
+        // word of the batch: it does not redo the work, it decides whether
+        // the work may be called done and says what stands in the way.
+        if (gate) {
+            val gateVerdict = runExtra(
+                context, app, AgentRole.FINAL_GATEKEEPER,
+                "You are the last gate before this work is called done. Check the work below " +
+                    "and the findings on the board: does it do what was asked, is every claim " +
+                    "backed by the code that is really there, and what breaks. End with exactly " +
+                    "one verdict on its own line - VERDICT: SHIP, VERDICT: SHIP_WITH_FIXES or " +
+                    "VERDICT: DO_NOT_SHIP - and, for any verdict other than SHIP, the blockers " +
+                    "as file and line, what is wrong and what has to change. A blocker you " +
+                    "cannot point at in the code is not a blocker. Do not rewrite the work.\n\n" +
+                    board.toString().take(9000),
+            )
+            sb.appendLine("### GATE (final_gatekeeper)")
+            sb.appendLine(gateVerdict)
+            sb.appendLine()
+            board.append(TaskBoard.entry(0, "GATE", gateVerdict))
         }
 
         val boardPath = writeBoardFile(batchId, board.toString(), spawnerSessionId, context)

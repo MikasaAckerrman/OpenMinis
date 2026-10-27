@@ -180,9 +180,17 @@ object SubagentTools {
                     "the board (mistakes, contradictions, unsupported claims — or CONFIRMED). " +
                     "Quality gate; adds one more agent run.",
             ),
+            "gate" to AgentToolParam(
+                "boolean",
+                "false (default). true = after the review, a gatekeeper agent reads the work and " +
+                    "the board and returns a verdict — SHIP, SHIP_WITH_FIXES or DO_NOT_SHIP — with " +
+                    "the blockers it can point at in the code. Use it before you call an " +
+                    "implementation done: it is the last checkpoint and it fixes nothing itself. " +
+                    "Adds one more agent run.",
+            ),
         ),
         required = listOf("tool_title", "agents"),
-        propertyOrdering = listOf("tool_title", "agents", "mode", "synthesize", "review"),
+        propertyOrdering = listOf("tool_title", "agents", "mode", "synthesize", "review", "gate"),
     )
 
     fun runGraphDefinition(): AgentToolDefinition = AgentToolDefinition(
