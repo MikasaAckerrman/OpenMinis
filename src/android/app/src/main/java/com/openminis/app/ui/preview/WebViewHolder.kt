@@ -117,6 +117,15 @@ class WebViewHolder(
                 request: android.webkit.WebResourceRequest,
             ): Boolean {
                 val urlStr = request.url?.toString()
+                // [T-telegram-in-app] A `tg://` link has a public web form, and
+                // Telegram links have to stay inside the app. The rewrite is a
+                // pure function, so it is the same rule the chat-link
+                // resolver applies - one rule, two call sites.
+                val telegramWeb = com.openminis.app.ui.browser.TelegramLink.toWebUrl(urlStr)
+                if (telegramWeb != null) {
+                    view.loadUrl(telegramWeb)
+                    return true
+                }
                 // T234: Google permanently disallows WebView for sign-in /
                 // OAuth. Hand auth-domain navigation to Chrome Custom Tab.
                 if (com.openminis.app.browser.GoogleAuthRouter.shouldRouteExternally(urlStr)) {
