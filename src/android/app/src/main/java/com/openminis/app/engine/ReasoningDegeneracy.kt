@@ -103,6 +103,10 @@ internal object ReasoningDegeneracy {
      *
      * The text may be the whole reasoning or its tail. Returns null when
      * nothing looks like a loop.
+     *
+     * The barrier does not use this: it uses [ReasoningLoopWatch], which
+     * keeps the evidence of the whole stream. This stays the rule of the
+     * short window, on its own tests.
      */
     fun detect(text: CharSequence): Finding? {
         if (text.isEmpty()) return null
@@ -174,7 +178,7 @@ internal object ReasoningDegeneracy {
      * A symbol: not a letter, not a digit, not a space, and not one of
      * the marks that ordinary code and prose repeat on purpose.
      */
-    private fun isSymbol(ch: Char): Boolean {
+    internal fun isSymbol(ch: Char): Boolean {
         if (ch.isLetterOrDigit()) return false
         if (ch.isWhitespace()) return false
         return ch !in ORDINARY_MARKS

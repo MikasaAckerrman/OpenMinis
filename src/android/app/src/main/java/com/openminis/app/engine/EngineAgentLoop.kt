@@ -115,6 +115,10 @@ class EngineAgentLoop(
             // quadratic: a long reasoning would copy itself over and over
             // while it streams. This keeps the tail and nothing else.
             val reasoningTail = StringBuilder()
+            // [T-reasoning-degeneracy] The watch keeps the evidence of the whole
+            // stream, so a loop in the middle of the reasoning is still provable
+            // after the tail moved on.
+            val reasoningWatch = ReasoningLoopWatch()
             val pendingCalls = mutableListOf<EngineToolCall>()
             var failure: AgentEvent.Error? = null
 
@@ -147,7 +151,7 @@ class EngineAgentLoop(
                                         reasoningTail.length - ReasoningDegeneracy.TAIL_CHARS,
                                     )
                                 }
-                                val loop = ReasoningDegeneracy.detect(reasoningTail)
+                                val loop = reasoningWatch.accept(event.text)
                                 if (loop == null) {
                                     turnReasoning.append(event.text)
                                     emit(AgentEvent.ThinkingDelta(event.text))
