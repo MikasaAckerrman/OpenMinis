@@ -1325,24 +1325,8 @@ object SubagentExecutor {
      *    another orchestrator, a reviewer cannot arm a reviewer, a worker
      *    arms nobody. Uncontrolled fan-out is structurally impossible.
      */
-    private fun mayDelegate(childRole: AgentRole?, spawnerRole: AgentRole?): Boolean {
-        val reviewers = setOf(
-            AgentRole.CODE_CORRECTNESS_REVIEWER,
-            AgentRole.SECURITY_REVIEWER,
-            AgentRole.PERFORMANCE_REVIEWER,
-            AgentRole.TEST_QUALITY_AUDITOR,
-        )
-        return when (spawnerRole) {
-            // Event-matrix fix (A8 x A3): a custom agent (childRole == null)
-            // spawned from MAIN may delegate — spawnCustom() already grants
-            // exactly that (spawnerRole == null); the batch path disagreed
-            // with the single path for the same user action. Both entry
-            // points now answer identically.
-            null -> childRole == null || childRole == AgentRole.ORCHESTRATOR || childRole in reviewers
-            AgentRole.ORCHESTRATOR -> childRole != null && childRole in reviewers
-            else -> false
-        }
-    }
+    private fun mayDelegate(childRole: AgentRole?, spawnerRole: AgentRole?): Boolean =
+        SubagentRoles.mayDelegate(childRole, spawnerRole)
 
     /**
      * Map a spawnable [AgentRole] to a model-role key the resolver understands
@@ -1382,6 +1366,57 @@ object SubagentExecutor {
 
 /** Role names exposed to the LLM for the spawn_subagent tool enum. */
 object SubagentRoles {
+
+    /**
+     * [T-subagent-nesting] The delegation capability matrix.
+     *
+     * MAIN chat (spawnerRole == null) may arm the ORCHESTRATOR (the entry
+     * delegator) and the reviewer roles. The ORCHESTRATOR may arm worker
+     * roles and reviewer roles - its tool surface has always granted
+     * spawn_subagent/spawn_many/cancel_subagent/task_board, and the
+     * orchestrator prompt tells it to split the task and hire workers, but
+     * the matrix answered "reviewers only", so the tool was there and the
+     * permission was not.
+     *
+     * The structural caps stay: an orchestrator cannot arm another
+     * orchestrator, a reviewer cannot arm a reviewer, a worker arms
+     * nobody. The workers a delegator may arm are leaves, so no chain can
+     * pass depth 3 and uncontrolled fan-out stays impossible.
+     */
+    internal fun mayDelegate(childRole: AgentRole?, spawnerRole: AgentRole?): Boolean {
+        val reviewers = setOf(
+            AgentRole.CODE_CORRECTNESS_REVIEWER,
+            AgentRole.SECURITY_REVIEWER,
+            AgentRole.PERFORMANCE_REVIEWER,
+            AgentRole.TEST_QUALITY_AUDITOR,
+        )
+        // The roles that cannot delegate: they are leaves, so a delegator
+        // that arms them stays inside the depth cap.
+        val workers = setOf(
+            AgentRole.REQUIREMENTS_ANALYST,
+            AgentRole.CODEBASE_DISCOVERY,
+            AgentRole.SOLUTION_ARCHITECT,
+            AgentRole.INDEPENDENT_TEST_DESIGNER,
+            AgentRole.SENIOR_IMPLEMENTER,
+            AgentRole.DEPENDENCY_GUARDIAN,
+            AgentRole.FINAL_GATEKEEPER,
+            AgentRole.DOCUMENTATION_AGENT,
+            AgentRole.EXPLORE,
+        )
+        return when (spawnerRole) {
+            // Event-matrix fix (A8 x A3): a custom agent (childRole == null)
+            // spawned from MAIN may delegate - spawnCustom() already grants
+            // exactly that (spawnerRole == null); the batch path disagreed
+            // with the single path for the same user action. Both entry
+            // points now answer identically.
+            null -> childRole == null || childRole == AgentRole.ORCHESTRATOR || childRole in reviewers
+            AgentRole.ORCHESTRATOR ->
+                childRole != null &&
+                    childRole != AgentRole.ORCHESTRATOR &&
+                    (childRole in reviewers || childRole in workers)
+            else -> false
+        }
+    }
     val SPAWNABLE = listOf(
         // [T-explore-role] First in the list: research-first agents spawn
         // explorers more often than any specialist.
