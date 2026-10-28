@@ -33,7 +33,7 @@ object OutputSanitizer {
      */
     fun sanitizeArrows(text: String): String {
         if (!text.contains('⇒')) return text
-        val collapsed = ARROW_RUN.replace(text) { "⇒ " }
+        val collapsed = ARROW_RUN.replace(text) { "⇒" }
         return ARROW_RUN_TIGHT.replace(collapsed) { "⇒" }
     }
 }
