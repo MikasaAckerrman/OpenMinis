@@ -241,17 +241,19 @@ object SubagentExecutor {
                         description = task, workspaceDir = null, dependsOnJson = dependsOnJson,
                     )
                 }
+                var deliver: String? = null
                 val text = try {
                     val result = AgentGraphRunner.run(context, graph.id, task, taskId = spawnId, ephemeral = true)
+                    val formatted = formatResult(role, result)
                     if (teamId != null) {
                         AgentBoardRecorder.taskFinished(
                             context, taskId = spawnId, teamId = teamId,
                             assignedAgentId = null,
                             succeeded = result.status == RunStatus.SUCCESS,
-                            result = formatResult(role, result),
+                            result = formatted,
                         )
                     }
-                    formatResult(role, result)
+                    formatted
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     // [T-subagent-background-ceiling] A cancelled run is not a
                     // failed run.
@@ -291,16 +293,30 @@ object SubagentExecutor {
                     }
                     "Subagent (${role.lowercase()}) background run failed: ${e.message}"
                 }
-                runCatching { onBackgroundResult?.invoke(spawnId, role, text) }
-                    .onFailure {
-                        com.openminis.app.logging.AppLogger.warning(
-                            TAG, "background result callback failed: ${it.message}",
-                        )
-                    }
+                deliver = text
             } finally {
                 activeBackground.remove(spawnId)
                 backgroundLimiter.release()
                 runCatching { app.providerRepository.deleteAgentGraph(graph.id) }
+                // [T-soft-cancel-signal] Exactly ONE delivery on EVERY
+                // terminal path. The callback used to fire only when the run
+                // produced a result, so a cancelled run - or a failure before
+                // the run started - left the parent waiting on its deferred
+                // forever: the parent's turn hung, with no result and no
+                // error, while the child was already gone. The signal now
+                // belongs to the bookkeeping, next to the permit release.
+                runCatching {
+                    onBackgroundResult?.invoke(
+                        spawnId,
+                        role,
+                        deliver ?: "Subagent (${role.lowercase()}) ended without a result " +
+                            "(the run was cancelled or failed before it produced output).",
+                    )
+                }.onFailure {
+                    com.openminis.app.logging.AppLogger.warning(
+                        TAG, "background result callback failed: ${it.message}",
+                    )
+                }
             }
         }
         activeBackground[spawnId] = ActiveBackground("$role: ${task.take(80)}", job)
@@ -904,7 +920,14 @@ object SubagentExecutor {
                     teamId = spawnerSessionId, dependsOnJson = depsJson(dependsOn),
                     parentJob = null,
                 )
-                ready.await()
+                // The child owns its scope, so the parent's wait is bounded:
+                // a signal lost with the process must not hang the parent's
+                // turn forever. The board keeps the outcome either way.
+                kotlinx.coroutines.withTimeoutOrNull(600_000L) { ready.await() }
+                    ?: "Subagent (${role.lowercase()}) is still running (no result within " +
+                        "${600_000L / 1000}s) - it keeps working in the background, " +
+                        "its result lands on the team board; collect it with await_result($spawnId)."
+
             } else {
                 runSingle(context, app, graph, node, role, task, teamId = spawnerSessionId, dependsOnJson = depsJson(dependsOn))
             }
