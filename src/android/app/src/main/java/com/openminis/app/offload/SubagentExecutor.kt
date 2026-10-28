@@ -240,6 +240,7 @@ object SubagentExecutor {
             kotlinx.coroutines.Dispatchers.IO + (parentJob ?: kotlinx.coroutines.Job())
         )
         val job = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
+            var deliver: String? = null
             try {
                 // [T-task-board] Durable ledger for background runs too — a
                 // background agent that dies with the process leaves a
@@ -251,7 +252,6 @@ object SubagentExecutor {
                         description = task, workspaceDir = null, dependsOnJson = dependsOnJson,
                     )
                 }
-                var deliver: String? = null
                 val text = try {
                     val result = AgentGraphRunner.run(context, graph.id, task, taskId = spawnId, ephemeral = true)
                     val formatted = formatResult(role, result)
