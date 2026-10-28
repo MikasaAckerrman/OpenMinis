@@ -129,8 +129,11 @@ class EngineAgentLoop(
                     when (event) {
                         is StreamEvent.TextDelta -> {
                             if (failure == null) {
-                                turnText.append(event.text)
-                                emit(AgentEvent.TextDelta(event.text))
+                                // [T-output-arrows] Collapse the arrow-run degeneration
+                                // before it reaches the user and the saved message.
+                                val clean = OutputSanitizer.sanitizeArrows(event.text)
+                                turnText.append(clean)
+                                emit(AgentEvent.TextDelta(clean))
                             }
                         }
                         // Progressive surfaces pass straight through: the
