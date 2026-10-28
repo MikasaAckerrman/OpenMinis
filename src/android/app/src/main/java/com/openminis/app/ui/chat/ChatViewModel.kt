@@ -3047,14 +3047,28 @@ class ChatViewModel(
         // [T-export-cache-not-session-scoped] This chat's own export, not whichever
         // was written last. With one shared slot, exporting a second chat
         // invalidated the first chat's range and made its import impossible.
-        val first = externalCompactionPrefs.getString(
+        val rememberedFirst = externalCompactionPrefs.getString(
             ExternalExportCache.firstDbIdKey(compactSid),
             null,
         )
-        val last = externalCompactionPrefs.getString(
+        val rememberedLast = externalCompactionPrefs.getString(
             ExternalExportCache.lastDbIdKey(compactSid),
             null,
         )
+        // [T-compact-range-from-artifact] The file in the user's hand carries
+        // its own range ("RANGE <first>..<last>"), so a missing preference
+        // does not have to end the import. The remembered range wins; the
+        // file is the fallback. Either way the apply step recomputes the
+        // live range and refuses any drift.
+        val remembered = if (rememberedFirst != null && rememberedLast != null) {
+            rememberedFirst to rememberedLast
+        } else {
+            null
+        }
+        val fromFile = ExternalExportCache.rangeFromText(text)
+        val range = remembered ?: fromFile
+        val first = range?.first
+        val last = range?.second
         // Kept for the refusal message: is some OTHER chat the one holding a
         // live export, so the user knows which chat to go back to.
         val tracked = ExternalExportCache.parseIndex(
@@ -3065,7 +3079,7 @@ class ChatViewModel(
             viewModelScope.launch(Dispatchers.Main) {
                 appendSystemInfo(
                     text = if (exportedSession != null) {
-                        "Активный экспорт — из другой сессии. Сделай /export-compact в ЭТОМ чате."
+                        "В ЭТОМ чате нет сохранённого экспорта (в другом чате есть свой — он сюда не подходит). Сделай /export-compact в ЭТОМ чате."
                     } else {
                         "Нет активного экспорта — сначала /export-compact, сожми файл внешней моделью, потом /import-compact."
                     },
@@ -3073,6 +3087,14 @@ class ChatViewModel(
                 )
             }
             return
+        }
+        if (remembered == null) {
+            viewModelScope.launch(Dispatchers.Main) {
+                appendSystemInfo(
+                    text = "Диапазон взят из самого файла экспорта (RANGE $first..$last): сохранённой выгрузки в этом чате не было.",
+                    iconKind = "compact",
+                )
+            }
         }
         compactAll(
             com.openminis.app.data.CompactionLaunchPolicy.Origin.EXPLICIT_USER,

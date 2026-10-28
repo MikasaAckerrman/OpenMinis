@@ -141,6 +141,42 @@ class ExternalExportCacheTest {
         assertEquals(emptyList<String>(), ExternalExportCache.parseIndex(""))
     }
 
+    /**
+     * The exported file carries its own range. When the remembered export is
+     * gone, that line is the only way to know which messages the file was
+     * made from - without it the import refused with "из другой сессии".
+     */
+    @Test
+    fun theRangeIsReadFromTheArtifact() {
+        val text = "Вот сжатая выжимка.
+
+---
+(Служебная строка, не изменяй: RANGE 0f9c1a22-1111-2222-3333-444455556666..0f9c1a22-9999-8888-7777-666655554444)
+---"
+        val range = requireNotNull(ExternalExportCache.rangeFromText(text)) {
+            "the service line carries the range"
+        }
+        assertEquals("0f9c1a22-1111-2222-3333-444455556666", range.first)
+        assertEquals("0f9c1a22-9999-8888-7777-666655554444", range.second)
+    }
+
+    @Test
+    fun anArtifactWithoutTheServiceLineHasNoRange() {
+        assertNull(
+            ExternalExportCache.rangeFromText("просто сжатая выжимка, без служебной строки"),
+        )
+    }
+
+    /** "?" is the placeholder for a range end without a persisted id. */
+    @Test
+    fun thePlaceholderRangeIsNotARange() {
+        assertNull(
+            ExternalExportCache.rangeFromText(
+                "(Служебная строка, не изменяй: RANGE ?..?)",
+            ),
+        )
+    }
+
     /** Every key of a session has to be removed together or the leak persists. */
     @Test
     fun eachSessionHasItsOwnDisjointKeys() {

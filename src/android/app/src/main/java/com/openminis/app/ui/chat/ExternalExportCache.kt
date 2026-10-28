@@ -24,6 +24,11 @@ package com.openminis.app.ui.chat
  * ViewModel, which keeps the decisions testable without Android.
  */
 internal object ExternalExportCache {
+
+    /** The service line the export writes into the file. */
+    private val RANGE_IN_TEXT =
+        Regex("RANGE\\s*[:\\-]?\\s*([A-Za-z0-9_-]{6,64})\\.\\.([A-Za-z0-9_-]{6,64})")
+
     /** How long a remembered export is re-announced instead of recomputed. */
     const val FRESH_MS = 15L * 60 * 1000
 
@@ -58,6 +63,31 @@ internal object ExternalExportCache {
         val first = entry.firstDbId
         val last = entry.lastDbId
         if (first.isNullOrBlank() || last.isNullOrBlank()) return null
+        return first to last
+    }
+
+    /**
+     * [T-compact-range-from-artifact] The range carried by the artifact.
+     *
+     * The export writes a service line - "(Служебная строка, не изменяй:
+     * RANGE <first>..<last>)" - into the file it produces, and the export
+     * prompt asks the external model to keep that line. The file therefore
+     * knows which messages it was made from even when the remembered export
+     * is gone: another install, an export made before the range was
+     * published, or a chat that never exported at all.
+     *
+     * The value returned here is a CANDIDATE, not an authority. The apply
+     * step recomputes the live range from history and refuses any drift, so
+     * a foreign or edited range cannot fold the wrong messages
+     * (see ExternalCompactionPlan).
+     *
+     * "?" is the placeholder the export writes when a range end had no
+     * persisted id; it is not a range and must not be read as one.
+     */
+    fun rangeFromText(text: String): Pair<String, String>? {
+        val match = RANGE_IN_TEXT.find(text) ?: return null
+        val first = match.groupValues[1]
+        val last = match.groupValues[2]
         return first to last
     }
 
