@@ -198,6 +198,25 @@ object SubagentExecutor {
                 )
             }
             throw e
+        } catch (e: Exception) {
+            // [F3-failure-reason] Before, only launchBackground had this
+            // second catch: a foreground run that crashed outside its own
+            // graph runner left a RUNNING row on the board forever, and the
+            // exception escaped to the tool layer with no cause text.
+            // runGraph's own catch (right below) is the template. Mirror it:
+            // close the row with the exception, then rethrow so the caller's
+            // own cancellation/error handling still applies.
+            com.openminis.app.logging.AppLogger.error(
+                TAG, "foreground subagent run failed: ${e.javaClass.simpleName}: ${e.message}",
+            )
+            if (teamId != null) {
+                AgentBoardRecorder.taskFinished(
+                    context, taskId = node.id, teamId = teamId,
+                    assignedAgentId = null, succeeded = false,
+                    result = "run failed: ${e.javaClass.simpleName}: ${e.message}",
+                )
+            }
+            throw e
         }
         if (teamId != null) {
             AgentBoardRecorder.taskFinished(
@@ -841,8 +860,10 @@ object SubagentExecutor {
          * [T-agent-card-live] The run's task id, the moment it is known.
          *
          * Same contract as runSingle's onStarted, but for the caller that
-         * owns the chat line: the id is handed over before the run starts,
-         * so the line can follow the agent's live progress.
+         * owns the chat line. [A15-onSpawned-after-permit] The id is handed
+         * over only AFTER the phone-ceiling permit is held, so a live card
+         * is never created for a spawn that was refused — the line follows
+         * the agent's live progress, and a refusal shows as a refusal.
          */
         onSpawned: ((taskId: String) -> Unit)? = null,
         /**
@@ -898,9 +919,6 @@ object SubagentExecutor {
         val (graph, node) = buildEphemeralGraph(agentRole, task, allowNesting)
         app.providerRepository.saveAgentGraph(graph)
         val spawnId = node.id
-        // [T-agent-card-live] Hand the id over before the run starts: the
-        // chat's line needs it to find the live progress of THIS agent.
-        onSpawned?.invoke(spawnId)
         return if (foreground) {
             if (spawnerRole != null) {
                 // [T-soft-cancel] A child hired by an agent must survive the
@@ -923,6 +941,12 @@ object SubagentExecutor {
                         "running (phone ceiling). Wait for their result notifications first, " +
                         "then spawn again."
                 }
+                // [A15-onSpawned-after-permit] The chat line must be bound
+                // to a run that exists. Before, the id was handed over above,
+                // BEFORE the ceiling could refuse it — the UI then showed a
+                // live card for a spawn that never started, spinning until
+                // the end of the turn. Bind only once the permit is held.
+                onSpawned?.invoke(spawnId)
                 val ready = kotlinx.coroutines.CompletableDeferred<String>()
                 launchBackground(
                     context, app, graph, spawnId, role, task,
@@ -938,6 +962,12 @@ object SubagentExecutor {
                         "${AWAIT_CHILD_RESULT_MS / 1000}s) - it keeps working in the background, " +
                         "its result lands on the team board; collect it with await_result($spawnId)."
             } else {
+                // [A15-onSpawned-after-permit] Foreground direct run: no
+                // ceiling stands between the graph save and the run, so the
+                // id is valid the moment the run is about to start. Bind it
+                // here, right before runSingle — same contract as the other
+                // branches: a live card only for a run that exists.
+                onSpawned?.invoke(spawnId)
                 runSingle(context, app, graph, node, role, task, teamId = spawnerSessionId, dependsOnJson = depsJson(dependsOn))
             }
         } else {
@@ -950,6 +980,9 @@ object SubagentExecutor {
                     "running (phone ceiling). Wait for their result notifications first, " +
                     "then spawn again."
             }
+            // [A15-onSpawned-after-permit] Same as the two branches above:
+            // the permit is held, the launch WILL happen — bind now.
+            onSpawned?.invoke(spawnId)
             return launchBackground(context, app, graph, spawnId, role, task, onBackgroundResult, spawnerSessionId, depsJson(dependsOn), parentJob = null)
         }
     }

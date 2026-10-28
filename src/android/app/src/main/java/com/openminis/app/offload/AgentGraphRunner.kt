@@ -39,6 +39,25 @@ internal object AgentGraphRunner {
     private const val MAX_CHECKPOINTS = 5
     private const val MAX_CHECKPOINT_BYTES = 64L * 1024 * 1024
 
+    /**
+     * [F3-failure-reason] Progress noise in the trace — attempts, waits,
+     * retries. failureReason must skip these to find the Terminal event
+     * (FAILED / MISSING_MODEL_ENTRY / ...) of a node, or the report would
+     * show "ATTEMPT 2/3" for a run that actually died of an HTTP 500.
+     */
+    private val SOFT_TRACE_ACTIONS = setOf(
+        "ATTEMPT", "RETRY", "RETRY_SKIPPED", "WAIT_PREDECESSORS", "QUEUED",
+        "STARTED", "START", "SESSION", "MODEL", "HANDOFF", "CHECKPOINT",
+        "CHECKPOINTED", "CHECKPOINT-SKIP", "SCOPE_WARNING", "SCOPE_DOWNGRADED",
+        "LENIENT_HANDOFF",
+    )
+    /** [F3-failure-reason] Cap the joined reason at one screenful of causes. */
+    private const val MAX_ERROR_REASON_LEN = 2_000
+    /** [F6-burst-proof-backoff] Minimum first pause: bursts observed in the
+     *  network journal last ~25s, and 8+16=24s of cumulative pause clears
+     *  them before attempt 3 fires. */
+    private const val BURST_PROOF_BACKOFF_FLOOR_MS = 8_000L
+
     /** In-memory state for a running graph. */
     data class GraphState(
         val graph: AgentGraph,
@@ -532,6 +551,14 @@ internal object AgentGraphRunner {
             status = finalStatus,
             artifacts = state.artifactIndex,
             trace = state.trace.toList(),
+            // [F3-failure-reason] Before this, a FAILED/PARTIAL run reached the
+            // spawner with error=null: formatResult printed "produced no
+            // output." and the board stored the same nothing, while the real
+            // cause ("Transient error: HTTP 500 ...", "All attempts
+            // exhausted", a missing model entry) lived only in state.trace.
+            // Project the last terminal trace event per non-COMPLETED node
+            // into the error string so chat and board show why the run died.
+            error = if (finalStatus == RunStatus.SUCCESS) null else failureReason(state),
             finalHandoff = resolveFinalHandoff(state, allExitRuntimeIds),
             // [T-spawn-subagent-ephemeral] Raw answer of the exit node, for the
             // "answered but botched the handoff" case — see GraphRunResult.
@@ -549,6 +576,58 @@ internal object AgentGraphRunner {
      * is available. Falls back to any exit handoff, so a run that only got as
      * far as BLOCKED still explains itself rather than reporting nothing.
      */
+    /**
+     * [F3-failure-reason] The human-readable cause of a non-SUCCESS run, for
+     * GraphRunResult.error. Takes the LAST trace event of each node that did
+     * not COMPLETED — the terminal action (FAILED / MISSING_MODEL_ENTRY /
+     * INVALID_HANDOFF / SKIPPED) plus its details — and joins them one per
+     * line: exit nodes first (they ARE the run's answer), then the rest.
+     * A blocked predecessor is the CAUSE of a failed exit node, so the
+     * cause chain must not collapse to the exit node alone.
+     */
+    // internal: pinned by AgentGraphRunnerFailureReasonTest (same package)
+    internal fun failureReason(state: GraphState): String? {
+        data class Cause(val isExit: Boolean, val line: String)
+
+        val exitRuntimeIds = state.graph.exitNodeIds.flatMap { cid ->
+            state.graph.nodes.find { it.id == cid }?.replicaIds() ?: listOf(cid)
+        }
+        val causes = state.nodeStatus.entries
+            .filter { it.value != NodeStatus.COMPLETED }
+            .mapNotNull { (runtimeId, status) ->
+                val event = state.trace.lastOrNull {
+                    it.nodeId == runtimeId && it.action !in SOFT_TRACE_ACTIONS
+                }
+                val line = event?.let { e ->
+                    "role=${e.role.name.lowercase()} node=${runtimeId.takeLast(6)} " +
+                        "action=${e.action} details=${e.details}"
+                } ?: "node=${runtimeId.takeLast(6)} status=$status"
+                Cause(isExit = runtimeId in exitRuntimeIds, line = line)
+            }
+        if (causes.isEmpty()) return null
+        return causes.sortedByDescending { it.isExit }
+            .joinToString("\n") { it.line }
+            .take(MAX_ERROR_REASON_LEN)
+    }
+
+    /**
+     * [F6-burst-proof-backoff] Exponential backoff for node retries.
+     *
+     * The MiniMax api.minimaxi.com outage of 28.10 20:33:56-20:34:21 lasted
+     * ~25 seconds. With the flat 2s pause, a 3-attempt node spent its whole
+     * budget INSIDE the burst and gave up (journal: FAIL attempts 1/3, 2/3,
+     * 3/3 all within 24s, then GIVEUP). Doubling per attempt alone is not
+     * enough at the 2s default (2+4=6s < 25s), so the base is floored at
+     * 8s: 8+16=24s of pause total lets attempt 3 land past a ~25s burst.
+     * A retry already follows a 54-60s wait, so the longer pause costs the
+     * user nothing; the 60s cap keeps a long outage from stalling the graph.
+     */
+    // internal: pinned by AgentGraphRunnerRetryTest (same package)
+    internal fun retryBackoffMs(attemptsMade: Int, baseMs: Long): Long {
+        val base = baseMs.coerceAtLeast(BURST_PROOF_BACKOFF_FLOOR_MS)
+        return (base shl (attemptsMade - 1).coerceIn(0, 6)).coerceAtMost(60_000L)
+    }
+
     private fun resolveFinalHandoff(
         state: GraphState,
         exitRuntimeIds: List<String>,
@@ -839,9 +918,11 @@ internal object AgentGraphRunner {
                 addTrace(
                     state, runtimeId, node.role, "RETRY",
                     "Status: ${promptResult.status} after ${elapsedMs / 1000}s, " +
-                        "waiting ${graph.config.retryPolicy.backoffMs}ms",
+                        "waiting ${retryBackoffMs(attempts, graph.config.retryPolicy.backoffMs)}ms",
                 )
-                kotlinx.coroutines.delay(graph.config.retryPolicy.backoffMs)
+                kotlinx.coroutines.delay(
+                    retryBackoffMs(attempts, graph.config.retryPolicy.backoffMs)
+                )
             } else {
                 // Non-retryable error
                 break
