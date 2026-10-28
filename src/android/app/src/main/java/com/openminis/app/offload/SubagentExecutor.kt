@@ -66,6 +66,16 @@ object SubagentExecutor {
     // gate nobody planned for.
     val MAX_PARALLEL: Int = com.openminis.app.engine.AgentConcurrency.parallel
     val MAX_BACKGROUND: Int = com.openminis.app.engine.AgentConcurrency.background
+
+    /**
+     * [T-soft-cancel-signal] How long a parent waits for a child it hired.
+     *
+     * The child's own graph budget is 180s, so this leaves room for the
+     * normal run plus its bookkeeping; the bound exists for the abnormal
+     * case - a signal lost with the process - where the parent must get
+     * its turn back instead of waiting forever.
+     */
+    private const val AWAIT_CHILD_RESULT_MS = 600_000L
     private val parallelLimiter = Semaphore(MAX_PARALLEL)
 
     /**
@@ -923,11 +933,10 @@ object SubagentExecutor {
                 // The child owns its scope, so the parent's wait is bounded:
                 // a signal lost with the process must not hang the parent's
                 // turn forever. The board keeps the outcome either way.
-                kotlinx.coroutines.withTimeoutOrNull(600_000L) { ready.await() }
+                kotlinx.coroutines.withTimeoutOrNull(AWAIT_CHILD_RESULT_MS) { ready.await() }
                     ?: "Subagent (${role.lowercase()}) is still running (no result within " +
-                        "${600_000L / 1000}s) - it keeps working in the background, " +
+                        "${AWAIT_CHILD_RESULT_MS / 1000}s) - it keeps working in the background, " +
                         "its result lands on the team board; collect it with await_result($spawnId)."
-
             } else {
                 runSingle(context, app, graph, node, role, task, teamId = spawnerSessionId, dependsOnJson = depsJson(dependsOn))
             }
