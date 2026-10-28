@@ -18278,8 +18278,8 @@ Environment variables:
 
 Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended, so in-app scheduled scripts may not run as expected. For recurring tasks that must fire while the app is backgrounded, use the native alarm tool (AlarmManager) or tell the user to set up a system-level schedule (Google Calendar event, Tasker automation, etc.). (Waiting or polling WITHIN the current turn is different — that is what shell_execute `delay` chains are for, per the shell_execute notes above.)
 
-""" + com.openminis.app.agent.SystemPromptBuilder.ENGINEERING_DISCIPLINE
-        + com.openminis.app.agent.SystemPromptBuilder.BACKGROUND_MONITORING
+""" + com.openminis.app.agent.SystemPromptBuilder.ENGINEERING_DISCIPLINE +
+        com.openminis.app.agent.SystemPromptBuilder.BACKGROUND_MONITORING
 
         // Match iOS order exactly: skills → global memory → recent daily memory.
         // See ios/Agent/Chat/AIChatViewModel.swift:4375-4387. Each fragment is
