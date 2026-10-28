@@ -148,11 +148,7 @@ class ExternalExportCacheTest {
      */
     @Test
     fun theRangeIsReadFromTheArtifact() {
-        val text = "Вот сжатая выжимка.
-
----
-(Служебная строка, не изменяй: RANGE 0f9c1a22-1111-2222-3333-444455556666..0f9c1a22-9999-8888-7777-666655554444)
----"
+        val text = "Вот сжатая выжимка.\n\n---\n(Служебная строка, не изменяй: RANGE 0f9c1a22-1111-2222-3333-444455556666..0f9c1a22-9999-8888-7777-666655554444)\n---"
         val range = requireNotNull(ExternalExportCache.rangeFromText(text)) {
             "the service line carries the range"
         }
