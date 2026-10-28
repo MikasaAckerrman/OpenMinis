@@ -876,7 +876,38 @@ object SubagentExecutor {
         // chat's line needs it to find the live progress of THIS agent.
         onSpawned?.invoke(spawnId)
         return if (foreground) {
-            runSingle(context, app, graph, node, role, task, teamId = spawnerSessionId, dependsOnJson = depsJson(dependsOn))
+            if (spawnerRole != null) {
+                // [T-soft-cancel] A child hired by an agent must survive the
+                // parent's cancellation.
+                //
+                // The tokens of the child are already spent and its result is
+                // still wanted, so the child runs in its OWN scope
+                // (parentJob = null) while the parent waits for the outcome
+                // through a deferred that the background callback completes.
+                // If the parent is cancelled first, the parent stops waiting
+                // and the child keeps working; the board records the real
+                // outcome, so the work is not lost.
+                //
+                // The phone ceiling is enforced here too: launchBackground
+                // releases the permit when the child ends, so it has to be
+                // taken before the call.
+                if (!backgroundLimiter.tryAcquire()) {
+                    runCatching { app.providerRepository.deleteAgentGraph(graph.id) }
+                    return "spawn refused: $MAX_BACKGROUND background subagents are already " +
+                        "running (phone ceiling). Wait for their result notifications first, " +
+                        "then spawn again."
+                }
+                val ready = kotlinx.coroutines.CompletableDeferred<String>()
+                launchBackground(
+                    context, app, graph, spawnId, role, task,
+                    onBackgroundResult = { _, _, result -> ready.complete(result) },
+                    teamId = spawnerSessionId, dependsOnJson = depsJson(dependsOn),
+                    parentJob = null,
+                )
+                ready.await()
+            } else {
+                runSingle(context, app, graph, node, role, task, teamId = spawnerSessionId, dependsOnJson = depsJson(dependsOn))
+            }
         } else {
             // [T-spawn-many] Phone ceiling: unbounded background spawns would
             // multiply live sessions, VMs and model calls on a device with
