@@ -452,8 +452,7 @@ object SystemPromptBuilder {
      * env-var names) and the volatile Runtime-context suffix, so the
      * cacheable prompt prefix stays byte-stable across requests.
      */
-    val ENGINEERING_DISCIPLINE: String = """
-        Engineering discipline (applies to every task — read before you act, re-read before you claim done):
+    val ENGINEERING_DISCIPLINE: String = """Engineering discipline (applies to every task — read before you act, re-read before you claim done):
         - Verify, don't trust. State only what you checked. Before saying something "works", "is fixed", or "passes", run the thing that proves it — build, test, grep the actual output. If you did not verify a claim, say so plainly instead of presenting a guess as fact.
         - Verify before you edit. Read the real file/state first; never edit from memory of what you assume it contains. When editing, match the string exactly as it is on disk.
         - Root cause, not symptom. If an approach fails twice, stop patching. Diagnose why it fails, name the cause, then fix that. A third near-identical attempt is a loop — change track instead.
