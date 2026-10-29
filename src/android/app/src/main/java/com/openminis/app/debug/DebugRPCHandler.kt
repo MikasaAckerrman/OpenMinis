@@ -37,6 +37,12 @@ import kotlin.coroutines.resume
 class DebugRPCHandler(private val context: Context) {
 
     companion object {
+        /**
+         * [T-agent-board-rpc] The live statuses of agent_tasks - the same
+         * triple the DAO's activeTasks() selects on; completed/failed/
+         * cancelled rows are history and only served with activeOnly=false.
+         */
+        private val ACTIVE_BOARD_STATUSES = setOf("PENDING", "RUNNING", "BLOCKED")
         /** Set this from MainActivity to enable screenshot capture. */
         var currentActivity: WeakReference<Activity>? = null
 
@@ -190,6 +196,7 @@ class DebugRPCHandler(private val context: Context) {
             }
             "debug.alloc.snapshot" -> AllocProbe.snapshot()
             "debug.agentTrace" -> handleAgentTrace(params)
+            "debug.agentBoard" -> handleAgentBoard(params)
             "debug.fetch" -> handleFetch(params)
             "debug.shellExecute" -> handleShellExecute(params)
             "debug.update.check" -> handleUpdateCheck()
@@ -981,6 +988,60 @@ class DebugRPCHandler(private val context: Context) {
         val enabled = params.optBoolean("enabled", false)
         AppLogger.setEnabled(context, enabled)
         return JSONObject().put("enabled", AppLogger.isEnabled(context))
+    }
+
+    /**
+     * [T-agent-board-rpc] Live read of the subagent task board.
+     *
+     * The spawning chat (and the agent that spawned a worker) must be able
+     * to see "my workers are RUNNING, one FAILED with reason X" DURING the
+     * turn - not only when (or never, if the worker died silently) the
+     * final result arrives. This is the read-only companion to
+     * AgentBoardRecorder's writes; rows come from agent_tasks the recorder
+     * already maintains, so no new state is introduced.
+     *
+     * Row sources, both from the existing DAO:
+     *  - teamId given: tasksForTeam() (newest first, limited);
+     *  - no teamId: activeTasks() - live rows across ALL teams. The all-teams
+     *    finished history is deliberately not served here: live observation
+     *    does not need it, and per-team history is one teamId away.
+     */
+    private fun handleAgentBoard(params: JSONObject): JSONObject {
+        val teamId = params.optString("teamId", "").takeIf { it.isNotEmpty() }
+        val raw = params.opt("activeOnly")
+        val active = when (raw) {
+            is Boolean -> raw
+            is Int -> raw != 0
+            is Long -> raw != 0L
+            else -> true
+        }
+        val limit = params.optInt("limit", 20).coerceIn(1, 100)
+        val dao = com.openminis.app.data.db.ProviderDatabase
+            .getInstance(context).agentBoardDao()
+        val rows = kotlinx.coroutines.runBlocking {
+            when {
+                teamId != null && active -> dao.activeTasksForTeam(teamId, limit)
+                teamId != null -> dao.tasksForTeam(teamId, limit)
+                else -> dao.activeTasks()
+            }
+        }
+        val statuses = org.json.JSONObject()
+        for (t in rows) statuses.put(t.status, statuses.optInt(t.status) + 1)
+        val tasks = org.json.JSONArray()
+        for (t in rows.take(limit * 3)) {
+            tasks.put(org.json.JSONObject().apply {
+                put("id", t.id)
+                put("teamId", t.teamId)
+                put("title", t.title.take(120))
+                put("status", t.status)
+                put("updatedAt", t.updatedAt)
+                t.resultArtifact?.let { put("result", it.take(600)) }
+            })
+        }
+        return JSONObject()
+            .put("activeCount", rows.count { it.status in ACTIVE_BOARD_STATUSES })
+            .put("statuses", statuses)
+            .put("tasks", tasks)
     }
 
     // ── Response helpers ────────────────────────────────────────────────────

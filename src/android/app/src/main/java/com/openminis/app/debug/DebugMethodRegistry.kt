@@ -352,6 +352,19 @@ object DebugMethodRegistry {
             example = JSONObject(),
         ),
         MethodSpec(
+            name = "debug.agentBoard",
+            description = "Read the subagent task board: live state of spawned agents WHILE they run. " +
+                "Read-only. Answers 'is my agent working or already dead' during a turn, instead of " +
+                "waiting for (or never receiving) a final result.",
+            params = listOf(
+                ParamSpec("teamId", "string", required = false, description = "The spawning chat session id. Filters to one team; default: live rows across all teams."),
+                ParamSpec("activeOnly", "bool", required = false, default = true, description = "true = live view (PENDING/RUNNING/BLOCKED). With a teamId, false also serves that team's finished history; without one, live rows only."),
+                ParamSpec("limit", "number", required = false, default = 20L, description = "Max rows per team slice."),
+            ),
+            returns = "{activeCount, statuses:{PENDING:n,RUNNING:n,...}, tasks:[{id,role,status,title,updatedAt,result?}]}",
+            example = JSONObject(),
+        ),
+        MethodSpec(
             name = "debug.agentTrace",
             description = "Get agent request traces (alias of debug.llmRequests, iOS-compatible shape).",
             params = listOf(

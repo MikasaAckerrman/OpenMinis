@@ -211,6 +211,19 @@ interface AgentBoardDao {
     suspend fun activeTasks(): List<AgentTaskEntity>
 
     /**
+     * [T-agent-board-rpc] Live rows of ONE team, newest first. Filtered in
+     * SQL, not in memory, so a team with a long recent finished history
+     * cannot crowd its RUNNING tasks out of the LIMIT - the debug.agentBoard
+     * RPC reads this for its live per-team view.
+     */
+    @Query(
+        "SELECT * FROM agent_tasks WHERE team_id = :teamId " +
+            "AND status IN ('PENDING','RUNNING','BLOCKED') " +
+            "ORDER BY created_at DESC LIMIT :limit"
+    )
+    suspend fun activeTasksForTeam(teamId: String, limit: Int = 50): List<AgentTaskEntity>
+
+    /**
      * Close one row as cancelled, keeping the history entry. Returns true
      * when this call is the one that changed the status - the compare and
      * set makes a second caller a no-op instead of a double history row.
