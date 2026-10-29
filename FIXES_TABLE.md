@@ -94,3 +94,22 @@
 **Следующий шаг:** `provider.instances.list {includeDisabled:true, includeSecrets:true}` через RPC ⇒ сравнить per-role биндинги; затем `provider.instances.test` для подозрительного.
 
 **Правки кода этого хода:** `b0b3aa02` — `deliver` объявлен соседом `try` (иначе `finally` его не видел ⇒ CI `40659414803` FAILED: `Unresolved reference 'deliver'` 312:25) + именованная константа `AWAIT_CHILD_RESULT_MS`; `4fd5be4a` — доставка сигнала ровно один раз в `finally` + ограниченное ожидание + одно форматирование результата.
+
+
+## БЛОК 3 — ЗАКРЫТИЕ РАССЛЕДОВАНИЯ (29.10, ночь): КОД ЗАКОДЕН, CI GREEN
+
+**Опровержение ведущей гипотезы блока 2:** per-role биндинги ревью-ролей НЕ пустые и НЕ проблема — `minis-config get agent.keys.<role>` вернул `""` для всех 6 ролей ⇒ все роли резолвятся одинаково (ступени 2–4 резолвера, модель чата) ⇒ роль ни при чём. Настоящие два дефекта доказаны сетевым журналом `network-journal.log` (читается RPC `debug.logs.read {name,maxBytes}`): (1) провайдер `api.minimaxi.com` деградирует вспышками (556 network error, 340 no-response-60s, 153 empty response, 8 HTTP500 за окно; успех только при streams=1); (2) причина отказа умирала в `state.trace` — в чат шло «produced no output», доска — RUNNING-зомби.
+
+| # | Правка | Файл:место | Коммит | Проверка |
+|---|---|---|---|---|
+| F3a | `failureReason(state)`: последний не-SOFT trace-эвент каждого не-COMPLETED узла, exit первыми, кап 2000 ⇒ `GraphRunResult.error` | `offload/AgentGraphRunner.kt` (сборка GraphRunResult ~530 + new fun ~618) | `4bf0461e` | unit-тест AgentGraphRunnerFailureReasonTest (4 кейса) + CI |
+| F3b | общий `catch(Exception)` в `runSingle`: лог + `taskFinished("run failed: …")` + rethrow | `offload/SubagentExecutor.kt` (~205) | `4bf0461e` | CI green; шаблон = существующий catch launchBackground |
+| F6 | `retryBackoffMs`: floor 8с + экспонента + кап 60с — попытка 3 выходит за 25с-вспышку 500 | `offload/AgentGraphRunner.kt` RETRY-цикл ~855 | `4bf0461e` | unit-тест AgentGraphRunnerRetryTest (4 кейса) + CI |
+| A15 | `onSpawned?.invoke` ПОСЛЕ tryAcquire во всех 3 ветках spawn — плашка только для реального запуска | `offload/SubagentExecutor.kt` (~855-985) | `4bf0461e` | вычитка всех return-путей; дублей нет; early-return до графа не задет |
+
+- Коммит фикса тестов: `9719e7fa` (JUnit4-only, `artifactDir: String`, plain calls на object). **CI Unit Tests run `40754326045` = SUCCESS** на `9719e7fa`; origin = mirror = `9719e7fa` (сверено ls-remote).
+- Решения пользователя зафиксированы: модель субагентов = модель сессии (F1-развод по провайдерам отменён); INSTALL-APK-хуки не трогаем; вопросы F2 (потолок) не подтверждены — потолок не менялся.
+- Грабли CI: kotlin.test не в classpath (проект JUnit4); GraphState.artifactDir — String; internal object ⇒ plain вызовы.
+- **Грабля file_write:** 3 попытки записали стаб «[CONTEXT OFFLOADED]…» вместо контента — контент подменяется оффлоадером сессии ДО записи на диск. Лечение: shell_execute + python3 heredoc (parts.append).
+- Гейт-ревью: 2 спавна ревьюера упали без вывода (провайдер). Выполнен ручной чек-лист A–F (SOFT-литералы против полного списка addTrace: добавлен CHECKPOINT-SKIP; порядок catch; сигнатуры; replicaIds; nodeStatus-ключи) + CI. Повторить спавн-гейт при стабильном провайдере.
+- **Осталось:** F7 (компакция: после сжатия в UI только «последний ответ агента + сообщение пользователя», без содержимого тулов; проверка стабильности компакции на 500-вспышках); живая проверка F3/A15 на устройстве (APK [quick] после стабилизации провайдера); повторный спавн-гейт; B1.1 (await_result), B1.3 (изоляция каталогов), B3-B9, E-B4/B5/B6; вторая часть R1 (фильтр U+21D2 при записи в БД/UI, а не только в TextDelta).
