@@ -3384,35 +3384,18 @@ fun ChatScreen(
                     lastTrailingPinKey = newest.key
                     tracedScrollToItem("trailing-row/${newest.contentType}", 0, 0)
                 }
-                // messageId → isCompactedHistory map. Used to fade entire
-                // assistant-row clusters (header + text + tool pills) at
-                // render time — mirrors iOS isCompactedHistory opacity(0.5).
-                // The lookup uses the underlying message id stripped of any
-                // dedupe suffix (`id#2`) added by buildFlatChatItems.
-                val grayedMap = remember(messages) {
-                    messages.associate { it.id to it.isCompactedHistory }
-                }
+                // Strips the dedupe suffix (`id#2`) buildFlatChatItems may
+                // append. Kept: retry/delete/copy actions below resolve
+                // their real message through it.
                 fun originalMessageId(id: String): String =
                     id.substringBefore('#')
-                fun FlatChatItem.isCompacted(): Boolean = when (this) {
-                    is FlatChatItem.UserBubble -> grayedMap[originalMessageId(message.id)] == true
-                    is FlatChatItem.AssistantHeader -> grayedMap[originalMessageId(messageId)] == true
-                    is FlatChatItem.AssistantFooter -> grayedMap[originalMessageId(messageId)] == true
-                    is FlatChatItem.AssistantText -> grayedMap[originalMessageId(messageId)] == true
-                    is FlatChatItem.AssistantMarkdownBlock -> grayedMap[originalMessageId(messageId)] == true
-                    is FlatChatItem.AssistantThinking -> grayedMap[originalMessageId(messageId)] == true
-                    is FlatChatItem.AssistantToolUse -> grayedMap[originalMessageId(messageId)] == true
-                    // [T-zcode-turn-fold] Fold row follows its message's
-                    // compacted state — it IS part of that turn's cluster.
-                    is FlatChatItem.AssistantTurnFold -> grayedMap[originalMessageId(messageId)] == true
-                    is FlatChatItem.AssistantInfo -> false  // system rows never grayed
-                    is FlatChatItem.AssistantTyping -> false
-                    // Live progress card is never part of persisted history, so
-                    // a compact marker can't gray it.
-                    is FlatChatItem.AgentRunCard -> false
-                    is FlatChatItem.AssistantError -> grayedMap[originalMessageId(messageId)] == true
-                    is FlatChatItem.AssistantLegacyContent -> grayedMap[originalMessageId(messageId)] == true
-                }
+                // [F7-hide-compacted-history] The former grayedMap +
+                // FlatChatItem.isCompacted() fade (iOS opacity 0.5 mirror)
+                // was dead code — never called, and compacted rows rendered
+                // at full intensity anyway. Compacted history is now SKIPPED
+                // in buildFlatChatItems: after a compact the chat shows the
+                // divider plus the live tail only, which is the product
+                // decision the user asked for; the data stays untouched.
                 // SelectionContainer must wrap the WHOLE LazyColumn — placing
                 // it per-item breaks long-press because items get disposed
                 // when scrolled out and the selection registrar/detector goes

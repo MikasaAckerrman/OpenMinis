@@ -814,6 +814,15 @@ internal fun buildFlatChatItems(
     }
     for (idx in fromIndex until messages.size) {
         val message = messages[idx]
+        // [F7-hide-compacted-history] A compacted row is SUMMARIZED history:
+        // its content lives on in the model context and in the divider's
+        // summary, and rendering it again duplicated the whole old chat
+        // (tool folds included) between the divider and the live tail.
+        // The divider itself is a system row and never carries the flag, so
+        // it survives. Data and context are untouched - this is the render
+        // layer only, and incremental builds see the same skip because the
+        // flag is per message, not positional.
+        if (message.isCompactedHistory) continue
         // [T-android-perf-logging] Per-100-message progress breadcrumb.
         // `out.size` is the running row count, so a sudden jump between two
         // progress lines localizes the heavy batch. Only fires on the
