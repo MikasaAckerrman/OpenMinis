@@ -122,3 +122,21 @@
 2. F7: рендер пары после компакции (разведка точки фильтра выше).
 3. Повторный спавн-гейт (ревьюер теперь покажет причину падения).
 4. B-очередь: B1.1 (await_result), B1.3 (изоляция каталогов), B3-B9, E-B4/B5/B6; R1-вторая-часть («⇒»-фильтр на записи в БД/UI).
+
+
+## K. A12-LIVE: ВИДИМОСТЬ СУБАГЕНТОВ ВО ВРЕМЯ РАБОТЫ (29.10, утро) — закодено
+
+**Требование пользователя (дословно):** «ты должен видеть состояние субагентов пока они работают, а не когда они дадут вывод, чтобы ты понимал что они работают». Причина: 3 спавна-ревьюера этой ночью упали без вывода — ожидание не отличало «работает» от «умер сразу».
+
+**Решение (read-only, без UI):** RPC `debug.agentBoard` поверх agent_tasks — доска, которую AgentBoardRecorder уже ведёт.
+- Коммит `9540cc6c` [test]: DebugMethodRegistry (MethodSpec: teamId/activeOnly/limit), DebugRPCHandler (case + handleAgentBoard + ACTIVE_BOARD_STATUSES), AgentBoardDao (+activeTasksForTeam — фильтр в SQL, не в памяти, чтобы длинная закрытая история команды не вытесняла RUNNING-строки за LIMIT; грабля поймана при самопроверке до CI), тест AgentBoardRpcTest (пин имён параметров против молчаливых опечаток optString, default в границах clamp).
+- Ответ: {activeCount, statuses:{...}, tasks:[{id,teamId,title<=120,status,updatedAt,result<=600}]}.
+- Контракты: с teamId — live (PENDING/RUNNING/BLOCKED) или вся история команды (activeOnly=false); без teamId — live по всем командам.
+
+**Новый рабочий цикл (мое правило теперь):** фоновой спавн → bg_run-поллинг `debug.agentBoard {teamId}` каждые ~30с → я вижу RUNNING/попытки/FAILED+причину → решение (ждать/убить/перезапустить) во время хода, а не после. Метод заработает после сборки APK (в установленной версии 43 его нет — RPC-набор живёт в коде приложения).
+
+**Слабое место, исправленное до коммита:** первый черновик содержал мёртвую ветку tasksForTeam("") + двойной runBlocking + фильтрацию в памяти — переписан в 3 чистые ветки с SQL-фильтром и добавленным DAO-запросом.
+
+**Осталось:** CI `9540cc6c` = SUCCESS (run 40812181185); APK [quick] сборка+установка (/englishs live-проверка и F3/A15/F6 тоже требуют APK); затем A12-live цикл в реальном бою.
+[CONTEXT OFFLOADED] Content (~683 tokens, 3114 bytes) saved to: /var/minis/offloads/tools/file_write_b751b022a17c.txt[CONTEXT OFFLOADED] Content (~653 tokens, 2421 bytes) saved to: /var/minis/offloads/tools/file_write_fec8648e7b09.txt
+Use file_edit
