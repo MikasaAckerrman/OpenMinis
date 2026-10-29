@@ -264,6 +264,11 @@ class AnthropicProvider(
         var currentToolId: String? = null
         var currentToolName: String? = null
         val toolInputBuffer = StringBuilder()
+        // [Y2-silent-truncation] Same class of failure as OpenAIProvider Y1:
+        // relays under load stream the first phrase and close the socket with
+        // no message_delta / message_stop / [DONE] — the old EOF path let the
+        // accumulated fragment pass as a complete answer.
+        var sawTerminalMarker = false
 
         try {
             var line: String?
@@ -271,7 +276,10 @@ class AnthropicProvider(
                 val l = line ?: continue
                 if (!l.startsWith("data: ")) continue
                 val payload = l.removePrefix("data: ")
-                if (payload == "[DONE]") break
+                if (payload == "[DONE]") {
+                    sawTerminalMarker = true
+                    break
+                }
 
                 val event = try { JSONObject(payload) } catch (_: Exception) { continue }
                 // [T-perf-raw-sse-gate] see OpenAIProvider — raw payload
@@ -360,6 +368,7 @@ class AnthropicProvider(
                         }
                     }
                     "message_delta" -> {
+                        sawTerminalMarker = true
                         event.optJSONObject("usage")?.let { usage ->
                             send(LLMStreamChunk.Usage(parseUsage(usage)))
                         }
@@ -367,7 +376,27 @@ class AnthropicProvider(
                             ?.safeOptString("stop_reason", "")?.ifEmpty { null }
                         send(LLMStreamChunk.Finished(stopReason))
                     }
+                    "message_stop" -> {
+                        // [Y2-silent-truncation] Anthropic's own terminal SSE
+                        // event. Relays may send ONLY message_stop (skipping
+                        // message_delta): mark termination so the EOF guard
+                        // below does not flag a normal finish as truncation.
+                        sawTerminalMarker = true
+                    }
                 }
+            }
+            // [Y2-silent-truncation] EOF without message_delta / message_stop /
+            // [DONE] is a server-side truncation, not a finished answer:
+            // route it into the retryable TransientError path instead of
+            // closing the channel "successfully" with a fragment payload.
+            if (!sawTerminalMarker) {
+                cancel(
+                    "Stream truncated without completion marker",
+                    com.openminis.app.data.model.LLMError.TransientError(
+                        "Anthropic stream ended without message_delta, message_stop or [DONE] — " +
+                            "probable server-side stream truncation"
+                    ),
+                )
             }
         } catch (e: Exception) {
             cancel("Stream error", mapError(e))

@@ -822,6 +822,13 @@ class OpenAIProvider private constructor(
         var toolCallEventCount = 0
         var sawFinishReason = false
         var sawUsageBlock = false
+        // [Y1-silent-truncation] Relay/proxy outages (morphllm 29.10): server
+        // streams the first phrase, then closes the socket with NO
+        // finish_reason, NO response.completed and NO [DONE]. Without this
+        // flag the EOF path below treated the fragment as a complete answer
+        // ("COMPLETE with one phrase" subagent failures — see network journal:
+        // zero transport errors for those spawns).
+        var sawCompletionMarker = false
 
         try {
             send(LLMStreamChunk.Started)
@@ -844,6 +851,7 @@ class OpenAIProvider private constructor(
                     if (it.startsWith(" ")) it.removePrefix(" ") else it
                 }
                 if (payload == "[DONE]") {
+                    sawCompletionMarker = true
                     // Flush any remaining buffered content from think tag extraction
                     if (hasThinkTags && thinkTagBuffer.isNotEmpty()) {
                         val remaining = thinkTagBuffer.toString()
@@ -1274,6 +1282,24 @@ class OpenAIProvider private constructor(
                         "reasoningLen=$reasoningLen toolCallEvents=$toolCallEventCount sawUsage=$sawUsageBlock"
                 )
             }
+        // [Y1-silent-truncation] EOF WITHOUT any completion marker (no
+        // finish_reason chunk, no response.completed, no [DONE]) is a
+        // server-side truncation, not a finished answer. Historically this
+        // path only emitted the T321 warning above and the accumulated
+        // fragment became a "successful" reply — subagent graph nodes then
+        // reported COMPLETE with a one-phrase answer. Make it retryable:
+        // cancel() maps the channel to a TransientError, the existing
+        // RETRY/GIVEUP budget handles the rest.
+        if (!sawFinishReason && !sawCompletionMarker) {
+            cancel(
+                "Stream truncated without completion marker",
+                LLMError.TransientError(
+                    "Stream ended after $sseEventCount events / $contentLen chars " +
+                        "without finish_reason, response.completed or [DONE] — " +
+                        "probable server-side stream truncation"
+                ),
+            )
+        }
         } catch (e: Exception) {
             // T321: never silently swallow — log message + top-3 stack frames.
             val frames = e.stackTrace.take(3).joinToString(" | ") { "${it.className}.${it.methodName}:${it.lineNumber}" }

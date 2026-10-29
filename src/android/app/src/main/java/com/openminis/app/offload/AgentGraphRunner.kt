@@ -624,7 +624,9 @@ internal object AgentGraphRunner {
      */
     // internal: pinned by AgentGraphRunnerRetryTest (same package)
     internal fun retryBackoffMs(attemptsMade: Int, baseMs: Long): Long {
-        val base = baseMs.coerceAtLeast(BURST_PROOF_BACKOFF_FLOOR_MS)
+        // Cap the base as well: an anomalous backoffMs config (e.g. huge)
+        // would otherwise overflow inside shl before coerceAtMost ever runs.
+        val base = baseMs.coerceIn(BURST_PROOF_BACKOFF_FLOOR_MS, 60_000L)
         return (base shl (attemptsMade - 1).coerceIn(0, 6)).coerceAtMost(60_000L)
     }
 

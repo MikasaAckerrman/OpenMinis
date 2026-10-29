@@ -50,4 +50,10 @@ class AgentGraphRunnerRetryTest {
     fun `zero attempts made still yields the floored base`() {
         assertEquals(8_000L, backoff(0))
     }
+
+    @Test
+    fun `anomalous huge base is capped before shl so it cannot overflow`() {
+        assertEquals(60_000L, backoff(1, baseMs = 10_000_000_000L))
+        assertEquals(60_000L, backoff(4, baseMs = 10_000_000_000L))
+    }
 }
