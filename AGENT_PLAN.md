@@ -139,4 +139,12 @@
 
 **Осталось:** CI `9540cc6c` = SUCCESS (run 40812181185); APK [quick] сборка+установка (/englishs live-проверка и F3/A15/F6 тоже требуют APK); затем A12-live цикл в реальном бою.
 [CONTEXT OFFLOADED] Content (~683 tokens, 3114 bytes) saved to: /var/minis/offloads/tools/file_write_b751b022a17c.txt[CONTEXT OFFLOADED] Content (~653 tokens, 2421 bytes) saved to: /var/minis/offloads/tools/file_write_fec8648e7b09.txt
-Use file_edit
+Use file_edit### Y-серия (29.10, ночь): тихое молчание стрима — корень доказан, фикс в коде
+
+Корень E1 доказан кодом: OpenAIProvider лупа читает до EOF; EOF без finish_reason/response.completed/[DONE] исторически = T321-warning + «успешный» обрезок (спавны 21:36/21:52: одна фраза + COMPLETE, ноль транспорт-событий). Anthropic: EOF без message_delta/message_stop/[DONE] = тот же тихий успех.
+- Y1 (OpenAI): sawCompletionMarker при [DONE]; guard после while: cancel(TransientError «stream truncated...») в RETRY/GIVEUP-механику.
+- Y2 (Anthropic): sawTerminalMarker ставят message_delta, message_stop, [DONE]; guard после while.
+- Y3 (GraphRunner): retryBackoffMs base capped (coerceIn 8000..60000) — аномальный конфиг не переполнит shl.
+- Тест: AgentGraphRunnerRetryTest + кейс huge-base.
+Контракт: ложных ретраев нет на штатных концов. Не покрыто юнит-тестами: стрим-лупы (MockWebServer — кандидат следующего хода).
+
