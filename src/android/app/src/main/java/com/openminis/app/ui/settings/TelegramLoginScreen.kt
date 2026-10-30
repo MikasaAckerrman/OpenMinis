@@ -26,6 +26,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.openminis.app.MinisApp
+import com.openminis.app.sandbox.TelegramLoginRunner
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -108,13 +109,11 @@ fun TelegramLoginScreen(
 
     // Check initial status
     LaunchedEffect(Unit) {
+        // [T-tg-login-host] The driver runs in a host-owned PRoot instance
+        // (TelegramLoginRunner) — the app process itself has no python3 and
+        // no /var/minis, so a bare ProcessBuilder here could never work.
         val r = withContext(Dispatchers.IO) {
-            runCatching {
-                val p = ProcessBuilder("python3", "/var/minis/mcp-servers/srv/tg-login.py", "status")
-                    .redirectErrorStream(true)
-                    .start()
-                p.inputStream.bufferedReader().readText()
-            }.getOrDefault("")
+            TelegramLoginRunner.run(context, listOf("status"), timeoutSec = 30).output
         }
         val json = runCatching { JSONObject(r.trim().lines().lastOrNull { it.startsWith("{") } ?: "{}") }.getOrDefault(JSONObject())
         loggedIn = json.optBoolean("logged_in", false)
@@ -128,25 +127,35 @@ fun TelegramLoginScreen(
         scope.launch {
             busy = true
             error = null
-            val out = withContext(Dispatchers.IO) {
-                runCatching {
-                    val cmd = mutableListOf("python3", "/var/minis/mcp-servers/srv/tg-login.py")
-                    cmd.addAll(args)
-                    // Pass API creds when the user entered them locally —
-                    // the script falls back to its saved state / env vars.
-                    if (apiId.isNotBlank() && apiHash.isNotBlank() && args.firstOrNull() != "status") {
-                        cmd.addAll(listOf("--api-id", apiId.trim(), "--api-hash", apiHash.trim()))
-                    }
-                    val p = ProcessBuilder(cmd).redirectErrorStream(true).start()
-                    p.inputStream.bufferedReader().readText()
-                }.getOrDefault("")
+            val argList = args.toMutableList()
+            // Pass API creds when the user entered them locally —
+            // the script falls back to its saved state / env vars.
+            if (apiId.isNotBlank() && apiHash.isNotBlank() && args.firstOrNull() != "status") {
+                argList.addAll(listOf("--api-id", apiId.trim(), "--api-hash", apiHash.trim()))
+            }
+            val result = withContext(Dispatchers.IO) {
+                val r = TelegramLoginRunner.run(
+                    context,
+                    argList,
+                    apiId = apiId.trim().takeIf { apiId.isNotBlank() },
+                    apiHash = apiHash.trim().takeIf { apiHash.isNotBlank() },
+                )
+                // The session Pyrogram may have written agent-side is moved
+                // into the vault right away; a no-op when nothing appeared.
+                TelegramLoginRunner.sweepSessionIntoVault(context)
+                r
             }
             busy = false
-            val json = runCatching { JSONObject(out.trim().lines().lastOrNull { it.startsWith("{") } ?: "{}") }.getOrDefault(JSONObject())
-            if (json.has("error")) {
-                error = json.getString("error")
-            } else {
-                onDone(json)
+            val json = runCatching { JSONObject(result.output.trim().lines().lastOrNull { it.startsWith("{") } ?: "{}") }.getOrDefault(JSONObject())
+            when {
+                json.has("error") -> error = json.getString("error")
+                // [T-tg-login-host] No JSON verdict at all means the driver
+                // never answered (crash, missing rootfs). Surface it — the
+                // old silent swallow here was the dead-button bug.
+                json.length() == 0 && result.exitCode != 0 ->
+                    error = "Driver failed (exit ${result.exitCode}): " +
+                        result.output.trim().take(200).ifBlank { "no output" }
+                else -> onDone(json)
             }
         }
     }
