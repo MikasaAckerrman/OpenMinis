@@ -78,6 +78,12 @@ object ProviderFactory {
                         model = model,
                         basePath = base,
                         useResponsesAPI = instance.useResponsesAPI,
+                        // [T-android-reasoning-content-mode] Per-instance
+                        // control over whether `reasoning_content` is echoed
+                        // back on prior assistant turns. "omit" for gateways
+                        // that reject the field (Groq, Mistral).
+                        reasoningContentMode = instance.reasoningContentMode,
+                        instanceId = instance.id,
                         // [T-provider-custom-user-agent] Covers both chat and
                         // /responses for custom-base OpenAI-compat relays; null
                         // on the official direct path.

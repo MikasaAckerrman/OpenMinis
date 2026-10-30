@@ -164,6 +164,20 @@ data class ProviderInstance(
     // but modeled here as a switch on the instance so an existing OpenAI
     // provider can be re-pointed without changing its type.
     var useResponsesAPI: Boolean = false,
+    // [T-android-reasoning-content-mode] Controls whether `reasoning_content`
+    // is echoed back on prior assistant turns.
+    //
+    // Why this exists: several OpenAI-compatible gateways REJECT the field
+    // outright (`property 'reasoning_content' is unsupported` / 422
+    // `extra_forbidden`) — Groq and Mistral among them. Other gateways
+    // (Kimi, DeepSeek, GLM) REQUIRE it to stay present once thinking is on.
+    // One global behaviour cannot satisfy both, so the mode is per instance:
+    //   auto (default) — echo when thinking is on (current behaviour)
+    //   omit           — never send the field
+    // `omit` is also auto-applied at runtime: a 4xx naming
+    // `reasoning_content` flips the instance into omit for the rest of the
+    // session, so an unknown gateway self-heals on the first failure.
+    var reasoningContentMode: String = "auto",
     // [T-android-image-endpoint-mode] User-selected image-generation routing
     // for OpenAI-compatible providers (see ImageEndpointMode). Defaults keep
     // old persisted JSON (which lacks both keys) round-tripping cleanly:

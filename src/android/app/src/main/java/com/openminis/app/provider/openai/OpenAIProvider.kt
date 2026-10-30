@@ -58,6 +58,11 @@ class OpenAIProvider private constructor(
     var codexAccountId: String? = null,
     /** When true, route through /v1/responses even on API-key providers. */
     private val useResponsesAPI: Boolean = false,
+    private val reasoningContentMode: String = "auto",
+    // [T-android-reasoning-content-mode] Instance identity — used to latch a
+    // "this gateway rejects reasoning_content" verdict across provider
+    // instances and across turns within the app process.
+    private val instanceId: String? = null,
     /**
      * When true, force Chat Completions even when the bearer is provided
      * via OAuth. Set by OAuth-but-not-Codex callers (xAI Grok) — without
@@ -127,6 +132,33 @@ class OpenAIProvider private constructor(
     ) : this(apiKey = null, oauthTokenProvider = oauthTokenProvider, model = model, codexAccountId = codexAccountId)
 
     companion object {
+        // [T-android-reasoning-content-mode] Instance ids of gateways that
+        // answered 4xx naming `reasoning_content`. Process-wide so the verdict
+        // survives the per-turn rebuild of provider instances.
+        private val reasoningContentRejectingInstances: MutableSet<String> =
+            java.util.Collections.synchronizedSet(mutableSetOf())
+
+        /**
+         * [T-android-reasoning-content-mode] Latch a gateway as "rejects
+         * reasoning_content" when its error body names the field. Returns true
+         * when the verdict was newly recorded.
+         */
+        fun latchReasoningContentRejection(instanceId: String?, errorBody: String?): Boolean {
+            if (instanceId.isNullOrBlank() || errorBody.isNullOrBlank()) return false
+            if (!isReasoningContentRejection(errorBody)) return false
+            return reasoningContentRejectingInstances.add(instanceId)
+        }
+
+        /**
+         * [T-android-reasoning-content-mode] Inspect a 4xx body: true when it
+         * complains specifically about `reasoning_content` (as opposed to some
+         * other unsupported property).
+         */
+        fun isReasoningContentRejection(errorBody: String?): Boolean {
+            if (errorBody.isNullOrBlank()) return false
+            return errorBody.contains("reasoning_content", ignoreCase = true)
+        }
+
         /**
          * [T-request-byte-budget] Trailing user-text turns kept verbatim by the
          * provider-boundary byte gate. Matches ChatViewModel's
@@ -196,6 +228,22 @@ class OpenAIProvider private constructor(
     }
 
     private val isOAuth: Boolean get() = oauthTokenProvider != null
+
+    // [T-android-reasoning-content-mode] Runtime latch: set after a 4xx that
+    // names `reasoning_content`, so the next attempt — and every later turn on
+    // this provider — omits the field entirely. Self-healing for gateways we
+    // have never seen (Groq, Mistral, and any future one). The verdict is
+    // shared per INSTANCE across provider objects, because each turn builds a
+    // fresh provider instance from the same config.
+    @Volatile
+    private var reasoningContentRejected: Boolean = false
+
+    // [T-android-reasoning-content-mode] Effective mode for this request:
+    // "auto" echoes the field (Kimi / DeepSeek / GLM need it), "omit" never
+    // sends it (Groq / Mistral reject it as an unknown property).
+    private fun reasoningContentAllowed(): Boolean =
+        reasoningContentMode != "omit" && !reasoningContentRejected &&
+            (instanceId == null || instanceId !in reasoningContentRejectingInstances)
 
     // MARK: - Image passthrough [T-android-model-use-image-passthrough GH#62]
 
@@ -699,6 +747,24 @@ class OpenAIProvider private constructor(
                 "OpenAIProvider",
                 "[T321] ← HTTP ${response.code} error body: $errorBody"
             )
+            // [T-android-reasoning-content-mode] A 4xx that names
+            // `reasoning_content` means this gateway refuses the field
+            // outright (Groq: "property 'reasoning_content' is unsupported";
+            // Mistral: 422 extra_forbidden). Latch the instance so every
+            // subsequent turn omits the field — the next request succeeds
+            // instead of failing the same way forever.
+            if (response.code == 400 || response.code == 422) {
+                if (isReasoningContentRejection(errorBody)) {
+                    reasoningContentRejected = true
+                    latchReasoningContentRejection(instanceId, errorBody)
+                    com.openminis.app.logging.AppLogger.warning(
+                        "OpenAIProvider",
+                        "[T-android-reasoning-content-mode] gateway rejects " +
+                            "reasoning_content (instance=${instanceId?.take(8)}) — " +
+                            "omitting the field from now on",
+                    )
+                }
+            }
             response.close()
             // T302: skip the LLMRequestLog write entirely on release builds —
             // not just to avoid the (already-truncated) retention cost, but to
@@ -1655,7 +1721,12 @@ class OpenAIProvider private constructor(
         val modelAlwaysReasons = model.supportsReasoning == true
         val modelMayReason = model.supportsReasoning ?: true
         val includeReasoning = (thinkingLevel.isEnabled || modelAlwaysReasons) && modelMayReason
-        val echoReasoning = includeReasoning
+        // [T-android-reasoning-content-mode] Gate the echo on the instance mode
+        // and the runtime latch. Gateways that reject the field (Groq, Mistral)
+        // get NO reasoning_content at all — not even the "" placeholder, which
+        // those APIs flag as an unknown/extra property (400 / 422).
+        val reasoningAllowed = reasoningContentAllowed()
+        val echoReasoning = includeReasoning && reasoningAllowed
         // T-mimo-reasoning-echo-34671: Mimo V2.5 returns 400 Param Incorrect on
         // multi-turn tool-call history when any prior assistant turn (especially
         // a tool_calls-bearing one) omits `reasoning_content`. Mimo's docs say
@@ -1665,7 +1736,7 @@ class OpenAIProvider private constructor(
         // echo gate (includeReasoning) is true. OpenAI o-series ignores
         // unknown message-level `reasoning_content` so this stays harmless
         // there; non-reasoning models gate this off via includeReasoning=false.
-        val placeholderAllowed = includeReasoning
+        val placeholderAllowed = includeReasoning && reasoningAllowed
 
         val lastUserIndex = budgetedMessages.indexOfLast { it.role == LLMMessage.Role.USER }
         for ((index, msg) in budgetedMessages.withIndex()) {
