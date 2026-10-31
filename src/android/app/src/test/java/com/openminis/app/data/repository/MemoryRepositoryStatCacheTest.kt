@@ -51,7 +51,6 @@ class MemoryRepositoryStatCacheTest {
         assertTrue(r.isBlank() || r.startsWith("No matches found"))
     }
 
-    @Test
     /**
      * The daily-log lookback window is relative to TODAY
      * (MemoryRepository.MAX_LOOKBACK_DAYS = 30), so a hardcoded date rots:
@@ -63,6 +62,7 @@ class MemoryRepositoryStatCacheTest {
         java.time.LocalDate.now().minusDays(3)
             .format(java.time.format.DateTimeFormatter.ISO_LOCAL_DATE)
 
+    @Test
     fun `case insensitive match`() {
         val f = tmp.newFile(withinLookback() + ".md")
         f.writeText("The QUICK brown FOX\n")
