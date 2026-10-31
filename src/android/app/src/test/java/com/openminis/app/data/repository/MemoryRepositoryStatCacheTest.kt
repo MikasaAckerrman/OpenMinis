@@ -52,8 +52,19 @@ class MemoryRepositoryStatCacheTest {
     }
 
     @Test
+    /**
+     * The daily-log lookback window is relative to TODAY
+     * (MemoryRepository.MAX_LOOKBACK_DAYS = 30), so a hardcoded date rots:
+     * the original 2026-09-30.md fell out of the window on 31.10 and failed
+     * CI from that day on. Files for these tests must sit INSIDE the window,
+     * so the name is computed from today instead.
+     */
+    private fun withinLookback(): String =
+        java.time.LocalDate.now().minusDays(3)
+            .format(java.time.format.DateTimeFormatter.ISO_LOCAL_DATE)
+
     fun `case insensitive match`() {
-        val f = tmp.newFile("2026-09-30.md")
+        val f = tmp.newFile(withinLookback() + ".md")
         f.writeText("The QUICK brown FOX\n")
         val r = repo().getMemory("quick fox", scope = "all")
         assertTrue(r.isNotBlank() && !r.startsWith("No memory"))
@@ -61,7 +72,7 @@ class MemoryRepositoryStatCacheTest {
 
     @Test
     fun `stat cache invalidates on file change`() {
-        val f = tmp.newFile("2026-09-30.md")
+        val f = tmp.newFile(withinLookback() + ".md")
         f.writeText("original keyword-one\n")
         val repo = repo()
         val first = repo.getMemory("keyword-one", scope = "all")
@@ -76,7 +87,7 @@ class MemoryRepositoryStatCacheTest {
 
     @Test
     fun `daily fragment reflects file growth`() {
-        val f = tmp.newFile("2026-09-30.md")
+        val f = tmp.newFile(withinLookback() + ".md")
         val repo = repo()
         f.writeText("day one line\n")
         val a = repo.loadRecentDailyMemoryFragment(2000) ?: ""
