@@ -67,6 +67,10 @@ object AgentWorkerPrompt {
             "- cancel_subagent: stop a BACKGROUND subagent you started. Give the spawn id " +
             "from the 'spawned: spawn-xxxx' text. Use it when the agent is looping or waiting for " +
             "something that will not arrive. Cancelling one that already finished is not an error.",
+        "await_result" to
+            "- await_result: fetch a FINISHED subagent's result by its spawn id when you " +
+            "return in a later turn and the notification is gone. A still-running id " +
+            "answers with its status — do not re-spawn a task already on the board.",
         "spawn_subagent" to
             "- spawn_subagent: delegate ONE subtask to a specialist. The worker " +
             "sees ONLY the task text you pass — not this conversation — so include " +

@@ -31,6 +31,8 @@ object SubagentTools {
     const val TASK_BOARD_TOOL_NAME = "task_board"
     /** [T-agent-cancel] Cancels a running background subagent by its spawn id. */
     const val CANCEL_TOOL_NAME = "cancel_subagent"
+    /** [T-agent-await-result] Late pickup of a finished subagent's result from the board. */
+    const val AWAIT_RESULT_TOOL_NAME = "await_result"
 
     /**
      * [T-agent-file] Discovery for user-defined agents (Codex v2 pattern:
@@ -130,6 +132,31 @@ object SubagentTools {
         parameters = mapOf(
             "tool_title" to AgentToolParam("string", "A concise 5-10 word summary shown to the user (e.g. 'Cancel the stuck review agent'). Use the user's language."),
             "spawn_id" to AgentToolParam("string", "The spawn id of the background subagent to cancel, e.g. 'spawn-ab12cd34'."),
+        ),
+        required = listOf("tool_title", "spawn_id"),
+        propertyOrdering = listOf("tool_title", "spawn_id"),
+    )
+
+    /**
+     * [T-agent-await-result] Late pickup of a finished subagent's result.
+     *
+     * A background spawn delivers its result as a notification inside the
+     * spawning turn. When the orchestrator returns in a LATER turn — or the
+     * notification scrolled away in a long one — the verdict is still on the
+     * durable board; this fetches it instead of re-spawning the same task.
+     * A still-running spawn answers with its status, not its result.
+     */
+    fun awaitResultDefinition(): AgentToolDefinition = AgentToolDefinition(
+        name = AWAIT_RESULT_TOOL_NAME,
+        description = "Fetch the RESULT of a spawned subagent by its spawn id — late pickup " +
+            "from the durable team board. Use it when you return in a later turn and the " +
+            "result notification of a background spawn is gone, or to collect a foreground " +
+            "run's verdict whose turn already ended. A spawn that is still RUNNING answers " +
+            "with its status, not its result — call again later; task_board shows the whole team. " +
+            "Ids come from spawn results ('spawned: spawn-xxxx') or task_board.",
+        parameters = mapOf(
+            "tool_title" to AgentToolParam("string", "A concise 5-10 word summary shown to the user (e.g. 'Fetch the review result'). Use the user's language."),
+            "spawn_id" to AgentToolParam("string", "The spawn id to fetch the result of, e.g. 'spawn-ab12cd34'."),
         ),
         required = listOf("tool_title", "spawn_id"),
         propertyOrdering = listOf("tool_title", "spawn_id"),

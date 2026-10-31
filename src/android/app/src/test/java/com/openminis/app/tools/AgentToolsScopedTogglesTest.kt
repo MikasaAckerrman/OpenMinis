@@ -70,6 +70,9 @@ class AgentToolsScopedTogglesTest {
             // same family: it is meaningless without the spawn tools that
             // create the agent it would cancel, and it rides with them.
             SubagentTools.CANCEL_TOOL_NAME,
+            // [T-agent-await-result] Late pickup reads the board rows those
+            // spawns created — meaningless without the spawn tools too.
+            SubagentTools.AWAIT_RESULT_TOOL_NAME,
         )
         assertTrue(
             "gate must strip exactly the delegation family, got diff=$diff",

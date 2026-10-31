@@ -241,6 +241,12 @@ object AgentTools {
                 if (permitted(com.openminis.app.tools.SubagentTools.CANCEL_TOOL_NAME)) {
                     add(com.openminis.app.tools.SubagentTools.cancelSubagentDefinition())
                 }
+                // [T-agent-await-result] Registry parity: the equivalence
+                // oracle (ToolSurfaceAdapterTest) requires the legacy builder
+                // to carry the same surface as ToolSurfaceAdapter.
+                if (permitted(com.openminis.app.tools.SubagentTools.AWAIT_RESULT_TOOL_NAME)) {
+                    add(com.openminis.app.tools.SubagentTools.awaitResultDefinition())
+                }
                 if (permitted(com.openminis.app.tools.SubagentTools.SPAWN_MANY_TOOL_NAME)) {
                     add(com.openminis.app.tools.SubagentTools.spawnManyDefinition())
                 }

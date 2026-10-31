@@ -1469,8 +1469,8 @@ object SubagentRoles {
      * MAIN chat (spawnerRole == null) may arm the ORCHESTRATOR (the entry
      * delegator) and the reviewer roles. The ORCHESTRATOR may arm worker
      * roles and reviewer roles - its tool surface has always granted
-     * spawn_subagent/spawn_many/cancel_subagent/task_board, and the
-     * orchestrator prompt tells it to split the task and hire workers, but
+     * spawn_subagent/spawn_many/cancel_subagent/task_board/await_result, and
+     * the orchestrator prompt tells it to split the task and hire workers, but
      * the matrix answered "reviewers only", so the tool was there and the
      * permission was not.
      *
@@ -1560,7 +1560,10 @@ object SubagentRoles {
         // REVIEWER -> leaf). The matrix that grants these tools lives in
         // mayDelegate() — see the depth-cap comment there.
         AgentRole.ORCHESTRATOR ->
-            listOf("shell_execute", "file_read", "spawn_subagent", "spawn_many", "cancel_subagent", "task_board")
+            listOf(
+                "shell_execute", "file_read", "spawn_subagent", "spawn_many",
+                "cancel_subagent", "task_board", "await_result",
+            )
         AgentRole.CODE_CORRECTNESS_REVIEWER,
         AgentRole.SECURITY_REVIEWER,
         AgentRole.PERFORMANCE_REVIEWER,

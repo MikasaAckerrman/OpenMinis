@@ -16,7 +16,7 @@ object ToolTaxonomy {
         "file_read", "read_image", "memory_get",
         "todo_read", "bg_check", "bg_list",
         "memory_blocks_view", "supermemory_search",
-        "grep", "glob", "list_agents", "task_board" -> MutationKind.READ
+        "grep", "glob", "list_agents", "task_board", "await_result" -> MutationKind.READ
 
         "web_search", "webfetch", "browser_use" -> MutationKind.NETWORK
 

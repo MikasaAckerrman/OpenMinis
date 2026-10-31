@@ -48,7 +48,7 @@ class ToolScheduler(
         fun effectOf(toolName: String): Effect = when (toolName) {
             "file_read", "read_image", "memory_get", "supermemory_search",
             "memory_blocks_view", "todo_read", "bg_check", "bg_list",
-            "grep", "glob", "list_agents", "task_board", "web_search", "webfetch",
+            "grep", "glob", "list_agents", "task_board", "await_result", "web_search", "webfetch",
             -> Effect.READ
 
             "file_write", "file_edit", "memory_write", "memory_blocks_edit",

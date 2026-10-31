@@ -15885,6 +15885,8 @@ class ChatViewModel(
             com.openminis.app.tools.SubagentTools.SPAWN_TOOL_NAME ->
                 executeSpawnSubagent(argsJson, toolBlocks, assistantId)
             com.openminis.app.tools.SubagentTools.CANCEL_TOOL_NAME -> executeCancelSubagent(argsJson)
+            com.openminis.app.tools.SubagentTools.AWAIT_RESULT_TOOL_NAME ->
+                executeAwaitResult(argsJson)
             com.openminis.app.tools.SubagentTools.SPAWN_MANY_TOOL_NAME ->
                 executeSpawnMany(argsJson, toolBlocks, assistantId)
             com.openminis.app.tools.SubagentTools.LIST_AGENTS_TOOL_NAME -> executeListAgents(argsJson)
@@ -16403,6 +16405,57 @@ class ChatViewModel(
             ToolExecutionResult(
                 "No running background subagent with id $spawnId - it has already finished, or it was never started.",
                 false,
+            )
+        }
+    }
+
+    /**
+     * [T-agent-await-result] Late pickup of a finished subagent's result from
+     * the durable board. A background spawn delivers its result as a
+     * notification inside the spawning turn; when the orchestrator returns in
+     * a LATER turn — or the notification scrolled away — this reads the
+     * stored verdict instead of re-spawning the same task. A still-running
+     * spawn answers with its status: the run is alive, its notification will
+     * still arrive.
+     */
+    private suspend fun executeAwaitResult(argsJson: String): ToolExecutionResult {
+        val args = runCatching { JSONObject(argsJson) }.getOrNull()
+            ?: return ToolExecutionResult("Invalid JSON for await_result", false)
+        val spawnId = args.optString("spawn_id").trim()
+        if (spawnId.isEmpty()) {
+            return ToolExecutionResult("await_result: 'spawn_id' is required", false)
+        }
+        val task = try {
+            // Deliberately NOT filtered by team: a spawn id only reaches the
+            // model through this chat's own spawn results or its task_board
+            // (team-scoped), and late pickup must survive session forks,
+            // whose board rows keep the original team id.
+            com.openminis.app.data.db.ProviderDatabase
+                .getInstance(context).agentBoardDao().taskById(spawnId)
+        } catch (e: Exception) {
+            return ToolExecutionResult("await_result: board read failed: ${e.message}", false)
+        } ?: return ToolExecutionResult(
+            "No board task with id $spawnId — ids come from spawn results " +
+                "('spawned: spawn-xxxx') or the task_board tool.",
+            false,
+        )
+        val logic = com.openminis.app.offload.AgentBoardLogic
+        return if (task.status == logic.STATUS_RUNNING ||
+            task.status == logic.STATUS_PENDING ||
+            task.status == logic.STATUS_BLOCKED
+        ) {
+            ToolExecutionResult(
+                "spawn $spawnId (${task.roleRequired}) is ${task.status} — not finished yet. " +
+                    "Its result arrives as a notification; call await_result again later, " +
+                    "or task_board for the whole team view.",
+                true,
+            )
+        } else {
+            ToolExecutionResult(
+                "spawn $spawnId (${task.roleRequired}) ${task.status}:\n" +
+                    (task.resultArtifact?.takeIf { it.isNotBlank() }
+                        ?: "(no result stored — the run ended without output)"),
+                task.status == logic.STATUS_COMPLETED,
             )
         }
     }

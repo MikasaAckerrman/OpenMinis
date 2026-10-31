@@ -107,6 +107,13 @@ object ToolSurfaceAdapter {
                     SubagentTools.CANCEL_TOOL_NAME,
                     SubagentTools.cancelSubagentDefinition(),
                 )
+                // [T-agent-await-result] Late pickup: the board already holds
+                // finished runs' verdicts; the schema must offer reading them.
+                register(
+                    this,
+                    SubagentTools.AWAIT_RESULT_TOOL_NAME,
+                    SubagentTools.awaitResultDefinition(),
+                )
                 register(
                     this,
                     SubagentTools.SPAWN_MANY_TOOL_NAME,
