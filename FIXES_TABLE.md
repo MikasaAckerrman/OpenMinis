@@ -40,6 +40,10 @@
 | B8 | **Построчное ревью остальных моих файлов** | Не сделано | `StreamSlot`, `AgentConcurrency`, правки `ToolScheduler`/`SubagentExecutor`, гейт-ревьюер, перехват `tg://` в двух WebView, отмена HTTP в трёх провайдерах | средний |
 | B9 | **Скиллы: инвентаризация + правило доверия** | Не сделано | Перечень навыков; правило: вредоносный код, а не качество | низкий |
 | B10 | **Проверка A1 на устройстве** | APK не собран (см. B2) | `/export-compact` → `/import-compact` в одном чате, включая fast path | высокий (зависит от B2) |
+| B11 | **extractTar без zip-slip проверки и PAX-заголовков** | Вскрыто сравнением с AndCode (COMPARE.md 1.1): `sandbox/RootfsManager.kt:596-684` собирает `File(targetDir, fullName)` без canonical-path проверки; парсер не умеет PAX/длинные имена. Спасает только то, что источник — подписанный APK-ассет, но парсер общий | Добавить canonical-path проверку (паттерн AndCode RuntimeArchive.kt:76-79); рассмотреть commons-compress | средний |
+| B12 | **tg-vault HTTP без аутентификации на loopback** | Вскрыто сравнением (COMPARE.md 1.5): `TelegramVaultManager.kt:140` слушает 127.0.0.1:7824 без auth — любой сторонний app с INTERNET-пермиссией может дёргать /mcp привилегированного Telegram-инстанса (Android не изолирует loopback между приложениями) | Basic-auth по рецепту AndCode LocalServerAuth.kt (32 байта SecureRandom в app-private файле + проверка заголовка в telegram.py); ~50 строк | высокий |
+| B13 | **Плоский 10-минутный таймаут scheduled-прогонов** | Вскрыто сравнением (COMPARE.md 1.3): `scheduled/ScheduledAgentRunner.kt:34` RUN_TIMEOUT_MS=10 мин убивает легитимно долгие задачи; нет retry, нет reconcileStaleRuns, нет hasActiveRun | Watchdog idle-vs-max-duration по образцу AndCode ScheduleRunWatchdog.kt:40-74 (признак жизни по хэшу частей транскрипта) + retry 10/20/30 + reconcile при рестарте | средний |
+| B14 | **Нет системного слоя редакции секретов в логах** | Вскрыто сравнением (COMPARE.md 1.5): точечные redact'ы, системного слоя нет; AndCode решает одним классом SecretRedaction.kt (57 строк) | Портировать паттерн в AppLogger (bearer/sk-/ghp_/key=value/query-string) | средний |
 
 ---
 
@@ -178,3 +182,16 @@
 **Статус проверки:** CI НЕ запускался ([test] и [quick] — только с разрешения юзера). На устройстве не проверено. Ручной компиляционный гейт пройден ревьюером.
 
 **Осталось в B1:** 2) `cancel_subagent scope=all` для foreground-детей; 3) изоляция каталогов ребёнка (P0.4).
+
+### БЛОК 6.1 — Ревью-раунд 1 по B1.1 (31.10, внешний ревьюер юзера): оба вопроса подтверждены кодом и исправлены
+
+Ревьюер не одобрил 89562a3: [BLOCKER] изоляция чтения доски, [MAJOR] кап размера результата. Проверка подтвердила правоту обоих:
+
+| # | Вопрос ревьюера | Факт по коду | Фикс |
+|---|---|---|---|
+| 1 | taskById без фильтра по команде | Комментарий в 89562a3 («id доходит только из своих спавнов») — рассуждение о типичном потоке, не гарантия: id может прийти из произвольного текста (сообщение юзера, вставка). Чтение чужой команды = утечка результата до 4000 симв. | Новый DAO-метод `taskByIdForTeam(id, teamId)` + `SQL_TASK_BY_ID_FOR_TEAM` ( AgentBoardDao.kt), тот же скоуп, что у task_board; чужой id и неизвестный id неразличимы (оба null). Тест изоляции на НАСТОЯЩЕМ SQLite через JDBC (AgentBoardPanelQueriesTest — та же каркас-конвенция «тест гоняет тот же SQL-констант, что апп»): свой-команда читает, чужой — null, неизвестный — null |
+| 2 | Кап на чтении отсутствует | Кап на записи ЕСТЬ (AgentBoardRecorder:128, `result.take(RESULT_CAP=4000)`) и это единственный путь записи (`setResult` зовётся только из `finishTask`, тот — только из taskFinished; 9 терминальных путей SubagentExecutor все через него). НО: `git log -S RESULT_CAP` — кап введён только в `9ec21b4d` (30.10), а доска существует с 27.09 ⇒ строки, записанные до 30.10, могут лежать НЕограниченными до 30-дневной чистки | Читающий кап `.take(4000)` в executeAwaitResult с комментарием о докапном окне |
+
+**Коммит:** `cd0d56cf` (3 файла, +86/−8: DAO + ChatViewModel + тест), origin = mirror = `cd0d56cf...` (ls-remote). CI: Unit Tests запущен тегом [test] (не APK — Build APK skipped по дизайну). Статус: ожидает повторного ревью ревьюера.
+
+**Вскрыто сравнением с AndCode (наши дефекты → §B11-B14, полная карта — WORKLOG/COMPARE.md):** extractTar без zip-slip; tg-vault loopback без auth; плоский 10-мин кап scheduled; нет SecretRedaction-слоя.
