@@ -253,6 +253,19 @@ interface AgentBoardDao {
     @Query("SELECT * FROM agent_tasks WHERE id = :id")
     suspend fun taskById(id: String): AgentTaskEntity?
 
+    /**
+     * [T-agent-await-result] Team-scoped single-task read for await_result.
+     *
+     * Possession of a spawn id does NOT authorize reading another team's
+     * task: the id can reach a session from arbitrary text (a user message,
+     * pasted content), so the read is scoped exactly like task_board
+     * (tasksForTeam). A fork reads its own team only — the same visibility
+     * its task_board has. Returns null for both "unknown id" and "foreign
+     * team", so existence in another team is not even observable.
+     */
+    @Query(SQL_TASK_BY_ID_FOR_TEAM)
+    suspend fun taskByIdForTeam(id: String, teamId: String): AgentTaskEntity?
+
     @Query("SELECT * FROM agent_tasks WHERE team_id = :teamId ORDER BY created_at DESC LIMIT :limit")
     suspend fun tasksForTeam(teamId: String, limit: Int = 50): List<AgentTaskEntity>
 
@@ -429,5 +442,13 @@ interface AgentBoardDao {
             "DELETE FROM task_status_history WHERE task_id IN (" +
                 "SELECT id FROM agent_tasks WHERE updated_at < :cutoff " +
                 "AND status IN ('COMPLETED', 'FAILED', 'CANCELLED'))"
+
+        /**
+         * [T-agent-await-result] The await_result read: same-team only.
+         * A constant, like the other board queries, so the test runs the
+         * very query the app runs instead of a copy of it.
+         */
+        const val SQL_TASK_BY_ID_FOR_TEAM =
+            "SELECT * FROM agent_tasks WHERE id = :id AND team_id = :teamId"
     }
 }

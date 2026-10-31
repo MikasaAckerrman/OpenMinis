@@ -2,6 +2,7 @@ package com.openminis.app.data.db
 
 import com.openminis.app.offload.AgentBoardLogic
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -425,6 +426,56 @@ class AgentBoardPanelQueriesTest {
             p.setString(1, runId)
             return p.executeQuery().use { rs ->
                 if (rs.next()) rs.getString(1) else null
+            }
+        }
+    }
+
+    /**
+     * [T-agent-await-result] The await_result read is TEAM-SCOPED: a spawn id
+     * can reach a session from arbitrary text (a user message, pasted
+     * content), so possession of the id must not authorize reading another
+     * team's task. Own team reads the whole row; a foreign-team id and an
+     * unknown id are indistinguishable — both null, no data, no existence
+     * signal. The app and this test run the SAME SQL constant.
+     */
+    @Test
+    fun `await_result read is team-scoped - foreign id answers nothing`() {
+        withDb { conn ->
+            // Own team: the row comes back whole, with its result.
+            conn.prepareStatement(AgentBoardDao.SQL_TASK_BY_ID_FOR_TEAM).use { p ->
+                p.setString(1, "a-completed")
+                p.setString(2, teamA)
+                p.executeQuery().use { r ->
+                    assertTrue("own-team row must be readable by id", r.next())
+                    assertEquals(teamA, r.getString("team_id"))
+                    assertEquals("a-completed", r.getString("id"))
+                }
+            }
+            // Cross-team: teamA asking for teamB's task — null, no columns.
+            conn.prepareStatement(AgentBoardDao.SQL_TASK_BY_ID_FOR_TEAM).use { p ->
+                p.setString(1, "b-running")
+                p.setString(2, teamA)
+                p.executeQuery().use { r ->
+                    assertFalse("foreign-team id must not leak the row", r.next())
+                }
+            }
+            // The same id from its OWN team reads fine — isolation is by
+            // team, not by id globality being broken.
+            conn.prepareStatement(AgentBoardDao.SQL_TASK_BY_ID_FOR_TEAM).use { p ->
+                p.setString(1, "b-running")
+                p.setString(2, teamB)
+                p.executeQuery().use { r ->
+                    assertTrue("own team still reads its own row", r.next())
+                    assertEquals(teamB, r.getString("team_id"))
+                }
+            }
+            // Unknown id: null, same shape as the foreign-team answer.
+            conn.prepareStatement(AgentBoardDao.SQL_TASK_BY_ID_FOR_TEAM).use { p ->
+                p.setString(1, "no-such-id")
+                p.setString(2, teamA)
+                p.executeQuery().use { r ->
+                    assertFalse("unknown id yields no row", r.next())
+                }
             }
         }
     }

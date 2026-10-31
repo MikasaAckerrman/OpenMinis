@@ -16426,17 +16426,19 @@ class ChatViewModel(
             return ToolExecutionResult("await_result: 'spawn_id' is required", false)
         }
         val task = try {
-            // Deliberately NOT filtered by team: a spawn id only reaches the
-            // model through this chat's own spawn results or its task_board
-            // (team-scoped), and late pickup must survive session forks,
-            // whose board rows keep the original team id.
+            // Team-scoped (same visibility rule as task_board): possession
+            // of a spawn id — it can arrive from arbitrary text, not only
+            // this team's spawn results — does not authorize reading
+            // another session's task. A foreign-team id is null here, so
+            // existence in another team is not even observable.
             com.openminis.app.data.db.ProviderDatabase
-                .getInstance(context).agentBoardDao().taskById(spawnId)
+                .getInstance(context).agentBoardDao()
+                .taskByIdForTeam(spawnId, activeSessionId)
         } catch (e: Exception) {
             return ToolExecutionResult("await_result: board read failed: ${e.message}", false)
         } ?: return ToolExecutionResult(
-            "No board task with id $spawnId — ids come from spawn results " +
-                "('spawned: spawn-xxxx') or the task_board tool.",
+            "No board task with id $spawnId in this chat's team — ids come from " +
+                "spawn results ('spawned: spawn-xxxx') or the task_board tool.",
             false,
         )
         val logic = com.openminis.app.offload.AgentBoardLogic
@@ -16451,9 +16453,13 @@ class ChatViewModel(
                 true,
             )
         } else {
+            // Read-site cap over the writer's AgentBoardRecorder.RESULT_CAP:
+            // rows written before that cap existed may still sit uncapped in
+            // the DB for up to the 30-day prune window.
+            val readCap = 4000
             ToolExecutionResult(
                 "spawn $spawnId (${task.roleRequired}) ${task.status}:\n" +
-                    (task.resultArtifact?.takeIf { it.isNotBlank() }
+                    (task.resultArtifact?.takeIf { it.isNotBlank() }?.take(readCap)
                         ?: "(no result stored — the run ended without output)"),
                 task.status == logic.STATUS_COMPLETED,
             )
