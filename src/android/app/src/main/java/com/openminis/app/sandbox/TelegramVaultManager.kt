@@ -52,15 +52,48 @@ object TelegramVaultManager {
         File(context.filesDir, "minis-global/mcp-servers/srv")
 
     /**
+     * [T-vault-auth] The bearer secret of the vault HTTP gate: generated once
+     * into filesDir/tg-vault/auth.key (app-private storage, never inside any
+     * agent-visible bind). Empty string = gate disabled (file unavailable) —
+     * the vault degrades to today's unauthenticated loopback instead of
+     * breaking the whole Telegram surface. Rationale: loopback is NOT a
+     * trust boundary on Android — any app holding INTERNET can reach another
+     * app's 127.0.0.1 port, so the privileged Telegram reader must
+     * authenticate its callers.
+     */
+    private fun authSecret(context: Context): String = try {
+        val f = File(vaultDir(context), "auth.key")
+        val existing = f.takeIf { it.exists() }?.readText()?.trim()
+        if (!existing.isNullOrEmpty()) existing else {
+            val bytes = ByteArray(32)
+            java.security.SecureRandom().nextBytes(bytes)
+            val hex = bytes.joinToString("") { "%02x".format(it) }
+            f.parentFile?.mkdirs()
+            f.writeText(hex)
+            hex
+        }
+    } catch (e: Exception) {
+        Log.w(TAG, "vault auth secret unavailable: ${e.message}")
+        ""
+    }
+
+    /**
      * Liveness probe that verifies the responder IS our telegram MCP
      * (a bare port probe would false-positive on any process bound to
      * 7824 and silently leave the agent without a server).
      */
-    fun isAlive(): Boolean = try {
+    fun isAlive(context: Context): Boolean = try {
         Socket("127.0.0.1", PORT).use { s ->
             s.soTimeout = 4000
+            // [T-vault-auth] The gate (when armed) needs the bearer secret in
+            // the probe too — an unauthenticated initialize would now read
+            // 401 and read as "dead".
+            val authHeader = authSecret(context)
+                .takeIf { it.isNotEmpty() }?.let { "Authorization: Bearer $it\r\n" } ?: ""
             val probe = "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\n" +
-                "Content-Type: application/json\r\nConnection: close\r\n" +
+                "Content-Type: application/json\r\n" +
+                authHeader +
+                "Connection: close\r\n" +
                 "Content-Length: 46\r\n\r\n" +
                 "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"initialize\"}"
             s.getOutputStream().apply {
@@ -80,7 +113,7 @@ object TelegramVaultManager {
      * "Not logged in"), never to an app crash.
      */
     fun ensureStarted(context: Context) {
-        if (isAlive()) return
+        if (isAlive(context)) return
         thread(name = "tg-vault-start") {
             try {
                 startLocked(context)
@@ -104,6 +137,26 @@ object TelegramVaultManager {
             return
         }
         vault.mkdirs()
+
+        // [T-vault-auth] Arm the gate AND publish the secret to the only
+        // configured callers: every HTTP MCP entry pointed at this vault
+        // port receives an Authorization header in servers.json (the CLI's
+        // http transport reads server.headers verbatim and supports $VAR
+        // expansion). The agent CAN read servers.json — acceptable by
+        // design: the vault surface is read-only, and the threat model here
+        // is OTHER PHONE APPS, which never see filesDir.
+        val auth = authSecret(context)
+        if (auth.isNotEmpty()) {
+            runCatching {
+                val repo = com.openminis.app.data.repository.MCPRepository(context)
+                repo.servers.value
+                    .filter { it.url?.contains(":$PORT") == true }
+                    .filter { it.headers["Authorization"] != "Bearer $auth" }
+                    .forEach { stale ->
+                        repo.update(stale.copy(headers = stale.headers + ("Authorization" to "Bearer $auth")))
+                    }
+            }.onFailure { Log.w(TAG, "vault auth header publish failed: ${it.message}") }
+        }
 
         // 1. Keep the vault server code in sync with the maintained copy
         //    (the agent-side /var/minis/mcp-servers/srv/telegram.py stays
@@ -155,6 +208,10 @@ object TelegramVaultManager {
         if (PRootKernel.prootLoader32Path.isNotEmpty()) {
             env["PROOT_LOADER_32"] = PRootKernel.prootLoader32Path
         }
+        // [T-vault-auth] Arm the python-side gate; empty secret = no gate
+        // (see authSecret) — the server keeps today's behaviour instead of
+        // 401-ing every caller.
+        if (auth.isNotEmpty()) env["TG_VAULT_AUTH"] = auth
         env["TG_SESSION_DIR"] = "/vault"
         // API credentials come from the encrypted env-var store via the
         // host — they never transit the agent sandbox environment.

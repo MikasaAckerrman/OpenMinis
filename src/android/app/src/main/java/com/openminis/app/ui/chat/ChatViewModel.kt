@@ -1490,6 +1490,15 @@ class ChatViewModel(
     // streaming, hiding the Stop button while the new turn was live).
     @Volatile
     private var streamJob: Job? = null
+    // [T-stop-delivery] Generation counter of the send path. cancelStream()
+    // bumps it; the send coroutine captures the value at slot-claim and re-
+    // checks it right before launching the real streamJob — a Stop pressed
+    // during the multi-second prepare window ("in delivery") invalidates the
+    // pending launch, which the old code could not reach (streamJob was
+    // still null, so cancelStream's cancel was a no-op while the flag
+    // already gassed the Stop button).
+    @Volatile
+    private var turnSendEpoch = 0L
     private var currentProvider: LLMProvider? = null
     private var currentModel: LLMModel? = null
 
@@ -9505,6 +9514,8 @@ class ChatViewModel(
         // OEM-frozen — live-proven 24.09) at some point inside THIS turn.
         val streamTurnStartedAtMs = System.currentTimeMillis()
         streamJob = viewModelScope.launch(Dispatchers.IO) {
+            // [T-stop-delivery] Re-assert (retry path): see the send entry.
+            _isStreaming.value = true
             AppLogger.info(TAG_STREAM, "$label streamJob ENTER sid=$activeSessionId")
             try {
                 SessionConcurrencyManager.acquireSlot(activeSessionId)
@@ -10536,6 +10547,10 @@ class ChatViewModel(
         // read-based branch could not tell "busy" from "about to be busy",
         // and a second turn could start in between the read and the write.
         val slotClaimed = _isStreaming.tryClaimStreamSlot()
+        // [T-stop-delivery] Generation captured at claim: a Stop pressed
+        // during the prepare window bumps the counter and this send aborts
+        // right before the real streamJob would launch.
+        val sendEpochAtClaim = turnSendEpoch
         AppLogger.info(
             TAG_STREAM,
             "send claims the run slot (sync, sid=$activeSessionId, won=$slotClaimed)",
@@ -10572,6 +10587,9 @@ class ChatViewModel(
         // message. Without this an image-only "look at this" send dropped.
         if (trimmed.isBlank() && _attachments.value.isEmpty()) {
             AppLogger.info(TAG_STREAM, "[Send] branch=DROP (blank, no attachments)")
+            // [T-stop-delivery] The slot was claimed above: a plain return
+            // here leaked it (Stop button stuck on with no turn behind it).
+            _isStreaming.releaseStreamSlot()
             return
         }
         if (!requireFullSessionHistory()) {
@@ -10579,6 +10597,8 @@ class ChatViewModel(
             if (trimmed.isNotEmpty() && _inputText.value.isEmpty()) {
                 _inputText.value = trimmed
             }
+            // [T-stop-delivery] Same slot leak as the DROP branch above.
+            _isStreaming.releaseStreamSlot()
             return
         }
         if (_isCompacting.value) {
@@ -10952,9 +10972,25 @@ class ChatViewModel(
                 else "$prefix\n\n${baseSystemPrompt ?: ""}"
             } else baseSystemPrompt
 
+            // [T-stop-delivery] A Stop during the prepare window bumped the
+            // epoch: the launch must NOT happen (the old code started the
+            // full turn here with the Stop button already dead). The slot is
+            // released; the "thinking" row was cleaned by cancelStream's own
+            // cleanup path when Stop was pressed.
+            if (turnSendEpoch != sendEpochAtClaim) {
+                AppLogger.info(
+                    TAG_STREAM,
+                    "[Send] aborted pre-launch (Stop during delivery, epoch $sendEpochAtClaim -> $turnSendEpoch)",
+                )
+                _isStreaming.releaseStreamSlot()
+                return
+            }
             // Start agent loop with fallback. _isStreaming was set synchronously at top.
             streamLaunched = true
             streamJob = launch(Dispatchers.IO) {
+                // [T-stop-delivery] Re-assert: a stale Stop could have gassed
+                // the flag while this coroutine was being scheduled.
+                _isStreaming.value = true
                 AppLogger.info(TAG_STREAM, "send streamJob ENTER sid=$activeSessionId")
                 try {
                     // Acquire concurrency slot (suspends if at max)
@@ -11303,6 +11339,8 @@ class ChatViewModel(
         )
 
         streamJob = launch(Dispatchers.IO) {
+            // [T-stop-delivery] Re-assert (graph path): see the send entry.
+            _isStreaming.value = true
             AppLogger.info(TAG_STREAM, "graph streamJob ENTER sid=$activeSessionId graph=${decision.graphId}")
             var cancelled = false
             try {
@@ -12045,6 +12083,8 @@ class ChatViewModel(
             // _isStreaming was already set synchronously at the top.
             streamLaunched = true
             streamJob = launch(Dispatchers.IO) {
+                // [T-stop-delivery] Re-assert (retryLast path): see the send entry.
+                _isStreaming.value = true
                 AppLogger.info(TAG_STREAM, "retryLast streamJob ENTER sid=$activeSessionId")
                 try {
                     SessionConcurrencyManager.acquireSlot(activeSessionId)
@@ -19465,6 +19505,9 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
 
     fun cancelStream() {
         AppLogger.info(TAG_STREAM, "cancelStream invoked _isStreaming=false (sid=$activeSessionId)")
+        // [T-stop-delivery] Invalidate any send still in its prepare window:
+        // its coroutine re-checks the epoch before launching the real job.
+        turnSendEpoch++
         streamJob?.cancel()
         _isStreaming.value = false
         // T-streaming-side-channel: flush any in-flight delta back into the
