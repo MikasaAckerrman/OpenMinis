@@ -161,4 +161,70 @@ class ToolScheduler(
 
     /** Concurrency cap for wave execution (>= 1). */
     fun cap(): Int = maxConcurrent.coerceAtLeast(1)
+
+    /**
+     * [T-tool-scheduler-reactive] Dependency DAG for BARRIER-FREE execution
+     * (the turbo path): a call starts the moment its conflicting
+     * predecessors finish instead of waiting for a whole wave — the wave
+     * plan is correct, but a wave BARRIER idles fast calls behind the
+     * slowest member of the previous wave.
+     *
+     * Semantics are exactly plan()'s, expressed as per-call dependencies:
+     *   - per key, model order is preserved against every conflicting use
+     *     (a WRITE waits for the last reader OR writer of that key; a READ
+     *     waits only for the last writer);
+     *   - GLOBAL (undeclared) is hermetic in BOTH directions: it depends on
+     *     all earlier calls and every later call depends on it;
+     *   - spawn_* declares a unique key, so spawns stay parallel.
+     *
+     * Dependencies point BACKWARD only (model order), which lets the
+     * executor launch every coroutine up front in list order and let each
+     * one await just its own dependencies — no wave barrier, no idle time,
+     * maxConcurrent enforced by a semaphore acquired AFTER the waits (a
+     * waiting call holds no slot).
+     */
+    data class ReactiveNode(val call: SchedCall, val dependsOn: Set<String>)
+
+    fun planReactive(calls: List<SchedCall>): List<ReactiveNode> {
+        val nodes = mutableListOf<ReactiveNode>()
+        // Per key: the last call that USED it (read or write) and the last
+        // call that WROTE it. A write depends on the last use (order against
+        // readers and writers); a read depends only on the last write.
+        val lastUseBy = HashMap<String, String>()
+        val lastWriteBy = HashMap<String, String>()
+        var globalBarrier: String? = null
+        var lastMeta: String? = null
+
+        for (call in calls) {
+            val declaredKeys = resourceKeysOf(call.name, call.argsJson)
+            val isSpawn = declaredKeys == null && call.name.startsWith("spawn_")
+            val effect = if (isSpawn) Effect.WRITE else effectOf(call.name)
+            val keys: Set<String>? = if (isSpawn) setOf("agent-spawn:${nodes.size}") else declaredKeys
+
+            val deps = mutableSetOf<String>()
+            if (keys == null) {
+                // GLOBAL: hermetic — waits for EVERYTHING earlier, and every
+                // later call waits for it (runs alone, both directions).
+                for (earlier in nodes) deps.add(earlier.call.id)
+                globalBarrier = call.id
+            } else {
+                globalBarrier?.let { deps.add(it) }
+                if (effect == Effect.META) {
+                    lastMeta?.let { deps.add(it) }
+                    lastMeta = call.id
+                } else {
+                    for (k in keys) {
+                        if (effect == Effect.WRITE) lastUseBy[k]?.let { deps.add(it) }
+                        lastWriteBy[k]?.let { deps.add(it) }
+                    }
+                }
+                for (k in keys) {
+                    lastUseBy[k] = call.id
+                    if (effect == Effect.WRITE) lastWriteBy[k] = call.id
+                }
+            }
+            nodes.add(ReactiveNode(call, deps))
+        }
+        return nodes
+    }
 }

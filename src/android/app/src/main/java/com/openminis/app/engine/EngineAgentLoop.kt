@@ -323,47 +323,34 @@ class EngineAgentLoop(
         val toRun = preflighted.mapNotNull { (call, outcome) ->
             if (outcome == null) call else null
         }
-        // [T-tool-scheduler] Wave execution: conflict-aware parallelism.
-        // Reads on disjoint resources run concurrently; same-resource
-        // read/write and write/write serialize in model order; GLOBAL
-        // tools run alone. Waves execute sequentially; inside a wave a
-        // maxConcurrent semaphore caps the fan-out. Each call executes
-        // exactly once; results land in the map by call id.
+        // [T-tool-scheduler-reactive] Barrier-free dispatch. Dependencies
+        // point backward in model order only: a call launches up front and
+        // awaits JUST its conflicting predecessors — a finished tool frees
+        // its resource instantly for the next dependent, with no wave
+        // barrier idling fast calls behind the slowest one. The
+        // maxConcurrent semaphore is acquired AFTER the waits, so a waiting
+        // call holds no slot. Each call executes exactly once; results land
+        // in the map by call id.
         val sched = toRun.map { ToolScheduler.SchedCall(it.id, it.name, it.argsJson) }
-        val waves = toolScheduler.plan(sched)
-        // [T-scheduler-observability] The parallelism contract, visible:
-        // N proposed calls -> M waves; a wave with >1 call RUNS those calls
-        // concurrently (verify: overlapping [Engine] tool timestamps).
-        // Serial waves are the conflict matrix doing its job.
+        val nodes = toolScheduler.planReactive(sched)
+        val immediate = nodes.count { it.dependsOn.isEmpty() }
         onEngineEvent(
-            "[Scheduler] ${toRun.size} call(s) -> ${waves.size} wave(s): " +
-                waves.mapIndexed { i, w ->
-                    "w${i + 1}=[${w.calls.joinToString(",") { it.name }}]" +
-                        if (w.calls.size > 1) "(parallel)" else ""
-                }.joinToString(" "),
+            "[Scheduler] ${toRun.size} call(s) reactive: $immediate immediate, " +
+                "${nodes.size - immediate} chained on resource deps",
         )
         val ran: Map<String, ToolOutcome> = if (toRun.size > 1) {
-            val results = mutableMapOf<String, ToolOutcome>()
-            for (wave in waves) {
-                if (wave.calls.size == 1) {
-                    val call = toRun.first { it.id == wave.calls.first().id }
-                    results[call.id] = runExecutor(call)
-                } else {
-                    val semaphore = Semaphore(toolScheduler.cap())
-                    coroutineScope {
-                        wave.calls.map { schedCall ->
-                            val call = toRun.first { it.id == schedCall.id }
-                            async(Dispatchers.Default) {
-                                semaphore.withPermit { runExecutor(call) to schedCall.id }
-                            }
-                        }.forEach { deferred ->
-                            val (outcome, id) = deferred.await()
-                            results[id] = outcome
-                        }
+            coroutineScope {
+                val semaphore = Semaphore(toolScheduler.cap())
+                val deferreds = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Deferred<ToolOutcome>>()
+                for (node in nodes) {
+                    val call = toRun.first { it.id == node.call.id }
+                    deferreds[node.call.id] = async(Dispatchers.Default) {
+                        node.dependsOn.forEach { depId -> deferreds.getValue(depId).await() }
+                        semaphore.withPermit { runExecutor(call) }
                     }
                 }
+                deferreds.mapValues { it.value.await() }
             }
-            results
         } else {
             toRun.associate { call -> call.id to runExecutor(call) }
         }

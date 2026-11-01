@@ -176,3 +176,53 @@ class ToolSchedulerTest {
         assertEquals(4, w[0].calls.size)
     }
 }
+
+// ---- reactive DAG ([T-tool-scheduler-reactive]) ----
+
+@Test
+fun `reactive write waits only for the last conflicting reader`() {
+    val nodes = planner().planReactive(listOf(
+        sched("1", "file_read", "/a"),
+        sched("2", "file_read", "/b"), // unrelated fast call
+        sched("3", "file_write", "/a"),
+    ))
+    val deps = nodes.associate { it.call.id to it.dependsOn }
+    assertEquals(emptySet<String>(), deps["1"])
+    assertEquals(emptySet<String>(), deps["2"])
+    // The write waits for the reader of ITS file only — a wave barrier
+    // would have idled it behind the unrelated read of /b as well.
+    assertEquals(setOf("1"), deps["3"])
+}
+
+@Test
+fun `reactive write-write keeps model order`() {
+    val nodes = planner().planReactive(listOf(
+        sched("1", "file_write", "/a"),
+        sched("2", "file_write", "/a"),
+    ))
+    val deps = nodes.associate { it.call.id to it.dependsOn }
+    assertEquals(setOf("1"), deps["2"])
+}
+
+@Test
+fun `reactive global is hermetic in both directions`() {
+    val nodes = planner().planReactive(listOf(
+        sched("1", "file_read", "/a"),
+        sched("2", "shell_execute"),
+        sched("3", "file_read", "/b"),
+    ))
+    val deps = nodes.associate { it.call.id to it.dependsOn }
+    assertEquals(setOf("1"), deps["2"])
+    assertEquals(setOf("1", "2"), deps["3"])
+}
+
+@Test
+fun `reactive spawns run parallel with no deps`() {
+    val nodes = planner().planReactive(listOf(
+        sched("1", "spawn_subagent"),
+        sched("2", "spawn_subagent"),
+    ))
+    val deps = nodes.associate { it.call.id to it.dependsOn }
+    assertEquals(emptySet<String>(), deps["1"])
+    assertEquals(emptySet<String>(), deps["2"])
+}
