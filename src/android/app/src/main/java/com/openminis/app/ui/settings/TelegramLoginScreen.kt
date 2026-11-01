@@ -33,6 +33,18 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 /**
+ * [T-tg-login-host] The driver emits exactly one `RESULT {json}` line on
+ * stdout (library chatter — the TgCrypto speed hint, usage text — shares the
+ * merged stream). Parsing must anchor on the RESULT prefix: a plain '{' scan
+ * can pick up unrelated lines, and the old `{`-last-line parse NEVER matched
+ * the driver's real output at all.
+ */
+private fun driverJson(output: String): JSONObject = runCatching {
+    val line = output.trim().lines().lastOrNull { it.contains("RESULT ") } ?: ""
+    JSONObject(line.substringAfter("RESULT ", line))
+}.getOrDefault(JSONObject())
+
+/**
  * [T-telegram-login] Telegram-styled login screen. Guides the user through
  * the Pyrogram auth flow: phone → code → (2FA password). Uses the same
  * session file as the telegram MCP (tg_session.session), so logging in
@@ -115,7 +127,7 @@ fun TelegramLoginScreen(
         val r = withContext(Dispatchers.IO) {
             TelegramLoginRunner.run(context, listOf("status"), timeoutSec = 30).output
         }
-        val json = runCatching { JSONObject(r.trim().lines().lastOrNull { it.startsWith("{") } ?: "{}") }.getOrDefault(JSONObject())
+        val json = driverJson(r)
         loggedIn = json.optBoolean("logged_in", false)
         // env_ready = env vars set; has_saved_creds = previously entered via UI.
         // If NEITHER: show the API credentials step first (send-code would
@@ -127,12 +139,15 @@ fun TelegramLoginScreen(
         scope.launch {
             busy = true
             error = null
-            val argList = args.toMutableList()
-            // Pass API creds when the user entered them locally —
-            // the script falls back to its saved state / env vars.
+            val argList = mutableListOf<String>()
+            // [T-tg-login-host] --api-id/--api-hash are TOP-LEVEL argparse
+            // options: they must precede the subcommand or argparse rejects
+            // the whole line (exit 2). The driver falls back to its env /
+            // saved state when the flags are absent.
             if (apiId.isNotBlank() && apiHash.isNotBlank() && args.firstOrNull() != "status") {
                 argList.addAll(listOf("--api-id", apiId.trim(), "--api-hash", apiHash.trim()))
             }
+            argList.addAll(args)
             val result = withContext(Dispatchers.IO) {
                 val r = TelegramLoginRunner.run(
                     context,
@@ -146,7 +161,7 @@ fun TelegramLoginScreen(
                 r
             }
             busy = false
-            val json = runCatching { JSONObject(result.output.trim().lines().lastOrNull { it.startsWith("{") } ?: "{}") }.getOrDefault(JSONObject())
+            val json = driverJson(result.output)
             when {
                 json.has("error") -> error = json.getString("error")
                 // [T-tg-login-host] No JSON verdict at all means the driver
@@ -291,7 +306,7 @@ fun TelegramLoginScreen(
             Spacer(Modifier.height(16.dp))
             Button(
                 onClick = {
-                    runLogin("send-code", phone.trim()) { r ->
+                    runLogin("send-code", "--phone", phone.trim()) { r ->
                         if (r.optBoolean("code_sent", false)) codeSent = true
                     }
                 },
@@ -325,7 +340,7 @@ fun TelegramLoginScreen(
             )
             Spacer(Modifier.height(16.dp))
             Button(
-                onClick = { runLogin("send-code", phone.trim()) { codeSent = true } },
+                onClick = { runLogin("send-code", "--phone", phone.trim()) { codeSent = true } },
                 enabled = !busy && phone.isNotBlank(),
                 colors = ButtonDefaults.buttonColors(containerColor = accent),
                 shape = RoundedCornerShape(12.dp),
@@ -353,7 +368,7 @@ fun TelegramLoginScreen(
             )
             Spacer(Modifier.height(16.dp))
             Button(
-                onClick = { runLogin("verify", phone.trim(), code.trim()) { r ->
+                onClick = { runLogin("verify", "--code", code.trim()) { r ->
                     if (r.optBoolean("needs_password", false)) needsPassword = true else loggedIn = true
                 } },
                 enabled = !busy && code.isNotBlank(),
@@ -382,7 +397,10 @@ fun TelegramLoginScreen(
             )
             Spacer(Modifier.height(16.dp))
             Button(
-                onClick = { runLogin("password", password) { loggedIn = true } },
+                // [T-tg-login-host] The driver has NO 'password' subcommand:
+                // 2FA completes through verify --code --password (the phone
+                // code hash stays pending in the driver state until then).
+                onClick = { runLogin("verify", "--code", code.trim(), "--password", password) { loggedIn = true } },
                 enabled = !busy && password.isNotBlank(),
                 colors = ButtonDefaults.buttonColors(containerColor = accent),
                 shape = RoundedCornerShape(12.dp),

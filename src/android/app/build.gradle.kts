@@ -39,9 +39,10 @@ android {
         // [T-vc56] Jump (not increment) over the installed base: the user's
         // device runs the vc55 clone APK (built before f71cac0 reverted the
         // bump), and Android refuses to install vc54 over vc55. 56 clears it.
-        // vc146: tg-login host-owned proot fix, await_result, team-scoped board
-        // read, cancel scope=all, kurigram pin — device-testing round.
-        versionCode = 146
+        // vc147: tg-login ARGV contract fixed (--phone/--code flags, RESULT
+        // prefix parsing, 2FA via verify --password — the old positional
+        // calls could never match the driver's argparse).
+        versionCode = 147
         // vc69: 97 commits — kotlincheck infra + strict preflight (types/enums,
         // parallel-batch gate) + atomic tool budget + budget footer + symmetric
         // supermemory lifecycle (FPS guard) + thermal telemetry + review fixes
