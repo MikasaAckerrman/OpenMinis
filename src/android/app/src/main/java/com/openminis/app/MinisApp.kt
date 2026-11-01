@@ -552,6 +552,10 @@ class MinisApp : Application(), ImageLoaderFactory {
         // instance on loopback. Idempotent; skips silently if not set up yet.
         TelegramVaultManager.ensureStarted(this)
 
+        // [B20 Thermal & RAM Guard] Mechanical parallelism clamp on overheat
+        // / low memory — long agent runs must never freeze the sandbox.
+        com.openminis.app.engine.DeviceGuard.start(this)
+
         // T219-1: load user-mounted external folders and seed PRoot's
         // bindMounts before the first proot invocation, so the very first
         // `shell_execute` already has `/var/minis/mounts/<name>/` visible.

@@ -82,8 +82,11 @@ object SubagentExecutor {
     // executor and the scheduler agree. They used to be fixed at 3 while the
     // scheduler allowed a wave of 4, which left a spawn waiting behind a
     // gate nobody planned for.
-    val MAX_PARALLEL: Int = com.openminis.app.engine.AgentConcurrency.parallel
-    val MAX_BACKGROUND: Int = com.openminis.app.engine.AgentConcurrency.background
+    // [B20 Thermal Guard] Getters, not vals: the thermal/RAM clamp
+    // (DeviceGuard) shrinks the ceilings at runtime, and the refusal
+    // messages must quote the CURRENT ceiling, not the boot-time one.
+    val MAX_PARALLEL: Int get() = com.openminis.app.engine.AgentConcurrency.parallel
+    val MAX_BACKGROUND: Int get() = com.openminis.app.engine.AgentConcurrency.background
 
     /**
      * [T-soft-cancel-signal] How long a parent waits for a child it hired.

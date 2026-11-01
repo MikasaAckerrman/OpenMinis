@@ -18,6 +18,16 @@ package com.openminis.app.engine
  */
 object AgentConcurrency {
 
+    /**
+     * [B20 Thermal & RAM Guard] Mechanical clamp: DeviceGuard raises this
+     * divider when the device overheats or runs out of memory, and the
+     * ceilings shrink accordingly (6 -> 3 -> 2 -> 1). A getter, not a val:
+     * consumers re-read it on every turn, so the clamp applies without an
+     * app restart.
+     */
+    @Volatile
+    var thermalDivider: Int = 1
+
     /** How many subagents may run in the foreground at the same time. */
     fun parallelCeiling(cores: Int): Int = when {
         cores >= 8 -> 6
@@ -35,9 +45,11 @@ object AgentConcurrency {
     /** The cores of the device the app runs on. */
     fun deviceCores(): Int = Runtime.getRuntime().availableProcessors()
 
-    /** Foreground ceiling for this device. */
-    val parallel: Int = parallelCeiling(deviceCores())
+    /** Foreground ceiling for this device, thermal-clamped. */
+    val parallel: Int
+        get() = (parallelCeiling(deviceCores()) / thermalDivider).coerceAtLeast(1)
 
-    /** Background ceiling for this device. */
-    val background: Int = backgroundCeiling(deviceCores())
+    /** Background ceiling for this device, thermal-clamped. */
+    val background: Int
+        get() = (backgroundCeiling(deviceCores()) / thermalDivider).coerceAtLeast(1)
 }
