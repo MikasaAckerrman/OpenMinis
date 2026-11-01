@@ -96,6 +96,15 @@ fun TelegramLoginScreen(
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
 
+    // [T-tg-accounts] The account cards (B17 stage C UI). Declared BEFORE
+    // the effects: the loggedIn effect refreshes the cards after sign-in.
+    val vaultDir = remember { File(context.filesDir, "tg-vault") }
+    val accountStore = remember { TelegramAccountStore(vaultDir) }
+    var accounts by remember { mutableStateOf<List<TgAccount>>(emptyList()) }
+    var addingAccount by remember { mutableStateOf(false) }
+    fun reloadAccounts() { accounts = accountStore.load() }
+    LaunchedEffect(Unit) { reloadAccounts() }
+
     // [T-telegram-login-state] Keep the flow on disk as it advances: the
     // verification code is only valid for a few minutes, so losing it to a
     // rotation or a process kill means starting the login over.
@@ -127,14 +136,6 @@ fun TelegramLoginScreen(
             reloadAccounts()
         }
     }
-
-    // [T-tg-accounts] The account cards (B17 stage C UI).
-    val vaultDir = remember { File(context.filesDir, "tg-vault") }
-    val accountStore = remember { TelegramAccountStore(vaultDir) }
-    var accounts by remember { mutableStateOf<List<TgAccount>>(emptyList()) }
-    var addingAccount by remember { mutableStateOf(false) }
-    fun reloadAccounts() { accounts = accountStore.load() }
-    LaunchedEffect(Unit) { reloadAccounts() }
 
     // Check initial status
     LaunchedEffect(Unit) {
