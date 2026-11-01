@@ -16398,12 +16398,24 @@ class ChatViewModel(
         if (spawnId.isEmpty()) {
             return ToolExecutionResult("cancel_subagent: 'spawn_id' is required", false)
         }
-        val cancelled = com.openminis.app.offload.SubagentExecutor.cancelBackground(spawnId)
+        // [T-agent-cancel-scope] background (default) keeps the old contract:
+        // only registered background spawns and graph-tool runs. all reaches
+        // ALSO the foreground batch children of spawn_many, whose Job is
+        // accounted by spawnId (SubagentExecutor.foregroundRuns).
+        val includeForeground =
+            args.optString("scope", "background").trim().lowercase() == "all"
+        val cancelled = com.openminis.app.offload.SubagentExecutor
+            .cancelSpawn(spawnId, includeForeground)
         return if (cancelled) {
-            ToolExecutionResult("Cancelled background subagent $spawnId.", true)
+            ToolExecutionResult(
+                "Cancelled subagent $spawnId" +
+                    if (includeForeground) " (scope=all)." else ".",
+                true,
+            )
         } else {
             ToolExecutionResult(
-                "No running background subagent with id $spawnId - it has already finished, or it was never started.",
+                "No cancellable subagent with id $spawnId - it has already finished, " +
+                    "it was never started, or it is a foreground batch child and scope=all was not passed.",
                 false,
             )
         }

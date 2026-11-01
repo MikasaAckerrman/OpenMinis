@@ -64,9 +64,11 @@ object AgentWorkerPrompt {
         // waste turns (incomplete task text, invisible workers, duplicate
         // spawns of already-done work).
         "cancel_subagent" to
-            "- cancel_subagent: stop a BACKGROUND subagent you started. Give the spawn id " +
-            "from the 'spawned: spawn-xxxx' text. Use it when the agent is looping or waiting for " +
-            "something that will not arrive. Cancelling one that already finished is not an error.",
+            "- cancel_subagent: stop a subagent by its spawn id (from the 'spawned: spawn-xxxx' " +
+            "text or a RUNNING task_board row). Background agents stop directly; a FOREGROUND " +
+            "batch child of spawn_many needs scope=\"all\" — it stops alone, the batch continues. " +
+            "Use it when the agent is looping or waiting for something that will not arrive. " +
+            "Cancelling one that already finished is not an error.",
         "await_result" to
             "- await_result: fetch a FINISHED subagent's result by its spawn id when you " +
             "return in a later turn and the notification is gone. A still-running id " +

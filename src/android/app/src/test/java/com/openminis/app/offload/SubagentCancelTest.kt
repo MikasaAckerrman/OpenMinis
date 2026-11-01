@@ -63,6 +63,57 @@ class SubagentCancelTest {
     }
 
     @Test
+    fun `scope all cancels a foreground batch child`() {
+        val job = Job()
+        SubagentExecutor.registerForegroundForTest("spawn-fg-running", job)
+
+        val stopped = SubagentExecutor.cancelSpawn("spawn-fg-running", includeForeground = true)
+
+        assertTrue("a running foreground child must be reported as stopped", stopped)
+        assertTrue("the job must actually be cancelled", job.isCancelled)
+    }
+
+    @Test
+    fun `default scope leaves a foreground batch child alone`() {
+        val job = Job()
+        SubagentExecutor.registerForegroundForTest("spawn-fg-default", job)
+
+        assertFalse(
+            "background-scope cancel must not reach a foreground child",
+            SubagentExecutor.cancelSpawn("spawn-fg-default", includeForeground = false),
+        )
+        assertFalse("the child must keep running", job.isCancelled)
+        job.cancel()
+    }
+
+    @Test
+    fun `foreground cancel of a finished child is honest`() {
+        val job = Job().also { it.complete() }
+        SubagentExecutor.registerForegroundForTest("spawn-fg-finished", job)
+
+        assertFalse(
+            "a finished foreground child has nothing left to stop",
+            SubagentExecutor.cancelSpawn("spawn-fg-finished", includeForeground = true),
+        )
+    }
+
+    @Test
+    fun `foreground child is visible to isCancellable only under scope all`() {
+        val job = Job()
+        SubagentExecutor.registerForegroundForTest("spawn-fg-visible", job)
+
+        assertFalse(
+            "the plain panel probe must not report a foreground child",
+            SubagentExecutor.isCancellable("spawn-fg-visible"),
+        )
+        assertTrue(
+            "scope=all must see the foreground child",
+            SubagentExecutor.isCancellable("spawn-fg-visible", includeForeground = true),
+        )
+        job.cancel()
+    }
+
+    @Test
     fun `the cancel tool asks for a spawn id and a title`() {
         val def = SubagentTools.cancelSubagentDefinition()
 

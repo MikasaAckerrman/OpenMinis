@@ -14,6 +14,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -47,6 +48,23 @@ object SubagentExecutor {
      * task was over.
      */
     private val activeBackground = ConcurrentHashMap<String, ActiveBackground>()
+
+    /**
+     * [T-agent-cancel-scope] Foreground children by spawnId: the batch
+     * agents of spawn_many. A single foreground spawn from the MAIN chat is
+     * the turn itself (it runs in the caller's job) and is deliberately
+     * NEVER registered here — cancelling it would mean cancelling the turn,
+     * which is the one thing a tool must not do. A foreground spawn from a
+     * WORKER session goes through launchBackground (A10) and lives in
+     * [activeBackground] instead.
+     *
+     * Registration happens BEFORE the board row goes RUNNING (runSingle
+     * writes it), so an id the model could have learned from task_board is
+     * always either already registered or already gone: the
+     * cancel-before-register race is closed by ordering, the same way
+     * earlyStops does in the reference designs.
+     */
+    private val foregroundRuns = ConcurrentHashMap<String, Job>()
 
     /**
      * [T-graph-cancel] The graph runs that can be stopped.
@@ -656,14 +674,30 @@ object SubagentExecutor {
                                 // fail the async, cancel every sibling in the
                                 // batch and throw away ALL results.
                                 app.providerRepository.saveAgentGraph(graph)
-                                runSingle(
-                                    context, app, graph, node, spec.role,
-                                    TaskBoard.inject(spec.task, snapshot),
-                                    teamId = spawnerSessionId,
-                                    onStarted = { taskId ->
-                                        onAgentStarted?.invoke(task.index, taskId)
-                                    },
-                                )
+                                // [T-agent-cancel-scope] The batch child runs
+                                // under its OWN cancellable Job (child of this
+                                // async), registered under its spawn id BEFORE
+                                // the board row goes RUNNING inside runSingle:
+                                // a scope=all cancel that learned the id from
+                                // the board can never miss a live child. The
+                                // async's own job is never cancelled — its
+                                // await must stay usable for the siblings.
+                                val childJob = Job(kotlin.coroutines.coroutineContext[Job])
+                                foregroundRuns[node.id] = childJob
+                                try {
+                                    withContext(childJob) {
+                                        runSingle(
+                                            context, app, graph, node, spec.role,
+                                            TaskBoard.inject(spec.task, snapshot),
+                                            teamId = spawnerSessionId,
+                                            onStarted = { taskId ->
+                                                onAgentStarted?.invoke(task.index, taskId)
+                                            },
+                                        )
+                                    }
+                                } finally {
+                                    foregroundRuns.remove(node.id, childJob)
+                                }
                             }.let { outcome ->
                                 // [T-subagent-block-live] This agent is done
                                 // with ITS line; say so now, not when the
@@ -834,11 +868,44 @@ object SubagentExecutor {
     }
 
     /**
+     * [T-agent-cancel-scope] Cancels a subagent by spawnId.
+     *
+     * scope=background (the tool default, [includeForeground] = false) keeps
+     * the old contract: only registered background spawns and graph-tool
+     * runs. scope=all extends the reach to FOREGROUND children — the batch
+     * agents of spawn_many — whose own Job is held by [foregroundRuns].
+     *
+     * Cancelling one stops that agent only: its async reports a failed
+     * outcome through the ordinary onAgentDone path, the batch's other
+     * agents continue, and the caller's job is never touched (the registry
+     * never holds the turn's job — see the map's contract).
+     */
+    fun cancelSpawn(spawnId: String, includeForeground: Boolean): Boolean {
+        if (graphScopes.cancel(spawnId)) return true
+        if (includeForeground) {
+            val foregroundJob = foregroundRuns[spawnId]
+            if (foregroundJob != null && foregroundJob.isActive) {
+                foregroundJob.cancel()
+                return true
+            }
+        }
+        val entry = activeBackground[spawnId] ?: return false
+        if (!entry.job.isActive) return false
+        entry.job.cancel()
+        return true
+    }
+
+    /**
      * [T-agent-cancel-test] Registers a background entry for tests, so the
      * cancellation contract can be exercised without running a real agent.
      */
     internal fun registerBackgroundForTest(spawnId: String, job: kotlinx.coroutines.Job) {
         activeBackground[spawnId] = ActiveBackground("test", job)
+    }
+
+    /** [T-agent-cancel-test] Same seam for a foreground batch child. */
+    internal fun registerForegroundForTest(spawnId: String, job: kotlinx.coroutines.Job) {
+        foregroundRuns[spawnId] = job
     }
 
     fun activeBackgroundCount(): Int = activeBackground.size

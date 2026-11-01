@@ -250,9 +250,6 @@ interface AgentBoardDao {
     @Insert
     suspend fun insertMissionEvent(event: MissionLogEntity)
 
-    @Query("SELECT * FROM agent_tasks WHERE id = :id")
-    suspend fun taskById(id: String): AgentTaskEntity?
-
     /**
      * [T-agent-await-result] Team-scoped single-task read for await_result.
      *

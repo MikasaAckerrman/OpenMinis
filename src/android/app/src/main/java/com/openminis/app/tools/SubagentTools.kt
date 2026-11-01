@@ -119,22 +119,31 @@ object SubagentTools {
     )
 
     /**
-     * [T-agent-cancel] Cancels a running BACKGROUND subagent.
+     * [T-agent-cancel] Cancels a subagent by its spawn id. Background agents
+     * stop directly; foreground batch children of spawn_many need scope=all.
      */
     fun cancelSubagentDefinition(): AgentToolDefinition = AgentToolDefinition(
         name = CANCEL_TOOL_NAME,
-        description = "Cancel a BACKGROUND subagent by its spawn id. " +
-            "Use it when a background agent is going the wrong way: stuck in a loop, " +
-            "waiting for something that will never arrive, or working on something no longer needed. " +
-            "The agent stops and its slot is released. " +
-            "Get the ids from task_board, or from the 'spawned: spawn-xxxx' text a background spawn returned. " +
+        description = "Cancel a subagent by its spawn id. " +
+            "BACKGROUND agents (spawned with background=true, id from the 'spawned: spawn-xxxx' text) " +
+            "stop directly. FOREGROUND children — the batch agents of spawn_many, visible as RUNNING " +
+            "rows on task_board — need scope=\"all\": that agent stops, the rest of its batch continues, " +
+            "and your turn is never touched. " +
+            "Use it when an agent is going the wrong way: stuck in a loop, waiting for something that " +
+            "will never arrive, or working on something no longer needed. " +
             "Cancelling an agent that already finished is not an error - there is simply nothing left to stop.",
         parameters = mapOf(
             "tool_title" to AgentToolParam("string", "A concise 5-10 word summary shown to the user (e.g. 'Cancel the stuck review agent'). Use the user's language."),
-            "spawn_id" to AgentToolParam("string", "The spawn id of the background subagent to cancel, e.g. 'spawn-ab12cd34'."),
+            "spawn_id" to AgentToolParam("string", "The spawn id of the subagent to cancel, e.g. 'spawn-ab12cd34'."),
+            "scope" to AgentToolParam(
+                "string",
+                "background (default) = only registered background agents and graph runs. " +
+                    "all = ALSO foreground batch children of spawn_many (task_board RUNNING rows).",
+                enumValues = listOf("background", "all"),
+            ),
         ),
         required = listOf("tool_title", "spawn_id"),
-        propertyOrdering = listOf("tool_title", "spawn_id"),
+        propertyOrdering = listOf("tool_title", "spawn_id", "scope"),
     )
 
     /**
