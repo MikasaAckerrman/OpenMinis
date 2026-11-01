@@ -60,5 +60,7 @@
 - **И3 ч.2: Стабилизация PersistentShell (c3ca7a07):** Аудит гонок вызовов shell, `writeMutex`-очередь команд, тест `s11` на 5-way шторм команд подтвердил корректность диспетчеризации.
 - **B17 Этап А: Хранилище аккаунтов Telegram (6a05f1aa):** `TelegramAccountStore`: атомарный `accounts.json` (tmp+rename), каталоги `accounts/<dir>/`, эксклюзивный `isActive`, бесшовная миграция старой сессии, 6 unit-тестов.
 - **B17 Этап B: Multi-Client сервер telegram.py (afb98ec):** Пул клиентов в памяти, параметр `account` во всех тулах (request-scoped с откатом на активный), тул `tg_whoami` для автозаполнения профиля, 22 тула верифицированы живым тестом.
+- **B20: Аппаратный Thermal & RAM Watchdog (b2a91a4a):** `DeviceGuard` с `OnThermalStatusListener` + `ActivityManager.getMemoryInfo`; динамический кламп в `AgentConcurrency` (потолки 6→3→1 без рестарта); работающие агенты не отменяются принудительно, защищая долгие задачи; 6 тестов.
 - Консилиум-правило (AGENTS.md): застрял — запрос юзеру на опрос внешних оракулов, не угадывать.
+
 

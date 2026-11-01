@@ -584,6 +584,11 @@ class ChatViewModel(
     // commit. Earlier rounds are already their own rows; re-committing them
     // duplicated content.
     @Volatile private var liveTurnTextSb: LiveTurnBuffer? = null
+    // [B21] The CURRENT round's tool_use parts, published by the loop at the
+    // round-persist site — the cancel cleanup builds PERSISTED tool_use +
+    // CANCELLED-result pairs from this (text-only parts made the tool cards
+    // vanish after a reload: the pairing guard drops orphaned results).
+    @Volatile private var liveTurnToolUse: List<AgentContentPart.ToolUse>? = null
     @Volatile private var liveStreamTurnText: String = ""
     @Volatile private var liveStreamId: String? = null
 
@@ -14822,6 +14827,10 @@ class ChatViewModel(
             for ((id, name, args) in toolCalls) {
                 assistantParts.add(AgentContentPart.ToolUse(id, name, args))
             }
+            // [B21] Publish the round's tool_use parts for the cancel path:
+            // handleUserCancelledCleanup persists them WITH their results so
+            // the cards survive a reload instead of vanishing.
+            liveTurnToolUse = assistantParts.filterIsInstance<AgentContentPart.ToolUse>()
 
             // Map toolUseId -> input JSON string for persistence (accumulated across turns)
             toolCalls.forEach { (id, _, args) -> allToolInputs[id] = args.toString() }
@@ -14879,6 +14888,7 @@ class ChatViewModel(
                 // [T-partial-turn-durability] Round committed → the crash
                 // journal and the live-round export are obsolete.
                 liveTurnTextSb = null
+                liveTurnToolUse = null
                 liveStreamTurnText = ""
                 liveTurnThinkingSb = null
                 liveTurnReasoningBlob = null
@@ -15550,6 +15560,7 @@ class ChatViewModel(
                     accumulatedText = ""
                     allToolBlocks.clear()
                     allToolInputs.clear()
+                    liveTurnToolUse = null
                     toolInputChunkRings.clear()
                     toolInputBuilders.clear()
                     _canResume.value = false
@@ -19881,56 +19892,60 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         if (hadInflightTools) {
             msgs[lastIdx] = last.copy(toolBlocks = updatedBlocks)
             _messages.value = msgs
-            val parts = cancelledIds.map { (id, name) ->
-                AgentContentPart.ToolResult(
-                    id = id,
-                    name = name,
-                    content = CANCELLED_MARKER,
-                    isError = true,
-                )
-            }
-            // [T-partial-turn-durability] The interrupted round's TEXT is
-            // still unpersisted — persistAssistantTurn runs only AFTER tool
-            // execution, which the cancel just cut short. Commit it before
-            // the cancelled tool results, in the SAME coroutine so the two
-            // rows cannot race on nextSortOrder. Text-only parts: tool_use
-            // inputs are not recoverable here (they live in the loop's
-            // allToolInputs) and the orphaned CANCELLED tool_results are
-            // already handled downstream by PayloadPairingGuard.
-            // [T-thinking-durability] The round's reasoning rides along
-            // (reasoningContent) whenever a row is written. Boundary (iOS
-            // #566/#569 parity, same as Case 0 / Case 2): a MANUAL Stop with
-            // no text yet → clean drop, no row; thinking-only rounds survive
-            // on the error/background path (persistPartialStreamTurn), which
-            // is where the user's "reasoning disappears in background" lived.
+            // [B21] Persist the round's tool_use blocks TOGETHER with their
+            // results: the old text-only parts made the UI cards VANISH
+            // after a reload (the pairing guard drops orphaned CANCELLED
+            // results with no matching tool_use). In-flight tools get the
+            // CANCELLED marker; tools that completed before the Stop keep
+            // their card with an explicit not-persisted note (their real
+            // result text lives in the loop buffer, not recoverable here).
             val roundText = currentLiveTurnText()
+            val roundToolUses = liveTurnToolUse ?: emptyList()
+            val parts = roundToolUses.map { tu ->
+                val inflight = cancelledIds.firstOrNull { it.first == tu.id }
+                if (inflight != null) {
+                    AgentContentPart.ToolResult(
+                        id = tu.id,
+                        name = tu.name,
+                        content = CANCELLED_MARKER,
+                        isError = true,
+                    )
+                } else {
+                    AgentContentPart.ToolResult(
+                        id = tu.id,
+                        name = tu.name,
+                        content = "(completed before the stop; result not persisted)",
+                        isError = false,
+                    )
+                }
+            }
             val textParts = roundText.takeIf { it.isNotEmpty() }?.let { rt ->
                 listOf(
                     AgentContentPart.Text(rt),
                     AgentContentPart.Text(STREAM_INTERRUPTED_REMINDER),
                 )
             }
-            if (textParts != null) {
+            val rowParts = (textParts ?: emptyList()) + roundToolUses + parts
+            if (rowParts.isNotEmpty()) {
                 agentHistory.add(
                     LLMMessage(
                         role = LLMMessage.Role.ASSISTANT,
                         content = roundText,
-                        contentParts = textParts,
+                        contentParts = rowParts,
                         reasoningContent = survivingThinking,
                     )
                 )
             }
             val sidNow = activeSessionId
             viewModelScope.launch(Dispatchers.IO) {
-                if (textParts != null) {
+                if (rowParts.isNotEmpty()) {
                     runCatching {
                         chatRepository.appendMessage(
-                            sidNow, "assistant", buildAssistantPartsJson(textParts),
+                            sidNow, "assistant", buildAssistantPartsJson(rowParts),
                             reasoningContent = survivingThinking,
                         )
                     }
                 }
-                persistToolResultMessage(parts)
             }
             _canResume.value = true
             return
