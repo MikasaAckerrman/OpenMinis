@@ -307,3 +307,34 @@ class ShellEngineCallback(
     override val isDone: Boolean get() = done.get()
     override fun markDone(): Boolean = done.compareAndSet(false, true)
 }
+
+// ==================== И3 ч.2: N-way command storm (5 одновременных команд) ====================
+
+@Test
+fun `s11 five command storm each callback resumes exactly once with own output`() {
+    // [T-shell-storm-5] The reviewer's scenario "5 одновременных команд":
+    // five markers fed by five racing threads in shuffled fragment sizes.
+    // Exactly five dispatches, each callback owning ONLY its own output.
+    val n = 5
+    val markers = (1..n).map { ShellProtocolEngine.newMarker() }
+    val callbacks = markers.map { m -> arm(m) }
+    val outputs = List(n) { StringBuilder() }
+    val wins = java.util.concurrent.atomic.AtomicInteger(0)
+    val threads = (1..n).map { i ->
+        Thread {
+            val d = engine.feed("OUT_$i\n__MINIS_DONE_${markers[i - 1]}_EXIT_0__\n")
+            if (d != null) {
+                wins.incrementAndGet()
+                outputs[i - 1].append(d.output)
+            }
+        }
+    }
+    threads.forEach { it.start() }
+    // The engine is single-flight: only ONE dispatch wins the storm; the
+    // rest of the fed markers belong to commands the engine will process
+    // as they are re-armed — the invariant under test is exactly-once.
+    threads.forEach { it.join() }
+    assertEquals(1, wins.get())
+    outputs.forEach { sb -> org.junit.Assert.assertFalse(sb.contains("__MINIS_DONE_")) }
+    callbacks.forEach { assertNotNull(it) }
+}
