@@ -257,6 +257,15 @@
 
 **Код telegram.py НЕ менялся** (drop-in); параллелизм per-chat (Semaphore+gather по рекомендации Грока) — отдельная задача после device-проверки миграции.
 
+
+## БЛОК 9 — vc146 СОБРАН (01.11): device-тест-раунд
+
+**Сборка:** run `41305942338` SUCCESS, артефакт app-clone-apk 41 986 689 Б (live до 08.11), versionCode 146. Триггер: коммит `cfee3dc8` [quick] (bump versionCode — правильный триггер вместо пустых коммитов: paths-ignore их пропускает).
+
+**Внутри vc146:** tg-login host-owned proot фикс • await_result (SHIP) • team-scoped board read • cancel scope=all (SHIP) • kurigram-пин • тест-инфра фиксы.
+
+**Device-план (инструкция передана юзеру для мобильного IDE):** установка vc146 → kurigram в PRoot → Т1 Send code (видимый результат) → Т2 await_result → Т3 cancel scope=all → Т4 баннер ошибок. Отчёт ожидается сюда; результаты → FIXES_TABLE (A-строки после подтверждения на устройстве).
+
 **Вскрыто сравнением с AndCode (наши дефекты → §B11-B14, полная карта — WORKLOG/COMPARE.md):** extractTar без zip-slip; tg-vault loopback без auth; плоский 10-мин кап scheduled; нет SecretRedaction-слоя.
 
 ### БЛОК 6.2 — Ревью-раунд 2 (01.11, внешний ревьюер): «Need evidence», блокеров нет; замечания закрыты
