@@ -113,6 +113,13 @@ object TelegramVaultManager {
      * "Not logged in"), never to an app crash.
      */
     fun ensureStarted(context: Context) {
+        // [T-tg-accounts] Stage A: register the single-account-era session in
+        // the accounts registry (idempotent; the vault server still reads the
+        // classic path until stage B moves it to per-account dirs).
+        runCatching {
+            TelegramAccountStore(vaultDir(context))
+                .migrateLegacyIfNeeded(File(vaultDir(context), "tg_session.session"))
+        }.onFailure { Log.w(TAG, "accounts migration failed: ${it.message}") }
         if (isAlive(context)) return
         thread(name = "tg-vault-start") {
             try {
