@@ -19,7 +19,10 @@ package com.openminis.app.offload
  */
 object TaskDedup {
 
-    /** Similarity at or above this = the same work (0.0..1.0). */
+    /** Similarity at or above this = the same work (0.0..1.0).
+     *  Calibrated on the auth-review pair: reworded duplicate ~0.86,
+     *  distinct-focus split ~0.56. */
+
     const val DUPLICATE_THRESHOLD = 0.70
 
     fun normalize(text: String): Set<String> =
