@@ -383,6 +383,31 @@ object SubagentExecutor {
      * spawn paths (deep-analysis fix: customs previously bypassed it).
      * Returns the refusal text, or null when the spawn may proceed.
      */
+    /**
+     * [T-agent-dedup] Single-spawn duplicate gate: the new task is compared
+     * (TaskDedup, mechanical token similarity) against this team's ACTIVE
+     * board rows — an in-flight agent already doing this exact work makes
+     * the spawn a waste of tokens and a source of contradictory output.
+     * Failed/COMPLETED rows are not matched: re-delegation stays allowed.
+     */
+    private suspend fun duplicateRefusal(
+        context: Context,
+        spawnerSessionId: String?,
+        task: String,
+    ): String? {
+        if (spawnerSessionId.isNullOrBlank()) return null
+        val active = runCatching {
+            com.openminis.app.data.db.ProviderDatabase.getInstance(context)
+                .agentBoardDao()
+                .activeTasksForTeam(spawnerSessionId, limit = 50)
+                .associate { it.id to (it.title + "\n" + it.description) }
+        }.getOrNull() ?: return null
+        val dup = TaskDedup.findDuplicate(task, active) ?: return null
+        return "spawn refused: an ACTIVE task already covers this exact work — " +
+            "${dup.first} (similarity ${(dup.second * 100).toInt()}%). Read its result via " +
+            "await_result/task_board instead of re-spawning, or reword it with a distinct focus."
+    }
+
     private suspend fun dependencyRefusal(
         context: Context,
         spawnerSessionId: String?,
@@ -602,6 +627,39 @@ object SubagentExecutor {
                     "or custom:<name> (see list_agents)"
             }
         }
+        // [T-agent-dedup] Mechanical duplicate gate, checked SEQUENTIALLY
+        // here (airtight — no parallel race): every spec against the team's
+        // ACTIVE board rows and against the EARLIER specs of this same
+        // batch. Two agents must never do the same work in parallel; a
+        // flagged spec is skipped at dispatch (duplicateOf) with an honest
+        // refusal naming the task it duplicates.
+        val boardTaskTexts = if (spawnerSessionId != null) {
+            runCatching {
+                com.openminis.app.data.db.ProviderDatabase.getInstance(context)
+                    .agentBoardDao()
+                    .activeTasksForTeam(spawnerSessionId, limit = 50)
+                    .associate { it.id to (it.title + "\n" + it.description) }
+            }.getOrNull() ?: emptyMap()
+        } else {
+            emptyMap()
+        }
+        val batchAccepted = mutableListOf<String>()
+        val duplicateRefusalBySpec = HashMap<Int, String>()
+        for (spec in agents) {
+            val dup = TaskDedup.findDuplicate(spec.task, boardTaskTexts)
+                ?: TaskDedup.findDuplicate(
+                    spec.task,
+                    batchAccepted.withIndex().associate { (i, t) -> "batch#$i" to t },
+                )
+            if (dup != null) {
+                duplicateRefusalBySpec[spec.index] =
+                    "spawn refused: duplicate task — ${dup.first} already covers this exact work " +
+                        "(similarity ${(dup.second * 100).toInt()}%). Read its result via task_board/" +
+                        "await_result instead of re-spawning, or reword it with a distinct focus."
+            } else {
+                batchAccepted.add(spec.task)
+            }
+        }
         val tasks = agents.mapIndexed { i, spec -> TaskConflictDetector.Task(i, spec.role, spec.task) }
         val plan = if (serial) {
             // Explicit serial: one task per batch, array order preserved.
@@ -648,6 +706,9 @@ object SubagentExecutor {
                     val spec = agents[task.index]
                     async(kotlinx.coroutines.Dispatchers.IO) {
                         parallelLimiter.withPermit {
+                            // [T-agent-dedup] Flagged duplicates never start:
+                            // honest refusal in their section.
+                            duplicateRefusalBySpec[task.index]?.let { return@withPermit it }
                             // [T-spawn-crash + event-matrix fix] EVERYTHING
                             // fallible is inside runCatching: buildGraphFor
                             // reads agent FILES (IOException possible) and used
@@ -959,6 +1020,8 @@ object SubagentExecutor {
             // bypassed the dependency gate — the schema promises enforcement
             // for EVERY spawn; a custom agent is not a dep loophole.
             dependencyRefusal(context, spawnerSessionId, dependsOn)?.let { return it }
+        // [T-agent-dedup] Mechanical duplicate gate (active board rows).
+        duplicateRefusal(context, spawnerSessionId, task)?.let { return it }
             return spawnCustom(
                 context, app, role.removePrefix("custom:").trim(), task, foreground, onBackgroundResult,
                 spawnerSessionId, depsJson(dependsOn),
@@ -975,6 +1038,8 @@ object SubagentExecutor {
         // does not run — better a deterministic refusal naming the wait-set
         // than a worker starting on top of half-done input.
         dependencyRefusal(context, spawnerSessionId, dependsOn)?.let { return it }
+        // [T-agent-dedup] Mechanical duplicate gate (active board rows).
+        duplicateRefusal(context, spawnerSessionId, task)?.let { return it }
 
         // [T-subagent-nesting] Resolve the delegation matrix BEFORE building
         // the graph: agentWorkerRole is a suspend DB read (IO-safe here —
