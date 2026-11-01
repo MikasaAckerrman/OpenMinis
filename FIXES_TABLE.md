@@ -221,6 +221,23 @@
 
 **Осталось в B1:** п.3 изоляция каталогов ребёнка (P0.4).
 
+
+## БЛОК 8 — KURIGRAM-МИГРАЦИЯ TELEGRAM-СТЕКА (01.11, ZCode; инициатива ревьюера + юзера)
+
+**Проблема:** оригинальный Pyrogram заморожен (2.0.106 на устройстве); свежие типы Telegram (истории/топики/реакции) не поддерживаются. Kurigram — drop-in форк: import-поверхность остаётся `pyrogram`.
+
+**Реализовано:**
+
+| # | Что | Где |
+|---|---|---|
+| 1 | Локальная верификация 2.2.26 на Python 3.14: import модуля, raw-функции telegram.py (SearchGlobal, InputMessagesFilterEmpty), сигнатура Client (name/api_id/api_hash/workdir — точная поверхность srv/*.py), py_compile telegram/tg-login/tg-join/tg-cursor | venv-less user-install, все PASS |
+| 2 | Пин стека: `srv/requirements.txt` (kurigram==2.2.26, python-socks[asyncio]>=2.4.0, pyaes-fallback; fast-путь kurigram[fast]=tgcrypto опционален на устройстве) + README-секция + инструкция отката (pyrogram==2.0.106) | repo `minis-mcp-servers`, коммит `d8ac9c6` |
+| 3 | Установка на устройство — ИНСТРУКЦИЯ передана юзеру для мобильного IDE (pip в PRoot + рестарт vault + read-only тул-проверка + отчёт) | device, ожидает прогона |
+
+**Важно:** pyaes на PyPI без wheel — ставится из sdist или копируется как pure-python пакет; песочный /tmp-сэндбокс ломает резолвер pip (output.json) — обход: скачивать wheels напрямую и ставить --no-deps.
+
+**Код telegram.py НЕ менялся** (drop-in); параллелизм per-chat (Semaphore+gather по рекомендации Грока) — отдельная задача после device-проверки миграции.
+
 **Вскрыто сравнением с AndCode (наши дефекты → §B11-B14, полная карта — WORKLOG/COMPARE.md):** extractTar без zip-slip; tg-vault loopback без auth; плоский 10-мин кап scheduled; нет SecretRedaction-слоя.
 
 ### БЛОК 6.2 — Ревью-раунд 2 (01.11, внешний ревьюер): «Need evidence», блокеров нет; замечания закрыты
