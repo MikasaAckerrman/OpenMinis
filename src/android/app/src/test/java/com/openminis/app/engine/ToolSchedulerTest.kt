@@ -211,8 +211,11 @@ class ToolSchedulerTest {
             sched("3", "file_read", "/b"),
         ))
         val deps = nodes.associate { it.call.id to it.dependsOn }
+        // The shell depends on everything earlier (hermetic). readB depends
+        // on the SHELL only - which transitively covers readA. Direct deps
+        // stay minimal: the graph is transitive by construction.
         assertEquals(setOf("1"), deps["2"])
-        assertEquals(setOf("1", "2"), deps["3"])
+        assertEquals(setOf("2"), deps["3"])
     }
 
     @Test
