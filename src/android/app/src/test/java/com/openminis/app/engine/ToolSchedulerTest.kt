@@ -214,7 +214,6 @@ fun `reactive global is hermetic in both directions`() {
     val deps = nodes.associate { it.call.id to it.dependsOn }
     assertEquals(setOf("1"), deps["2"])
     assertEquals(setOf("1", "2"), deps["3"])
-}
 
 @Test
 fun `reactive spawns run parallel with no deps`() {
@@ -225,4 +224,5 @@ fun `reactive spawns run parallel with no deps`() {
     val deps = nodes.associate { it.call.id to it.dependsOn }
     assertEquals(emptySet<String>(), deps["1"])
     assertEquals(emptySet<String>(), deps["2"])
+}
 }
