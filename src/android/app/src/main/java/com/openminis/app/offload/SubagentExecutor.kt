@@ -848,8 +848,9 @@ object SubagentExecutor {
      * Today nothing is in the registry in production, so this answers false
      * for every task. That is the truth, and the panel shows it.
      */
-    fun isCancellable(spawnId: String): Boolean {
+    fun isCancellable(spawnId: String, includeForeground: Boolean = false): Boolean {
         if (graphScopes.isCancellable(spawnId)) return true
+        if (includeForeground && foregroundRuns[spawnId]?.isActive == true) return true
         val entry = activeBackground[spawnId] ?: return false
         return entry.job.isActive
     }
