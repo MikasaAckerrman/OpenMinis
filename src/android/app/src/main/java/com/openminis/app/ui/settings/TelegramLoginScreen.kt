@@ -26,6 +26,8 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.openminis.app.MinisApp
+import com.openminis.app.sandbox.TelegramAccountStore
+import com.openminis.app.sandbox.TgAccount
 import com.openminis.app.sandbox.TelegramLoginRunner
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch

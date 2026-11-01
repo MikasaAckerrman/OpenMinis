@@ -10988,7 +10988,7 @@ class ChatViewModel(
                     "[Send] aborted pre-launch (Stop during delivery, epoch $sendEpochAtClaim -> $turnSendEpoch)",
                 )
                 _isStreaming.releaseStreamSlot()
-                return
+                return@launch
             }
             // Start agent loop with fallback. _isStreaming was set synchronously at top.
             streamLaunched = true

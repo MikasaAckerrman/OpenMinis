@@ -648,14 +648,14 @@ object SubagentExecutor {
         }
         val batchAccepted = mutableListOf<String>()
         val duplicateRefusalBySpec = HashMap<Int, String>()
-        for (spec in agents) {
+        agents.forEachIndexed { specIdx, spec ->
             val dup = TaskDedup.findDuplicate(spec.task, boardTaskTexts)
                 ?: TaskDedup.findDuplicate(
                     spec.task,
                     batchAccepted.withIndex().associate { (i, t) -> "batch#$i" to t },
                 )
             if (dup != null) {
-                duplicateRefusalBySpec[spec.index] =
+                duplicateRefusalBySpec[specIdx] =
                     "spawn refused: duplicate task — ${dup.first} already covers this exact work " +
                         "(similarity ${(dup.second * 100).toInt()}%). Read its result via task_board/" +
                         "await_result instead of re-spawning, or reword it with a distinct focus."
