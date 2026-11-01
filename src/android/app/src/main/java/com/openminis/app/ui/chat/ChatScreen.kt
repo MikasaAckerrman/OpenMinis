@@ -2814,10 +2814,15 @@ fun ChatScreen(
             }
 
             // Messages + scroll-to-bottom button
+            // [B22] Measured composer height lives OUTSIDE the messages Box:
+            // both the LazyColumn reserve (inside) and the composer modifier
+            // (below) read it.
+            var composerHeightPx by remember { mutableStateOf(0) }
             Box(modifier = Modifier.weight(1f)) {
                 var toolBarHeightPx by remember { mutableStateOf(0) }
                 val density = LocalDensity.current
                 val toolBarHeightDp = with(density) { toolBarHeightPx.toDp() }
+                val composerHeightDp = with(density) { composerHeightPx.toDp() }
                 // T166 / T170 / T173: bottomReserve must clear the visible
                 // top of the floating tool-status overlay. Layout primitives
                 // come from FloatingToolStatusBar:
@@ -2929,8 +2934,16 @@ fun ChatScreen(
                 // (user reported "the bottom of the text is slightly clipped"). The floating-tools branch
                 // already reserves visualOverlayHeight (65dp) + buffer and
                 // was not part of the report; keep its +14 buffer.
+                // [B22] The reserve is now MEASURED: the old fixed 20dp
+                // under-reserved as soon as the input grew to multiple
+                // lines (or navigation insets shifted) — the last lines of
+                // the reply hid under the composer and the scroll bounced
+                // back. Floating-tools branch adds the overlay height ON TOP
+                // of the composer height (the overlay floats above the
+                // input bar's upper edge).
                 val bottomReserve =
-                    if (hasFloatingTools) visualOverlayHeight + 14.dp else 20.dp
+                    if (hasFloatingTools) visualOverlayHeight + composerHeightDp + 8.dp
+                    else if (composerHeightPx > 0) composerHeightDp + 8.dp else 20.dp
                 // T174: when bottomReserve changes (toolbar appearing /
                 // disappearing or thumbnail height shift), re-pin to bottom
                 // if we are currently following. Without this, the new
@@ -4613,6 +4626,7 @@ fun ChatScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .navigationBarsPadding()
+                    .onGloballyPositioned { composerHeightPx = it.size.height }
                     .padding(horizontal = 12.dp)
                     .padding(top = 2.dp, bottom = 8.dp),
             ) {

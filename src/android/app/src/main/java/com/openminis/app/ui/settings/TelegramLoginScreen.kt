@@ -58,12 +58,13 @@ fun TelegramLoginScreen(
     val scope = rememberCoroutineScope()
     val app = context.applicationContext as? MinisApp
 
-    // Telegram dark palette
-    val bg = Color(0xFF17212B)
-    val surface = Color(0xFF232E3C)
+    // Telegram dark palette — matte Grok/TG style (ROADMAP_MEMORY §И-style)
+    val bg = Color(0xFF0D0F12)
+    val surface = Color(0xFF16191E)
+    val border = Color(0xFF262A33)
     val accent = Color(0xFF2AABEE)
     val textPrimary = Color(0xFFFFFFFF)
-    val textSecondary = Color(0xFF708499)
+    val textSecondary = Color(0xFF8B95A5)
 
     var loggedIn by remember { mutableStateOf<Boolean?>(null) }
     // [T-telegram-login-state] The sign-in state is kept on disk, so a
@@ -116,8 +117,22 @@ fun TelegramLoginScreen(
 
     // [T-telegram-login-state] A finished sign-in leaves nothing behind.
     LaunchedEffect(loggedIn) {
-        if (loggedIn == true) loginStore.clear()
+        if (loggedIn == true) {
+            loginStore.clear()
+            // [T-tg-accounts] A new account just signed in: refresh the cards
+            // (the profile fills via tg_whoami on the server side).
+            addingAccount = false
+            reloadAccounts()
+        }
     }
+
+    // [T-tg-accounts] The account cards (B17 stage C UI).
+    val vaultDir = remember { File(context.filesDir, "tg-vault") }
+    val accountStore = remember { TelegramAccountStore(vaultDir) }
+    var accounts by remember { mutableStateOf<List<TgAccount>>(emptyList()) }
+    var addingAccount by remember { mutableStateOf(false) }
+    fun reloadAccounts() { accounts = accountStore.load() }
+    LaunchedEffect(Unit) { reloadAccounts() }
 
     // Check initial status
     LaunchedEffect(Unit) {
@@ -226,6 +241,61 @@ fun TelegramLoginScreen(
         )
         Spacer(Modifier.height(32.dp))
 
+        // [T-tg-accounts] Account cards (B17 stage C): every registered
+        // account with an initials avatar, @username/phone and the exclusive
+        // active radio. Deleting an account is deliberately NOT offered to
+        // agents — only the user decides that here.
+        if (accounts.isNotEmpty()) {
+            Spacer(Modifier.height(16.dp))
+            accounts.forEach { acc ->
+                Surface(
+                    color = surface,
+                    shape = RoundedCornerShape(12.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, border),
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .background(if (acc.isActive) accent else border, CircleShape),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                (acc.firstName?.take(1) ?: acc.username?.take(1) ?: "?").uppercase(),
+                                color = Color.White,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold,
+                            )
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                acc.username?.let { "@$it" } ?: (acc.firstName ?: "Account"),
+                                color = textPrimary,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Medium,
+                            )
+                            if (!acc.phone.isNullOrBlank()) {
+                                Text(acc.phone, color = textSecondary, fontSize = 12.sp)
+                            }
+                        }
+                        RadioButton(
+                            selected = acc.isActive,
+                            onClick = {
+                                accountStore.setActive(acc.dirName)
+                                accounts = accountStore.load()
+                            },
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+        }
+
         if (loggedIn == true) {
             // Logged in card
             Surface(
@@ -245,6 +315,16 @@ fun TelegramLoginScreen(
                     }
                 }
             }
+        } else if (!addingAccount && accounts.isNotEmpty()) {
+            // [T-tg-accounts] Accounts are managed above (cards + radio):
+            // offer adding another one without repeating the login flow.
+            Button(
+                onClick = { addingAccount = true; loggedIn = null },
+                colors = ButtonDefaults.buttonColors(containerColor = surface),
+                shape = RoundedCornerShape(12.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, border),
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+            ) { Text("+ Add account", color = textPrimary) }
         } else if (showCreds == null) {
             // Checking env vars / saved state — show a spinner-free placeholder
             // (LaunchedEffect below fills it instantly).
@@ -262,7 +342,7 @@ fun TelegramLoginScreen(
                     focusedTextColor = textPrimary,
                     unfocusedTextColor = textPrimary,
                     focusedBorderColor = accent,
-                    unfocusedBorderColor = textSecondary.copy(alpha = 0.3f),
+                    unfocusedBorderColor = border,
                 ),
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -276,7 +356,7 @@ fun TelegramLoginScreen(
                     focusedTextColor = textPrimary,
                     unfocusedTextColor = textPrimary,
                     focusedBorderColor = accent,
-                    unfocusedBorderColor = textSecondary.copy(alpha = 0.3f),
+                    unfocusedBorderColor = border,
                 ),
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -299,7 +379,7 @@ fun TelegramLoginScreen(
                     focusedTextColor = textPrimary,
                     unfocusedTextColor = textPrimary,
                     focusedBorderColor = accent,
-                    unfocusedBorderColor = textSecondary.copy(alpha = 0.3f),
+                    unfocusedBorderColor = border,
                 ),
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -334,7 +414,7 @@ fun TelegramLoginScreen(
                     focusedTextColor = textPrimary,
                     unfocusedTextColor = textPrimary,
                     focusedBorderColor = accent,
-                    unfocusedBorderColor = textSecondary.copy(alpha = 0.3f),
+                    unfocusedBorderColor = border,
                 ),
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -362,7 +442,7 @@ fun TelegramLoginScreen(
                     focusedTextColor = textPrimary,
                     unfocusedTextColor = textPrimary,
                     focusedBorderColor = accent,
-                    unfocusedBorderColor = textSecondary.copy(alpha = 0.3f),
+                    unfocusedBorderColor = border,
                 ),
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -391,7 +471,7 @@ fun TelegramLoginScreen(
                     focusedTextColor = textPrimary,
                     unfocusedTextColor = textPrimary,
                     focusedBorderColor = accent,
-                    unfocusedBorderColor = textSecondary.copy(alpha = 0.3f),
+                    unfocusedBorderColor = border,
                 ),
                 modifier = Modifier.fillMaxWidth(),
             )
