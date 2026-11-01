@@ -196,6 +196,29 @@
 
 **Вердикт раунда-3 (01.11): SHIP, blocking issues отсутствуют.** Ревьюер подтвердил: изоляция закрыта (чужой spawn_id → null, утечки нет), takeSafe защищает UTF-16 на обоих сайтах, усечение декларируется, fail-fast без поллинга, finishTask атомарен (читатель видит либо живой статус, либо терминальный с гарантированным результатом), тесты изоляции и суррогатов PASSED. [INFO]-хвост: неиспользуемый `taskById(id)` удалить при следующей ревизии DAO (забрано в B1.3-коммит). B1.1 (await_result) — ЗАВЕРШЕНО: код + ревью + CI; device-проверка после следующей согласованной сборки APK.
 
+
+## БЛОК 7 — B1.3 cancel scope=all: ЖЁСТКАЯ ОТМЕНА FOREGROUND-ДЕТЕЙ (01.11, ZCode)
+
+**Проблема (B1 п.2):** `cancel_subagent` умел останавливать только зарегистрированных фоновых спавнов и graph-прогоны. Батч-агенты `spawn_many` (foreground-дети) не имели учёта Job по spawnId вообще.
+
+**Разведка (факты):** `graphScopes.run` оборачивает ТОЛЬКО `run_graph` (SubagentExecutor.kt ~1016, taskId="graph-…"); foreground-спавн из MAIN-чата — это сам ход (работает в job вызывающего; отменять его тулом = отменить ход — запрещено контрактом AgentGraphScopes); foreground-спавн из воркера идёт через launchBackground (A10) и уже в activeBackground; батч-дети — не учтены нигде.
+
+**Решение (референс AndroidHarness SubagentRuns: Map<id,Job> + honest false):**
+
+| # | Правка | Файл |
+|---|---|---|
+| 1 | Реестр `foregroundRuns` (spawnId→Job) с контрактом «никогда не держит job хода»; батч-дети регистрируются ПОД СВОЙ child Job (Job(parent=async)) ДО board-записи RUNNING (runSingle) — гонка «отмена до регистрации» закрыта порядком; снятие в finally по паре (key,value); async-job сам никогда не канселится (await сиблингов жив) | `offload/SubagentExecutor.kt` |
+| 2 | `cancelSpawn(spawnId, includeForeground)` + `isCancellable(spawnId, includeForeground=false)` — прежние подписи/поведение сохранены (панель-проба не менялась) | там же |
+| 3 | Тул `cancel_subagent` + параметр `scope=background\|all` (дефолт прежний); ChatViewModel парсит и зовёт cancelSpawn; отмена одного батч-ребёнка НЕ трогает siblings (отчёт через обычный onAgentDone) | `tools/SubagentTools.kt`, `ui/chat/ChatViewModel.kt` |
+| 4 | TOOL_NOTES обновлены | `tools/AgentWorkerPrompt.kt` |
+| 5 | Мёртвый `taskById` удалён из DAO (INFO ревьюера раунда-3) | `data/db/AgentBoardDao.kt` |
+
+**Тесты:** SubagentCancelTest +4 (scope=all останавливает ребёнка; дефолт-scope его не трогает; finished-ребёнок — честный false; isCancellable видит только под scope=all).
+
+**Коммит:** `a3c3e9cb` (7 файлов, +165/−25); push в оба репо отложен DNS-сбоем машины — фоновый ретрай-цикл, SHA сверить ls-remote после доставки; CI [test] запустится пушем.
+
+**Осталось в B1:** п.3 изоляция каталогов ребёнка (P0.4).
+
 **Вскрыто сравнением с AndCode (наши дефекты → §B11-B14, полная карта — WORKLOG/COMPARE.md):** extractTar без zip-slip; tg-vault loopback без auth; плоский 10-мин кап scheduled; нет SecretRedaction-слоя.
 
 ### БЛОК 6.2 — Ревью-раунд 2 (01.11, внешний ревьюер): «Need evidence», блокеров нет; замечания закрыты
