@@ -40,7 +40,8 @@ android {
         // device runs the vc55 clone APK (built before f71cac0 reverted the
         // bump), and Android refuses to install vc54 over vc55. 56 clears it.
         // vc148 r3: accounts block order fixed (single declaration before
-        // the effects) - rebuild for the device round.
+        // the effects) - rebuild for the device round. Full-stage verification
+        // build (all stage fixes compiled and packaged together).
         versionCode = 148
         // vc69: 97 commits — kotlincheck infra + strict preflight (types/enums,
         // parallel-batch gate) + atomic tool budget + budget footer + symmetric
