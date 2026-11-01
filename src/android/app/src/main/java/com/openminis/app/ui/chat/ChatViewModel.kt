@@ -16455,12 +16455,20 @@ class ChatViewModel(
         } else {
             // Read-site cap over the writer's AgentBoardRecorder.RESULT_CAP:
             // rows written before that cap existed may still sit uncapped in
-            // the DB for up to the 30-day prune window.
+            // the DB for up to the 30-day prune window. takeSafe never cuts
+            // inside a surrogate pair, and a cut is DECLARED in the text
+            // instead of handed over silently.
             val readCap = 4000
+            val raw = task.resultArtifact?.takeIf { it.isNotBlank() }
+            val body = raw?.let { logic.takeSafe(it, readCap) }
+                ?: "(no result stored — the run ended without output)"
+            val cutNote = if (raw != null && raw.length > body.length) {
+                "\n… (truncated at $readCap chars — full text: task_board)"
+            } else {
+                ""
+            }
             ToolExecutionResult(
-                "spawn $spawnId (${task.roleRequired}) ${task.status}:\n" +
-                    (task.resultArtifact?.takeIf { it.isNotBlank() }?.take(readCap)
-                        ?: "(no result stored — the run ended without output)"),
+                "spawn $spawnId (${task.roleRequired}) ${task.status}:\n$body$cutNote",
                 task.status == logic.STATUS_COMPLETED,
             )
         }

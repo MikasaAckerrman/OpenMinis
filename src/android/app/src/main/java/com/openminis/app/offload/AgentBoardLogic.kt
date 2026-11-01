@@ -20,6 +20,20 @@ import com.openminis.app.data.db.AgentTaskEntity
  */
 object AgentBoardLogic {
 
+    /**
+     * [T-agent-await-result] take() that never ends mid-surrogate: a plain
+     * String.take can cut between the two Chars of a supplementary code
+     * point (emoji etc.), leaving a dangling surrogate that serializes as
+     * U+FFFD. Backs off one Char when the cut lands on a high surrogate —
+     * its low partner always follows immediately, so one step is exact.
+     */
+    fun takeSafe(s: String, max: Int): String {
+        if (s.length <= max) return s
+        var end = max
+        if (end > 0 && Character.isHighSurrogate(s[end - 1])) end--
+        return s.substring(0, end)
+    }
+
     const val STATUS_PENDING = "PENDING"
     const val STATUS_RUNNING = "RUNNING"
     const val STATUS_COMPLETED = "COMPLETED"

@@ -125,7 +125,9 @@ internal object AgentBoardRecorder {
                 to = to,
                 byAgentId = assignedAgentId,
                 reason = outcome.reason,
-                result = result.take(RESULT_CAP),
+                // takeSafe: a cut inside a surrogate pair would park a
+                // dangling U+FFFD in the durable row.
+                result = AgentBoardLogic.takeSafe(result, RESULT_CAP),
                 toAgentId = teamId,
                 messageType = outcome.messageType,
                 eventType = outcome.eventType,

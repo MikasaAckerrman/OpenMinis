@@ -36,6 +36,17 @@ class AgentBoardLogicTest {
     )
 
     @Test
+    fun `takeSafe never splits a surrogate pair`() {
+        val s = "a" + "\uD83D\uDE00" + "b" // 'a', emoji as a surrogate pair, 'b' — 4 chars
+        assertEquals(s, AgentBoardLogic.takeSafe(s, 10))
+        // Cut lands on the high surrogate: back off to keep the pair whole.
+        assertEquals("a", AgentBoardLogic.takeSafe(s, 2))
+        // Cut lands on the low surrogate: the pair is complete, keep it.
+        assertEquals("a" + "\uD83D\uDE00", AgentBoardLogic.takeSafe(s, 3))
+        assertEquals("", AgentBoardLogic.takeSafe(s, 0))
+    }
+
+    @Test
     fun `independent pending tasks are all ready`() {
         val tasks = listOf(task("a"), task("b"), task("c"))
         assertEquals(listOf("a", "b", "c"), AgentBoardLogic.readyTaskIds(tasks))
