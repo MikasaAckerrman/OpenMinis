@@ -12226,9 +12226,14 @@ class ChatViewModel(
                 if (!streamLaunched) {
                     AppLogger.info(TAG_STREAM, "retryLast _isStreaming=false (setup aborted)")
                     _isStreaming.value = false
+                    com.openminis.app.service.SessionConcurrencyManager.unlockSession(activeSessionId)
+                } else {
+                    try {
+                        streamJob?.join()
+                    } finally {
+                        com.openminis.app.service.SessionConcurrencyManager.unlockSession(activeSessionId)
+                    }
                 }
-                // [B18 SessionMutex] Release on every exit (normal/cancel/error).
-                com.openminis.app.service.SessionConcurrencyManager.unlockSession(activeSessionId)
             }
         }
     }
