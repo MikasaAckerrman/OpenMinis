@@ -12041,6 +12041,13 @@ class ChatViewModel(
             AppLogger.warning(TAG_STREAM, "retryLast rejected: the run slot is taken")
             return
         }
+        // [B18 SessionMutex] Same exclusivity as sendMessage: a retry never
+        // runs in parallel with another turn of this chat.
+        if (!com.openminis.app.service.SessionConcurrencyManager.tryLockSession(activeSessionId)) {
+            _isStreaming.releaseStreamSlot()
+            AppLogger.warning(TAG_STREAM, "retryLast rejected: session lock busy (a turn is already running in this chat)")
+            return
+        }
         streamStartedAtMs = System.currentTimeMillis()
         lastStreamActivityMs = streamStartedAtMs
 
@@ -12220,6 +12227,8 @@ class ChatViewModel(
                     AppLogger.info(TAG_STREAM, "retryLast _isStreaming=false (setup aborted)")
                     _isStreaming.value = false
                 }
+                // [B18 SessionMutex] Release on every exit (normal/cancel/error).
+                com.openminis.app.service.SessionConcurrencyManager.unlockSession(activeSessionId)
             }
         }
     }
