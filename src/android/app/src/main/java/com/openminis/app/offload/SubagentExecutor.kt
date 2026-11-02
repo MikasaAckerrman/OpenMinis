@@ -97,7 +97,11 @@ object SubagentExecutor {
      * its turn back instead of waiting forever.
      */
     private const val AWAIT_CHILD_RESULT_MS = 600_000L
-    private val parallelLimiter = Semaphore(MAX_PARALLEL)
+    // [B20-followup] Dynamic gates: the ceiling is re-read on EVERY
+    // acquire (AgentConcurrency), so DeviceGuard's thermal/RAM clamp
+    // applies to new spawns without re-creating the gate. Permits held
+    // by running agents are never revoked (reviewer invariant).
+    private val parallelLimiter = com.openminis.app.engine.DynamicGate { com.openminis.app.engine.AgentConcurrency.parallel }
 
     /**
      * [T-subagent-background-ceiling] The background ceiling, enforced.
@@ -112,7 +116,7 @@ object SubagentExecutor {
      * A semaphore makes the test and the reservation one step, the same way
      * parallelLimiter already does for the foreground limit.
      */
-    private val backgroundLimiter = Semaphore(MAX_BACKGROUND)
+    private val backgroundLimiter = com.openminis.app.engine.DynamicGate { com.openminis.app.engine.AgentConcurrency.background }
 
     /** [T-spawn-many] One agent of a spawn_many batch. */
     data class SpawnSpec(val role: String, val task: String)

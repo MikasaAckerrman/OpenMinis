@@ -10556,6 +10556,15 @@ class ChatViewModel(
         // during the prepare window bumps the counter and this send aborts
         // right before the real streamJob would launch.
         val sendEpochAtClaim = turnSendEpoch
+        // [B18 SessionMutex] Exclusive per-session turn lock: two turns in
+        // ONE chat session must never run in parallel (double-click, UI/
+        // background race). Busy = the same enqueue path as the global slot.
+        if (!com.openminis.app.service.SessionConcurrencyManager.tryLockSession(activeSessionId)) {
+            _isStreaming.releaseStreamSlot()
+            AppLogger.info(TAG_STREAM, "[Send] branch=ENQUEUE (session lock busy — a turn is already running in this chat)")
+            enqueuePrompt(text)
+            return
+        }
         AppLogger.info(
             TAG_STREAM,
             "send claims the run slot (sync, sid=$activeSessionId, won=$slotClaimed)",
@@ -10595,6 +10604,7 @@ class ChatViewModel(
             // [T-stop-delivery] The slot was claimed above: a plain return
             // here leaked it (Stop button stuck on with no turn behind it).
             _isStreaming.releaseStreamSlot()
+            com.openminis.app.service.SessionConcurrencyManager.unlockSession(activeSessionId)
             return
         }
         if (!requireFullSessionHistory()) {
@@ -10604,6 +10614,7 @@ class ChatViewModel(
             }
             // [T-stop-delivery] Same slot leak as the DROP branch above.
             _isStreaming.releaseStreamSlot()
+            com.openminis.app.service.SessionConcurrencyManager.unlockSession(activeSessionId)
             return
         }
         if (_isCompacting.value) {
@@ -10988,6 +10999,7 @@ class ChatViewModel(
                     "[Send] aborted pre-launch (Stop during delivery, epoch $sendEpochAtClaim -> $turnSendEpoch)",
                 )
                 _isStreaming.releaseStreamSlot()
+                com.openminis.app.service.SessionConcurrencyManager.unlockSession(activeSessionId)
                 return@launch
             }
             // Start agent loop with fallback. _isStreaming was set synchronously at top.
@@ -11303,6 +11315,16 @@ class ChatViewModel(
                                 }
                             }
                         }
+                    }
+                    // [B18 SessionMutex] The setup coroutine is the turn's lock
+                    // holder. join keeps it alive for the whole streamJob (a
+                    // screen close mid-turn cancels both together), and the
+                    // unlock covers every exit: normal, cancel, error.
+                    try {
+                        streamJob?.join()
+                    } finally {
+                        com.openminis.app.service.SessionConcurrencyManager
+                            .unlockSession(activeSessionId)
                     }
                 }
             }

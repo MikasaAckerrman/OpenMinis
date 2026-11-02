@@ -3,6 +3,7 @@ package com.openminis.app.service
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 
 /**
@@ -77,10 +78,38 @@ object SessionConcurrencyManager {
 
     fun isSuspended(sessionId: String): Boolean = sessionId in _suspendedSessions.value
 
+    // [B18 SessionMutex] Per-session EXCLUSIVE turn lock: in one chat session
+    // exactly one dialogue turn may run at a time. The global semaphore above
+    // bounds the process-wide pool; without this map two turns targeting the
+    // SAME session (double-click, UI/background race) both acquire slots and
+    // write one Room history concurrently — "второй Minis в том же чате".
+    private val sessionMutexes = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
+
+    /**
+     * Try to take the exclusive turn lock for [sessionId]. False = a turn is
+     * already running in this session: the caller must enqueue or refuse,
+     * NEVER proceed in parallel.
+     *
+     * Mutexes are REUSABLE (kotlinx Mutex unlocks back to usable state), so
+     * entries stay in the map and serve every later turn of that session —
+     * growth is bounded by distinct sessions per process, and pruning entries
+     * with suspended waiters would silently break the exclusivity invariant.
+     */
+    fun tryLockSession(sessionId: String): Boolean {
+        val mutex = sessionMutexes.computeIfAbsent(sessionId) { Mutex() }
+        return mutex.tryLock()
+    }
+
+    /** Release the exclusive turn lock. Idempotent per holder discipline. */
+    fun unlockSession(sessionId: String) {
+        sessionMutexes[sessionId]?.unlock()
+    }
+
     /** Test-only reset; callers must first finish/cancel all test coroutines. */
     internal fun resetForTest() {
         synchronized(stateLock) {
             semaphore = Semaphore(MAX_CONCURRENT)
+            sessionMutexes.clear()
             _runningSessions.value = emptySet()
             _suspendedSessions.value = emptyList()
         }
