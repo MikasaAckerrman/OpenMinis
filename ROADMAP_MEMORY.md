@@ -86,3 +86,9 @@
 - **Цикл сборки выловил 4 косяка** (все починены, каждый коммитом): spec.index → forEachIndexed; return → return@launch; импорты аккаунтов; reactive-тесты вне класса (перезапись Write).
 - **Грабли-новички**: маркер сборки в сообщении коммита забывать = skipped; heredoc-append после скобки класса = 3 сломанных состояния (лечение — Write целиком).
 - **Далее**: полное ревью ревьюера всего батча → правки → device-раунд v2 (Т1-Т4 + точный текст ошибки Send code на vc148).
+
+### 02.11 — B23 (краш на математике) закрыт по коду
+- ROM без WebView-провайдера: KatexWebViewPool крашился на WebView() (MissingWebViewPackageException через produceState).
+- Фикс (4152cf01): одноразовый флаг webviewUnavailable + runCatching на создании → math рендерится monospace-фолбэком (ветка уже была в Compose).
+- «Жрёт»-симптом: exception-per-frame produceState-ретрай убит тем же флагом.
+- Опция C (установить WebView на ROM через root) — решение юзера, вернёт полный KaTeX-рендер.
