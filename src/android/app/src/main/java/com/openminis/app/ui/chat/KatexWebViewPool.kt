@@ -92,6 +92,14 @@ internal object KatexWebViewPool {
         isDark: Boolean,
         fontSizePx: Int,
     ): KatexRenderResult? {
+        // [B23] No WebView provider on the device (de-Googled ROMs): the
+        // WebView() constructor throws MissingWebViewPackageException, which
+        // used to propagate through produceState and CRASH the app on every
+        // session containing math. Gate + one-time probe: once creation
+        // fails, every render returns null instantly and the Compose side
+        // falls back to monospace raw LaTeX (the existing null branch) —
+        // no per-frame exception retries, no crash.
+        if (webviewUnavailable) return null
         val wv = ensureWebView(appContext) ?: return null
         if (!awaitReady()) return null
 
@@ -118,8 +126,29 @@ internal object KatexWebViewPool {
 
     private suspend fun ensureWebView(appContext: Context): WebView? {
         webView?.let { return it }
-        return runOnMainSync { createWebView(appContext) }
+        // [B23] Creation is the crash boundary: MissingWebViewPackageException
+        // (no WebView provider on the ROM) escapes the main-thread hop via
+        // completeExceptionally. Catch it ONCE here, mark the pool, and let
+        // every later render short-circuit to the text fallback.
+        return runCatching { runOnMainSync { createWebView(appContext) } }
+            .getOrElse { t ->
+                webviewUnavailable = true
+                android.util.Log.w(
+                    TAG,
+                    "WebView unavailable (KaTeX falls back to plain text): " +
+                        "${t.javaClass.simpleName}: ${t.message}",
+                )
+                null
+            }
     }
+
+    /**
+     * [B23] True once WebView creation has failed (no provider on the ROM).
+     * Volatile: renderInternal checks it on EVERY math render, so the
+     * failure is paid exactly once, not per frame.
+     */
+    @Volatile
+    private var webviewUnavailable = false
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun createWebView(appContext: Context): WebView? {
