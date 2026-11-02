@@ -43,22 +43,22 @@ class DynamicGateTest {
             gate.tryAcquire(),
         )
         assertEquals("holders are never revoked", 2, gate.activeCount())
-        gate.release()
+        gate.release() // 2 -> 1 active; ceiling=1 so gate is still full
+        assertFalse("still full at ceiling=1", gate.tryAcquire())
+        gate.release() // 1 -> 0 active; ceiling=1 now has room
         assertTrue(gate.tryAcquire())
     }
 
     @Test
     fun `withPermit waits for the ceiling to open`() = runTest {
-        var ceiling = 1
+        val ceiling = 1
         val gate = DynamicGate({ ceiling }, pollMs = 1)
         val done = mutableListOf<Int>()
         val jobs = listOf(
             async { gate.withPermit { delay(10); done.add(1) } },
             async { gate.withPermit { done.add(2) } },
         )
-        // Join with the ceiling still 1: the second waiter completes only
-        // after the first releases.
-        ceiling = 2
+        // With ceiling=1, the second waiter completes only after the first releases.
         jobs.forEach { it.join() }
         assertEquals(listOf(1, 2), done)
     }
