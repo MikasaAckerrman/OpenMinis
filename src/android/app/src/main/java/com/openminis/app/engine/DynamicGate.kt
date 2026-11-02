@@ -24,6 +24,8 @@ class DynamicGate(
     /** Poll interval for over-ceiling waiting (ms). */
     private val pollMs: Long = 50,
 ) {
+    constructor(ceiling: () -> Int) : this(ceiling, 50L)
+
     private val active = AtomicInteger(0)
 
     /** Non-suspending probe for refuse-style call sites. */

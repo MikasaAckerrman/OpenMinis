@@ -68,8 +68,6 @@
 - **B23: Защита от краша на математике без WebView-провайдера (4152cf01):** В `KatexWebViewPool.kt` добавлен флаг `webviewUnavailable` и `runCatching` на создании WebView; при отсутствии WebView в системе сбой перехватывается один раз, дальнейшие вызовы сразу возвращают `null`, активируя штатный Compose monospace-фолбэк и устраняя бесконечные ретраи `produceState`.
 - **B18: Изоляция сессий SessionMutex (4faa17d9, 29a42733):** В `SessionConcurrencyManager.kt` реализован эксклюзивный мьютекс сессии `tryLockSession` / `unlockSession` (с защитой `isLocked + runCatching`), исключающий одновременный запуск двух ходов в одном чате; закрыты 4 пути утечки замка в `ChatViewModel.kt`; 5 unit-тестов в `SessionMutexTest`.
 - **B20-followup: Динамический лимитер DynamicGate (4faa17d9):** Реализован `DynamicGate` с динамической переоценкой `AgentConcurrency.parallel/background`; зажимает слоты при нагреве устройства без принудительной отмены работающих агентов; заменены фиксированные семафоры в `SubagentExecutor.kt`; 5 unit-тестов в `DynamicGateTest`.
+- **B18 проводка и удержание замка в `retryLast` (bbce23fd, f72c7a20):** `retryLast` захватывает `tryLockSession(activeSessionId)` и удерживает блокировку через `streamJob?.join()` в блоке `finally`, исключая преждевременное освобождение до завершения фонового потока.
+- **Стабильный релиз vc149 (`f72c7a20`):** Полный проверенный батч: B15 (FSM стоп-кнопки + защита эпох turnSendEpoch) + B12 (Bearer auth на порту 7824) + И3 (DAG-планировщик) + TaskDedup (дедупликация задач 0.70) + B17-A/B/C (мультиаккаунт Telegram + матовый интерфейс) + B20 (DeviceGuard + DynamicGate) + B21 (сохранение карточек тулов при Стоп) + B22 (динамический скролл-резерв) + B23 (защита от краша KaTeX без WebView) + B18 (SessionMutex). versionCode бампнут до 149.
 - Консилиум-правило (AGENTS.md): застрял — запрос юзеру на опрос внешних оракулов, не угадывать.
-
-
-
-
