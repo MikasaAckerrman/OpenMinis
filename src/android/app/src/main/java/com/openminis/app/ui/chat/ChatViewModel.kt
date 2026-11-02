@@ -10594,6 +10594,9 @@ class ChatViewModel(
                 forceCancelStaleStream()
             }
             enqueuePrompt(text)
+            // [B18] The session lock was taken before the slot branch: every
+            // early return below the lock releases BOTH.
+            com.openminis.app.service.SessionConcurrencyManager.unlockSession(activeSessionId)
             return
         }
         // T180: allow attachments-only sends (no caption). Mirrors iOS, where
@@ -10624,6 +10627,8 @@ class ChatViewModel(
             // runs in compactAll's finally block).
             AppLogger.info(TAG_STREAM, "[Send] branch=ENQUEUE (compact running)")
             enqueuePrompt(text)
+            // [B18] The session lock was taken before the compact branch.
+            com.openminis.app.service.SessionConcurrencyManager.unlockSession(activeSessionId)
             return
         }
         AppLogger.info(TAG_STREAM, "[Send] branch=DIRECT TURN (idle — sending now)")
@@ -10690,6 +10695,9 @@ class ChatViewModel(
             // [T-stream-slot-claim] The slot was taken at the top of this
             // function, so a path that gives up here must give it back.
             _isStreaming.releaseStreamSlot()
+            // [B18 SessionMutex] The lock was taken with the slot.
+            com.openminis.app.service.SessionConcurrencyManager
+                .unlockSession(activeSessionId)
             return
         }
         var provider: LLMProvider = initialProvider
@@ -11316,10 +11324,14 @@ class ChatViewModel(
                             }
                         }
                     }
-                    // [B18 SessionMutex] The setup coroutine is the turn's lock
-                    // holder. join keeps it alive for the whole streamJob (a
-                    // screen close mid-turn cancels both together), and the
-                    // unlock covers every exit: normal, cancel, error.
+                    // [B18 SessionMutex] Setup aborted before the turn
+                    // launched: release the session lock here.
+                    com.openminis.app.service.SessionConcurrencyManager
+                        .unlockSession(activeSessionId)
+                } else {
+                    // [B18 SessionMutex] Normal path: hold the lock for the
+                    // whole streamJob (a screen close mid-turn cancels both
+                    // together), unlock on every exit — normal, cancel, error.
                     try {
                         streamJob?.join()
                     } finally {

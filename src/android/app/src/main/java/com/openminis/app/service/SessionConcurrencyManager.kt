@@ -100,9 +100,16 @@ object SessionConcurrencyManager {
         return mutex.tryLock()
     }
 
-    /** Release the exclusive turn lock. Idempotent per holder discipline. */
+    /**
+     * Release the exclusive turn lock. Safe to call speculatively: an
+     * already-unlocked mutex is left alone (kotlinx Mutex.unlock() throws
+     * IllegalStateException on an unlocked mutex — this wrapper never does).
+     */
     fun unlockSession(sessionId: String) {
-        sessionMutexes[sessionId]?.unlock()
+        val mutex = sessionMutexes[sessionId] ?: return
+        if (mutex.isLocked) {
+            runCatching { mutex.unlock() }
+        }
     }
 
     /** Test-only reset; callers must first finish/cancel all test coroutines. */
