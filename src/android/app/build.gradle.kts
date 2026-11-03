@@ -67,7 +67,10 @@ android {
         )
 
         ndk {
-            abiFilters += listOf("arm64-v8a")
+            // [И8] Universal ABI: arm64 for the phone, x86_64 for the
+            // Waydroid PC stand. librg.so stays arm64-only (prebuilt) —
+            // native_search degrades on the PC stand, documented in И8.
+            abiFilters += listOf("arm64-v8a", "x86_64")
         }
 
         externalNativeBuild {
