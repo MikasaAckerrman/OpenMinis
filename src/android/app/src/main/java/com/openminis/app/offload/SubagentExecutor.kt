@@ -101,6 +101,8 @@ object SubagentExecutor {
     // acquire (AgentConcurrency), so DeviceGuard's thermal/RAM clamp
     // applies to new spawns without re-creating the gate. Permits held
     // by running agents are never revoked (reviewer invariant).
+    // Reviewer note (02.11): kotlinx Mutex has no owner - the unlockSession
+    // wrapper trusts its callers to be holders. Keep it that way.
     private val parallelLimiter = com.openminis.app.engine.DynamicGate({ com.openminis.app.engine.AgentConcurrency.parallel })
 
     /**
