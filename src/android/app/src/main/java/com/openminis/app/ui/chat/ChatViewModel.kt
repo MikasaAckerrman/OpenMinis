@@ -71,6 +71,7 @@ import com.openminis.app.tools.MemoryTools
 import com.openminis.app.tools.ReadImageTool
 import com.openminis.app.tools.ToolExecutionResult
 import com.openminis.app.offload.OffloadPermissionManager
+import com.openminis.app.offload.forceReleaseStreamSlot
 import com.openminis.app.offload.releaseStreamSlot
 import com.openminis.app.offload.tryClaimStreamSlot
 import com.openminis.app.offload.TurnTimerPolicy
@@ -8722,7 +8723,11 @@ class ChatViewModel(
         toolLoopDetector.reset()
         _canResume.value = false
         _attachments.value = emptyList()
-        _promptQueue.value = emptyList()
+        // [H3-zombie-queue] (2026-11-04 review HIGH) clearPromptQueue() also
+        // wipes the persistent DraftStore copy. The old in-memory-only reset
+        // let restorePromptQueue resurrect the "cleared" prompts on the next
+        // chat open and the reload kick auto-sent them into the empty chat.
+        clearPromptQueue()
         _hasInjectedShareContent.value = false
         // T261: tool-detail sheet is per-session UI state — clear it so a
         // newly cleared chat doesn't briefly flash a stale tool's sheet
@@ -8873,15 +8878,24 @@ class ChatViewModel(
         // [T-stream-slot-claim] One run at a time. The claim is atomic, so a
         // message that arrives while this path prepares cannot start a
         // second turn on the same transcript.
-        if (!_isStreaming.tryClaimStreamSlot()) return false
-        val started = rerunFromToolBlockImpl(assistantMessageId, blockId)
+        // [H2-ownership] The claim returns a token: only it can release the
+        // slot, so a stale tail can never drop a newer turn's flag.
+        val slotClaim = _isStreaming.tryClaimStreamSlot() ?: return false
+        val started = rerunFromToolBlockImpl(assistantMessageId, blockId, slotClaim)
         // A path that gives up before the run owns the slot must give it
         // back, otherwise the session stays busy for good.
-        if (!started) _isStreaming.releaseStreamSlot()
+        if (!started) _isStreaming.releaseStreamSlot(slotClaim)
         return started
     }
 
-    private fun rerunFromToolBlockImpl(assistantMessageId: String, blockId: String): Boolean {
+    private fun rerunFromToolBlockImpl(
+        assistantMessageId: String,
+        blockId: String,
+        // [H2-ownership] The wrapper's claim token: the degenerate branch
+        // hands the slot BACK before delegating to retryFromMessage (which
+        // makes its own fresh claim).
+        slotClaim: Long?,
+    ): Boolean {
         val messages = _messages.value
         val asstIdx = messages.indexOfFirst { it.id == assistantMessageId }
         if (asstIdx < 0) return false
@@ -8922,8 +8936,12 @@ class ChatViewModel(
                 .firstOrNull { it.role == "user" && it.content.isNotBlank() }
                 ?: return false
             Log.i(TAG, "rerunFromToolBlock degenerate → retryFromMessage(precedingUser) tuId=${targetToolUseId.take(12)}")
-            retryFromMessage(userMsg.id)
-            return true
+            // [B2-slot-leak] (review round 2) The wrapper already holds the
+            // claim; retryFromMessage would see its own flag and loud-reject,
+            // leaving the slot parked forever. Hand the token back first —
+            // the delegate makes its own fresh claim.
+            _isStreaming.releaseStreamSlot(slotClaim)
+            return retryFromMessage(userMsg.id)
         }
 
         val initialProvider = currentProvider
@@ -9089,11 +9107,11 @@ class ChatViewModel(
                     agentHistory.add(entity.toLLMMessage())
                 }
 
-                streamLaunched = runRerunStreamTail(initialProvider, "rerunFromToolBlock")
+                streamLaunched = runRerunStreamTail(initialProvider, "rerunFromToolBlock", slotClaim = slotClaim)
             } finally {
                 if (!streamLaunched) {
                     AppLogger.info(TAG_STREAM, "rerunFromToolBlock _isStreaming=false (setup aborted)")
-                    _isStreaming.value = false
+                    _isStreaming.releaseStreamSlot(slotClaim)
                 }
             }
         }
@@ -9143,7 +9161,11 @@ class ChatViewModel(
                     streamJob?.cancel(CancellationException("user retry takeover"))
                 }
                 streamJob = null
-                _isStreaming.value = false
+                // [H2-ownership] Takeover: the cancelled job's tail may not
+                // have run yet, but the slot is deliberately abandoned here —
+                // clear the registry together with the flag, or the fresh
+                // claim below would be rejected by its own takeover.
+                _isStreaming.forceReleaseStreamSlot()
             } else {
             AppLogger.info(
                 TAG,
@@ -9207,6 +9229,10 @@ class ChatViewModel(
             if (text.isNotBlank()) {
                 _promptQueue.value = _promptQueue.value.filterNot { it.id == pid }
                 _messages.value = _messages.value.filterNot { it.id == message.id }
+                // [C1-persist] (review round 2) Same class as the fixed H3:
+                // without persisting, the "sent" prompt resurrected from the
+                // DraftStore on the next chat open and auto-duplicated.
+                persistPromptQueue()
                 // Attachments ride the composer state into sendMessage —
                 // restore them so an image-queued prompt resends whole.
                 if (!entry?.attachments.isNullOrEmpty()) {
@@ -9300,7 +9326,9 @@ class ChatViewModel(
         // The orphaned first job's `_isStreaming = false` at completion would
         // then flip the UI to "stopped" while the second job was still running.
         AppLogger.info(TAG_STREAM, "retry claims the run slot (sync, sid=$activeSessionId)")
-        if (!_isStreaming.tryClaimStreamSlot()) {
+        // [H2-ownership] Token claim — see rerunFromToolBlock.
+        val slotClaim = _isStreaming.tryClaimStreamSlot()
+        if (slotClaim == null) {
             AppLogger.warning(TAG_STREAM, "retry rejected: the run slot is taken")
             return false
         }
@@ -9435,11 +9463,11 @@ class ChatViewModel(
                 agentHistory.add(entity.toLLMMessage())
             }
 
-            streamLaunched = runRerunStreamTail(provider, "retryFromMessage", placeholderAssistantId = retryAssistantId)
+            streamLaunched = runRerunStreamTail(provider, "retryFromMessage", placeholderAssistantId = retryAssistantId, slotClaim = slotClaim)
             } finally {
                 if (!streamLaunched) {
                     AppLogger.info(TAG_STREAM, "retry _isStreaming=false (setup aborted)")
-                    _isStreaming.value = false
+                    _isStreaming.releaseStreamSlot(slotClaim)
                     // [T-retry-instant-thinking] Setup died before the loop
                     // adopted the pre-created row — remove the dangling dots
                     // bubble so the chat doesn't show a stuck «thinking» row.
@@ -9474,6 +9502,9 @@ class ChatViewModel(
         // is the existing assistant message, regenerated in place) and the
         // internal fallback re-launch (the loop already owns a row).
         placeholderAssistantId: String? = null,
+        // [H2-ownership] The caller's stream-slot token: the tail (or its
+        // fallback re-launch) owns the release once it takes over the turn.
+        slotClaim: Long?,
     ): Boolean {
         // [T-auto-resume] The state of this turn. It is created per call,
         // so the tool calls of one turn never leak into another one.
@@ -9801,7 +9832,7 @@ class ChatViewModel(
                                 // below runs AFTER this branch), and the
                                 // stale-job tail guard skips the reset because
                                 // the nested launch reassigns streamJob first.
-                                runRerunStreamTail(next.provider, label = "fallback")
+                                runRerunStreamTail(next.provider, label = "fallback", slotClaim = slotClaim)
                             }
                         }
                     }
@@ -9856,7 +9887,9 @@ class ChatViewModel(
             // XIN 2026-06-12 log (20:22:26 / 20:23:25).
             if (streamJob === coroutineContext[Job]) {
                 AppLogger.info(TAG_STREAM, "$label _isStreaming=false (about to set)")
-                _isStreaming.value = false
+                // [H2-ownership] Release by token: safe even if a takeover
+                // already happened — the CAS makes a stale release a no-op.
+                _isStreaming.releaseStreamSlot(slotClaim)
             } else {
                 AppLogger.info(TAG_STREAM, "$label _isStreaming SKIPPED (stale job; current=${streamJob?.hashCode()} this=${coroutineContext[Job]?.hashCode()})")
             }
@@ -10180,6 +10213,10 @@ class ChatViewModel(
         val pid = msg.queuedPromptId ?: return
         _promptQueue.value = _promptQueue.value.filterNot { it.id == pid }
         _messages.value = _messages.value.filterNot { it.id == messageId }
+        // [H-medium-persist] (2026-11-04 review) Persist the withdrawal —
+        // without this the "removed" prompt resurrected from the DraftStore
+        // on the next chat open and the reload kick auto-sent it.
+        persistPromptQueue()
         Log.i(TAG, "Withdrew queued message, queue=${_promptQueue.value.size}")
     }
 
@@ -10551,7 +10588,10 @@ class ChatViewModel(
         // slot, and the message is queued instead of sent - the old
         // read-based branch could not tell "busy" from "about to be busy",
         // and a second turn could start in between the read and the write.
-        val slotClaimed = _isStreaming.tryClaimStreamSlot()
+        // [H2-ownership] (2026-11-04 review) The claim returns a token: only
+        // this exact value may release the slot, so a stale abort tail can
+        // never drop a newer turn's flag (see StreamSlot.kt).
+        val slotClaim = _isStreaming.tryClaimStreamSlot()
         // [T-stop-delivery] Generation captured at claim: a Stop pressed
         // during the prepare window bumps the counter and this send aborts
         // right before the real streamJob would launch.
@@ -10561,17 +10601,17 @@ class ChatViewModel(
         // background race). Busy = the same enqueue path as the global slot.
         val sessionLockKey = activeSessionId
         if (!com.openminis.app.service.SessionConcurrencyManager.tryLockSession(sessionLockKey)) {
-            if (slotClaimed) _isStreaming.releaseStreamSlot() // [B18-fix] the slot may belong to the RUNNING turn
+            if (slotClaim != null) _isStreaming.releaseStreamSlot(slotClaim) // [B18-fix] release ONLY our own claim
             AppLogger.info(TAG_STREAM, "[Send] branch=ENQUEUE (session lock busy — a turn is already running in this chat)")
             enqueuePrompt(text)
             return
         }
         AppLogger.info(
             TAG_STREAM,
-            "send claims the run slot (sync, sid=$activeSessionId, won=$slotClaimed)",
+            "send claims the run slot (sync, sid=$activeSessionId, won=$slotClaim)",
         )
         // While streaming, enqueue instead of silently dropping (iOS: send vs enqueuePrompt).
-        if (!slotClaimed) {
+        if (slotClaim == null) {
             // [T-send-trace] Queue acceptance now carries the age of the
             // turn that owns the stream slot: a parked/stale turn (phantom
             // resume, hung preamble) is the #1 way a queue parks forever —
@@ -10607,7 +10647,7 @@ class ChatViewModel(
             AppLogger.info(TAG_STREAM, "[Send] branch=DROP (blank, no attachments)")
             // [T-stop-delivery] The slot was claimed above: a plain return
             // here leaked it (Stop button stuck on with no turn behind it).
-            _isStreaming.releaseStreamSlot()
+            _isStreaming.releaseStreamSlot(slotClaim)
             com.openminis.app.service.SessionConcurrencyManager.unlockSession(sessionLockKey)
             return
         }
@@ -10617,7 +10657,7 @@ class ChatViewModel(
                 _inputText.value = trimmed
             }
             // [T-stop-delivery] Same slot leak as the DROP branch above.
-            _isStreaming.releaseStreamSlot()
+            _isStreaming.releaseStreamSlot(slotClaim)
             com.openminis.app.service.SessionConcurrencyManager.unlockSession(sessionLockKey)
             return
         }
@@ -10627,6 +10667,11 @@ class ChatViewModel(
             // It will auto-send when the compact finishes (the queue pump
             // runs in compactAll's finally block).
             AppLogger.info(TAG_STREAM, "[Send] branch=ENQUEUE (compact running)")
+            // [B1-slot-leak] (review round 2) The claim was taken at the top:
+            // a bare return here parked a dead token in the registry and
+            // bricked the chat's sends until restart. Compact does NOT hold
+            // the slot — give it back before enqueueing.
+            _isStreaming.releaseStreamSlot(slotClaim)
             enqueuePrompt(text)
             // [B18] The session lock was taken before the compact branch.
             com.openminis.app.service.SessionConcurrencyManager.unlockSession(sessionLockKey)
@@ -10695,7 +10740,7 @@ class ChatViewModel(
             _error.value = "No provider configured"
             // [T-stream-slot-claim] The slot was taken at the top of this
             // function, so a path that gives up here must give it back.
-            _isStreaming.releaseStreamSlot()
+            _isStreaming.releaseStreamSlot(slotClaim)
             // [B18 SessionMutex] The lock was taken with the slot.
             com.openminis.app.service.SessionConcurrencyManager
                 .unlockSession(sessionLockKey)
@@ -10951,7 +10996,7 @@ class ChatViewModel(
                 // earlier turns belong to a conversation it is not part of, and
                 // pasting them in would spend the orchestrator's budget on context
                 // it cannot act on.
-                launchGraphTurn(activeSessionId, routing, trimmed)
+                launchGraphTurn(activeSessionId, routing, trimmed, slotClaim)
                 return@launch
             }
             if (routing is com.openminis.app.offload.AgentDispatcher.Decision.NormalChat) {
@@ -11007,7 +11052,12 @@ class ChatViewModel(
                     TAG_STREAM,
                     "[Send] aborted pre-launch (Stop during delivery, epoch $sendEpochAtClaim -> $turnSendEpoch)",
                 )
-                _isStreaming.releaseStreamSlot()
+                // [H2-ownership] THE fix for the review HIGH: a Stop during the
+                // prepare window used to release the slot a concurrent NEW send
+                // had already taken (killing its Stop button + mutex discipline).
+                // The token release is a CAS against our own ownership — if a
+                // newer turn holds the slot, this is a silent no-op.
+                _isStreaming.releaseStreamSlot(slotClaim)
                 com.openminis.app.service.SessionConcurrencyManager.unlockSession(sessionLockKey)
                 return@launch
             }
@@ -11270,7 +11320,8 @@ class ChatViewModel(
                 // `var streamJob` KDoc; identical pattern as runRerunStreamTail.
                 if (streamJob === coroutineContext[Job]) {
                     AppLogger.info(TAG_STREAM, "send _isStreaming=false (about to set)")
-                    _isStreaming.value = false
+                    // [H2-ownership] Release by token — stale-tail-safe.
+                    _isStreaming.releaseStreamSlot(slotClaim)
                     // [T-stale-typing-sweep] Owner-verified point (takeover
                     // jobs skip here): the turn is definitively over — no
                     // message may keep per-message streaming flags.
@@ -11298,7 +11349,8 @@ class ChatViewModel(
             } finally {
                 if (!streamLaunched) {
                     AppLogger.info(TAG_STREAM, "send _isStreaming=false (setup aborted)")
-                    _isStreaming.value = false
+                    // [H2-ownership] Release by token (idempotent).
+                    _isStreaming.releaseStreamSlot(slotClaim)
                     // [T-instant-thinking-indicator] The pre-created "thinking"
                     // row dies with the aborted send — no ghost indicator.
                     preAssistantId?.let { pid ->
@@ -11360,6 +11412,10 @@ class ChatViewModel(
         activeSessionId: String,
         decision: com.openminis.app.offload.AgentDispatcher.Decision.RunGraph,
         input: String,
+        // [H2-ownership] The caller's stream-slot token: the graph turn owns
+        // the release once it takes over (its tail runs on the send path's
+        // finally only when this fun was NOT reached).
+        slotClaim: Long?,
     ) {
         appendSystemInfo(
             text = "Routing to agent graph '${decision.graphId}' (${decision.rationale}).",
@@ -11443,7 +11499,8 @@ class ChatViewModel(
                 AppLogger.info(TAG_STREAM, "graph streamJob CANCELLED")
             }
             if (streamJob === coroutineContext[Job]) {
-                _isStreaming.value = false
+                // [H2-ownership] Release by token — stale-tail-safe.
+                _isStreaming.releaseStreamSlot(slotClaim)
             }
             // A graph turn holds _isStreaming for minutes, which is exactly when
             // the composer lets the user queue follow-ups (enqueuePrompt gates on
@@ -12038,14 +12095,16 @@ class ChatViewModel(
 
         // T145: claim _isStreaming synchronously — see retryFromMessage for rationale.
         AppLogger.info(TAG_STREAM, "retryLast claims the run slot (sync, sid=$activeSessionId)")
-        if (!_isStreaming.tryClaimStreamSlot()) {
+        // [H2-ownership] Token claim — see StreamSlot.kt / sendMessage.
+        val slotClaim = _isStreaming.tryClaimStreamSlot()
+        if (slotClaim == null) {
             AppLogger.warning(TAG_STREAM, "retryLast rejected: the run slot is taken")
             return
         }
         // [B18 SessionMutex] Same exclusivity as sendMessage: a retry never
         // runs in parallel with another turn of this chat.
         if (!com.openminis.app.service.SessionConcurrencyManager.tryLockSession(activeSessionId)) {
-            _isStreaming.releaseStreamSlot()
+            _isStreaming.releaseStreamSlot(slotClaim)
             AppLogger.warning(TAG_STREAM, "retryLast rejected: session lock busy (a turn is already running in this chat)")
             return
         }
@@ -12212,7 +12271,8 @@ class ChatViewModel(
                 // [T-android-stale-streamjob-clears-isstreaming] guard.
                 if (streamJob === coroutineContext[Job]) {
                     AppLogger.info(TAG_STREAM, "retryLast _isStreaming=false (about to set)")
-                    _isStreaming.value = false
+                    // [H2-ownership] Release by token — stale-tail-safe.
+                    _isStreaming.releaseStreamSlot(slotClaim)
                     // [T-stale-typing-sweep] Owner-verified point.
                     sweepStaleStreamingPlaceholders("retryLast")
                     // [T-auto-mode] Symmetric with the send tail: a pending
@@ -12226,7 +12286,8 @@ class ChatViewModel(
             } finally {
                 if (!streamLaunched) {
                     AppLogger.info(TAG_STREAM, "retryLast _isStreaming=false (setup aborted)")
-                    _isStreaming.value = false
+                    // [H2-ownership] Release by token (idempotent).
+                    _isStreaming.releaseStreamSlot(slotClaim)
                     com.openminis.app.service.SessionConcurrencyManager.unlockSession(activeSessionId)
                 } else {
                     try {
@@ -19569,7 +19630,9 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         // its coroutine re-checks the epoch before launching the real job.
         turnSendEpoch++
         streamJob?.cancel()
-        _isStreaming.value = false
+        // [H2-ownership] User Stop = deliberate abort breaker: no one owns the
+        // run anymore. Clears the token registry and the flag together.
+        _isStreaming.forceReleaseStreamSlot()
         // T-streaming-side-channel: flush any in-flight delta back into the
         // canonical message so the rest of cancelStream's cleanup (publish
         // overlay excerpt, persist, retry-eligible state) sees the real
@@ -19684,7 +19747,8 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         if (job != null && job.isActive) {
             job.cancel(CancellationException("stale stream force-drain (parked turn)"))
         } else {
-            _isStreaming.value = false
+            // [H2-ownership] Nothing alive owns the run — system breaker.
+            _isStreaming.forceReleaseStreamSlot()
         }
         viewModelScope.launch {
             kotlinx.coroutines.delay(250)
@@ -19740,6 +19804,22 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
             }
             var provider: LLMProvider = initialProvider
 
+            // [H1-cas-claim] (2026-11-04 review HIGH): claim BEFORE the
+            // network/IO prep. The old shape — free-guard read above, `value
+            // = true` only after OAuth + buildSystemPrompt — let two
+            // overlapping kicks pass the guard together and both start a
+            // drain (double send, duplicate DB rows). tryClaimStreamSlot is
+            // a CAS: exactly one kick owns the slot; the loser's queue stays
+            // persisted and the next kick delivers it.
+            val slotClaim = _isStreaming.tryClaimStreamSlot()
+            if (slotClaim == null) {
+                AppLogger.info(
+                    TAG_STREAM,
+                    "resumeQueueAfterCancel: slot taken during prep — queue persisted, next kick retries",
+                )
+                return@launch
+            }
+
             // Refresh OAuth token if needed (mirrors sendMessage L2477-2501).
             if ((provider as? com.openminis.app.provider.anthropic.AnthropicProvider)?.isOAuth == true) {
                 try {
@@ -19765,18 +19845,27 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                 }
             }
 
-            val baseSystemPrompt = withContext(Dispatchers.IO) { buildSystemPrompt() }
+            // [H1-cas-claim] The ONLY throwing point between the early claim
+            // and the streamJob start: a failure here gives the token back,
+            // the queue stays persisted for the next kick.
+            val baseSystemPrompt = try {
+                withContext(Dispatchers.IO) { buildSystemPrompt() }
+            } catch (e: Exception) {
+                _isStreaming.releaseStreamSlot(slotClaim)
+                AppLogger.error(
+                    TAG_STREAM,
+                    "resumeQueueAfterCancel: buildSystemPrompt failed — slot released, queue persisted: ${e.message}",
+                )
+                return@launch
+            }
             val systemPrompt = if ((provider as? com.openminis.app.provider.anthropic.AnthropicProvider)?.isOAuth == true) {
                 val prefix = com.openminis.app.auth.ClaudeOAuthManager.ANTHROPIC_OAUTH_IDENTIFIER_PROMPT
                 if (baseSystemPrompt?.startsWith(prefix) == true) baseSystemPrompt
                 else "$prefix\n\n${baseSystemPrompt ?: ""}"
             } else baseSystemPrompt
 
-            // T145: claim the streaming flag synchronously before launching
-            // the streamJob so a concurrent send/retry tap is rejected by the
-            // entry guard. Mirrors sendMessage discipline.
-            AppLogger.info(TAG_STREAM, "resumeQueueAfterCancel takes the run slot (free by contract, sid=$activeSessionId)")
-            _isStreaming.value = true
+            // [H1-cas-claim] The slot was claimed at the TOP of this kick
+            // (CAS before the OAuth/prompt prep) — nothing to set here.
             streamStartedAtMs = System.currentTimeMillis()
         lastStreamActivityMs = streamStartedAtMs
             _canResume.value = false
@@ -19875,10 +19964,12 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                 // [T-android-stale-streamjob-clears-isstreaming] guard.
                 if (streamJob === coroutineContext[Job]) {
                     AppLogger.info(TAG_STREAM, "resumeQueueAfterCancel _isStreaming=false (about to set)")
-                    _isStreaming.value = false
                 } else {
                     AppLogger.info(TAG_STREAM, "resumeQueueAfterCancel _isStreaming SKIPPED (stale job)")
                 }
+                // [H2-ownership] Release by token — safe in BOTH branches: if
+                // a takeover re-claimed the slot, the CAS is a silent no-op.
+                _isStreaming.releaseStreamSlot(slotClaim)
                 AppLogger.info(TAG_STREAM, "resumeQueueAfterCancel streamJob EXIT")
             }
         }
@@ -20149,7 +20240,24 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         }
 
         viewModelScope.launch {
-            val baseSystemPrompt = withContext(Dispatchers.IO) { buildSystemPrompt() }
+            // [H1-cas-claim] (2026-11-04 review HIGH) Claim BEFORE the IO
+            // prep: one CAS decides the owner, so the entry-guard race cannot
+            // double-start two resumes. Rejected resume restores the banner.
+            val slotClaim = _isStreaming.tryClaimStreamSlot()
+            if (slotClaim == null) {
+                AppLogger.info(TAG_STREAM, "resume: slot taken — resume rejected (banner restored)")
+                _canResume.value = true
+                return@launch
+            }
+            // [H1-cas-claim] The only throwing point before the streamJob
+            // start: release the token, keep the turn resumable.
+            val baseSystemPrompt = try {
+                withContext(Dispatchers.IO) { buildSystemPrompt() }
+            } catch (e: Exception) {
+                _isStreaming.releaseStreamSlot(slotClaim)
+                AppLogger.error(TAG_STREAM, "resume: buildSystemPrompt failed — slot released: ${e.message}")
+                return@launch
+            }
             val systemPrompt =
                 if ((provider as? com.openminis.app.provider.anthropic.AnthropicProvider)?.isOAuth == true) {
                     val prefix = com.openminis.app.auth.ClaudeOAuthManager.ANTHROPIC_OAUTH_IDENTIFIER_PROMPT
@@ -20157,8 +20265,7 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                     else "$prefix\n\n${baseSystemPrompt ?: ""}"
                 } else baseSystemPrompt
 
-            AppLogger.info(TAG_STREAM, "resume _isStreaming=true (sid=$activeSessionId)")
-            _isStreaming.value = true
+            // [H1-cas-claim] The slot was claimed at the top of this launch.
             streamStartedAtMs = System.currentTimeMillis()
         lastStreamActivityMs = streamStartedAtMs
             streamJob = launch(Dispatchers.IO) {
@@ -20224,12 +20331,14 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                 // [T-android-stale-streamjob-clears-isstreaming] guard.
                 if (streamJob === coroutineContext[Job]) {
                     AppLogger.info(TAG_STREAM, "resume _isStreaming=false (about to set)")
-                    _isStreaming.value = false
                     // [T-stale-typing-sweep] Owner-verified point.
                     sweepStaleStreamingPlaceholders("resume")
                 } else {
                     AppLogger.info(TAG_STREAM, "resume _isStreaming SKIPPED (stale job)")
                 }
+                // [H2-ownership] Release by token — stale-tail-safe (CAS no-op
+                // if a takeover already re-claimed the slot).
+                _isStreaming.releaseStreamSlot(slotClaim)
                 AppLogger.info(TAG_STREAM, "resume streamJob EXIT")
             }
         }

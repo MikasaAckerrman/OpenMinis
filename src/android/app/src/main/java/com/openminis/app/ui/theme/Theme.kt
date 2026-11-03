@@ -1,6 +1,8 @@
 package com.openminis.app.ui.theme
 
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
@@ -9,7 +11,10 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -152,7 +157,19 @@ fun MinisTheme(
         shapes = MinisShapes,
         typography = typography,
     ) {
-        CompositionLocalProvider(LocalChatPalette provides chatPalette, content = content)
+        CompositionLocalProvider(LocalChatPalette provides chatPalette) {
+            // [testtags-root] Expose Compose testTags as view resource-ids to
+            // the whole accessibility tree: uiautomator / Maestro can address
+            // every tagged button by id without screenshots. Pure semantics
+            // flag — no visual or behavioral change.
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .semantics { testTagsAsResourceId = true },
+            ) {
+                content()
+            }
+        }
     }
 }
 

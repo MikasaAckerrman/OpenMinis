@@ -1,0 +1,105 @@
+--- Фильтрация REVIEWS/evidence/20261104/pattern-check-cancellation-tryemit.txt на корутинные зоны ---
+
+/home/levia/.zcode/workspace/draft-2e52331c-9822-416d-89d0-9cf826d5d8cb/openminis/src/android/app/src/main/java/com/openminis/app/auth/AntigravityOAuthManager.kt:115
+  Scope: val token = validAccessToken() ?: return@withContext
+  Code:  catch(Exception) без rethrow CancellationException рядом с корутинным кодом
+
+/home/levia/.zcode/workspace/draft-2e52331c-9822-416d-89d0-9cf826d5d8cb/openminis/src/android/app/src/main/java/com/openminis/app/auth/GeminiOAuthManager.kt:105
+  Scope: private suspend fun fetchUserEmail() {
+  Code:  catch(Exception) без rethrow CancellationException рядом с корутинным кодом
+
+/home/levia/.zcode/workspace/draft-2e52331c-9822-416d-89d0-9cf826d5d8cb/openminis/src/android/app/src/main/java/com/openminis/app/auth/GeminiOAuthManager.kt:163
+  Scope: private suspend fun onboardUser(token: String): String? {
+  Code:  catch(Exception) без rethrow CancellationException рядом с корутинным кодом
+
+/home/levia/.zcode/workspace/draft-2e52331c-9822-416d-89d0-9cf826d5d8cb/openminis/src/android/app/src/main/java/com/openminis/app/auth/GeminiOAuthManager.kt:184
+  Scope: private suspend fun pollOperation(token: String, operationNa
+  Code:  catch(Exception) без rethrow CancellationException рядом с корутинным кодом
+
+/home/levia/.zcode/workspace/draft-2e52331c-9822-416d-89d0-9cf826d5d8cb/openminis/src/android/app/src/main/java/com/openminis/app/auth/OAuthManager.kt:255
+  Scope: return@withContext false
+  Code:  catch(Exception) без rethrow CancellationException рядом с корутинным кодом
+
+/home/levia/.zcode/workspace/draft-2e52331c-9822-416d-89d0-9cf826d5d8cb/openminis/src/android/app/src/main/java/com/openminis/app/auth/XAIOAuthManager.kt:583
+  Scope: val server = loginCallbackServer ?: return@launch
+  Code:  catch(Exception) без rethrow CancellationException рядом с корутинным кодом
+
+/home/levia/.zcode/workspace/draft-2e52331c-9822-416d-89d0-9cf826d5d8cb/openminis/src/android/app/src/main/java/com/openminis/app/browser/BrowserUseManager.kt:1048
+  Scope: withContext(Dispatchers.Main) {
+  Code:  catch(Exception) без rethrow CancellationException рядом с корутинным кодом
+
+/home/levia/.zcode/workspace/draft-2e52331c-9822-416d-89d0-9cf826d5d8cb/openminis/src/android/app/src/main/java/com/openminis/app/browser/BrowserUseManager.kt:1081
+  Scope: private suspend fun getBackbone(maxDepth: Int?): BrowserActi
+  Code:  catch(Exception) без rethrow CancellationException рядом с корутинным кодом
+
+/home/levia/.zcode/workspace/draft-2e52331c-9822-416d-89d0-9cf826d5d8cb/openminis/src/android/app/src/main/java/com/openminis/app/browser/BrowserUseManager.kt:1134
+  Scope: // The fetch JS runs `await fetch(...)` inside an async IIFE
+  Code:  catch(Exception) без rethrow CancellationException рядом с корутинным кодом
+
+/home/levia/.zcode/workspace/draft-2e52331c-9822-416d-89d0-9cf826d5d8cb/openminis/src/android/app/src/main/java/com/openminis/app/browser/BrowserUseManager.kt:1355
+  Scope: private suspend fun evaluateJavascript(js: String): String =
+  Code:  catch(Exception) без rethrow CancellationException рядом с корутинным кодом
+
+/home/levia/.zcode/workspace/draft-2e52331c-9822-416d-89d0-9cf826d5d8cb/openminis/src/android/app/src/main/java/com/openminis/app/browser/BrowserUseManager.kt:1379
+  Scope: private suspend fun evaluateAndReturn(js: String): BrowserAc
+  Code:  catch(Exception) без rethrow CancellationException рядом с корутинным кодом
+
+/home/levia/.zcode/workspace/draft-2e52331c-9822-416d-89d0-9cf826d5d8cb/openminis/src/android/app/src/main/java/com/openminis/app/browser/BrowserUseManager.kt:678
+  Scope: private suspend fun attachSnapshot(result: BrowserActionResu
+  Code:  catch(Exception) без rethrow CancellationException рядом с корутинным кодом
+
+/home/levia/.zcode/workspace/draft-2e52331c-9822-416d-89d0-9cf826d5d8cb/openminis/src/android/app/src/main/java/com/openminis/app/data/UpdateChecker.kt:371
+  Scope: val body = resp.body ?: return@withContext DownloadResult.Er
+  Code:  catch(Exception) без rethrow CancellationException рядом с корутинным кодом
+
+/home/levia/.zcode/workspace/draft-2e52331c-9822-416d-89d0-9cf826d5d8cb/openminis/src/android/app/src/main/java/com/openminis/app/data/repository/ProviderRepository.kt:257
+  Scope: loadScope.launch {
+  Code:  catch(Exception) без rethrow CancellationException рядом с корутинным кодом
+
+/home/levia/.zcode/workspace/draft-2e52331c-9822-416d-89d0-9cf826d5d8cb/openminis/src/android/app/src/main/java/com/openminis/app/data/repository/SkillRepository.kt:983
+  Scope: private suspend fun fetchContentsWithRetry(apiURL: String, o
+  Code:  catch(Exception) без rethrow CancellationException рядом с корутинным кодом
+
+/home/levia/.zcode/workspace/draft-2e52331c-9822-416d-89d0-9cf826d5d8cb/openminis/src/android/app/src/main/java/com/openminis/app/debug/BrowserDebugMethods.kt:117
+  Scope: private suspend fun readViewport(mgr: BrowserUseManager): JS
+  Code:  catch(Exception) без rethrow CancellationException рядом с корутинным кодом
+
+/home/levia/.zcode/workspace/draft-2e52331c-9822-416d-89d0-9cf826d5d8cb/openminis/src/android/app/src/main/java/com/openminis/app/debug/DebugRPCHandler.kt:99
+  Scope: suspend fun handle(json: String): String {
+  Code:  catch(Exception) без rethrow CancellationException рядом с корутинным кодом
+
+/home/levia/.zcode/workspace/draft-2e52331c-9822-416d-89d0-9cf826d5d8cb/openminis/src/android/app/src/main/java/com/openminis/app/debug/DebugServer.kt:173
+  Scope: launch(rpcDispatcher) { handleConnection(client) }
+  Code:  catch(Exception) без rethrow CancellationException рядом с корутинным кодом
+
+/home/levia/.zcode/workspace/draft-2e52331c-9822-416d-89d0-9cf826d5d8cb/openminis/src/android/app/src/main/java/com/openminis/app/offload/AgentRunShowcase.kt:234
+  Scope: withContext(Dispatchers.IO) {
+  Code:  catch(Exception) без rethrow CancellationException рядом с корутинным кодом
+
+/home/levia/.zcode/workspace/draft-2e52331c-9822-416d-89d0-9cf826d5d8cb/openminis/src/android/app/src/main/java/com/openminis/app/offload/AgentRunShowcase.kt:85
+  Scope: ): String? = withContext(Dispatchers.IO) {
+  Code:  catch(Exception) без rethrow CancellationException рядом с корутинным кодом
+
+/home/levia/.zcode/workspace/draft-2e52331c-9822-416d-89d0-9cf826d5d8cb/openminis/src/android/app/src/main/java/com/openminis/app/provider/anthropic/AnthropicProvider.kt:199
+  Scope: val ttfbWatchdog = launch {
+  Code:  catch(Exception) без rethrow CancellationException рядом с корутинным кодом
+
+/home/levia/.zcode/workspace/draft-2e52331c-9822-416d-89d0-9cf826d5d8cb/openminis/src/android/app/src/main/java/com/openminis/app/provider/gemini/GeminiProvider.kt:196
+  Scope: val ttfbWatchdog = launch {
+  Code:  catch(Exception) без rethrow CancellationException рядом с корутинным кодом
+
+/home/levia/.zcode/workspace/draft-2e52331c-9822-416d-89d0-9cf826d5d8cb/openminis/src/android/app/src/main/java/com/openminis/app/provider/openai/OpenAIProvider.kt:686
+  Scope: val ttfbWatchdog = launch {
+  Code:  catch(Exception) без rethrow CancellationException рядом с корутинным кодом
+
+Итог: из сырых срабатываний осталось 23 реальных кандидатов в корутинах.
+
+## РУЧНАЯ ДОПРОВЕРКА (filter дал ложно-отрицательные — скан вверх упёрся в non-suspend fun)
+ПОДТВЕРЖДЕНО (паттерн №1, глотают CancellationException → конвертируют в StreamEvent.Error):
+- OpenAIProvider.kt:1303  catch(Exception) → cancel("Stream error", mapError(e))  [SSE-цикл callbackFlow]
+- AnthropicProvider.kt:401 catch(Exception) → cancel("Stream error", mapError(e))  [SSE-цикл]
+- GeminiProvider.kt:268    catch(Exception) → cancel("Stream error", mapError(e))  [SSE-цикл — проверено sed 260-275]
+Фикс-паттерн спринта №2: catch(e: CancellationException) { throw e } ПЕРЕД общим catch.
+Сокет при этом рвётся штатно (awaitClose{call.cancel()}, T171) — ломается только кооперативная отмена
+→ риск: mapError(CancellationException) может уйти в retryable → автофоллбэк после Stop = платные токены.
+ttfbWatchdog (OpenAI:686 / Gemini:196 / Anthropic:199) — launch с catch(Exception): кандидат в B27.
