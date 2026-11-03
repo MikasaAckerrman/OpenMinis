@@ -112,3 +112,15 @@ ttfbWatchdog (OpenAI:686 / Gemini:196 / Anthropic:199) — launch с catch(Excep
   Детерминированный pre-existing red (авторился под [quick], tests.yml
   не гонялся). ЗАКАРАНТИНЕН (@Ignore + комментарий), реворк — в
   тест-харденинг спринт.
+
+## СПРИНТ №2 ВЫПОЛНЕН (2026-11-04/05)
+- OpenAIProvider (SSE-цикл), AnthropicProvider, GeminiProvider:
+  catch(e: CancellationException) { throw e } добавлен ПЕРЕД общим
+  catch во всех трёх callbackFlow-циклах. Эталон паттерна уже был
+  в репо (OpenAI CodexImage-ветка ~773).
+- КОРРЕКТИРОВКА: ttfbWatchdog-сайты (686/196/199) — ЛОЖНЫЕ
+  срабатывания чекера: это catch(_: Exception){} вокруг call.cancel()
+  внутри invokeOnCancellation — не корутинный контекст, проглатывание
+  там идиоматично. Кандидатура в B27 СНЯТА; B27-трассировка ведётся
+  по другим следам (см. ChatViewModel.kt:11695 документацию
+  120s-TTFB/OEM-freeze случая).

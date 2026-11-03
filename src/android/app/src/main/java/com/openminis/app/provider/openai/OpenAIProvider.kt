@@ -1300,6 +1300,13 @@ class OpenAIProvider private constructor(
                 ),
             )
         }
+        } catch (e: CancellationException) {
+            // [T-cancel-cooperative] (sprint-2 audit, 2026-11-04) A user Stop
+            // must unwind as cancellation, not as a stream error: a swallowed
+            // CE here turned the abort into StreamEvent.Error, letting
+            // mapError() mark it retryable and fire fallback chains (paid
+            // tokens after Stop). Mirrors the CodexImage branch above.
+            throw e
         } catch (e: Exception) {
             // T321: never silently swallow — log message + top-3 stack frames.
             val frames = e.stackTrace.take(3).joinToString(" | ") { "${it.className}.${it.methodName}:${it.lineNumber}" }

@@ -15,6 +15,7 @@ import com.openminis.app.provider.ImageBudget
 import com.openminis.app.provider.LLMProvider
 import com.openminis.app.provider.applyUserAgentOverride
 import com.openminis.app.provider.safeOptString
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.awaitClose
@@ -398,6 +399,12 @@ class AnthropicProvider(
                     ),
                 )
             }
+        } catch (e: CancellationException) {
+            // [T-cancel-cooperative] (sprint-2 audit, 2026-11-04) User Stop
+            // unwinds as cancellation — a swallowed CE converted the abort
+            // into StreamEvent.Error and could trigger fallback chains
+            // (paid tokens after Stop). Mirrors OpenAIProvider's loop.
+            throw e
         } catch (e: Exception) {
             cancel("Stream error", mapError(e))
         } finally {
