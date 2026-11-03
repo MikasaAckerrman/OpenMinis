@@ -10559,8 +10559,9 @@ class ChatViewModel(
         // [B18 SessionMutex] Exclusive per-session turn lock: two turns in
         // ONE chat session must never run in parallel (double-click, UI/
         // background race). Busy = the same enqueue path as the global slot.
-        if (!com.openminis.app.service.SessionConcurrencyManager.tryLockSession(activeSessionId)) {
-            _isStreaming.releaseStreamSlot()
+        val sessionLockKey = activeSessionId
+        if (!com.openminis.app.service.SessionConcurrencyManager.tryLockSession(sessionLockKey)) {
+            if (slotClaimed) _isStreaming.releaseStreamSlot() // [B18-fix] the slot may belong to the RUNNING turn
             AppLogger.info(TAG_STREAM, "[Send] branch=ENQUEUE (session lock busy — a turn is already running in this chat)")
             enqueuePrompt(text)
             return
@@ -10596,7 +10597,7 @@ class ChatViewModel(
             enqueuePrompt(text)
             // [B18] The session lock was taken before the slot branch: every
             // early return below the lock releases BOTH.
-            com.openminis.app.service.SessionConcurrencyManager.unlockSession(activeSessionId)
+            com.openminis.app.service.SessionConcurrencyManager.unlockSession(sessionLockKey)
             return
         }
         // T180: allow attachments-only sends (no caption). Mirrors iOS, where
@@ -10607,7 +10608,7 @@ class ChatViewModel(
             // [T-stop-delivery] The slot was claimed above: a plain return
             // here leaked it (Stop button stuck on with no turn behind it).
             _isStreaming.releaseStreamSlot()
-            com.openminis.app.service.SessionConcurrencyManager.unlockSession(activeSessionId)
+            com.openminis.app.service.SessionConcurrencyManager.unlockSession(sessionLockKey)
             return
         }
         if (!requireFullSessionHistory()) {
@@ -10617,7 +10618,7 @@ class ChatViewModel(
             }
             // [T-stop-delivery] Same slot leak as the DROP branch above.
             _isStreaming.releaseStreamSlot()
-            com.openminis.app.service.SessionConcurrencyManager.unlockSession(activeSessionId)
+            com.openminis.app.service.SessionConcurrencyManager.unlockSession(sessionLockKey)
             return
         }
         if (_isCompacting.value) {
@@ -10628,7 +10629,7 @@ class ChatViewModel(
             AppLogger.info(TAG_STREAM, "[Send] branch=ENQUEUE (compact running)")
             enqueuePrompt(text)
             // [B18] The session lock was taken before the compact branch.
-            com.openminis.app.service.SessionConcurrencyManager.unlockSession(activeSessionId)
+            com.openminis.app.service.SessionConcurrencyManager.unlockSession(sessionLockKey)
             return
         }
         AppLogger.info(TAG_STREAM, "[Send] branch=DIRECT TURN (idle — sending now)")
@@ -10697,7 +10698,7 @@ class ChatViewModel(
             _isStreaming.releaseStreamSlot()
             // [B18 SessionMutex] The lock was taken with the slot.
             com.openminis.app.service.SessionConcurrencyManager
-                .unlockSession(activeSessionId)
+                .unlockSession(sessionLockKey)
             return
         }
         var provider: LLMProvider = initialProvider
@@ -11007,7 +11008,7 @@ class ChatViewModel(
                     "[Send] aborted pre-launch (Stop during delivery, epoch $sendEpochAtClaim -> $turnSendEpoch)",
                 )
                 _isStreaming.releaseStreamSlot()
-                com.openminis.app.service.SessionConcurrencyManager.unlockSession(activeSessionId)
+                com.openminis.app.service.SessionConcurrencyManager.unlockSession(sessionLockKey)
                 return@launch
             }
             // Start agent loop with fallback. _isStreaming was set synchronously at top.
@@ -11327,7 +11328,7 @@ class ChatViewModel(
                     // [B18 SessionMutex] Setup aborted before the turn
                     // launched: release the session lock here.
                     com.openminis.app.service.SessionConcurrencyManager
-                        .unlockSession(activeSessionId)
+                        .unlockSession(sessionLockKey)
                 } else {
                     // [B18 SessionMutex] Normal path: hold the lock for the
                     // whole streamJob (a screen close mid-turn cancels both
@@ -11336,7 +11337,7 @@ class ChatViewModel(
                         streamJob?.join()
                     } finally {
                         com.openminis.app.service.SessionConcurrencyManager
-                            .unlockSession(activeSessionId)
+                            .unlockSession(sessionLockKey)
                     }
                 }
             }
