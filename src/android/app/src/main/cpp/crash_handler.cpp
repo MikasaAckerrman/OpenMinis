@@ -423,6 +423,11 @@ Java_com_openminis_app_crash_NativeCrashHandler_nativeSelfTest(
     uc.uc_mcontext.sp = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&chain[0]) - 256);
     uc.uc_mcontext.regs[29] = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&chain[0]));
     uc.uc_mcontext.regs[30] = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&pc_module));
+#elif defined(__x86_64__)
+    // [И8] x86_64 Waydroid stand: glibc-style gregs indices (REG_RIP/RSP/RBP).
+    uc.uc_mcontext.gregs[REG_RIP] = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&pc_module));
+    uc.uc_mcontext.gregs[REG_RSP] = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&chain[0]) - 256);
+    uc.uc_mcontext.gregs[REG_RBP] = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&chain[0]));
 #else
     uc.uc_mcontext.__gregs[29] = reinterpret_cast<uintptr_t>(&chain[0]);
     uc.uc_mcontext.__gregs[30] = reinterpret_cast<uintptr_t>(&pc_module);
