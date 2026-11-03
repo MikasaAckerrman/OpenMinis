@@ -64,7 +64,18 @@ class LiveTurnBufferTest {
         val chunk = "x".repeat(4096)
         val stop = AtomicBoolean(false)
         val writer = thread(name = "live-turn-writer") {
-            while (!stop.get()) buf.append(chunk)
+            // [test-stability] (CI 851e27ad) The unbounded append OOM'd the
+            // JVM on loaded runners — heap died before the reader finished
+            // its 2000 snapshots (pass/fail flipped on timing). Bounded
+            // footprint via periodic clear: the invariant under test is
+            // unchanged, every snapshot is still a whole number of chunks
+            // (reader and writer share the same lock; an empty buffer
+            // satisfies the modulo check too).
+            var appended = 0
+            while (!stop.get()) {
+                buf.append(chunk)
+                if (++appended % 512 == 0) buf.clear()
+            }
         }
         try {
             repeat(2000) {
