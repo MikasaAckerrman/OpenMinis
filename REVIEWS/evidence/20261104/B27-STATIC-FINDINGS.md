@@ -31,3 +31,39 @@
 - MinisApp uncaughtException цепочка: порядок ACRA/MinisApp-хендлеров
   (ACRA collect() на main — HANG 2.9s из stall-лога) — дизайн-вопрос.
 - DebugServer 0.0.0.0:5322 в релизе — surface-аудит.
+
+## ДОРАБОТКА (2026-11-05): ScheduledTaskManager + DebugServer — запрошенный объём
+Commit: $(git rev-parse --short HEAD) (HEAD на момент аудита). Объём: два файла
+прочитаны полностью. Статусы: «статически проверено; runtime не проверен».
+
+### ScheduledTaskManager.kt (176 строк, прочитан целиком)
+- registerAlarm: setExactAndAllowWhileIdle(RTC_WAKEUP) + SecurityException →
+  fallback setAndAllowWhileIdle (revocation S+ обработана). [статически: краш-путей
+  не найдено; inexact-fallback = позднее срабатывание, не краш; runtime не проверен]
+- buildPendingIntent: FLAG_IMMUTABLE|UPDATE_CURRENT ✓. requestCode =
+  taskId.hashCode() and 0x7FFFFFFF → [LOW] коллизия hashCode двух задач = перезапись
+  PendingIntent (чужая задача стреляет по id другой). Триггер: коллизия hash (редко).
+  Остаточное: поведение receiver при отсутствующем task_id — вне этого объёма.
+- markFired/upsert в onReceive-контексте: главный поток — ANR-риск зависит от
+  ScheduledTaskStore (в этом объёме НЕ ПРОВЕРЕНО; store не читался).
+- rescheduleAll: обёрнут в try/catch вызывающим AlarmReceiver ✓ (проверено ранее).
+- update(): cancel→upsert→register — окно сироты-аларма отсутствует (cancel перед
+  register, enabled-гейт) [статически].
+
+### DebugServer.kt (437 строк) + точка старта
+- Release-гейт ЕСТЬ: MinisApp.kt:1014 `if (BuildConfig.DEBUG)` → сервер стартует
+  только в debug. [статически проверено; runtime не проверен]
+- Auth: non-loopback требует X-Minis-Token; loopback (adb forward) token-free;
+  сравнение constant-time (isAuthorized); пустой expectedToken → false. ✓
+- Ограничения: MAX_BODY_CHARS=8МБ, parallelism=8 (limitedParallelism). ✓
+- [LOW] MinisApp.kt:1016 лог «debug RPC server on 127.0.0.1:$rpcPort» вводит в
+  заблуждение: сокет на 0.0.0.0 (class doc). Вводит в заблуждение диагностику,
+  не безопасность.
+- НЕ ПРОВЕРЕНО в этом объёме: поверхность DebugRPCHandler (1890 строк — что может
+  делать авторизованный LAN-клиент: чтение логов/файлов, расход квоты), поведение
+  runBlocking-коннекшенов при остановке сервера.
+
+Вывод по двум файлам: существенных краш-путей не найдено; найдены [LOW] хеш-коллизия
+PendingIntent и [LOW] вводящий в заблуждение лог. Оба файла: «статически проверено;
+runtime не проверен». Остальные зоны (DebugRPCHandler surface, ScheduledTaskStore)
+остаются вне подтверждённого покрытия.

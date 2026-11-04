@@ -52,3 +52,14 @@
 ## 6. Статус приложения
 **Кандидатный билд с известными непроверенными рисками.** Не «можно спокойно
 пользоваться».
+
+
+## 7. Доработка B27 (2026-11-05): ScheduledTaskManager + DebugServer
+- ScheduledTaskManager: прочитан целиком; краш-путей не найдено [LOW: PendingIntent
+  hash-коллизия, ANR-риск store-зависимый — store НЕ проверен]. Статус: статически
+  проверено; runtime не проверен.
+- DebugServer: прочитан; release-гейт подтверждён статически (BuildConfig.DEBUG в
+  MinisApp.kt:1014); auth constant-time + token-gate для non-loopback ✓; [LOW]
+  вводящий в заблуждение лог 127.0.0.1 (фактически 0.0.0.0). DebugRPCHandler
+  surface (1890 строк) — НЕ ПРОВЕРЕНО в этом объёме. Статус: статически проверено;
+  runtime не проверен.
