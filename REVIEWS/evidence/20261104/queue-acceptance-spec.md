@@ -48,3 +48,16 @@ drain. Успех по B выше + восстановление UI без зо�
 | Cancel-выход | НЕ auto-drain (stop=stop, T189) | очередь персистентна; доставка на следующее действие/открытие — задокументированное поведение |
 | Compact in flight | kick из runCompact после ОБОИХ исходов | существующий контракт |
 Residual: не найдено. Stop=stop — продуктовое решение, не зависание.
+
+## ACRA main-hang — дизайн-заметка (не слепой фикс, ожидает ревью)
+Стек из stall-2026-11-04: uncaughtException → ACRA ReportExecutor.execute →
+CrashReportDataFactory.collect → FutureTask.get — 2.9s main-блокировка ВО ВРЕМЯ
+падения. Варианты (нужен выбор ревьюера): (a) ACRA конфигурация с
+setReportDialog... нет; корректные пути: `ACRA.init` c `CoreConfiguration`
+в асинхронном collectCollector (ACRA 5.x: `async` сборка через
+`ReportExecutor.execute` — проверить поддерживаемую версию ACRA в зависимостях);
+(b) обёртка uncaughtException: перенаправить в ACRA на background-треде с
+join(timeout) перед смертью процесса (сохранить доставку отчёта, убрать
+бесконечный get); (c) обновить ACRA до версии с неблокирующим collect.
+Ничего не менять до разбора версии ACRA в зависимостях и контракта её
+потоков — ошибка в обработчике краша = потеря отчётов.

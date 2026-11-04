@@ -196,6 +196,11 @@ android {
 
     testOptions {
         unitTests.isReturnDefaultValues = true
+        // [test-hardening] Robolectric needs the merged resources/assets to
+        // resolve Compose contexts on the JVM; heap headroom for the
+        // concurrency stress tests (bounded LiveTurnBuffer storm etc.).
+        unitTests.isIncludeAndroidResources = true
+        unitTests.all { it.maxHeapSize = "2g" }
     }
 
     lint {
@@ -351,6 +356,11 @@ dependencies {
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
     testImplementation("org.json:json:20231013")
+    // [test-hardening] Robolectric: Compose/UI-adjacent ViewModel logic on the
+    // JVM (no device, no APK build). Pinned to a 4.14.x line that supports
+    // compileSdk 36 resource merging.
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("androidx.test:core:1.6.1")
     // [T-m13-fts-memory] JVM suite runs the REAL FTS5 SQL (the identical
     // statements the Android SQLite executes) against sqlite-jdbc.
     testImplementation("org.xerial:sqlite-jdbc:3.47.1.0")

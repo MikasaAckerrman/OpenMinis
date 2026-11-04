@@ -2,7 +2,6 @@ package com.openminis.app.sandbox
 
 import org.junit.Assert.*
 import org.junit.Before
-import org.junit.Ignore
 import org.junit.Test
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.CyclicBarrier
@@ -294,43 +293,66 @@ class ShellProtocolEngineTest {
 
     // ==================== И3 ч.2: N-way command storm (5 одновременных команд) ====================
 
-    // [quarantined 2026-11-04] Pre-existing red, exposed by the FIRST-ever CI
-    // run of tests.yml (our [test] push 2db40b1d — the test was authored and
-    // "fixed" under [quick] tags, which skip tests.yml). Deterministic fail:
-    // s11 arms FIVE callbacks up front (markers.map { arm(it) }), but
-    // ShellProtocolEngine.start() is single-flight — check(current == null)
-    // throws IllegalStateException on the second arm. The storm shape must be
-    // reworked against feed()'s real contract (arm ONE command; decoy
-    // markers' bytes fold into carry) — queued for the test-hardening sprint,
-    // see REVIEWS/evidence/20261104/.
-    @Ignore
+    // [s11-rework 2026-11-05] The original storm premise (five racing
+    // threads, five armed callbacks) tested a contract the engine does not
+    // provide: start() is single-flight and the caller must serialize feeds
+    // (invariant F2/v2.3-C — current/carry/pendingLine are not thread-safe).
+    // The quarantined version failed deterministically on the second arm.
+    //
+    // Reworked to the REAL contract, keeping the storm's value: five
+    // back-to-back commands, each fed in SHUFFLED FRAGMENT SIZES, with
+    // DECOY marker-shaped bytes interleaved BETWEEN commands (idle-gap
+    // bytes are orphaned per feedLive — they must never contaminate the
+    // next command). Each command dispatches exactly once with its own
+    // output; no marker text leaks into any dispatched output.
     @Test
-    fun `s11 five command storm each callback resumes exactly once with own output`() {
-        // [T-shell-storm-5] The reviewer's scenario "5 одновременных команд":
-        // five markers fed by five racing threads in shuffled fragment sizes.
-        // Exactly five dispatches, each callback owning ONLY its own output.
-        val n = 5
-        val markers = (1..n).map { ShellProtocolEngine.newMarker() }
-        val callbacks = markers.map { m -> arm(m) }
-        val outputs = List(n) { StringBuilder() }
-        val wins = java.util.concurrent.atomic.AtomicInteger(0)
-        val threads = (1..n).map { i ->
-            Thread {
-                val d = engine.feed("OUT_$i\n__MINIS_DONE_${markers[i - 1]}_EXIT_0__\n")
+    fun `s11 five back-to-back commands with decoy idle-gap bytes dispatch once each`() {
+        val allOutputs = mutableListOf<String>()
+        var contaminated = false
+        repeat(5) { round ->
+            val marker = ShellProtocolEngine.newMarker()
+            val cb = arm(marker)
+            // Full payload for THIS round's command, fed in shuffled fragments.
+            val payload = "OUT_R${round}_A\nOUT_R${round}_B\n__MINIS_DONE_${marker}_EXIT_0__\n"
+            val fragments = mutableListOf<String>()
+            var i = 0
+            while (i < payload.length) {
+                val size = listOf(3, 7, 11, 23)[((marker.length + i) % 4)]
+                fragments += payload.substring(i, minOf(i + size, payload.length))
+                i += size
+            }
+            var dispatched: Dispatch? = null
+            for (frag in fragments) {
+                val d = engine.feed(frag)
                 if (d != null) {
-                    wins.incrementAndGet()
-                    outputs[i - 1].append(d.output)
+                    check(dispatched == null) { "double dispatch inside one command" }
+                    dispatched = d
                 }
             }
+            assertNotNull("round $round must dispatch exactly once", dispatched)
+            allOutputs += dispatched!!.output.toString()
+            // Decoy idle-gap bytes BETWEEN commands (current == null):
+            // they must be orphaned, never folded into the next command.
+            engine.feed("__MINIS_DONE_DECOY_${round}_EXIT_9__\n")
+            // Re-arm for the next round (single-flight: previous is done).
+            if (round < 4) {
+                val nextMarker = ShellProtocolEngine.newMarker()
+                // Pre-validate: engine is free right after a completed dispatch.
+                val cb2 = arm(nextMarker)
+                check(engine.feed("NEXT-CMD-BYTES_${round}\n") == null) { "idle-gap bytes must not dispatch" }
+                // This armed command is discarded via a completing feed so the
+                // next round starts clean: feed its own END marker.
+                val d2 = engine.feed("__MINIS_DONE_${nextMarker}_EXIT_0__\n")
+                assertNotNull(d2)
+                check(!cb2.output.toString().contains("DECOY")) { "decoy bytes contaminated command ${round + 1}" }
+                allOutputs += cb2.output.toString()
+            }
         }
-        threads.forEach { it.start() }
-        // The engine is single-flight: only ONE dispatch wins the storm; the
-        // rest of the fed markers belong to commands the engine will process
-        // as they are re-armed — the invariant under test is exactly-once.
-        threads.forEach { it.join() }
-        assertEquals(1, wins.get())
-        outputs.forEach { sb -> org.junit.Assert.assertFalse(sb.contains("__MINIS_DONE_")) }
-        callbacks.forEach { assertNotNull(it) }
+        // Aggregate invariants across all five rounds.
+        for (o in allOutputs) {
+            assertFalse("no marker text may leak into dispatched output", o.contains("__MINIS_DONE_"))
+            assertFalse("no decoy contamination", o.contains("DECOY"))
+        }
     }
 }
 
