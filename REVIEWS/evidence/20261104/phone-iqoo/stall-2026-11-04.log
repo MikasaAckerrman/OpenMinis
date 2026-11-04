@@ -1,0 +1,100 @@
+IDLE-FREEZE @ 00:44:26.874 (duration ~3771ms) — background park, not a hang
+===== HANG @ 00:52:14.245 (duration ~2896ms) sample=mid-hang escalation=0 =====
+thread: main
+  at jdk.internal.misc.Unsafe.park(Native Method)
+  at java.util.concurrent.locks.LockSupport.park(LockSupport.java:211)
+  at java.util.concurrent.FutureTask.awaitDone(FutureTask.java:447)
+  at java.util.concurrent.FutureTask.get(FutureTask.java:190)
+  at org.acra.data.CrashReportDataFactory.collect(CrashReportDataFactory.kt:81)
+  at org.acra.data.CrashReportDataFactory.createCrashData(CrashReportDataFactory.kt:57)
+  at org.acra.builder.ReportExecutor.execute(ReportExecutor.kt:95)
+  at org.acra.builder.ReportBuilder.build(ReportBuilder.kt:151)
+  at org.acra.reporter.ErrorReporterImpl.uncaughtException(ErrorReporterImpl.kt:105)
+  at com.openminis.app.MinisApp.onCreate$lambda$3(MinisApp.kt:396)
+  at com.openminis.app.MinisApp.$r8$lambda$xRqDsDiPL1mfS6QZ_Mumh2vzLSw(Unknown Source:0)
+  at com.openminis.app.MinisApp$$ExternalSyntheticLambda2.uncaughtException(D8$$SyntheticClass:0)
+  at java.lang.ThreadGroup.uncaughtException(ThreadGroup.java:1071)
+  at java.lang.ThreadGroup.uncaughtException(ThreadGroup.java:1066)
+  at java.lang.Thread.dispatchUncaughtException(Thread.java:2339)
+
+IDLE-FREEZE @ 00:57:39.418 (duration ~3319ms) — background park, not a hang
+IDLE-FREEZE @ 00:59:49.919 (duration ~2791ms) — background park, not a hang
+===== HANG @ 02:44:26.219 (duration ~3386ms) sample=mid-hang escalation=0 =====
+thread: main
+  at android.view.Surface.nativeIsValid(Native Method)
+  at android.view.Surface.isValid(Surface.java:468)
+  at android.view.ViewRootImpl.performTraversals(ViewRootImpl.java:4377)
+  at android.view.ViewRootImpl.doTraversal(ViewRootImpl.java:3507)
+  at android.view.ViewRootImpl$TraversalRunnable.run(ViewRootImpl.java:11847)
+  at android.view.Choreographer$CallbackRecord.run(Choreographer.java:1954)
+  at android.view.Choreographer$CallbackRecord.run(Choreographer.java:1963)
+  at android.view.Choreographer.doCallbacks(Choreographer.java:1388)
+  at android.view.Choreographer.doFrame(Choreographer.java:1244)
+  at android.view.Choreographer$FrameDisplayEventReceiver.run(Choreographer.java:1937)
+  at android.os.Handler.handleCallback(Handler.java:1014)
+  at android.os.Handler.dispatchMessage(Handler.java:102)
+  at android.os.Looper.loopOnce(Looper.java:250)
+  at android.os.Looper.loop(Looper.java:340)
+  at android.app.ActivityThread.main(ActivityThread.java:9867)
+  at java.lang.reflect.Method.invoke(Native Method)
+  at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:621)
+  at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:957)
+
+===== HANG @ 02:44:26.725 (duration ~3386ms) sample=post-recovery escalation=0 =====
+thread: main
+  at android.os.MessageQueue.nativePollOnce(Native Method)
+  at android.os.MessageQueue.next(MessageQueue.java:352)
+  at android.os.Looper.loopOnce(Looper.java:202)
+  at android.os.Looper.loop(Looper.java:340)
+  at android.app.ActivityThread.main(ActivityThread.java:9867)
+  at java.lang.reflect.Method.invoke(Native Method)
+  at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:621)
+  at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:957)
+
+IDLE-FREEZE @ 02:46:31.474 (duration ~2625ms) — background park, not a hang
+IDLE-FREEZE @ 03:20:42.408 (duration ~5288ms) — background park, not a hang
+IDLE-FREEZE @ 03:20:55.952 (duration ~6619ms) — background park, not a hang
+IDLE-FREEZE @ 03:21:05.325 (duration ~3981ms) — background park, not a hang
+IDLE-FREEZE @ 03:21:14.504 (duration ~7048ms) — background park, not a hang
+IDLE-FREEZE @ 03:21:35.368 (duration ~3758ms) — background park, not a hang
+IDLE-FREEZE @ 03:21:42.185 (duration ~6446ms) — background park, not a hang
+IDLE-FREEZE @ 03:22:14.588 (duration ~5872ms) — background park, not a hang
+IDLE-FREEZE @ 03:23:07.904 (duration ~6885ms) — background park, not a hang
+IDLE-FREEZE @ 03:23:33.038 (duration ~5126ms) — background park, not a hang
+IDLE-FREEZE @ 03:23:50.805 (duration ~10604ms) — background park, not a hang
+IDLE-FREEZE @ 03:23:53.925 (duration ~2662ms) — background park, not a hang
+IDLE-FREEZE @ 03:24:46.594 (duration ~6530ms) — background park, not a hang
+IDLE-FREEZE @ 03:25:04.091 (duration ~2749ms) — background park, not a hang
+IDLE-FREEZE @ 03:25:10.358 (duration ~6141ms) — background park, not a hang
+IDLE-FREEZE @ 03:25:18.555 (duration ~8084ms) — background park, not a hang
+IDLE-FREEZE @ 03:26:16.342 (duration ~7475ms) — background park, not a hang
+IDLE-FREEZE @ 03:26:26.477 (duration ~3840ms) — background park, not a hang
+IDLE-FREEZE @ 03:26:36.446 (duration ~6233ms) — background park, not a hang
+IDLE-FREEZE @ 03:26:43.292 (duration ~5351ms) — background park, not a hang
+IDLE-FREEZE @ 03:26:49.547 (duration ~5783ms) — background park, not a hang
+IDLE-FREEZE @ 03:26:55.131 (duration ~5317ms) — background park, not a hang
+IDLE-FREEZE @ 03:26:58.941 (duration ~2549ms) — background park, not a hang
+IDLE-FREEZE @ 03:27:10.213 (duration ~5938ms) — background park, not a hang
+IDLE-FREEZE @ 03:27:25.557 (duration ~5629ms) — background park, not a hang
+IDLE-FREEZE @ 03:27:32.244 (duration ~6123ms) — background park, not a hang
+IDLE-FREEZE @ 03:27:38.314 (duration ~5511ms) — background park, not a hang
+IDLE-FREEZE @ 03:27:47.529 (duration ~3102ms) — background park, not a hang
+IDLE-FREEZE @ 03:27:55.543 (duration ~6002ms) — background park, not a hang
+IDLE-FREEZE @ 03:28:00.214 (duration ~2930ms) — background park, not a hang
+IDLE-FREEZE @ 03:28:23.520 (duration ~2882ms) — background park, not a hang
+IDLE-FREEZE @ 03:28:33.666 (duration ~7199ms) — background park, not a hang
+IDLE-FREEZE @ 03:28:41.888 (duration ~6971ms) — background park, not a hang
+IDLE-FREEZE @ 03:28:49.445 (duration ~5318ms) — background park, not a hang
+IDLE-FREEZE @ 03:29:13.193 (duration ~6491ms) — background park, not a hang
+IDLE-FREEZE @ 03:29:20.311 (duration ~5559ms) — background park, not a hang
+IDLE-FREEZE @ 03:29:33.313 (duration ~5075ms) — background park, not a hang
+IDLE-FREEZE @ 03:29:41.431 (duration ~5978ms) — background park, not a hang
+IDLE-FREEZE @ 03:29:47.974 (duration ~5023ms) — background park, not a hang
+IDLE-FREEZE @ 03:29:53.922 (duration ~5463ms) — background park, not a hang
+IDLE-FREEZE @ 03:30:04.639 (duration ~3211ms) — background park, not a hang
+IDLE-FREEZE @ 19:04:07.229 (duration ~7637ms) — background park, not a hang
+IDLE-FREEZE @ 19:11:39.821 (duration ~8001ms) — background park, not a hang
+IDLE-FREEZE @ 19:12:00.409 (duration ~2582ms) — background park, not a hang
+IDLE-FREEZE @ 19:26:57.569 (duration ~2640ms) — background park, not a hang
+IDLE-FREEZE @ 19:41:56.992 (duration ~3320ms) — background park, not a hang
+IDLE-FREEZE @ 20:49:24.696 (duration ~2991ms) — background park, not a hang

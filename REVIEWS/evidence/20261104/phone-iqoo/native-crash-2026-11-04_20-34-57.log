@@ -1,0 +1,31 @@
+=== Minis Native Crash ===
+Time: 2026-11-04 20:34:57
+Signal: 6 (SIGABRT)
+si_code: -1
+Fault addr: 0x2869000035bd
+PID: 13757  TID: 2061
+
+(Tombstone with full backtrace written by Android system to /data/tombstones/ — adb pull or `adb bugreport`.)
+Thread: DefaultDispatch
+
+Backtrace (arm64 unwind, module+off):
+  #00 pc 0x0000006ce45b783c  /data/app/~~c-oikSOcvIHlkIwSUsiEPw==/com.openminis.app.clone-wP1pAVL13DE0DtuJ1sagIw==/lib/arm64/libminis_crash_handler.so+0x483c
+
+Faulting context:
+  pc 0x0000007275919680  sp 0x0000006c253a82f0  fp 0x0000006c253a8390  lr 0x0000007275919650
+  faulting pc -> ?+0x7275919680
+  caller (lr)  -> ?+0x7275919650
+
+Faulting frames (frame-pointer chain):
+  #00 pc 0x00207e727591a04c  ?+0x207e727591a04c
+  #01 pc 0x000e33f275919df8  ?+0xe33f275919df8
+  #02 pc 0x003d6ef27591b554  ?+0x3d6ef27591b554
+  #03 pc 0x003132f2758cb0fc  ?+0x3132f2758cb0fc
+  #04 pc 0x0000006cfc5c5588  /apex/com.android.os.statsd/lib64/libstatspull.so+0x25588
+  #05 pc 0x004f616cfc5c7768  ?+0x4f616cfc5c7768
+  #06 pc 0x0061356cfc5c73bc  ?+0x61356cfc5c73bc
+  #07 pc 0x004a946cfac99678  ?+0x4a946cfac99678
+  #08 pc 0x0004fe6cfab99324  ?+0x4fe6cfab99324
+  #09 pc 0x00262e00be1b1840  ?+0x262e00be1b1840
+  #10 pc 0x0000006cf988b579  ?+0x6cf988b579
+  #11 pc 0x0000006c253a9070  ?+0x6c253a9070
