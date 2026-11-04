@@ -10150,17 +10150,14 @@ class ChatViewModel(
         // this check: the winding-down tail's last-breath kick, the reload
         // kick on chat open and resumeQueueAfterCancel all drain the
         // persisted queue (T-queue-persist-fix).
-        var parkedIdle = false
-        if (!_isStreaming.value) {
-            parkedIdle = true
-            val lockHeld = com.openminis.app.service.SessionConcurrencyManager.isSessionBusy(activeSessionId)
-            AppLogger.info(
-                TAG_STREAM,
-                "[Queue] enqueue raced turn-end (streaming=false" +
-                    if (lockHeld) ", session lock still held — cancel window" else ", idle race" +
-                    ") — parking in queue; delivery via tail/reload kick",
-            )
-        }
+        // [T-recursion-guard] Decision extracted to QueueParkPolicy (pure, unit-
+        // tested; behavior-identical — see the policy's invariant doc).
+        val parkDecision = QueueParkPolicy.decide(
+            streaming = _isStreaming.value,
+            sessionLockHeld = com.openminis.app.service.SessionConcurrencyManager.isSessionBusy(activeSessionId),
+        )
+        AppLogger.info(TAG_STREAM, "[Queue] ${parkDecision.reason}")
+
 
         val prompt = QueuedPrompt(
             id = "queued_${System.currentTimeMillis()}_${(Math.random() * 1_000_000).toInt()}",
@@ -10189,10 +10186,7 @@ class ChatViewModel(
         // delivery kick: resumeQueueAfterCancel re-checks the queue AFTER the
         // park and CAS-claims the slot, so concurrent kicks still collapse
         // into one serialized consumer (session mutex + slot).
-        if (parkedIdle &&
-            !_isStreaming.value &&
-            !com.openminis.app.service.SessionConcurrencyManager.isSessionBusy(activeSessionId)
-        ) {
+        if (parkDecision.scheduleLivenessKick && !_isStreaming.value) {
             AppLogger.info(TAG_STREAM, "[Queue] parked into an IDLE session — scheduling delivery kick")
             viewModelScope.launch {
                 kotlinx.coroutines.delay(200)
