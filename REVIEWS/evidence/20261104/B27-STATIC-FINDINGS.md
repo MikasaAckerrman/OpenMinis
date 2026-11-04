@@ -39,11 +39,16 @@ Commit: $(git rev-parse --short HEAD) (HEAD на момент аудита). О�
 ### ScheduledTaskManager.kt (176 строк, прочитан целиком)
 - registerAlarm: setExactAndAllowWhileIdle(RTC_WAKEUP) + SecurityException →
   fallback setAndAllowWhileIdle (revocation S+ обработана). [статически: краш-путей
-  не найдено; inexact-fallback = позднее срабатывание, не краш; runtime не проверен]
+  не найдено; СЕМАНТИКА СРОКА НЕ ПРОВЕРЕНА — inexact/Doze может отложить доставку,
+  требования задач к точности не формализованы; runtime не проверен]
 - buildPendingIntent: FLAG_IMMUTABLE|UPDATE_CURRENT ✓. requestCode =
-  taskId.hashCode() and 0x7FFFFFFF → [LOW] коллизия hashCode двух задач = перезапись
-  PendingIntent (чужая задача стреляет по id другой). Триггер: коллизия hash (редко).
-  Остаточное: поведение receiver при отсутствующем task_id — вне этого объёма.
+  taskId.hashCode() and 0x7FFFFFFF → [LOW→ПОДТВЕРЖДЕНО ПО КОНТРАКТУ] коллизия
+  requestCode = перезапись PendingIntent: все Intent задач имеют ОДИНАКОВЫЕ
+  identity-поля (action=com.openminis.app.scheduled.FIRE, component=
+  ScheduledTaskAlarmReceiver, data/type отсутствуют), а extras (task_id) в
+  filterEquals НЕ участвуют → коллизия requestCode с необходимостью
+  перезаписывает. Runtime-проверки нет. Остаточное: receiver получит task_id
+  другой задачи → пропущенное/чужое срабатывание (не краш).
 - markFired/upsert в onReceive-контексте: главный поток — ANR-риск зависит от
   ScheduledTaskStore (в этом объёме НЕ ПРОВЕРЕНО; store не читался).
 - rescheduleAll: обёрнут в try/catch вызывающим AlarmReceiver ✓ (проверено ранее).
@@ -67,3 +72,38 @@ Commit: $(git rev-parse --short HEAD) (HEAD на момент аудита). О�
 PendingIntent и [LOW] вводящий в заблуждение лог. Оба файла: «статически проверено;
 runtime не проверен». Остальные зоны (DebugRPCHandler surface, ScheduledTaskStore)
 остаются вне подтверждённого покрытия.
+
+## ДОРАБОТКА 2 (2026-11-05): DebugRPCHandler — маршруты, auth, транспорт
+Commit: $(git rev-parse --short HEAD). Read-only; строки актуальны на HEAD.
+
+### Авторизация — где применяется
+DebugServer.handleConnection:243-248: auth ПРОВЕРЯЕТСЯ ДО парсинга/dispatch —
+единая точка, покрывает все 50 маршрутов. Non-loopback требует X-Minis-Token;
+loopback (adb forward) — token-free. [статически]
+
+### Транспорт
+Голый HTTP без TLS (JSON-RPC через сокеты, sendResponse writer) → токен для
+non-loopback передаётся в открытом виде — ПЕРЕХВАТЫВАЕМ В ПУТИ (внешнее ревью
+подтверждено статически). ServerSocket на 0.0.0.0:5322.
+
+### Маршруты: 50 методов. Классы опасности (не исчерпывающе, есть DEBUG-гейты только у 4):
+- ПРОИЗВОЛЬНОЕ ИСПОЛНЕНИЕ в песочнице: debug.shellExecute (1158-1175,
+  ExecutionCoordinator.execute, timeout≤900с) — БЕЗ BuildConfig.DEBUG-гейта;
+  debug.shizuku.exec / debug.modelUse.exec / debug.sessions.exec /
+  debug.minisConfig.exec (287-325) — С гейтом (throw -32601 вне debug).
+- ФАЙЛЫ: debug.writeFile / debug.readFile (690) / debug.rawLs (636) —
+  границы путей НЕ проверены в этом объёме.
+- UI-управление: debug.tap (779) / scroll / inputText / viewTree / highlight.
+- БРАУЗЕР: debug.browser.executeJS (222) / pageInfo / getText / screenshot.
+- КВОТА/АГЕНТЫ: agent.graph.run/seed, debug.llmRequests, debug.fetch (1092 —
+  SSRF-профиль из устройства), debug.update.check.
+- СОСТОЯНИЕ: debug.engineSwap, debug.cloudSync, debug.logs.setEnabled,
+  debug.minisConfig.exec (ConfigBridge set/set-batch — мутация конфига).
+
+### Текущая экспозиция (владелец уведомлён)
+На iQOO СЕЙЧАС установлен диагностический DEBUG-билд (гаечная установка
+69b2de06) → DebugServer активен на 0.0.0.0:5322 в Wi-Fi-сети; токен в
+files/debug_server_token (читаем рутом). Любой клиент LAN с токеном (или
+MITM-перехват) получает произвольное исполнение в песочнице + чтение файлов.
+Рекомендация владельцу: заменить билд на release/обычный при первой
+возможности или отключить Wi-Fi на телефоне до замены.
