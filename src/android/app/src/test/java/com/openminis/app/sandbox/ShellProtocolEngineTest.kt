@@ -321,7 +321,7 @@ class ShellProtocolEngineTest {
                 fragments += payload.substring(i, minOf(i + size, payload.length))
                 i += size
             }
-            var dispatched: Dispatch? = null
+            var dispatched: ShellProtocolEngine.Dispatch? = null
             for (frag in fragments) {
                 val d = engine.feed(frag)
                 if (d != null) {
