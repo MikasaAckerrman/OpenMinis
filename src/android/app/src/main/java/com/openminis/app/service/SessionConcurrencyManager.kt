@@ -112,6 +112,22 @@ object SessionConcurrencyManager {
         }
     }
 
+    /**
+     * Non-acquiring probe: is the exclusive turn lock for [sessionId] held?
+     *
+     * [T-recursion-guard] (2026-11-04 crash forensics, iQOO journal):
+     * enqueuePrompt's raced-turn-end routing used `!_isStreaming.value` to
+     * decide between "park in queue" and "delegate to sendMessage". In the
+     * cancel window — cancelStream force-releases the SLOT at once while the
+     * cancelled turn's tail still holds the SESSION LOCK through seconds of
+     * teardown — that check read false while the lock was held, so the
+     * delegation re-entered sendMessage, which re-claimed the free slot, hit
+     * the busy lock and enqueued again: sendMessage⇄enqueuePrompt recursion,
+     * 23k frames, StackOverflowError on the main thread.
+     */
+    fun isSessionBusy(sessionId: String): Boolean =
+        sessionMutexes[sessionId]?.isLocked ?: false
+
     /** Test-only reset; callers must first finish/cancel all test coroutines. */
     internal fun resetForTest() {
         synchronized(stateLock) {

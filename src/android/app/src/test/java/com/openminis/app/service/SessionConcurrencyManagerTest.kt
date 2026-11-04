@@ -88,3 +88,28 @@ class SessionConcurrencyManagerTest {
         holders.forEach { it.join() }
     }
 }
+
+class SessionConcurrencyProbeTest {
+
+    @Test
+    fun `probe reflects lock state without acquiring`() {
+        // [T-recursion-guard] The enqueuePrompt race-branch routes to
+        // sendMessage only when the session lock is actually FREE; a held
+        // lock (cancel window: slot force-released, dying turn still owns
+        // the mutex) must PARK the message instead of recursing.
+        val sid = "probe-test-session"
+        assertFalse(com.openminis.app.service.SessionConcurrencyManager.isSessionBusy(sid))
+        assertTrue(com.openminis.app.service.SessionConcurrencyManager.tryLockSession(sid))
+        assertTrue(
+            "probe must report the held lock",
+            com.openminis.app.service.SessionConcurrencyManager.isSessionBusy(sid),
+        )
+        com.openminis.app.service.SessionConcurrencyManager.unlockSession(sid)
+        assertFalse(
+            "probe must clear after unlock",
+            com.openminis.app.service.SessionConcurrencyManager.isSessionBusy(sid),
+        )
+        // Unknown session: no mutex entry — not busy.
+        assertFalse(com.openminis.app.service.SessionConcurrencyManager.isSessionBusy("never-locked"))
+    }
+}

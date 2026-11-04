@@ -124,3 +124,19 @@ ttfbWatchdog (OpenAI:686 / Gemini:196 / Anthropic:199) — launch с catch(Excep
   там идиоматично. Кандидатура в B27 СНЯТА; B27-трассировка ведётся
   по другим следам (см. ChatViewModel.kt:11695 документацию
   120s-TTFB/OEM-freeze случая).
+
+## ТЕЛЕФОННАЯ ФОРЕНЗИКА iQOO (10CF5719KM002JZ, V2425A, vc149 от 04.11 03:43)
+Краш-буфер logcat -b crash: 4 FATAL Minis, ВСЕ = StackOverflowError на main:
+- 11-03 00:48 / 21:48 / 11-04 00:52 — DispatchedTask/ThreadLocal цепочки
+- 11-03 09:35 — 23372 фрейма: sendMessage:10562→tryLockSession→
+  enqueuePrompt:10113→sendMessage:10565→… (БЕСКОНЕЧНАЯ рекурсия)
+Диагноз: цикл sendMessage⇄enqueuePrompt в окне «слот свободен, сессионный
+лок занят» (Stop-окно: forceRelease слота мгновенно, мьютекс держит
+умирающий turn-хвост секунды). enqueuePrompt роутил в sendMessage по
+флагу _isStreaming=false, не проверяя лок. vc149 содержит гвард 3ab98efb
+(релиз только своего клейма), но РОУТИНГ восстанавливал цикл.
+FIX: SessionConcurrencyManager.isSessionBusy (проба isLocked без
+приобретения) + гвард в enqueuePrompt: флаг=false И лок занят → PARK.
+Тест: SessionConcurrencyProbeTest.
+Также: System-level Thread-6 краши (media.module) и librootkotlinx
+краши — НЕ Minis (шум журнала телефона).
