@@ -10138,29 +10138,26 @@ class ChatViewModel(
         // user's text was lost completely (07.10 forensics: session 67a3c6e3,
         // "message in sending state that never sends"). Hand off to the
         // normal send path instead — a real turn for a real message.
+        // [T-recursion-guard] (2026-11-04 iQOO crash journal, 23k-frame SOF)
+        // PARK UNCONDITIONALLY — never delegate back to sendMessage from
+        // here. The old raced-turn-end delegation ("flag false → normal
+        // send") re-created sendMessage⇄enqueuePrompt recursion in the
+        // cancel window: cancelStream force-releases the SLOT instantly
+        // while the dying turn holds the SESSION LOCK through seconds of
+        // teardown — sendMessage re-claimed the free slot, hit the busy
+        // lock, enqueued back (a probe-based gate is still a TOCTOU
+        // observation, per external review). Delivery does not depend on
+        // this check: the winding-down tail's last-breath kick, the reload
+        // kick on chat open and resumeQueueAfterCancel all drain the
+        // persisted queue (T-queue-persist-fix).
         if (!_isStreaming.value) {
-            // [T-recursion-guard] (2026-11-04 iQOO crash journal) Route to the
-            // normal send path ONLY when the session lock is actually free.
-            // In the cancel window the streaming flag is already false while
-            // the dying turn still holds the session lock through seconds of
-            // teardown — delegating there re-entered
-            // sendMessage⇄enqueuePrompt until StackOverflowError (23k frames:
-            // sendMessage:claim → lock-busy → enqueue → flag false → send…).
-            // Parking is always safe: the winding-down tail's last-breath
-            // kick / a reload kick delivers the queue.
-            if (com.openminis.app.service.SessionConcurrencyManager.isSessionBusy(activeSessionId)) {
-                AppLogger.info(
-                    TAG_STREAM,
-                    "[Queue] enqueue raced turn-end, but the session lock is still held (cancel window) — parking in queue",
-                )
-            } else {
-                AppLogger.info(
-                    TAG_STREAM,
-                    "[Queue] enqueue raced turn-end (not streaming anymore) — routing to normal send",
-                )
-                sendMessage(text)
-                return
-            }
+            val lockHeld = com.openminis.app.service.SessionConcurrencyManager.isSessionBusy(activeSessionId)
+            AppLogger.info(
+                TAG_STREAM,
+                "[Queue] enqueue raced turn-end (streaming=false" +
+                    if (lockHeld) ", session lock still held — cancel window" else ", idle race" +
+                    ") — parking in queue; delivery via tail/reload kick",
+            )
         }
 
         val prompt = QueuedPrompt(
