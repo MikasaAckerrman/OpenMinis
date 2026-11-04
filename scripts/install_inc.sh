@@ -30,9 +30,10 @@ cd "$ANDROID_DIR"
 ./gradlew -q assembleDebug 2>&1 | tail -6
 adb -s "$SERIAL" install -r app/build/outputs/apk/debug/app-debug.apk 2>&1 | tail -2
 
-# [guard-2] The INSTALLED build must be fresh: lastUpdateTime within the
-# last 120s proves the new APK actually replaced the old one (an installer
-# "Success" alone does not prove the app was restarted on it).
+# [guard-2] Build IDENTITY, not just freshness: sha256 of the locally built
+# APK must equal the sha256 of the INSTALLED one (pm path -> pull -> compare).
+# lastUpdateTime alone proves a recent install, not that the installed bytes
+# are the current commit's build — reinstalling an old APK also refreshes it.
 NOW=$(date +%s)
 UPD=$(adb -s "$SERIAL" shell dumpsys package com.openminis.app.clone 2>/dev/null \
     | grep lastUpdateTime | tail -1 | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{8}' | head -1)
@@ -45,6 +46,19 @@ if [ -n "$UPD" ]; then
     fi
     echo "[install] freshness ok (updated ${AGE}s ago)"
 fi
+LOCAL_SHA=$(sha256sum app/build/outputs/apk/debug/app-debug.apk | cut -d' ' -f1)
+INSTALLED_PATH=$(adb -s "$SERIAL" shell pm path com.openminis.app.clone 2>/dev/null | sed 's/^package://' | tr -d '\r' | head -1)
+if [ -z "$INSTALLED_PATH" ]; then
+    echo "ERROR: package not installed after install?" >&2; exit 1
+fi
+adb -s "$SERIAL" pull "$INSTALLED_PATH" /tmp/installed_verify.apk >/dev/null 2>&1
+INSTALLED_SHA=$(sha256sum /tmp/installed_verify.apk | cut -d' ' -f1)
+rm -f /tmp/installed_verify.apk
+if [ "$LOCAL_SHA" != "$INSTALLED_SHA" ]; then
+    echo "ERROR: installed APK sha ${INSTALLED_SHA:0:16} != local build ${LOCAL_SHA:0:16} — identity mismatch" >&2
+    exit 1
+fi
+echo "[install] identity ok (sha ${LOCAL_SHA:0:16})"
 
 adb -s "$SERIAL" shell am force-stop com.openminis.app.clone || true
 adb -s "$SERIAL" shell am start -n com.openminis.app.clone/com.openminis.app.MainActivityIconAuto >/dev/null
