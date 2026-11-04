@@ -347,7 +347,20 @@ class MinisApp : Application(), ImageLoaderFactory {
         // before any other native lib (proot, pty_bridge, …) is dlopen'd
         // by the rest of onCreate so the handler is in place when those
         // libs first execute.
-        try {
+        // [T-native-diag-gate] (2026-11-04, external review task) DEBUG
+        // builds DO NOT register the handler: its re-raise path on arm64
+        // masked the whole SIGABRT series on vc149 (7 native-crash-*.log
+        // with a broken unwind, ZERO system tombstones, no "Fatal signal"
+        // in the crash buffer — the real causes are invisible). With the
+        // handler unregistered, debuggerd owns the signal: system
+        // tombstone + full backtrace land in logcat and /data/tombstones.
+        // Release behavior is UNCHANGED.
+        if (BuildConfig.DEBUG) {
+            Log.i(
+                "MinisApp",
+                "[T-native-diag-gate] DEBUG build — native crash handler NOT registered; debuggerd owns fatal signals (system tombstones expected)",
+            )
+        } else try {
             com.openminis.app.crash.NativeCrashHandler.install(
                 java.io.File(filesDir, "logs"),
             )
