@@ -10150,7 +10150,9 @@ class ChatViewModel(
         // this check: the winding-down tail's last-breath kick, the reload
         // kick on chat open and resumeQueueAfterCancel all drain the
         // persisted queue (T-queue-persist-fix).
+        var parkedIdle = false
         if (!_isStreaming.value) {
+            parkedIdle = true
             val lockHeld = com.openminis.app.service.SessionConcurrencyManager.isSessionBusy(activeSessionId)
             AppLogger.info(
                 TAG_STREAM,
@@ -10180,6 +10182,23 @@ class ChatViewModel(
                 "atts=${pendingAttachments.size} queue=${_promptQueue.value.size} " +
                 "sid=${activeSessionId.take(8)}",
         )
+        // [T-queue-liveness] (review v2, blocking-1) If the session is ALREADY
+        // idle (flag false, lock free), the last tail-kick may have inspected
+        // an EMPTY queue and gone to sleep — a message parked after that would
+        // hang until the next unrelated event. The park schedules its OWN
+        // delivery kick: resumeQueueAfterCancel re-checks the queue AFTER the
+        // park and CAS-claims the slot, so concurrent kicks still collapse
+        // into one serialized consumer (session mutex + slot).
+        if (parkedIdle &&
+            !_isStreaming.value &&
+            !com.openminis.app.service.SessionConcurrencyManager.isSessionBusy(activeSessionId)
+        ) {
+            AppLogger.info(TAG_STREAM, "[Queue] parked into an IDLE session — scheduling delivery kick")
+            viewModelScope.launch {
+                kotlinx.coroutines.delay(200)
+                runCatching { resumeQueueAfterCancel() }
+            }
+        }
 
         val attachmentNames = pendingAttachments.map { it.fileName }
         val imageUris = pendingAttachments.filter { it.isImage }.map { it.uri }
