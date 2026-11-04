@@ -13,9 +13,12 @@ import org.robolectric.annotation.Config
  * [test-hardening] Infra sanity: proves the Robolectric pipeline (merged
  * resources, SDK 35 simulation, JUnit runner wiring) works on the JVM before
  * any real UI-adjacent test relies on it. Not a product test.
+ * application = plain Application: the manifest's MinisApp runs heavy onCreate
+ * (crash-capture dirs, deep-link registration) that needs a real device env —
+ * a JVM sanity gate must not depend on it.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [35])
+@Config(sdk = [35], application = android.app.Application::class)
 class RobolectricSanityTest {
 
     @Test
