@@ -148,8 +148,28 @@ class AgentForegroundService : Service() {
     private var hasCompletionPending = false
     private var wasBusy = false
 
+    // [T-fgs-icu-warmup] (2026-11-05, stall-2026-11-05.log: HANG 3016ms main)
+    // Первый вызов resources.getQuantityString грузит ICU-таблицы плюралей —
+    // на холодном процессе это ~3s БЛОКИРОВКИ main-потока внутри
+    // buildNotification, т.е. в критическом окне startForeground.
+    // Прогреваем ICU на фоновом треде и кэшируем готовые метки по счётчику.
+    private val sessionLabelCache = java.util.concurrent.ConcurrentHashMap<Int, String>()
+
+    private fun sessionLabelCached(count: Int): String =
+        sessionLabelCache.getOrPut(count) {
+            resources.getQuantityString(R.plurals.bg_service_sessions, count, count)
+        }
+
     override fun onCreate() {
         super.onCreate()
+        // Прогрев ICU в фоне: buildNotification на main больше не платит
+        // за холодную загрузку плюралей (числа 0..12 покрывают реальный
+        // диапазон сессий; большие счётчики прогреются на первом miss).
+        Thread({
+            for (c in 0..12) {
+                runCatching { sessionLabelCached(c) }
+            }
+        }, "fgs-icu-warmup").start()
         // Safe-mode bail-out. When CrashFrequencyDetector tripped in
         // MinisApp.onCreate, the Application skipped its lateinit init
         // for repositories — but a sticky FG service that was running
@@ -809,9 +829,8 @@ class AgentForegroundService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val sessionLabel = resources.getQuantityString(
-            R.plurals.bg_service_sessions, sessionCount, sessionCount,
-        )
+        // [T-fgs-icu-warmup] чтение из кэша — main-поток не трогает ICU.
+        val sessionLabel = sessionLabelCached(sessionCount)
 
         // T-bg-overlay phase 1: enrich the ongoing notification.
         // Title:   "Minis is using <Tool>"  (or session-count summary when idle/between turns)

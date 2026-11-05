@@ -132,3 +132,15 @@ MITM-перехват) получает произвольное исполне�
   ещё не было).
 - Ремоуты: origin=mirror=e46e2143 (ревьюер подтвердил байт-в-байт);
   артефакт unstripped-native-libs 2.35МБ готов (run 42072257759).
+
+## ПРИОРИТЕТ 1 ПРИМЕНЁН (2026-11-05): FGS ICU warm-up + label cache
+Commit: след. [test]. AgentForegroundService.kt:
+- sessionLabelCache (ConcurrentHashMap) + sessionLabelCached() — чтение метки
+  из кэша в buildNotification (main не трогает ICU).
+- onCreate: фоновый прогрев counts 0..12 ("fgs-icu-warmup" тред).
+- Поведение/локализация идентичны (та же getQuantityString, перенесена с main).
+Ожидаемый эффект: HANG ~3s в startForeground-окне уходит; риск системного
+убийства за FGS-таймаут на строгих прошивках снижен. Runtime-подтверждение —
+по stall-логу после установки следующего билда (HANG-профиль исчезает).
+Infinix де-скоуплен владельцем; вотч Infinix остановлен (28371/29840 —
+живые pid процессов, не вотч).
