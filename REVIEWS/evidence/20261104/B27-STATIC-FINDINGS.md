@@ -118,3 +118,17 @@ MITM-перехват) получает произвольное исполне�
 - s11-статус: карантин снят, реворк (детерминированный 5-командный прогон с деко-
   байтами) — CI Unit Tests SUCCESS на 038fbfc5 (run 41919638753, внешний ревьюер
   подтвердил: «4 policy-теста + 3 Robolectric-теста DraftStore + s11 реворк прошли»).
+
+## КОРРЕКЦИЯ ЭТАПА 2 (2026-11-05, по ревью стенда Infinix)
+- Вотч v1 ОПРОВЕРГНУТ: прошивка XOS/Transsion глушит живой logcat
+  (live.logcat=disable, ro.logd.size=0) — детект по Fatal signal был слепым;
+  мгновенное исчезновение pid дало ложный ALL_DONE.
+- ФАКТ (run-as, build отладочный): stall-2026-11-05 — HANG 3016ms main:
+  AgentForegroundService.buildNotification → ICU getQuantityString
+  (AgentForegroundService.kt:812/225). Отдельная находка, не смешивать.
+- v2 развёрнут: мониторинг /data/tombstones/ (новые файлы = событие,
+  автоснятие) + run-as files/logs + авторестарт приложения при смерти;
+  3 часа, тихий. Томбстоунов сейчас 0 (падений на диагностическом билде
+  ещё не было).
+- Ремоуты: origin=mirror=e46e2143 (ревьюер подтвердил байт-в-байт);
+  артефакт unstripped-native-libs 2.35МБ готов (run 42072257759).
