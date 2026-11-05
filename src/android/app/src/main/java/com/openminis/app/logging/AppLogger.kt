@@ -279,7 +279,11 @@ object AppLogger {
             val nowMs = now.time
             val today = formattersTls.get()!!.dayLabel(nowMs)
             val w = getWriter(today)
-            w.println("[LOGCAT] $rawLine")
+            // [B14-secret-redaction] Framework/third-party lines captured by
+            // the tailer are the LEAST controllable input — mask the file
+            // copy. The own-tag parse above already ran on the raw line; the
+            // masks only replace token literals, never the prefix structure.
+            w.println("[LOGCAT] ${SecretRedaction.mask(rawLine)}")
             // [T-logging-hot-path] Bounded flush, same as the other writers:
             // the tail carries every framework log line, so a flush per line
             // was tens of thousands of disk round trips over a long session.
@@ -417,7 +421,9 @@ object AppLogger {
             val today = f.dayLabel(nowMs)
             val timestamp = f.stamp.format(now)
             val w = getWriter(today)
-            w.println("[$timestamp] [$channel] $line")
+            // [B14-secret-redaction] stdout/stderr capture is the sink where
+            // pasted commands and stack traces land — mask before the file.
+            w.println("[$timestamp] [$channel] ${SecretRedaction.mask(line)}")
             // [T-logging-hot-path] Same bounded policy as log(): the
             // captured-stdout path produced 14 927 lines in the 19.10
             // incident, and a flush per line was one disk round trip each.
@@ -490,6 +496,14 @@ object AppLogger {
         // silent unless logging is explicitly switched on.
         if (!enabled && !logcatEnabled) return
 
+        // [B14-secret-redaction] Single mask point covering BOTH sinks below
+        // (android.util.Log AND the daily file). A credential that reached
+        // any log line — echoed Authorization header, pasted curl command,
+        // stack-trace message — used to land verbatim in the exportable log.
+        // Masked text still carries the line's diagnostic shape (keys,
+        // prefixes, structure), only the credential literals are gone.
+        val safeMessage = SecretRedaction.mask(message)
+
         // [T-logging-hot-path] The tag was rebuilt as "Minis.$category" on
         // every call. ChatViewModel alone issues 265 log calls, several of
         // them per streamed token, so that concatenation was one String per
@@ -498,10 +512,10 @@ object AppLogger {
         if (logcatEnabled) {
             val logcatTag = logcatTags.getOrPut(category) { "Minis.$category" }
             when (level) {
-                "ERROR" -> Log.e(logcatTag, message)
-                "WARN" -> Log.w(logcatTag, message)
-                "DEBUG" -> Log.d(logcatTag, message)
-                else -> Log.i(logcatTag, message)
+                "ERROR" -> Log.e(logcatTag, safeMessage)
+                "WARN" -> Log.w(logcatTag, safeMessage)
+                "DEBUG" -> Log.d(logcatTag, safeMessage)
+                else -> Log.i(logcatTag, safeMessage)
             }
         }
 
@@ -522,7 +536,7 @@ object AppLogger {
             val today = f.dayLabel(nowMs)
             val timestamp = f.stamp.format(now)
             val w = getWriter(today)
-            w.println("[$timestamp] [$level] [$category] $message")
+            w.println("[$timestamp] [$level] [$category] $safeMessage")
             // [T-logging-hot-path] println() is buffered by the Writer; a
             // flush() per entry turned every log call into a synchronous I/O
             // round-trip ON THE CALLING THREAD — dozens per second while a
