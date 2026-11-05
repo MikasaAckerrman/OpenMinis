@@ -239,6 +239,38 @@ jobs:
           path: src/android/app/build/outputs/apk/clone/app-clone.apk
           retention-days: 7
 
+      # [evidence-pipeline] (2026-11-05, external review) Tombstone
+      # symbolization needs the UNSTRIPPED native libs of the EXACT build —
+      # without them the arm64 traces from debuggerd are unreadable (the
+      # 2026-11-04 SIGABRT series had no usable tombstones). Also record the
+      # APK sha256 in the run summary so an installed artifact can be matched
+      # against a specific run (lastUpdateTime alone proves freshness, not
+      # build identity).
+      - name: Collect unstripped native symbols + APK sha256
+        run: |
+          mkdir -p symbol-libs
+          FOUND=$(find src/android/app/build -type f -name "*.so" ! -path "*stripped*" 2>/dev/null || true)
+          if [ -n "$FOUND" ]; then
+            while IFS= read -r f; do
+              cp "$f" "symbol-libs/unstripped-$(echo "$f" | md5sum | cut -c1-6)-$(basename "$f")"
+            done <<< "$FOUND"
+          fi
+          sha256sum src/android/app/build/outputs/apk/clone/app-clone.apk | tee sha256.txt
+          echo "### APK sha256" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat sha256.txt >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "commit: $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload unstripped native symbols (for ndk-stack)
+        uses: actions/upload-artifact@v4
+        with:
+          name: unstripped-native-libs
+          path: symbol-libs/
+          retention-days: 30
+        if: hashFiles('symbol-libs/**') != ''
+
+
       - name: Auto-push version bump (if [quick] and not workflow_dispatch)
         if: contains(github.event.head_commit.message, '[quick]') && github.event_name != 'workflow_dispatch'
         run: |
