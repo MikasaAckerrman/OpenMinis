@@ -91,3 +91,12 @@
   пригодны для llvm-addr2line вручную (path: 6517cc1a).
 - Проверка появления артефакта unstripped-native-libs — по завершении
   прогона d5624f14.
+
+## 10. Статус на утро 2026-11-05
+- FGS ICU-фикс (1833260c): Unit Tests SUCCESS (compile+регресс в облаке) —
+  [проверено]. Runtime-подтверждение (HANG-профиль исчез из stall-лога) —
+  BLOCKED_DEVICE: Waydroid adb-сессия уснула, iQOO отключён владельцем.
+- Оба устройства ждут восстановления ADB; протоколы готовы
+  (iQOO: D1 kill-6/logcat-стрим; Waydroid: tombstone+logcat вотч, 15с подъём).
+- Приложение на устройствах: iQOO — фикс-билд 09e99632+; Infinix — diag 69b2de06
+  (де-скоуплен владельцем); Waydroid — diag 69b2de06 (сессия остановлена).
