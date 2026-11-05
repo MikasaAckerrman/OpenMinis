@@ -1303,7 +1303,11 @@ class ChatViewModel(
                         }.getOrNull()
                     }
                 } ?: emptyList()
-                if (id.isNotEmpty() && text.isNotEmpty()) {
+                // [review-038fbfc5 Finding-1] Attachments-only prompts are
+                // valid at enqueue time (T180) and persist with text=""; the
+                // old text-only gate silently DROPPED them on restore. Accept
+                // when either the text or the attachments survived.
+                if (id.isNotEmpty() && (text.isNotEmpty() || attachments.isNotEmpty())) {
                     prompts.add(QueuedPrompt(id = id, text = text, attachments = attachments))
                 }
             }

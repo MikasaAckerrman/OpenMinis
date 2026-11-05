@@ -53,6 +53,16 @@ object DraftStore {
         fun remove(key: String)
 
         /**
+         * [review-038fbfc5] Synchronous variants for CRITICAL payloads (the
+         * queued-prompt journal): .apply() flushes asynchronously, and a hard
+         * kill (SIGABRT/LMK — the exact failure profile of B27) inside the
+         * flush window silently drops the persisted queue. Default delegates
+         * to the async forms so existing implementations keep working.
+         */
+        fun putSync(key: String, value: String) = put(key, value)
+        fun removeSync(key: String) = remove(key)
+
+        /**
          * Every key currently held.
          *
          * The default is empty rather than abstract because an implementation
@@ -189,6 +199,8 @@ object DraftStore {
         override fun get(key: String): String? = p.getString(key, null)
         override fun put(key: String, value: String) { p.edit().putString(key, value).apply() }
         override fun remove(key: String) { p.edit().remove(key).apply() }
+        override fun putSync(key: String, value: String) { p.edit().putString(key, value).commit() }
+        override fun removeSync(key: String) { p.edit().remove(key).commit() }
         override fun keys(): Set<String> = p.all.keys.toSet()
     }
 
@@ -228,8 +240,10 @@ object DraftStore {
     fun saveQueue(context: Context, sessionId: String, json: String) {
         if (sessionId.isEmpty()) return
         val st = store(context)
-        if (json.isEmpty() || json == "[]") st.remove(Logic.queueKey(sessionId))
-        else st.put(Logic.queueKey(sessionId), json)
+        // [review-038fbfc5] commit() for the queue journal: an async flush
+        // loses it exactly on the kill -9 / LMK profile this store exists for.
+        if (json.isEmpty() || json == "[]") st.removeSync(Logic.queueKey(sessionId))
+        else st.putSync(Logic.queueKey(sessionId), json)
     }
 
     /** Load the serialized prompt queue, or "" when none. */
