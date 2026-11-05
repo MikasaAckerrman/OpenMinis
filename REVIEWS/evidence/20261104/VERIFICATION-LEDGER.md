@@ -212,5 +212,15 @@
     Добавлено 4 теста на защиту от path traversal:
     относительный путь (`../../evil.sh`), prefix-поле, hard link наружу,
     и корректный относительный путь внутри каталога (`dir/../dir/safe.txt`).
+- **CI верификация**:
+  - Run ID: `42108930079` (Unit Tests) - SUCCESS [проверено через API].
+  - 18 тестов TarExtractionTest прошли в общем наборе unit тестов.
+  - Ремоуты origin и mirror синхронизированы на `e0b7ecd1` [проверено rev-parse].
+  - Вердикт ревьюера: **SHIP** для B11 (Zip-slip защита в TarExtractor).
+- **Текущий статус ночи (01:08 06.11.2026)**:
+  - B14 (SecretRedaction) - SHIP (`08fc594d`, CI `42106809652`).
+  - J6/B6 (BackgroundMonitoring) - SHIP (`d5e907b6`, CI `42106809652`).
+  - B11 (TarExtractor Zip-slip) - SHIP (`e0b7ecd1`, CI `42108930079`).
+  - Аппаратный фронт: BLOCKED_DEVICE (устройства оффлайн, ждём ADB).
 
 
