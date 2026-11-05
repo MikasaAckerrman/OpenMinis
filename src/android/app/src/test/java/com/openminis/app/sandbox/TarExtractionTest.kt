@@ -294,108 +294,54 @@ class TarExtractionTest {
 
     // ==================== Helper: extract string (reimplemented for JVM test) ====================
 
-    /**
-     * Reimplementation of RootfsManager.extractString for JVM testing.
-     * This tests the same algorithm without needing Android Context.
-     */
-    private fun extractStringHelper(header: ByteArray, offset: Int, length: Int): String {
-        val end = minOf(offset + length, header.size)
-        var actualEnd = offset
-        for (i in offset until end) {
-            if (header[i] == 0.toByte()) break
-            actualEnd = i + 1
+    // --- Production TarExtractor delegation ---
+    // [B11-zip-slip-prevention] Directly tests production TarExtractor methods.
+    private fun extractStringHelper(header: ByteArray, offset: Int, length: Int): String =
+        TarExtractor.extractString(header, offset, length)
+
+    private fun readFullyHelper(input: java.io.InputStream, buf: ByteArray): Int =
+        TarExtractor.readFully(input, buf)
+
+    private fun extractTarHelper(input: java.io.InputStream, targetDir: File) =
+        TarExtractor.extractTar(input, targetDir)
+
+    // ==================== [B11-zip-slip-prevention] Tests ====================
+
+    @Test(expected = SecurityException::class)
+    fun `extractTar throws SecurityException on relative path traversal (dot-dot zip-slip)`() {
+        val tar = buildTar {
+            addFile("../../evil.sh", "echo pwned")
         }
-        return String(header, offset, actualEnd - offset, Charset.forName("UTF-8"))
+        extractTarHelper(ByteArrayInputStream(tar), targetDir)
     }
 
-    /**
-     * Reimplementation of RootfsManager.readFully for JVM testing.
-     */
-    private fun readFullyHelper(input: java.io.InputStream, buf: ByteArray): Int {
-        var offset = 0
-        while (offset < buf.size) {
-            val n = input.read(buf, offset, buf.size - offset)
-            if (n < 0) return offset
-            offset += n
+    @Test(expected = SecurityException::class)
+    fun `extractTar throws SecurityException on prefix field path traversal`() {
+        val tar = buildTar {
+            addFileWithPrefix("evil.sh", "../../", "echo pwned")
         }
-        return offset
+        extractTarHelper(ByteArrayInputStream(tar), targetDir)
     }
 
-    /**
-     * Reimplementation of RootfsManager.extractTar for JVM testing.
-     * Uses the exact same algorithm as the production code.
-     */
-    private fun extractTarHelper(input: java.io.InputStream, targetDir: File) {
-        val header = ByteArray(512)
-
-        while (true) {
-            val bytesRead = readFullyHelper(input, header)
-            if (bytesRead < 512) break
-
-            if (header.all { it == 0.toByte() }) break
-
-            val name = extractStringHelper(header, 0, 100)
-            val sizeOctal = extractStringHelper(header, 124, 12)
-            val typeFlag = header[156].toInt().toChar()
-            val linkName = extractStringHelper(header, 157, 100)
-
-            val prefix = extractStringHelper(header, 345, 155)
-            val fullName = if (prefix.isNotEmpty()) "$prefix/$name" else name
-
-            if (fullName.isEmpty()) break
-
-            val size = sizeOctal.trim().toLongOrNull(8) ?: 0L
-            val outFile = File(targetDir, fullName)
-
-            when (typeFlag) {
-                '5', 'D' -> {
-                    outFile.mkdirs()
-                }
-                '2' -> {
-                    outFile.parentFile?.mkdirs()
-                    try {
-                        java.nio.file.Files.createSymbolicLink(
-                            outFile.toPath(),
-                            java.nio.file.Paths.get(linkName)
-                        )
-                    } catch (_: Exception) { }
-                }
-                '0', '\u0000' -> {
-                    outFile.parentFile?.mkdirs()
-                    outFile.outputStream().use { output ->
-                        var remaining = size
-                        val buf = ByteArray(8192)
-                        while (remaining > 0) {
-                            val toRead = minOf(buf.size.toLong(), remaining).toInt()
-                            val n = input.read(buf, 0, toRead)
-                            if (n < 0) break
-                            output.write(buf, 0, n)
-                            remaining -= n
-                        }
-                    }
-                    val remainder = (size % 512).toInt()
-                    if (remainder != 0) {
-                        val skip = ByteArray(512 - remainder)
-                        readFullyHelper(input, skip)
-                    }
-                    continue
-                }
-                '1' -> {
-                    outFile.parentFile?.mkdirs()
-                    val linkTarget = File(targetDir, linkName)
-                    if (linkTarget.exists()) {
-                        linkTarget.copyTo(outFile, overwrite = true)
-                    }
-                }
-                else -> { }
-            }
-
-            if (typeFlag != '0' && typeFlag != '\u0000' && size > 0) {
-                val blocks = (size + 511) / 512 * 512
-                val skip = ByteArray(blocks.toInt())
-                readFullyHelper(input, skip)
-            }
+    @Test(expected = SecurityException::class)
+    fun `extractTar throws SecurityException on hardlink traversal escaping targetDir`() {
+        val tar = buildTar {
+            addFile("valid.txt", "safe")
+            addHardLink("link_out", "../../outside_file")
         }
+        extractTarHelper(ByteArrayInputStream(tar), targetDir)
+    }
+
+    @Test
+    fun `extractTar allows safe relative path that remains within targetDir`() {
+        val tar = buildTar {
+            addDirectory("dir/")
+            addFile("dir/../dir/safe.txt", "safe content")
+        }
+        extractTarHelper(ByteArrayInputStream(tar), targetDir)
+        val file = File(targetDir, "dir/safe.txt")
+        assertTrue("Safe file should exist inside targetDir", file.exists())
+        assertEquals("safe content", file.readText())
     }
 
     // ==================== Tar builder DSL ====================

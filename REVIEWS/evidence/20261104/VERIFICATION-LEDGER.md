@@ -199,3 +199,18 @@
   - Вердикт: **SHIP** для B14 (SecretRedaction) и J6/B6 (BackgroundMonitoring).
 - **Аппаратный фронт**: BLOCKED_DEVICE (устройства оффлайн, ждём ADB).
 
+## 14. Ночь 2026-11-06 — B11 (Zip-slip защита в TarExtractor)
+- **B11 — Защита от path traversal при распаковке tar**:
+  - `sandbox/TarExtractor.kt`: выделен чистый JVM-компонент распаковки POSIX tar.
+    Добавлена проверка выхода за пределы targetDir через `canonicalOut.path.startsWith(canonicalTarget.path + File.separator)`.
+    Аналогичная проверка для целей hard link (`canonicalLinkTarget`).
+    При попытке побега выбрасывается `SecurityException`.
+  - `sandbox/RootfsManager.kt`: делегирует распаковку в `TarExtractor`,
+    сохраняя бинарную и сигнатурную совместимость.
+  - `test/…/TarExtractionTest.kt`: удалена устаревшая копия `extractTarHelper`,
+    тесты переведены на реальный production-код `TarExtractor`.
+    Добавлено 4 теста на защиту от path traversal:
+    относительный путь (`../../evil.sh`), prefix-поле, hard link наружу,
+    и корректный относительный путь внутри каталога (`dir/../dir/safe.txt`).
+
+
