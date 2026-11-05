@@ -223,6 +223,18 @@ interface ChatDao {
     suspend fun insertMessages(messages: List<MessageEntity>)
 
     /**
+     * [B-dedup-acceptor] Raw `source_prompt_ids` JSON arrays for one session.
+     * Only queue-built rows carry the column (NULL otherwise), so the result
+     * is small — the ids-only discipline from [messageIdsForSession] applies
+     * here too: no parts_json blobs cross the CursorWindow.
+     */
+    @Query(
+        "SELECT source_prompt_ids FROM messages " +
+            "WHERE session_id = :sessionId AND source_prompt_ids IS NOT NULL",
+    )
+    suspend fun sourcePromptIdJsons(sessionId: String): List<String>
+
+    /**
      * Ids only — no parts_json. Used by the archive-restore path to decide which
      * archived rows are already live. `loadMessages` would pull every blob into
      * the CursorWindow just to read the id column, which is precisely the query

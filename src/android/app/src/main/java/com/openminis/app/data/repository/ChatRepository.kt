@@ -425,6 +425,10 @@ class ChatRepository(internal val dao: ChatDao) {
         partsJson: String,
         tokenUsage: String? = null,
         reasoningContent: String? = null,
+        // [B-dedup-acceptor] PromptIds of the queue entries this row accepts.
+        // Persisted INSIDE the same insert as the row — the acceptance marker
+        // is atomic with the message itself (see MessageEntity.sourcePromptIds).
+        sourcePromptIds: List<String>? = null,
     ): MessageEntity {
         val sortOrder = dao.nextSortOrder(sessionId)
         val now = System.currentTimeMillis()
@@ -502,6 +506,14 @@ class ChatRepository(internal val dao: ChatDao) {
             // are also written here on send, so their updated_at = send time
             // (harmless: the reader nulls finishedAtMs for user rows).
             updatedAt = now,
+            // [B-dedup-acceptor] Same-insert acceptance marker (see the
+            // appendMessage doc on the parameter). Null when the row was not
+            // built from the queue.
+            sourcePromptIds = sourcePromptIds
+                ?.takeIf { it.isNotEmpty() }
+                ?.let { ids ->
+                    org.json.JSONArray().apply { for (id in ids) put(id) }.toString()
+                },
         )
         dao.insertMessage(message)
         val preview = extractTextPreview(capped)
@@ -512,6 +524,29 @@ class ChatRepository(internal val dao: ChatDao) {
         // query having run first.
         SessionHistoryCache.invalidate(sessionId)
         return message
+    }
+
+    /**
+     * [B-dedup-acceptor] Union of the promptIds durably accepted in a session
+     * (every JSON array stored in messages.source_prompt_ids). The acceptor
+     * (drainQueuedPrompts / injectQueuedPromptsAsNewTurn / session restore)
+     * drops persisted-queue entries whose id appears here — a process death
+     * between appendMessage and persistPromptQueue can no longer deliver the
+     * same prompt twice. Malformed JSON in any row degrades to skipping that
+     * row: dedup is fail-open toward a possible duplicate, never toward a
+     * loss. Returns an empty set when the session has no queue-built rows.
+     */
+    suspend fun acceptedPromptIds(sessionId: String): Set<String> {
+        val jsons = dao.sourcePromptIdJsons(sessionId)
+        if (jsons.isEmpty()) return emptySet()
+        return jsons.flatMapTo(HashSet()) { json ->
+            runCatching {
+                val arr = org.json.JSONArray(json)
+                (0 until arr.length()).mapNotNull { i ->
+                    if (arr.isNull(i)) null else arr.optString(i).takeIf { it.isNotEmpty() }
+                }
+            }.getOrDefault(emptyList())
+        }
     }
 
     /**

@@ -34,4 +34,15 @@ data class MessageEntity(
     // (mirrors iOS messages.error_info / ChatMessage.error). Null for normal
     // rows; device-local, never synced to iCloud.
     @ColumnInfo(name = "error_info") val errorInfo: String? = null,
+    // [B-dedup-acceptor] PromptIds of the queue entries drained INTO this row,
+    // as a JSON array string. Written by the SAME insert as the row itself —
+    // the row's existence IS the acceptance marker (atomic sink): there is no
+    // window where a row is durable but its promptIds are not, or vice versa.
+    // Acceptor-side dedup (drainQueuedPrompts / injectQueuedPromptsAsNewTurn /
+    // session restore) consults it to drop persisted-queue entries whose
+    // message already landed — the at-least-once duplicate of
+    // queue-acceptance-spec scenario B (process death between appendMessage
+    // and persistPromptQueue). Null for rows not built from the queue
+    // (normal sends, assistant turns, tool results).
+    @ColumnInfo(name = "source_prompt_ids") val sourcePromptIds: String? = null,
 )

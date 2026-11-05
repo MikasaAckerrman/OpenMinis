@@ -7655,7 +7655,28 @@ class ChatViewModel(
                     // restore verbatim, log everything.
                     runCatching {
                         restorePromptQueue()
-                        val restored = _promptQueue.value
+                        // [B-dedup-acceptor] A persisted entry whose promptId is
+                        // already durable in the DB was accepted by a previous
+                        // process that died between appendMessage and
+                        // persistPromptQueue (scenario B). Re-queueing it would
+                        // both re-deliver the message and show a phantom queued
+                        // bubble next to the real one — drop it here, BEFORE the
+                        // bubbles are built and the reload kick fires. Fail-open
+                        // on DB error: keep every entry (possible duplicate,
+                        // never a loss).
+                        val acceptedAtRestore = runCatching {
+                            chatRepository.acceptedPromptIds(sessionId)
+                        }.getOrDefault(emptySet())
+                        val dedupSplit = QueueDedupPolicy.split(_promptQueue.value, acceptedAtRestore)
+                        if (dedupSplit.alreadyAccepted.isNotEmpty()) {
+                            AppLogger.info(
+                                TAG_STREAM,
+                                "[Queue] restore dedup: dropping ${dedupSplit.alreadyAccepted.size} already-accepted " +
+                                    "prompt(s) ids=${dedupSplit.alreadyAccepted.joinToString(",") { it.id.takeLast(12) }}",
+                            )
+                            _promptQueue.value = dedupSplit.fresh
+                        }
+                        val restored = dedupSplit.fresh
                         if (restored.isNotEmpty()) {
                             AppLogger.info(
                                 TAG_STREAM,
@@ -10302,12 +10323,32 @@ class ChatViewModel(
 
         // Build the combined user message from all queued prompts.
         val sid = ensureSession()
-        val combinedAttachments = queued.flatMap { it.attachments }
+        // [B-dedup-acceptor] Same acceptance-marker split as the drain: drop
+        // entries already durable in the DB (scenario B window) instead of
+        // delivering them twice, and mark the row we're about to write with
+        // the fresh ids. Fail-open: DB lookup failure keeps every entry.
+        val acceptedIds = runCatching {
+            chatRepository.acceptedPromptIds(sid)
+        }.getOrDefault(emptySet())
+        val dedupSplit = QueueDedupPolicy.split(queued, acceptedIds)
+        val fresh = dedupSplit.fresh
+        if (dedupSplit.alreadyAccepted.isNotEmpty()) {
+            AppLogger.info(
+                TAG_STREAM,
+                "[Queue] inject dedup: dropping ${dedupSplit.alreadyAccepted.size} already-accepted " +
+                    "prompt(s) ids=${dedupSplit.alreadyAccepted.joinToString(",") { it.id.takeLast(12) }}",
+            )
+            val acceptedSet = dedupSplit.alreadyAccepted.map { it.id }.toSet()
+            _promptQueue.value = _promptQueue.value.filterNot { it.id in acceptedSet }
+            persistPromptQueue()
+        }
+        if (fresh.isEmpty()) return null
+        val combinedAttachments = fresh.flatMap { it.attachments }
         val prepared = prepareUserAttachments(combinedAttachments, sid)
 
         val combinedParts = mutableListOf<AgentContentPart>()
         val combinedText = StringBuilder()
-        for (prompt in queued) {
+        for (prompt in fresh) {
             if (prompt.text.isNotEmpty()) {
                 if (combinedText.isNotEmpty()) combinedText.append("\n\n")
                 combinedText.append(prompt.text)
@@ -10328,7 +10369,7 @@ class ChatViewModel(
         if (combinedParts.isEmpty()) {
             AppLogger.warning(
                 TAG_STREAM,
-                "injectQueuedPromptsAsNewTurn: ${queued.size} queued prompt(s) produced no content, skipping",
+                "injectQueuedPromptsAsNewTurn: ${fresh.size} queued prompt(s) produced no content, skipping",
             )
             return null
         }
@@ -10353,10 +10394,16 @@ class ChatViewModel(
         // agentHistory so the next API call carries it.
         val userText = combinedText.toString()
         val userPartsJson = buildUserPartsJson(userText, prepared.mediaRefPartsJson, prepared.attachedFilesXml)
-        val userEntity = chatRepository.appendMessage(sid, "user", userPartsJson)
+        // [B-dedup-acceptor] The acceptance marker rides the SAME insert.
+        val userEntity = chatRepository.appendMessage(
+            sid,
+            "user",
+            userPartsJson,
+            sourcePromptIds = fresh.map { it.id },
+        )
         // [T-queue-zombie-window] Durable now — take the injected entries
         // and persist the remainder state.
-        val injectedIds = queued.map { it.id }.toSet()
+        val injectedIds = fresh.map { it.id }.toSet()
         _promptQueue.value = _promptQueue.value.filterNot { it.id in injectedIds }
         persistPromptQueue()
         agentHistory.add(
@@ -10468,7 +10515,31 @@ class ChatViewModel(
             // Build a combined user message (text + images from all queued prompts).
             // Persist as a single row.
             val sid = ensureSession()
-            val combinedAttachments = queued.flatMap { it.attachments }
+            // [B-dedup-acceptor] Drop entries whose promptId is already durable
+            // in the DB: a previous process wrote the row (appendMessage) and
+            // died before persistPromptQueue — the persisted queue restored
+            // the entry, and re-draining it would deliver the message TWICE
+            // (queue-acceptance-spec scenario B). The row's source_prompt_ids
+            // column, written by the SAME insert as the row, is the acceptance
+            // marker. Fail-open: a DB lookup failure keeps every entry (old
+            // at-least-once behavior — a possible duplicate, never a loss).
+            val acceptedIds = runCatching {
+                chatRepository.acceptedPromptIds(sid)
+            }.getOrDefault(emptySet())
+            val dedupSplit = QueueDedupPolicy.split(queued, acceptedIds)
+            if (dedupSplit.alreadyAccepted.isNotEmpty()) {
+                AppLogger.info(
+                    TAG_STREAM,
+                    "[Queue] dedup: dropping ${dedupSplit.alreadyAccepted.size} already-accepted " +
+                        "prompt(s) ids=${dedupSplit.alreadyAccepted.joinToString(",") { it.id.takeLast(12) }}",
+                )
+                val acceptedSet = dedupSplit.alreadyAccepted.map { it.id }.toSet()
+                _promptQueue.value = _promptQueue.value.filterNot { it.id in acceptedSet }
+                persistPromptQueue()
+            }
+            val fresh = dedupSplit.fresh
+            if (fresh.isEmpty()) continue
+            val combinedAttachments = fresh.flatMap { it.attachments }
             val prepared = prepareUserAttachments(combinedAttachments, sid)
 
             // T132: same shape as sendMessage — caption(s) first, then for each
@@ -10477,7 +10548,7 @@ class ChatViewModel(
             // lets the agent re-read the file via read_image.
             val combinedParts = mutableListOf<AgentContentPart>()
             val combinedText = StringBuilder()
-            for (prompt in queued) {
+            for (prompt in fresh) {
                 if (prompt.text.isNotEmpty()) {
                     if (combinedText.isNotEmpty()) combinedText.append("\n\n")
                     combinedText.append(prompt.text)
@@ -10493,12 +10564,19 @@ class ChatViewModel(
 
             val userText = combinedText.toString()
             val userPartsJson = buildUserPartsJson(userText, prepared.mediaRefPartsJson, prepared.attachedFilesXml)
-            chatRepository.appendMessage(sid, "user", userPartsJson)
+            // [B-dedup-acceptor] The acceptance marker rides the SAME insert —
+            // there is no window where the row exists but the marker does not.
+            chatRepository.appendMessage(
+                sid,
+                "user",
+                userPartsJson,
+                sourcePromptIds = fresh.map { it.id },
+            )
             // [T-queue-zombie-window] The message is now durable in the DB —
             // take the drained entries and flip the bubbles ONLY from here
             // on. A cancellation before this point leaves the queue intact
             // (restorable); after it, the DB row is the truth.
-            val drainedIds = queued.map { it.id }.toSet()
+            val drainedIds = fresh.map { it.id }.toSet()
             _promptQueue.value = _promptQueue.value.filterNot { it.id in drainedIds }
             // [T-queue-persist-fix] The drained message is now durable in
             // the DB — persist the (now empty-of-drained) queue so a
