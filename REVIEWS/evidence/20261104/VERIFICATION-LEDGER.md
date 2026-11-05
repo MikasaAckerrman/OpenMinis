@@ -12,6 +12,7 @@
 | 851e27ad | Unit Tests | 41732617552 | failure (LiveTurnBuffer OOM-флак, пофикшен e144ab54) |
 | 66ec77c2 | Unit Tests | 42081839005 | **success** (утро 05.11: ACRA LOGCAT removal) |
 | 0575f47b | Unit Tests | 42084272975 | **success** (утро 05.11: promptId-дедуп; Build APK skipped — тег [test] only, head_sha сверен с полным SHA) |
+| 511cba19 | Unit Tests | 42093519149 | **success** (вечер 05.11: FGS cold-start edge — miss без ICU на main) |
 | e144ab54 | Unit Tests | (id не записан) | **success** |
 | 69b2de06 | Build APK | 41874767970 | **success** (источник diag-артефакта) |
 Чего не хватает: прогоны для HEAD 6719cbd2 (docs-only) не
@@ -136,3 +137,24 @@
   по API, sync 4610cd44 [проверено ревьюером]. Остатки — BLOCKED_DEVICE:
   stall-профиль на реальном краше; стресс-B kill -9; миграция поверх
   исторической БД телефона.
+
+## 12. Вечер 2026-11-05 — бэклог без устройств (после SHIP)
+- **Бэклог №1 закрыт — FGS cold-start edge** (511cba19, ГО внешнего ревьюера):
+  getOrPut в sessionLabelCached возвращал ~3s холодную загрузку ICU-таблиц на
+  main, если onStartCommand выигрывал гонку у fgs-icu-warmup (1-3мс на
+  Thread.start). Теперь: miss в прогретом диапазоне 0..12 → ASCII-фоллбек
+  ("1 session"/"N sessions", форма совпадает с values/strings.xml плюралом),
+  warmup-тред пишет локализованные строки НАПРЯМУЮ в кэш; miss вне диапазона
+  (>12) → прямой getQuantityString (таблицы уже загружены warmup-тредом) —
+  наивный вариант «ASCII на любой miss» заморозил бы английские метки для
+  >12 навсегда. Unit Tests 42093519149 SUCCESS [проверено]. Runtime —
+  BLOCKED_DEVICE (первый тик FGS на устройстве).
+- **Бэклог №2 закрыт БЕЗ правок** (аудит ревьюера): debug.shellExecute
+  отсечён транспортом — DebugServer стартует только в DEBUG
+  (MinisApp.kt:1022), единый isAuthorized-гейт ДО RPC-диспатча: loopback
+  доверенный, LAN требует X-Minis-Token из files/debug_server_token
+  (root/run-as). Дополнительных правок не требуется.
+- **Бэклог №3 закрыт БЕЗ правок** (аудит ревьюера): ScheduledTaskStore —
+  SharedPreferences + JSON, датасет 0-5 задач, запись .apply() (L55),
+  чтение runCatching с пропуском битых строк (L26-28). ANR-риска нет.
+- Ремоуты origin/mirror синхронизированы [проверено rev-parse].
