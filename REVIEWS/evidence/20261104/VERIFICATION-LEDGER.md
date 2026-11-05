@@ -191,5 +191,11 @@
     строгих запретов sleep/таймеров).
   - Статус жалобы J6 в `AGENTS.md` и пункта B6 в `FIXES_TABLE.md` обновлён
     на «исправлено / закрыто».
+- **CI верификация**:
+  - Run ID: `42106809652` (Unit Tests) - SUCCESS [проверено через API].
+  - 9 тестов SecretRedactionTest + 4 теста BackgroundMonitoringPromptTest
+    прошли в общем наборе unit тестов.
+  - Ремоуты origin и mirror синхронизированы на `d5e907b6` [проверено rev-parse].
+  - Вердикт: **SHIP** для B14 (SecretRedaction) и J6/B6 (BackgroundMonitoring).
 - **Аппаратный фронт**: BLOCKED_DEVICE (устройства оффлайн, ждём ADB).
 
