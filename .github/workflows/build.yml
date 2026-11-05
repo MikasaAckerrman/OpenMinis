@@ -249,10 +249,16 @@ jobs:
       - name: Collect unstripped native symbols + APK sha256
         run: |
           mkdir -p symbol-libs
-          FOUND=$(find src/android/app/build -type f -name "*.so" ! -path "*stripped*" 2>/dev/null || true)
+          # ndk-stack matches libs by EXACT filename inside the dir given to
+          # -sym (external review): preserve original names under their ABI
+          # folders. Only CMake obj/ outputs — the UNSTRIPPED copies (the
+          # merged_native_libs copies on the same path layout are stripped).
+          FOUND=$(find src/android/app/build -type f -name "*.so" -path "*obj/*" 2>/dev/null || true)
           if [ -n "$FOUND" ]; then
             while IFS= read -r f; do
-              cp "$f" "symbol-libs/unstripped-$(echo "$f" | md5sum | cut -c1-6)-$(basename "$f")"
+              REL=$(realpath --relative-to="src/android/app/build" "$f")
+              mkdir -p "symbol-libs/$(dirname "$REL")"
+              cp "$f" "symbol-libs/$REL"
             done <<< "$FOUND"
           fi
           sha256sum src/android/app/build/outputs/apk/clone/app-clone.apk | tee sha256.txt
