@@ -107,3 +107,14 @@ files/debug_server_token (читаем рутом). Любой клиент LAN 
 MITM-перехват) получает произвольное исполнение в песочнице + чтение файлов.
 Рекомендация владельцу: заменить билд на release/обычный при первой
 возможности или отключить Wi-Fi на телефоне до замены.
+
+## ЭТАП 2 — старт (2026-11-05, ~23:00)
+- APK d5624f14 установлен на Infinix (092233731C001204, arm64), pid жив.
+- Unstripped arm64/x86_64 библиотеки сохранены: /tmp/d5624f14/intermediates/cxx/
+  Debug/1n5gn25q/obj/{arm64-v8a,x86_64}/{libminis_crash_handler,libpty_bridge,
+  libjieba_jni,libc++_shared}.so — готовы к ndk-stack.
+- Вотч: /tmp/infinix_watch.sh — 45 мин, детект "Fatal signal" / смерть процесса;
+  при краше полный logcat дамп → символизация ndk-stack с сохранёнными либами.
+- s11-статус: карантин снят, реворк (детерминированный 5-командный прогон с деко-
+  байтами) — CI Unit Tests SUCCESS на 038fbfc5 (run 41919638753, внешний ревьюер
+  подтвердил: «4 policy-теста + 3 Robolectric-теста DraftStore + s11 реворк прошли»).
