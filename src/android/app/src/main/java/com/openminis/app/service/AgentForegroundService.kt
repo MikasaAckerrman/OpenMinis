@@ -155,19 +155,38 @@ class AgentForegroundService : Service() {
     // Прогреваем ICU на фоновом треде и кэшируем готовые метки по счётчику.
     private val sessionLabelCache = java.util.concurrent.ConcurrentHashMap<Int, String>()
 
-    private fun sessionLabelCached(count: Int): String =
-        sessionLabelCache.getOrPut(count) {
-            resources.getQuantityString(R.plurals.bg_service_sessions, count, count)
-        }
+    // [T-fgs-icu-cold-start] Miss NEVER runs the ICU lambda on the caller:
+    // buildNotification executes on main inside the startForeground window,
+    // and a getOrPut here put the ~3s cold-table load back on main whenever
+    // onStartCommand won the race against the warmup thread (Thread.start
+    // takes 1-3ms). Warmed range (0..12): plain ASCII fallback — the warmup
+    // thread fills the localized label within milliseconds and the next
+    // rebuild (any onStartCommand / tool tick / taskRemoved) picks it up.
+    // Outside the warmed range (>12 sessions): direct getQuantityString —
+    // the cold-table load already happened on the warmup thread by then,
+    // so this is a cheap formatting call, and the label stays localized
+    // instead of being ASCII forever.
+    private fun sessionLabelCached(count: Int): String {
+        sessionLabelCache[count]?.let { return it }
+        if (count in 0..12) return if (count == 1) "1 session" else "$count sessions"
+        return resources.getQuantityString(R.plurals.bg_service_sessions, count, count)
+    }
 
     override fun onCreate() {
         super.onCreate()
         // Прогрев ICU в фоне: buildNotification на main больше не платит
         // за холодную загрузку плюралей (числа 0..12 покрывают реальный
-        // диапазон сессий; большие счётчики прогреются на первом miss).
+        // диапазон сессий; счётчики вне диапазона идут прямым вызовом —
+        // таблицы к тому моменту уже загружены этим тредом).
+        // Пишем готовые локализованные строки НАПРЯМУЮ в кэш: reader
+        // (sessionLabelCached) на miss отдаёт ASCII-фоллбек и никогда
+        // сам не дёргает ICU в прогретом диапазоне.
         Thread({
             for (c in 0..12) {
-                runCatching { sessionLabelCached(c) }
+                runCatching {
+                    sessionLabelCache[c] =
+                        resources.getQuantityString(R.plurals.bg_service_sessions, c, c)
+                }
             }
         }, "fgs-icu-warmup").start()
         // Safe-mode bail-out. When CrashFrequencyDetector tripped in
