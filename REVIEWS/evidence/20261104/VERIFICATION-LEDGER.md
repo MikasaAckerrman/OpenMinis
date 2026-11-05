@@ -168,3 +168,28 @@
   SHIP; shellExecute + ScheduledTaskStore — закрыто аудитами без правок.
   Кодовый фронт: пуст. Аппаратный фронт: BLOCKED_DEVICE (Waydroid
   tombstone-watch / iQOO D1 при подъёме ADB).
+
+## 13. Ночь 2026-11-06 — B14 (SecretRedaction) и J6 (Background Monitoring)
+- **B14 — Системный слой маскировки секретов в логах** (08fc594d):
+  - `logging/SecretRedaction.kt`: консервативный набор регулярных выражений:
+    Bearer (payload >= 12 символов И содержит цифру - легитимные фразы
+    вроде "bearer token rotation" выживают), sk- с поддержкой дефисов
+    (включая Anthropic sk-ant-api03-...) и lookbehind, GitHub токены
+    (ghp_, gho_, ghu_, ghs_, ghr_), x-minis-token (ключ сохраняется,
+    значение маскируется). Общая key=value сеть сознательно исключена,
+    чтобы не портить диагностику путей и идентификаторов.
+  - Врезка во все 3 файловых sink'а `AppLogger.kt`: `log()`,
+    `writeLogcatLine()`, `writeFileLine()`.
+  - 9 pure-JVM тестов в `SecretRedactionTest.kt`. При локальном ревью
+    выявлена и исправлена опечатка в тесте (строка без вызова маски),
+    предотвратив сбой компиляции в CI.
+- **J6 / B6 — Вшитый промпт фонового мониторинга**:
+  - Подтверждена интеграция `SystemPromptBuilder.BACKGROUND_MONITORING`
+    в базовый промпт чата (`ChatViewModel.kt:18652`).
+  - Добавлен проверочный JVM-тест `BackgroundMonitoringPromptTest.kt`
+    (проверка наличия, этапов жизненного цикла run_id, лимитов API и
+    строгих запретов sleep/таймеров).
+  - Статус жалобы J6 в `AGENTS.md` и пункта B6 в `FIXES_TABLE.md` обновлён
+    на «исправлено / закрыто».
+- **Аппаратный фронт**: BLOCKED_DEVICE (устройства оффлайн, ждём ADB).
+
