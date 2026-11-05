@@ -10,6 +10,8 @@
 | 4c161ab2 | Unit Tests | 41729159120 | **success** |
 | 851e27ad | Build APK | 41732617508 | **success** |
 | 851e27ad | Unit Tests | 41732617552 | failure (LiveTurnBuffer OOM-флак, пофикшен e144ab54) |
+| 66ec77c2 | Unit Tests | 42081839005 | **success** (утро 05.11: ACRA LOGCAT removal) |
+| 0575f47b | Unit Tests | 42084272975 | **success** (утро 05.11: promptId-дедуп; Build APK skipped — тег [test] only, head_sha сверен с полным SHA) |
 | e144ab54 | Unit Tests | (id не записан) | **success** |
 | 69b2de06 | Build APK | 41874767970 | **success** (источник diag-артефакта) |
 Чего не хватает: прогоны для HEAD 6719cbd2 (docs-only) не
@@ -39,6 +41,14 @@
   независимо НЕ перепроверено]. Стресс A–D не гонялся → поведение под нагрузкой —
   UNVERIFIED. at-least-once = РЕАЛЬНОЕ поведение (дубли возможны), exactly-once —
   не заявляется.
+- [0575f47b, утро 05.11] Дубль окна сценария B (смерть между appendMessage и
+  persistPromptQueue) закрыт на уровне КОДА: маркер принятия атомарен строке
+  (messages.source_prompt_ids, тот же INSERT), дедуп на трёх точках приёма,
+  fail-open в сторону дубля (никогда потери). Тесты pure+Robolectric в CI
+  42084272975 SUCCESS [проверено]. Стресс-B (реальный kill -9 в окне) и
+  runtime-проверка на устройстве — BLOCKED_DEVICE. Гарантия доставки:
+  at-least-once с дедупликацией ПРИНЯТИЯ (exactly-once приёма сообщений в DB);
+  exactly-once внешних действий НЕ заявляется.
 
 ## 5. Мост
 - Компоненты смоукнуты (очередь/дедуп/watchdog/хуки) [проверено].
@@ -100,3 +110,23 @@
   (iQOO: D1 kill-6/logcat-стрим; Waydroid: tombstone+logcat вотч, 15с подъём).
 - Приложение на устройствах: iQOO — фикс-билд 09e99632+; Infinix — diag 69b2de06
   (де-скоуплен владельцем); Waydroid — diag 69b2de06 (сессия остановлена).
+
+## 11. Утренний раунд 2026-11-05 (кодоые приоритеты чек-листа, без устройств)
+- **Приоритет 2 — ACRA LOGCAT** (66ec77c2): ReportField.LOGCAT + мёртвый
+  withLogcatArguments удалены из ACRA-конфига (MinisApp.attachBaseContext) →
+  синхронный logcat-коллектор (FutureTask.get ~2.9s в crash-пути из stall-лога)
+  недостижим. Безопасность перехода: CrashFileSender читает поле через
+  isNullOrBlank-guard (CrashFileReporter.kt:46) — секция просто пропускается;
+  AppLogger уже зеркалирует logcat в дневной файл ([LOGCAT]-строки) — контекст
+  краша не теряется. Unit Tests 42081839005 SUCCESS [проверено]. Runtime
+  (HANG-профиль исчез из stall-лога нового билда) — BLOCKED_DEVICE.
+- **Приоритет 3 — promptId-дедуп** (0575f47b): схема = атомарный маркер в строке
+  (source_prompt_ids, тот же INSERT) + дедуп на трёх точках приёма; миграция
+  15→16 по прецеденту MIGRATION_2_3 (nullable TEXT, валидация Room проходит);
+  retry-пути проверены читкой — ни один не пере-ставляет использованный id,
+  [T-queue-dedup-killer] (тихий съедатель повторного ввода) структурно
+  исключён (UUID-ids, не текст). Unit Tests 42084272975 SUCCESS [проверено].
+  Что не проверено: стресс-B на устройстве (kill -9 в окне), поведение
+  миграции на живой БД 10k+ строк (CI гоняет in-memory), независимый
+  ревью-проход по диффу 0575f47b.
+- Ремоуты origin/mirror синхронизированы на 0575f47b [проверено rev-parse].

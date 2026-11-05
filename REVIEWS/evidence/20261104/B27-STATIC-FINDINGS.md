@@ -30,6 +30,13 @@
   (автопереходы/детекторы) — не прочитаны.
 - MinisApp uncaughtException цепочка: порядок ACRA/MinisApp-хендлеров
   (ACRA collect() на main — HANG 2.9s из stall-лога) — дизайн-вопрос.
+  → ЗАКРЫТО 2026-11-05 (66ec77c2): ReportField.LOGCAT удалён из
+  withReportContent (+ мёртвый withLogcatArguments) — ACRA больше не
+  запускает синхронный logcat-коллектор в crash-пути, блокировка
+  FutureTask.get(~2.9s) недостижима. Контекст краша не теряется: AppLogger
+  зеркалирует живой logcat в дневной файл; CrashFileSender null-guarded
+  (секция "--- Logcat ---" просто не пишется). Runtime-подтверждение
+  (HANG-профиль исчез из stall-лога свежего билда) — BLOCKED_DEVICE.
 - DebugServer 0.0.0.0:5322 в релизе — surface-аудит.
 
 ## ДОРАБОТКА (2026-11-05): ScheduledTaskManager + DebugServer — запрошенный объём
