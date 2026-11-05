@@ -162,12 +162,23 @@ class MinisApp : Application(), ImageLoaderFactory {
         // writes filesDir/logs/crash-<stamp>.log — same dir + .log extension
         // that AppLogger.listLogFiles already filters for, so reports surface
         // in LogManagementScreen with no extra UI.
+        // [B27-acra-logcat] ReportField.LOGCAT is deliberately absent. ACRA's
+        // logcat collector runs synchronously inside the crash path and blocks
+        // the already-crashed thread on a FutureTask.get() (~2.9 s measured in
+        // the B27 static findings) before the process is allowed to die - pure
+        // added latency, and on firmware that ships logd disabled (XOS sets
+        // ro.logd.size=0) the tail it would capture is empty anyway. AppLogger
+        // already mirrors the live logcat stream into the daily
+        // minis-YYYY-MM-DD.log file ([LOGCAT] lines), so the lines around a
+        // crash still land in the log bundle the user can export; the
+        // crash-<stamp>.log keeps the full stack trace. CrashFileSender reads
+        // the field through a null-guard, so its absence just skips the
+        // "--- Logcat ---" section of the report.
         ACRA.init(
             this,
             CoreConfigurationBuilder()
                 .withBuildConfigClass(BuildConfig::class.java)
                 .withReportFormat(StringFormat.JSON)
-                .withLogcatArguments(listOf("-t", "200", "-v", "time"))
                 .withReportContent(
                     ReportField.APP_VERSION_NAME,
                     ReportField.APP_VERSION_CODE,
@@ -176,7 +187,6 @@ class MinisApp : Application(), ImageLoaderFactory {
                     ReportField.PHONE_MODEL,
                     ReportField.BRAND,
                     ReportField.STACK_TRACE,
-                    ReportField.LOGCAT,
                 ),
         )
     }
