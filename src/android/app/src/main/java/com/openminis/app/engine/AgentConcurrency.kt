@@ -52,4 +52,22 @@ object AgentConcurrency {
     /** Background ceiling for this device, thermal-clamped. */
     val background: Int
         get() = (backgroundCeiling(deviceCores()) / thermalDivider).coerceAtLeast(1)
+
+    /**
+     * [P1-io-concurrency] Ceiling for DISK/NETWORK tools (file_read,
+     * file_write, file_edit, read_image, webfetch — see
+     * [ToolConcurrencyClass]). A file write holds no model stream, no UI
+     * row, no share of the provider's rate limit — the CPU-derived
+     * parallelCeiling was throttling them pointlessly: 10 parallel writes
+     * to 10 distinct files ran 6-and-wait. The I/O number follows flash
+     * queue depth, not cores, and deliberately does NOT take the thermal
+     * divider: thermal pressure targets CPU work (streams, spawns); a
+     * handful of concurrent small writes is not a thermal factor.
+     * Consumer: EngineAgentLoop's second semaphore — ToolConcurrencyClass
+     * routes each call to its gate.
+     */
+    fun ioParallelCeiling(cores: Int): Int = if (cores >= 8) 16 else 8
+
+    /** I/O ceiling for this device (NOT thermal-clamped — see above). */
+    val ioParallel: Int get() = ioParallelCeiling(deviceCores())
 }

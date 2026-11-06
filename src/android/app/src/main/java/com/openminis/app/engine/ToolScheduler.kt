@@ -31,6 +31,14 @@ class ToolScheduler(
     private val resourceKeysOf: (toolName: String, argsJson: String) -> Set<String>? = { _, _ -> null },
     /** Hard cap on concurrently running tools inside one wave. */
     private val maxConcurrent: Int = 4,
+    /**
+     * [P1-io-concurrency] Separate cap for disk/network tools
+     * ([ToolConcurrencyClass.IO_TOOLS]): EngineAgentLoop acquires from
+     * this gate for I/O tools and from [maxConcurrent] for the rest — a
+     * 10-way file_write batch to 10 distinct paths must not wait behind
+     * the subagent ceiling.
+     */
+    private val ioMaxConcurrent: Int = 4,
 ) {
 
     enum class Effect { READ, WRITE, META, GLOBAL }
@@ -70,6 +78,11 @@ class ToolScheduler(
         val KEY_DECLARING_TOOLS: Set<String> = setOf(
             "file_read", "file_write", "file_edit", "read_image",
             "memory_write", "memory_blocks_edit",
+            // [P1-io-concurrency] webfetch declares net:<url> (pure GET,
+            // idempotent): two fetches of DIFFERENT urls run in parallel;
+            // same url is read+read — parallel by the read rule. A missing
+            // url stays UNDECLARED -> GLOBAL lock (never an empty key).
+            "webfetch",
         )
     }
 
@@ -161,6 +174,9 @@ class ToolScheduler(
 
     /** Concurrency cap for wave execution (>= 1). */
     fun cap(): Int = maxConcurrent.coerceAtLeast(1)
+
+    /** [P1-io-concurrency] Concurrency cap for I/O-class tools (>= 1). */
+    fun ioCap(): Int = ioMaxConcurrent.coerceAtLeast(1)
 
     /**
      * [T-tool-scheduler-reactive] Dependency DAG for BARRIER-FREE execution

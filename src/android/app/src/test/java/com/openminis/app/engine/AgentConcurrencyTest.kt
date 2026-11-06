@@ -47,4 +47,17 @@ class AgentConcurrencyTest {
         assertTrue("background=$background", background in 2..5)
         assertTrue("background=$background parallel=$parallel", background < parallel)
     }
+
+    @Test
+    fun `io ceiling outruns the agent ceiling on every device`() {
+        assertEquals(16, AgentConcurrency.ioParallelCeiling(8))
+        assertEquals(8, AgentConcurrency.ioParallelCeiling(4))
+        for (cores in 1..16) {
+            assertTrue(
+                "cores=$cores io=${AgentConcurrency.ioParallelCeiling(cores)} " +
+                    "cpu=${AgentConcurrency.parallelCeiling(cores)}",
+                AgentConcurrency.ioParallelCeiling(cores) > AgentConcurrency.parallelCeiling(cores),
+            )
+        }
+    }
 }

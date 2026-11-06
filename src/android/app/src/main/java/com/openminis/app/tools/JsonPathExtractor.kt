@@ -22,6 +22,9 @@ internal fun jsonObjectPathExtractor(toolName: String, argsJson: String): String
  *    would silently ride a parallel wave);
  *  - memory journal writes -> {"memory:journal"} (append-only file = one
  *    writer at a time, model order);
+ *  - webfetch -> {"net:<url>"} ([P1-io-concurrency] a pure idempotent
+ *    GET; different urls parallel, same url is read+read — parallel by
+ *    the read rule; missing url stays UNDECLARED);
  *  - everything else -> null (GLOBAL lock: serialize alone).
  * Returns a SET because future tools may span multiple resources
  * (db row + http host); the scheduler treats any intersection as a
@@ -32,6 +35,10 @@ internal fun jsonObjectResourceKeys(toolName: String, argsJson: String): Set<Str
         "file_read", "file_write", "file_edit", "read_image" -> {
             val p = JSONObject(argsJson).optString("path", "").trim()
             if (p.isEmpty()) null else setOf("fs:$p")
+        }
+        "webfetch" -> {
+            val u = JSONObject(argsJson).optString("url", "").trim()
+            if (u.isEmpty()) null else setOf("net:$u")
         }
         "memory_write", "memory_blocks_edit" -> setOf("memory:journal")
         else -> null

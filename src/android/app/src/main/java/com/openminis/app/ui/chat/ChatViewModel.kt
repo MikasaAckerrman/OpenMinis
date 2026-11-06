@@ -13399,6 +13399,9 @@ class ChatViewModel(
                 resourceKeysOf = ::jsonObjectResourceKeys,
                 // [T-parallel-agents] The same ceiling the executor uses.
                 maxConcurrent = com.openminis.app.engine.AgentConcurrency.parallel,
+                // [P1-io-concurrency] Disk/network tools outrun the subagent
+                // ceiling: a file write holds no stream/socket/rate-limit.
+                ioMaxConcurrent = com.openminis.app.engine.AgentConcurrency.ioParallel,
             ),
             onEngineEvent = { msg ->
                 // [T-scheduler-observability] app-side adapter: the wave

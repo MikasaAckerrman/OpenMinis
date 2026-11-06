@@ -340,13 +340,22 @@ class EngineAgentLoop(
         )
         val ran: Map<String, ToolOutcome> = if (toRun.size > 1) {
             coroutineScope {
-                val semaphore = Semaphore(toolScheduler.cap())
+                // [P1-io-concurrency] Two gates, one per tool class. The CPU
+                // gate keeps its subagent-sized cap (a spawn is a live model
+                // stream + a socket + a rate-limit share); disk/network tools
+                // get the I/O cap — a 10-way file_write batch to 10 distinct
+                // paths must not wait behind spawns. Resource conflicts stay
+                // the scheduler's job (planReactive deps); the gates only
+                // bound how many calls may run AT ONCE.
+                val cpuGate = Semaphore(toolScheduler.cap())
+                val ioGate = Semaphore(toolScheduler.ioCap())
                 val deferreds = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Deferred<ToolOutcome>>()
                 for (node in nodes) {
                     val call = toRun.first { it.id == node.call.id }
+                    val gate = if (ToolConcurrencyClass.isIo(call.name)) ioGate else cpuGate
                     deferreds[node.call.id] = async(Dispatchers.Default) {
                         node.dependsOn.forEach { depId -> deferreds.getValue(depId).await() }
-                        semaphore.withPermit { runExecutor(call) }
+                        gate.withPermit { runExecutor(call) }
                     }
                 }
                 deferreds.mapValues { it.value.await() }
