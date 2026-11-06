@@ -130,13 +130,17 @@ class DeletedArchiveMaintenanceTest {
         insertSession("doomed")
         dao.insertDeletedMessages(
             listOf(
-                archiveRow("alive", 5_000L, "ok"),
+                // cutoff = nowMs - 30d = 10_000: "ok" (20_000) survives it,
+                // "ancient" (500) does not. CI failure post-mortem: the first
+                // draft put "ok" at 5_000 — BEFORE the cutoff — so the
+                // retention sweep lawfully deleted it too.
+                archiveRow("alive", 20_000L, "ok"),
                 archiveRow("ghost", 6_000L, "orphan"),
                 archiveRow("alive", 500L, "ancient"),
             ),
         )
         repo.runDeletedArchiveMaintenance(nowMs = 30L * 24 * 60 * 60 * 1000 + 10_000L)
-        // Orphan gone; the ancient row (30d+ before nowMs) gone; "ok" stays.
+        // Orphan gone; the ancient row (500 < cutoff 10_000) gone; "ok" stays.
         assertEquals(0, dao.deletedMessageCount("ghost"))
         assertEquals(1, dao.deletedMessageCount("alive"))
         assertEquals("ok", dao.loadDeletedMessages("alive").single().archiveId.substringAfterLast('-'))
