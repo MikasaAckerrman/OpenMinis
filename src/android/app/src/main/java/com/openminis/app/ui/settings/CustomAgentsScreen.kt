@@ -108,8 +108,11 @@ fun CustomAgentsScreen(onBack: () -> Unit) {
             onDelete = { agent ->
                 scope.launch {
                     val ok = withContext(Dispatchers.IO) {
-                        runCatching { AgentFileStore.fileFor(context, agent.fileName)?.delete() }
-                            .getOrDefault(false)
+                        runCatching {
+                            // `== true` normalizes the nullable Boolean from
+                            // the ?. chain into a plain Boolean.
+                            AgentFileStore.fileFor(context, agent.fileName)?.delete() == true
+                        }.getOrDefault(false)
                     }
                     if (!ok) hudError = "Could not delete ${agent.fileName}"
                     reload()
@@ -460,7 +463,7 @@ private fun AgentEditorScreen(
                 modifier = Modifier.padding(top = 12.dp),
             )
             Row(
-                Modifier.fillMaxWidth().horizontalScroll(),
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 MODEL_ROLE_OPTIONS.forEach { role ->
