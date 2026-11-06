@@ -2,6 +2,7 @@ package com.openminis.app.engine
 
 import com.openminis.app.tools.jsonObjectPathExtractor
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -124,6 +125,66 @@ class ToolBatchPlannerTest {
                 listOf(
                     ToolBatchPlanner.PendingToolCall("1", "file_read", "{not json"),
                     ToolBatchPlanner.PendingToolCall("2", "file_read", "{\"path\":\"/a.kt\"}"),
+                ),
+            ),
+        )
+    }
+
+    // ---- [P2-prefix-batches] mixed batches keep their safe head ----
+
+    @Test
+    fun `mixed batch runs safe prefix parallel and stops at the barrier`() {
+        assertEquals(
+            2,
+            planner.parallelPrefixSize(
+                listOf(
+                    call("1", "file_write", "/a.kt"),
+                    call("2", "file_read", "/b.kt"),
+                    call("3", "shell_execute", "/c"),
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun `barrier first means nothing goes parallel`() {
+        assertEquals(
+            0,
+            planner.parallelPrefixSize(
+                listOf(
+                    call("1", "shell_execute"),
+                    call("2", "file_read", "/a.kt"),
+                    call("3", "file_read", "/b.kt"),
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun `duplicate path inside prefix stops the prefix`() {
+        // [write(a), edit(a)] — the second call would race the first.
+        assertEquals(
+            1,
+            planner.parallelPrefixSize(
+                listOf(call("1", "file_write", "/a.kt"), call("2", "file_edit", "/a.kt")),
+            ),
+        )
+    }
+
+    @Test
+    fun `single call gets no prefix - sequential, nothing to gain`() {
+        assertEquals(0, planner.parallelPrefixSize(listOf(call("1", "file_read", "/a.kt"))))
+    }
+
+    @Test
+    fun `fully safe batch keeps the full prefix`() {
+        assertEquals(
+            3,
+            planner.parallelPrefixSize(
+                listOf(
+                    call("1", "file_read", "/a.kt"),
+                    call("2", "file_write", "/b.kt"),
+                    call("3", "memory_get"),
                 ),
             ),
         )

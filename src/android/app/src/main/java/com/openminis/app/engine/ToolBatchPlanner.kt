@@ -58,4 +58,31 @@ class ToolBatchPlanner(
         val keys = calls.map { conflictKeyOf(it) }.filter { it.isNotEmpty() }
         return keys.size == keys.distinct().size
     }
+
+    /**
+     * [P2-prefix-batches] Mixed batches no longer fall all-or-nothing to
+     * sequential: the maximal PREFIX of batch-safe, pairwise
+     * non-conflicting calls still runs parallel; the first barrier tool
+     * (shell/browser/spawn/...) and everything after it stay sequential
+     * in model order. A prefix — not scattered groups — is what preserves
+     * the model's sequencing intent: calls BEFORE the barrier may run
+     * together (no ordering semantics exists between independent calls —
+     * the same basis the full-parallel batches rest on), but nothing may
+     * jump OVER the barrier tool.
+     *
+     * Returns the prefix LENGTH: 0 = fully sequential (single calls
+     * included — nothing to gain). The caller runs calls.take(size)
+     * parallel when size > 1 and the drop(size) remainder sequentially.
+     */
+    fun parallelPrefixSize(calls: List<PendingToolCall>): Int {
+        if (calls.size <= 1) return 0
+        var idx = 0
+        val seenKeys = HashSet<String>()
+        while (idx < calls.size && calls[idx].name in BATCH_SAFE_TOOLS) {
+            val key = conflictKeyOf(calls[idx])
+            if (key.isNotEmpty() && !seenKeys.add(key)) break
+            idx++
+        }
+        return idx
+    }
 }

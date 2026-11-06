@@ -15293,18 +15293,24 @@ class ChatViewModel(
             val batchPlanner = com.openminis.app.engine.ToolBatchPlanner(
                 pathOf = ::jsonObjectPathExtractor,
             )
-            val canParallelize = batchPlanner.canParallelize(
+            // [P2-prefix-batches] Mixed batches keep their safe head: the
+            // maximal prefix of batch-safe, pairwise non-conflicting calls
+            // still runs parallel; the first barrier tool (shell/browser/
+            // spawn/...) and everything after it run sequentially in model
+            // order — nothing jumps over the barrier.
+            val parallelPrefixSize = batchPlanner.parallelPrefixSize(
                 toolCalls.map { (id, name, args) ->
                     com.openminis.app.engine.ToolBatchPlanner.PendingToolCall(
                         id, name, args.toString(),
                     )
                 },
             )
-            if (canParallelize) {
+            val parallelCalls = if (parallelPrefixSize > 1) toolCalls.take(parallelPrefixSize) else null
+            if (parallelCalls != null) {
                 val parallelStart = System.currentTimeMillis()
                 // Mark ALL blocks RUNNING first (sequential UI update, no
                 // races), then fire the executes concurrently.
-                for ((id, name, args) in toolCalls) {
+                for ((id, name, args) in parallelCalls) {
                     val preIdx = allToolBlocks.indexOfFirst { it.id == id }
                     if (preIdx >= 0 && allToolBlocks[preIdx].toolStatus == ToolBlockStatus.PENDING) {
                         allToolBlocks[preIdx] = allToolBlocks[preIdx].copy(toolStatus = ToolBlockStatus.RUNNING)
@@ -15314,7 +15320,7 @@ class ChatViewModel(
                     updateAssistantMessage(assistantId, accumulatedText, true, allToolBlocks)
                 }
                 val results = kotlinx.coroutines.coroutineScope {
-                    val deferred = toolCalls.map { (id, name, args) ->
+                    val deferred = parallelCalls.map { (id, name, args) ->
                         async(Dispatchers.IO) {
                             // [T-preflight-parallel] SAME gate as the sequential
                             // path below — the parallel batch previously called
@@ -15348,10 +15354,10 @@ class ChatViewModel(
                     deferred.awaitAll()
                 }
                 AppLogger.info(TAG_STREAM,
-                    "parallel-batch: ${toolCalls.size} tool(s) in ${System.currentTimeMillis() - parallelStart}ms")
+                    "parallel-batch: ${parallelCalls.size} tool(s) in ${System.currentTimeMillis() - parallelStart}ms")
                 // Post-process sequentially — loop detector, block status,
                 // result parts — in the model's original order.
-                for ((idx, call) in toolCalls.withIndex()) {
+                for ((idx, call) in parallelCalls.withIndex()) {
                     val (id, name, args) = call
                     val result = results[idx]
                     toolLoopDetector.record(name, parseToolParams(args.toString()), result.output, null, id)
@@ -15395,10 +15401,15 @@ class ChatViewModel(
                 withContext(Dispatchers.Main) {
                     updateAssistantMessage(assistantId, accumulatedText, true, allToolBlocks)
                 }
-            } else {
+            }
+            // [P2-prefix-batches] The remainder (or the whole batch when no
+            // parallel prefix exists) runs through the original sequential
+            // path in model order — nothing jumps over the barrier tool.
+            val sequentialCalls = parallelCalls?.let { toolCalls.drop(parallelPrefixSize) } ?: toolCalls
+            if (sequentialCalls.isNotEmpty()) {
             // Sequential path (original): works for mixed tool batches,
             // write tools, shell/browser — anything with side effects.
-            // (The closing brace of this else is at the end of the
+            // (The closing brace of this block is at the end of the
             // original for-loop's post-processing.)
 
             // [T-android-session-last-message-live-tool-call] Push a live
@@ -15430,7 +15441,7 @@ class ChatViewModel(
             }
 
             // Execute all tool calls
-            for ((id, name, args) in toolCalls) {
+            for ((id, name, args) in sequentialCalls) {
                 // [T-android-overlay-tool-title] Pull tool_title uniformly
                 // from args for ALL tools — without this browser_use's
                 // tool_title never reached the overlay (only shell_execute
@@ -15665,7 +15676,7 @@ class ChatViewModel(
                 ))
                 resultDurations.add(elapsed)
             }
-            } // [T-parallel-read-tools] end of sequential else branch
+            } // [T-parallel-read-tools] end of sequential path block (a parallel prefix may have run above)
 
             // Update UI with tool statuses. Mark as awaiting the next model
             // response so "Minis is thinking" shows during the network gap
