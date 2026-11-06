@@ -13,9 +13,20 @@ import androidx.room.PrimaryKey
  * turns unrecoverable — the exact failure that wiped the HUD session's
  * 17–22 Aug work.
  *
- * Deliberately NOT a foreign-key child of `sessions`: the archive must outlive
- * even an explicit session delete, and CASCADE would defeat the whole point.
- * `session_id` is a plain indexed column, not a FK.
+ * Deliberately NOT a foreign-key child of `sessions` (CASCADE would couple
+ * the archive's life to the session row); `session_id` is a plain indexed
+ * column, not a FK.
+ *
+ * [B30-stage2] POLICY UPDATE — the archive is BOUNDED now: an explicit
+ * session delete purges its archive rows in the same transaction
+ * ([ChatDao.deleteSessionWithArchive]), and a background sweep purges
+ * orphans (session row gone), rows older than 30 days, and everything
+ * beyond the 100 newest per session
+ * ([ChatRepository.runDeletedArchiveMaintenance]). The original
+ * "outlives everything, forever" reading had NO delete anywhere and
+ * inflated minis.db to 408 MB. The no-destructive-retry guarantee is
+ * unchanged — retry/edit/rerun stay recoverable within the documented
+ * retention window.
  *
  * The primary key is a synthetic `archive_id`, NOT the original message `id`,
  * because the same logical message can be archived more than once (edit a

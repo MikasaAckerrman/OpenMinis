@@ -114,16 +114,45 @@ class ChatRepository(internal val dao: ChatDao) {
         val runId = session?.agentRunId
         if (session?.isAgentShowcase == 1 && runId != null) {
             for (worker in dao.listAgentRunSessions(runId)) {
-                // [T-archive-every-delete] Archive before wiping. The archive is
-                // NOT a FK child of `sessions`, so these copies survive the
-                // session row going away — which is exactly what makes an
-                // accidental delete recoverable.
-                archiveAndDeleteAllMessages(worker.id, "deleteSession-worker")
-                dao.deleteSession(worker.id)
+                // [B30-stage2] Session delete is now fully destructive (policy
+                // update — see DeletedMessageEntity): message ROWS die with the
+                // session row (FK CASCADE) and the session's archive rows are
+                // purged in the same transaction. The old archive-then-delete
+                // copy here was the single biggest minis.db inflator: it moved
+                // the WHOLE transcript into deleted_messages on every session
+                // delete, and no restore path can reach those copies once the
+                // session row is gone.
+                val workerTotal = dao.messageCountForSession(worker.id)
+                dao.deleteSessionWithArchive(worker.id)
+                com.openminis.app.data.MutationJournal.recordWipe(
+                    sessionId = worker.id,
+                    op = "deleteSession-worker",
+                    totalRows = workerTotal,
+                )
             }
         }
-        archiveAndDeleteAllMessages(id, "deleteSession")
-        dao.deleteSession(id)
+        // Keep the forensic wipe record even though the archive copy is gone.
+        val total = dao.messageCountForSession(id)
+        dao.deleteSessionWithArchive(id)
+        com.openminis.app.data.MutationJournal.recordWipe(
+            sessionId = id,
+            op = "deleteSession",
+            totalRows = total,
+        )
+    }
+
+    /**
+     * [B30-stage2] Bounded-archive sweep: orphans (session row gone), rows
+     * past the 30-day retention, and everything beyond the newest-100 per
+     * session ceiling. Idempotent, safe from any background context —
+     * driven by MinisApp.onTrimMemory's UI_HIDDEN branch (and safe to wire
+     * into a periodic job later). Failures are logged by the caller, never
+     * fatal.
+     */
+    suspend fun runDeletedArchiveMaintenance(nowMs: Long = System.currentTimeMillis()) {
+        dao.purgeOrphanDeletedMessages()
+        dao.purgeDeletedMessagesOlderThan(nowMs - DELETED_ARCHIVE_RETENTION_MS)
+        dao.capDeletedMessagesPerSession(DELETED_ARCHIVE_MAX_PER_SESSION)
     }
 
     suspend fun searchSessions(query: String): List<ChatSessionEntity> =
@@ -961,6 +990,9 @@ class ChatRepository(internal val dao: ChatDao) {
     }
 
     companion object {
+        // [B30-stage2] Bounded deleted-messages archive (see DeletedMessageEntity).
+        const val DELETED_ARCHIVE_RETENTION_MS: Long = 30L * 24 * 60 * 60 * 1000
+        const val DELETED_ARCHIVE_MAX_PER_SESSION = 100
         // <system-reminder>...</system-reminder> blocks are runtime nudges
         // injected into user-role messages by the harness (e.g. task-tracker
         // reminders). They never represent what the user actually typed, so

@@ -175,6 +175,21 @@ interface ChatDao {
     @Query("DELETE FROM sessions WHERE id = :id")
     suspend fun deleteSession(id: String)
 
+    /**
+     * [B30-stage2] Session delete takes its `deleted_messages` archive rows
+     * with it, in ONE transaction. The archive previously outlived the
+     * session forever ([T-archive-every-delete]'s "recoverable accidental
+     * delete") — with no DELETE from that table anywhere, the semantic
+     * inflated minis.db to 408 MB, and once the session row is gone no
+     * restore path can reach the copies anyway. Message ROWS die with the
+     * session via FK CASCADE; this also purges the archive copy.
+     */
+    @Transaction
+    suspend fun deleteSessionWithArchive(sessionId: String) {
+        deleteSessionArchive(sessionId)
+        deleteSession(sessionId)
+    }
+
     // Full-text search across session titles and message content
     @Query("""
         SELECT DISTINCT s.* FROM sessions s
@@ -364,8 +379,12 @@ interface ChatDao {
      * the wrong session is exactly as final as the bug was.
      *
      * So every row removal now leaves a recoverable copy. The archive is not a
-     * foreign-key child of `sessions`, so it deliberately OUTLIVES a session
-     * delete — that is the whole point.
+     * foreign-key child of `sessions`. [B30-stage2] policy note: the copy is
+     * now BOUNDED (30-day retention, ≤100 newest per session, orphans and
+     * session-delete purged — see [deleteSessionWithArchive] and
+     * ChatRepository.runDeletedArchiveMaintenance); the recovery window for
+     * retry/edit is what this table exists for, and it no longer grows
+     * forever.
      */
     @Transaction
     suspend fun archiveAndDeleteAllMessages(
@@ -426,6 +445,42 @@ interface ChatDao {
     /** How many archived rows a session has (cheap badge/count for restore UI). */
     @Query("SELECT COUNT(*) FROM deleted_messages WHERE session_id = :sessionId")
     suspend fun deletedMessageCount(sessionId: String): Int
+
+    // ─── [B30-stage2] bounded-archive maintenance ──────────────────────────
+    // The archive table had NO delete anywhere in the codebase — every
+    // retry/edit/rerun row (multi-MB parts_json each) and every deleted
+    // session's FULL transcript lived forever. The no-destructive-retry
+    // guarantee is unchanged (archive-then-truncate still runs first on the
+    // retry/edit paths); these sweeps bound the table instead. All three
+    // are idempotent and safe to re-run from any background context.
+
+    /** Session is being deleted: its archive rows go in the same transaction. */
+    @Query("DELETE FROM deleted_messages WHERE session_id = :sessionId")
+    suspend fun deleteSessionArchive(sessionId: String)
+
+    /** Rows whose session row no longer exists are unreachable for restore. */
+    @Query("DELETE FROM deleted_messages WHERE session_id NOT IN (SELECT id FROM sessions)")
+    suspend fun purgeOrphanDeletedMessages(): Int
+
+    /** Retention ceiling: rows archived before [cutoffMs] are gone. */
+    @Query("DELETE FROM deleted_messages WHERE deleted_at < :cutoffMs")
+    suspend fun purgeDeletedMessagesOlderThan(cutoffMs: Long): Int
+
+    /**
+     * Per-session ceiling: keep the newest [maxPerSession] rows per session
+     * (deleted_at DESC, archive_id tiebreak), drop the rest. Correlated COUNT —
+     * deliberately no window functions, runs on any bundled SQLite.
+     */
+    @Query(
+        "DELETE FROM deleted_messages WHERE archive_id IN (" +
+            "SELECT d.archive_id FROM deleted_messages d " +
+            "WHERE (SELECT COUNT(*) FROM deleted_messages d2 " +
+            "WHERE d2.session_id = d.session_id " +
+            "AND (d2.deleted_at > d.deleted_at " +
+            "OR (d2.deleted_at = d.deleted_at AND d2.archive_id >= d.archive_id))) " +
+            "> :maxPerSession)",
+    )
+    suspend fun capDeletedMessagesPerSession(maxPerSession: Int): Int
 
     /**
      * [T-message-surgery] Delete ONE message row, leaving everything after it

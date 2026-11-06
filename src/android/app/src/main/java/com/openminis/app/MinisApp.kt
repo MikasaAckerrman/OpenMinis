@@ -206,6 +206,27 @@ class MinisApp : Application(), ImageLoaderFactory {
         super.onTrimMemory(level)
         if (level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) {
             com.openminis.app.ui.chat.ChatViewModelStore.trimIdleOnBackground()
+            // [B30-stage2] The static parsed-history cache holds up to 2 FULL
+            // sessions (thousands of LLMMessage instances) in the Java heap
+            // even with nothing on screen — clear() had no caller anywhere
+            // before this line.
+            com.openminis.app.data.SessionHistoryCache.clear()
+            // Hand SQLite's pagecache back to the OS (native PSS, not heap).
+            runCatching {
+                database.openHelper.writableDatabase.execSQL("PRAGMA shrink_memory")
+            }.onFailure {
+                Log.w("MinisApp", "shrink_memory failed: ${it.message}")
+            }
+            // Bounded-archive sweep: orphans / 30-day retention / newest-100
+            // per session (deleted_messages had no delete anywhere — the
+            // 408 MB minis.db). Idempotent; IO thread; failures logged, never
+            // fatal.
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                runCatching { chatRepository.runDeletedArchiveMaintenance() }
+                    .onFailure {
+                        Log.w("MinisApp", "deleted-archive maintenance failed: ${it.message}")
+                    }
+            }
         }
     }
 

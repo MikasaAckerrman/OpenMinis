@@ -88,4 +88,23 @@ class SessionHistoryCacheTest {
         assertNotNull("2nd survives", SessionHistoryCache.get("s2", 1, 2))
         assertNotNull("3rd survives", SessionHistoryCache.get("s3", 1, 3))
     }
+
+    @Test
+    fun `clear empties everything - the B30 background-trim hook`() {
+        // [B30-stage2] clear() had NO caller anywhere: two full parsed
+        // sessions lived in the Java heap even with nothing on screen. The
+        // background trim (MinisApp.onTrimMemory >= TRIM_MEMORY_UI_HIDDEN)
+        // now calls it alongside the VM-store eviction.
+        val (rows1, llm1) = entry(listOf(row("m1", 10)))
+        val (rows2, llm2) = entry(listOf(row("m2", 20)))
+        SessionHistoryCache.put("s1", rows1, llm1, 1, 10)
+        SessionHistoryCache.put("s2", rows2, llm2, 1, 20)
+        SessionHistoryCache.clear()
+        assertNull(SessionHistoryCache.get("s1", 1, 10))
+        assertNull(SessionHistoryCache.get("s2", 1, 20))
+        // Usable after a clear: a foregrounded session re-fills it on load.
+        val (rows3, llm3) = entry(listOf(row("m3", 30)))
+        SessionHistoryCache.put("s3", rows3, llm3, 1, 30)
+        assertNotNull(SessionHistoryCache.get("s3", 1, 30))
+    }
 }
