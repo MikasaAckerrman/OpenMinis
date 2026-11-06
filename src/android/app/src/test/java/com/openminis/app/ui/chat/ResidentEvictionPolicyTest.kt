@@ -133,4 +133,54 @@ class ResidentEvictionPolicyTest {
         )
         assertEquals(emptyList<String>(), evict)
     }
+
+    // ---- [B30-idle-ram] keysToTrimOnBackground: the background sweep -----
+
+    @Test
+    fun `background trims every idle session, oldest first`() {
+        // The whole point of the trim: idle residents are invisible heap
+        // weight once the UI is hidden — drop ALL of them, not the LRU tail.
+        val lru = listOf("old1", "old2", "mid", "new1", "active")
+        val trim = ResidentEvictionPolicy.keysToTrimOnBackground(
+            lruOrder = lru,
+            pinned = emptySet(),
+            activeKey = "active",
+        )
+        assertEquals(listOf("old1", "old2", "mid", "new1"), trim)
+    }
+
+    @Test
+    fun `background trim never touches pinned live-work sessions`() {
+        val lru = listOf("idle1", "streaming", "idle2", "queued", "idle3")
+        val trim = ResidentEvictionPolicy.keysToTrimOnBackground(
+            lruOrder = lru,
+            pinned = setOf("streaming", "queued"),
+            activeKey = null,
+        )
+        assertEquals(listOf("idle1", "idle2", "idle3"), trim)
+    }
+
+    @Test
+    fun `background trim keeps the foregrounded session`() {
+        // The user is most likely to come back to exactly this chat;
+        // rebuilding its (heaviest) VM on return defeats the trim's purpose.
+        val lru = listOf("idle1", "active", "idle2")
+        val trim = ResidentEvictionPolicy.keysToTrimOnBackground(
+            lruOrder = lru,
+            pinned = emptySet(),
+            activeKey = "active",
+        )
+        assertEquals(listOf("idle1", "idle2"), trim)
+    }
+
+    @Test
+    fun `background trim of a fully working set is empty`() {
+        val lru = listOf("w1", "w2", "active")
+        val trim = ResidentEvictionPolicy.keysToTrimOnBackground(
+            lruOrder = lru,
+            pinned = setOf("w1", "w2"),
+            activeKey = "active",
+        )
+        assertEquals(emptyList<String>(), trim)
+    }
 }

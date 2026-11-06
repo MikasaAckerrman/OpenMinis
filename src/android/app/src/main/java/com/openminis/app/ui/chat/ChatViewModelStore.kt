@@ -110,6 +110,32 @@ object ChatViewModelStore {
     }
 
     /**
+     * [B30-idle-ram] Drop EVERY idle store — the app just went to the
+     * background (MinisApp.onTrimMemory >= TRIM_MEMORY_UI_HIDDEN), where
+     * idle residents are pure heap weight: each VM carries the session's
+     * parsed agentHistory + _messages with all tool blocks, and nothing can
+     * see them. Pinned sessions (live work) and the foregrounded one
+     * survive; everything else rebuilds from SQLite on next touch — a
+     * reload, never data. (Idempotent; cheap when there is nothing to drop.)
+     */
+    @Synchronized
+    fun trimIdleOnBackground() {
+        val active = activeSessionIdInternal?.let { resolveKey(it) }
+        val victims = ResidentEvictionPolicy.keysToTrimOnBackground(
+            lruOrder = lruOrder,
+            pinned = pinned,
+            activeKey = active,
+        )
+        for (key in victims) {
+            lruOrder.remove(key)
+            stores.remove(key)?.let {
+                it.clear()
+                Log.d(TAG, "trim-on-background store for $key (resident=${stores.size})")
+            }
+        }
+    }
+
+    /**
      * Draft → canonical mapping. When a draft ("__new__...") session is
      * persisted, we add `draftKey -> realId` here so lookups via the old key
      * (from a ChatScreen whose `sessionId` parameter is still the draft)

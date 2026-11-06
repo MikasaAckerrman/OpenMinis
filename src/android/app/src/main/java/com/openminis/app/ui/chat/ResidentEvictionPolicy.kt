@@ -64,6 +64,25 @@ object ResidentEvictionPolicy {
     }
 
     /**
+     * [B30-idle-ram] The background-trim decision: unlike the LRU bound
+     * (which keeps a small idle tail for instant back-navigation), going to
+     * the background means NOTHING idle can be seen — drop the whole idle
+     * set. Live-work sessions ([pinned]) are irreplaceable as always; the
+     * foregrounded session also survives by default: the user is most
+     * likely to come back to exactly that chat, and rebuilding the heaviest
+     * VM (its parsed history is the heap this trim exists to free) right on
+     * return would turn "background the app" into "reload my whole
+     * history".
+     *
+     * @return keys to drop, oldest first.
+     */
+    fun keysToTrimOnBackground(
+        lruOrder: List<String>,
+        pinned: Set<String>,
+        activeKey: String?,
+    ): List<String> = lruOrder.filter { it !in pinned && it != activeKey }
+
+    /**
      * Whether a session currently holds irreplaceable in-memory work and so
      * must be pinned against eviction. Centralised here (rather than inlined
      * as `_isStreaming` at the pin call site) so "live work" has ONE

@@ -3,6 +3,7 @@ package com.openminis.app
 import android.app.Activity
 import android.app.Application
 import android.content.BroadcastReceiver
+import android.content.ComponentCallbacks2
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -189,6 +190,23 @@ class MinisApp : Application(), ImageLoaderFactory {
                     ReportField.STACK_TRACE,
                 ),
         )
+    }
+
+    /**
+     * [B30-idle-ram] The UI just became invisible (HOME, screen-off, task
+     * switch): every IDLE cached ChatViewModel is pure heap weight now —
+     * each carries the session's parsed agentHistory + _messages with all
+     * tool blocks, and none of it can be seen. Drop them all except pinned
+     * (live work) and the foregrounded session (the one the user is most
+     * likely to return to; rebuilding it would reload its whole history
+     * right on return). Levels < UI_HIDDEN mean the app is still VISIBLE
+     * (running-low warnings) — not a background event.
+     */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) {
+            com.openminis.app.ui.chat.ChatViewModelStore.trimIdleOnBackground()
+        }
     }
 
     override fun onCreate() {
