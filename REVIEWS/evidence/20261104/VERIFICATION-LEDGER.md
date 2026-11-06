@@ -468,3 +468,50 @@ rowid → archive_id в cap-запросе принята.
   ndk;27.0.12077973 при конфигурации Gradle (CDN; в прогоне 1 та же
   авто-установка прошла за 13с; до компиляции Kotlin не дошло) →
   rerun-failed-jobs → SUCCESS (run_attempt 2).
+
+## 21. Утро 2026-11-07 — B16 этап 1 (категории тулов + полный реестр + экран кастомных агентов)
+
+ТЗ = спецификация из AGENT_PLAN.md, синхронизированная ревьюером (84cd27f4):
+6 категорий (File, Shell, Web, Memory, Subagent, System), экран в настройках,
+Markdown+YAML в /var/minis/agents/<name>.md, подхват без рестарта.
+
+### B16 этап 1 — 4fbf71a9 + 9723b27a, CI 42309842293 SUCCESS
+[статус: РЕАЛИЗОВАНО+CI | улика: код+9 тестов+run | не хватает: экран на устройстве + спавн кастомного агента с новыми тулами]
+- РЕКОГНОСЦИРОВКА изменила масштаб задачи: «зажат в 8» — это ТРИ реестра:
+  диспетчер ChatViewModel (35 веток, включая 18 константных
+  SubagentTools/BgTaskTools/Todo/Search/Mcp/WebFetch/AskUser/PlanSubmit —
+  первый grep по строковым литералам нашёл только 9), schema-реестр
+  ToolSurfaceAdapter.buildRegistry (34 тула под feature-гейтами),
+  валидация (AgentTools.ALL_TOOL_NAMES=8 + AgentFileParser.KNOWN_TOOL_NAMES=8).
+  Расширь я ТОЛЬКО парсер — UI записал бы валидный для парсера файл,
+  который schema-фильтр обрезал (риск «EMPTY schema», DebugRPCHandler:1787).
+- Решение: engine/ToolCategories (чистый) — 6 категорий × 34 тула,
+  ALL_TOOLS = union; AgentTools.ALL_TOOL_NAMES := ToolCategories.ALL_TOOLS;
+  AgentFileParser.KNOWN_TOOL_NAMES := тот же set. Один структурный источник,
+  drift структурно невозможен; парсер≡энфорсер запинен тестом.
+- plan_submit вне реестра СОЗНАТЕЛЬНО (план-выход, инжектится движком
+  только в PLAN-режиме; у воркера план-режима нет — allowlist обещал бы
+  тул, которого в схеме никогда не будет); subagent_task — iOS-имя.
+  ToolCategoriesTest пинит ВСЕ 35 веток диспетчера verbatim и разрешает
+  ровно одну асимметрию (plan_submit) — новая ветка диспетчера без
+  категории = красный CI.
+- Экран: Settings → Agent Runtime → «Custom agents» (после Skills,
+  иконка SmartToy); список/создание/редактирование/удаление; пикер тулов
+  аккордеоном по 6 категориям со счётчиком; Restrict-tools тумблер
+  (OFF = нет строки tools: = дефолт раннера — 1:1 с форматом файла);
+  modelRole чипами (6 ролей + default), model entry (beats role),
+  maxTurns 1..64; имя [A-Za-z0-9_-]+ — ':' ломал бы custom:<name>
+  роутинг, path-символы исключают traversal; fileFor-гейт в сторе;
+  сериализация — точный фронтматтер парсера; AgentFileStore без кэша →
+  сейв живой (spawn/list_agents видят сразу).
+- Компил-постмортем (прогон 1, 2 ошибки в моём новом файле):
+  (1) `runCatching{ fileFor(...)?.delete() }.getOrDefault(false)` дал
+  Boolean? — `!ok` на nullable запрещён → нормализация `== true`;
+  (2) `horizontalScroll()` требует ScrollState (перепутал с
+  verticalScroll(state) — у которого state тоже обязателен, в соседней
+  строке он был) → rememberScrollState(). Фикс 9723b27a → SUCCESS.
+- Поведенческое влияние расширения ALL_TOOL_NAMES: строители схем НЕ
+  читают его (expandAllowlist только канонизирует, регистрация — по
+  гейтам), ToolSurfaceAdapterTest/PlanFilter/ScopedToggles не задеты;
+  меняется ТОЛЬКО валидация: больше валидных имён принимается, опечатки
+  по-прежнему отвергаются.
