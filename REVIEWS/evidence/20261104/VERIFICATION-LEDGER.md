@@ -224,3 +224,44 @@
   - Аппаратный фронт: BLOCKED_DEVICE (устройства оффлайн, ждём ADB).
 
 
+
+## 15. Утро 2026-11-06 — B13 (idle-vs-max watchdog scheduled-прогонов)
+
+- **Задача** ([статус | улика | чего не хватает]): плоский `RUN_TIMEOUT_MS=10 мин`
+  (ScheduledAgentRunner.kt:34) — два режима отказа: живые 15-20-минутные прогоны
+  убивались на потолке; зависший сокет сжигал все 10 минут до констатации.
+  Улика: ревью-разбор + код wait-точек (`withTimeoutOrNull(timeoutMs){isStreaming.first{!it}}`
+  ×3 в HeadlessChatRunner). Не хватало: runtime-прогона на устройстве (устройство
+  вернулось, но стресс-B ещё впереди).
+- **Решение (8c8e481e, push origin+mirror)**:
+  1. `debug/RunWatchdogPolicy.kt` — чистая политика: `(elapsedRun, elapsedSilent, idle?, max) →
+     Continue | Abort(IDLE) | Abort(MAX_RUN)`; `>=` = нарушено; при двойном нарушении
+     MAX_RUN приоритетен; `idle=null` = легаси-плоское поведение. 5 boundary-тестов.
+  2. `ChatViewModel`: `_toolHeartbeat` StateFlow — счётчик тикает каждые 30с ВНУТРИ
+     `executeTool` (обёртка `withToolHeartbeat`, тело → `executeToolImpl`, choke point
+     единственный — параллельный и последовательный пути оба идут через executeTool).
+     Обоснование: тихий тул-запуск (build/тесты) НЕ мутирует `_messages` между
+     dispatch и результатом — без этого пульса idle-детектор убивал бы живую сборку
+     (тот же класс ложного срабатывания, что чиним). TTFT-ожидание пульса НЕ даёт
+     сознательно: сокет без следующего чанка — это и есть целевой stall.
+  3. `HeadlessChatRunner`: общий `awaitTurnSettled(vm, timeoutMs, idleMs)` на
+     Dispatchers.Default заменил все три плоских wait'а (prompt/retry/rerunFromToolBlock).
+     Сигнатура пульса: размер списка + hash последнего ChatMessage (data class →
+     хэш следует за контентом) + флаг стриминга + heartbeat. Окно сна = min(остаток
+     idle, остаток max); пульс внутри окна сбрасывает счётчик тишины; тишина дольше
+     окна → вердикт. `idleMs: Long? = null` → RPC-поверхность (ChatMutationMethods,
+     контракт harness) семантически не тронута; opt-in только из ScheduledAgentRunner.
+  4. `ScheduledAgentRunner`: idle=3 мин, max=30 мин (было плоско 10 мин).
+- **Отличие от андроид-референса** (AndCode ScheduleRunWatchdog.kt:40-74): пульс
+  по toolHeartbeat + hash последнего ChatMessage вместо хэша частей транскрипта —
+  причина: транскрипт-хэш не спасает от того же окна тишины внутри тул-запуска.
+- **НЕ входит в дифф (атомарность)**: retry-лестница 10/20/30 и reconcileStaleRuns
+  при рестарте — остались отдельными пунктами бэклога.
+- **CI верификация**: Run ID `42263011261` (Unit Tests) — SUCCESS [проверено через
+  API, head_sha сверен с полным SHA 8c8e481e5bf224614c5ed7403356c691ebeccfbe].
+  Build APK skipped ([test]-маршрут). Все 5 тестов RunWatchdogPolicyTest прошли;
+  компиляция всего B13-кода подтверждена CI.
+- **Чего не хватает (BLOCKED_DEVICE / runtime)**: реальный idle-abort на зависшем
+  сокете и спасение 15-минутного прогона наблюдаются только на устройстве
+  (стресс-B/D1-протокол при iQOO). Пока [статус: РЕАЛИЗОВАНО+CI-зелёный | улика:
+  код+тесты+CI | не хватает: runtime-демонстрация].
