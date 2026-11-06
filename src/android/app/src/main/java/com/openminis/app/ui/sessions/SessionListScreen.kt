@@ -101,6 +101,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -178,8 +179,10 @@ private fun categoryStyle(category: String?): CategoryStyle {
     }
 }
 
-// Date period for section grouping (matching iOS)
-private enum class DatePeriod(val label: String) {
+// Date period for section grouping (matching iOS). Internal since
+// [B31-session-list-perf]: the fast bucketing + its boundaries are
+// differential-tested from the unit-test source set.
+internal enum class DatePeriod(val label: String) {
     PINNED("Pinned"),     // labels are i18n'd at render time via sectionLabelFor
     TODAY("Today"),
     YESTERDAY("Yesterday"),
@@ -189,42 +192,78 @@ private enum class DatePeriod(val label: String) {
 }
 
 /**
- * Map a session's updatedAt timestamp to its display bucket. Mirrors iOS
+ * [B31-session-list-perf] Map a session's updatedAt to its display bucket
+ * with pure Long comparisons against precomputed boundaries. Replaces the
+ * old datePeriod(), which built 4 Calendar instances PER SESSION (800
+ * heavy objects per pass at 200 sessions, on every list update).
+ *
+ * Semantics are EXACTLY the old calendar algorithm's (pinned by the
+ * differential sweep in SessionDateBoundariesTest). Mirrors iOS
  * `ContentView.groupedSessions`:
- *   - Today / Yesterday: calendar-day match
- *   - This Week: within the last 7 days (rolling window, not current week)
- *   - This Month: within the last 30 days (rolling window, NOT current calendar month)
- *   - Earlier: everything else
+ *   - Today / Yesterday: calendar-day match (local zone) — midnight
+ *     boundaries, NOT rolling 24h windows;
+ *   - This Week: rolling 7×24h window from now (the old `diffDays < 7`
+ *     floor semantics, so a timestamp exactly now-7d falls THROUGH to
+ *     the month check);
+ *   - This Month: rolling one calendar month (strict >, matching the old
+ *     `timestamp > monthAgo`; a calendar-month match would push e.g. a
+ *     March 30 session into "Earlier" on April 2);
+ *   - Earlier: everything else.
  */
-private fun datePeriod(timestamp: Long): DatePeriod {
-    val now = Calendar.getInstance()
-    val cal = Calendar.getInstance().apply { time = Date(timestamp) }
+internal fun datePeriodFast(
+    timestamp: Long,
+    todayStart: Long,
+    yesterdayStart: Long,
+    weekBoundary: Long,
+    monthBoundary: Long,
+): DatePeriod = when {
+    timestamp >= todayStart -> DatePeriod.TODAY
+    timestamp >= yesterdayStart -> DatePeriod.YESTERDAY
+    timestamp > weekBoundary -> DatePeriod.THIS_WEEK
+    timestamp > monthBoundary -> DatePeriod.THIS_MONTH
+    else -> DatePeriod.EARLIER
+}
 
-    if (cal.get(Calendar.YEAR) == now.get(Calendar.YEAR) &&
-        cal.get(Calendar.DAY_OF_YEAR) == now.get(Calendar.DAY_OF_YEAR)
-    ) return DatePeriod.TODAY
-
-    val yesterday = Calendar.getInstance().apply { add(Calendar.DAY_OF_YEAR, -1) }
-    if (cal.get(Calendar.YEAR) == yesterday.get(Calendar.YEAR) &&
-        cal.get(Calendar.DAY_OF_YEAR) == yesterday.get(Calendar.DAY_OF_YEAR)
-    ) return DatePeriod.YESTERDAY
-
-    val diffDays = TimeUnit.MILLISECONDS.toDays(now.timeInMillis - timestamp)
-    if (diffDays < 7) return DatePeriod.THIS_WEEK
-
-    // iOS uses `monthAgo = now - 1 month` (rolling window). A calendar-month
-    // match would push e.g. a March 30 session into "Earlier" on April 2 —
-    // iOS still shows it in "This Month" until May 2.
-    val monthAgo = Calendar.getInstance().apply { add(Calendar.MONTH, -1) }.timeInMillis
-    if (timestamp > monthAgo) return DatePeriod.THIS_MONTH
-
-    return DatePeriod.EARLIER
+/**
+ * [B31-session-list-perf] The four bucket boundaries, built from ONE `now`
+ * (4 Calendar allocations per grouping PASS instead of per session).
+ * Internal: the differential test drives it with a pinned `now`.
+ */
+internal class SessionDateBoundaries(
+    val todayStart: Long,
+    val yesterdayStart: Long,
+    val weekBoundary: Long,
+    val monthBoundary: Long,
+) {
+    companion object {
+        fun compute(now: Calendar = Calendar.getInstance()): SessionDateBoundaries {
+            fun midnight(c: Calendar): Long = (c.clone() as Calendar).apply {
+                set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0)
+                set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+            }.timeInMillis
+            val todayStart = midnight(now)
+            // Calendar-day arithmetic, NOT minus-24h: DST makes a day 23/25h.
+            val yesterdayStart = midnight(
+                (now.clone() as Calendar).apply { add(Calendar.DAY_OF_YEAR, -1) },
+            )
+            val weekBoundary = now.timeInMillis - TimeUnit.DAYS.toMillis(7)
+            val monthBoundary = (now.clone() as Calendar).apply {
+                add(Calendar.MONTH, -1)
+            }.timeInMillis
+            return SessionDateBoundaries(todayStart, yesterdayStart, weekBoundary, monthBoundary)
+        }
+    }
 }
 
 private fun groupSessionsByDate(sessions: List<ChatSessionEntity>): List<Pair<DatePeriod, List<ChatSessionEntity>>> {
     val pinned = sessions.filter { it.pinnedAt != null }.sortedByDescending { it.pinnedAt }
     val unpinned = sessions.filter { it.pinnedAt == null }
-    val grouped = unpinned.groupBy { datePeriod(it.updatedAt) }
+    // [B31-session-list-perf] Boundaries computed ONCE per pass; the
+    // per-session map is a pure Long comparison now.
+    val b = SessionDateBoundaries.compute()
+    val grouped = unpinned.groupBy {
+        datePeriodFast(it.updatedAt, b.todayStart, b.yesterdayStart, b.weekBoundary, b.monthBoundary)
+    }
     val result = mutableListOf<Pair<DatePeriod, List<ChatSessionEntity>>>()
     if (pinned.isNotEmpty()) {
         result.add(DatePeriod.PINNED to pinned)
@@ -357,6 +396,13 @@ fun SessionListScreen(
     val browserTabPool = remember { com.openminis.app.browser.BrowserTabPool(context) }
 
     val groupedSessions = remember(sessions) { groupSessionsByDate(sessions) }
+
+    // [B31-session-list-perf] ONE collector per flow for the whole screen —
+    // the row items read derivedStateOf projections of these States below,
+    // and THIS scope never reads the values, so background-agent activity
+    // ticks do not recompose the screen at all.
+    val activeSessionsState = SessionActivityTracker.activeSessions.collectAsState()
+    val badgeMapState = com.openminis.app.service.SessionBadgeStore.byId.collectAsState()
 
     // [T-android-newchat-list-autoscroll] Hoisted scroll state so the VM's
     // new-session signal can drive it. The list is ORDER BY updated_at DESC,
@@ -613,28 +659,34 @@ fun SessionListScreen(
                             }
                             items(periodSessions, key = { it.id }) { session ->
                                 val activeQuery = if (isSearchActive && searchQuery.isNotBlank()) searchQuery else ""
-                                // [T-perf-row-global-collectors] Each row
-                                // subscribes to the activity/badge flows ITSELF:
-                                // a background-streaming session flips status on
-                                // every tool round (activeSessions ticks) — with
-                                // the old top-level collection that re-ran this
-                                // whole screen's scope and every visible row
-                                // (unstable viewmodel-capturing lambdas blocked
-                                // skipping). Now a tick invalidates only the
-                                // single row whose State actually changed.
-                                val activeNow by remember(session.id) {
-                                    SessionActivityTracker.activeSessions
-                                }.collectAsState()
-                                val badgeNow by remember(session.id) {
-                                    com.openminis.app.service.SessionBadgeStore.byId
-                                }.collectAsState()
+                                // [B31-session-list-perf] Two collectors for the
+                                // WHOLE screen (was: two per row — 2N
+                                // subscriptions). Each row reads a
+                                // derivedStateOf projection of those States, so a
+                                // tick recomposes ONLY rows whose own value
+                                // actually changed, and the screen scope (which
+                                // never reads the States) never invalidates.
+                                // Supersedes [T-perf-row-global-collectors]'
+                                // per-row collectors — same row-level isolation,
+                                // 2 subscriptions instead of 2×visibleRows —
+                                // WITHOUT reintroducing that fix's original
+                                // problem (top-level reads re-ran the whole
+                                // screen scope; here the screen reads nothing).
+                                val isActiveNow by remember(session.id) {
+                                    derivedStateOf { session.id in activeSessionsState.value }
+                                }
+                                val badgeHead by remember(session.id) {
+                                    derivedStateOf {
+                                        badgeMapState.value[session.id]?.firstOrNull()
+                                    }
+                                }
                                 SessionItemContent(
                                     session = session,
                                     modifier = Modifier.animateItem(),
                                     isSelecting = isSelecting,
                                     selectedIds = selectedIds,
-                                    isActive = session.id in activeNow,
-                                    badgeHead = badgeNow[session.id]?.firstOrNull(),
+                                    isActive = isActiveNow,
+                                    badgeHead = badgeHead,
                                     onSessionClick = onSessionClickGuarded,
                                     onToggleSelect = { viewModel.toggleSelect(it) },
                                     onEnterSelect = { viewModel.enterSelection(it) },
