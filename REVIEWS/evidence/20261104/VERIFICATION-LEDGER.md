@@ -312,3 +312,37 @@ Hot window (последние ~50 сообщений в _messages, осталь
 сердце: restore, source_prompt_ids-дедуп, compaction-границы, queued prompts,
 T180 attachment-restore. Rust seam (файловые манипуляции/индексация вне
 Android Context) — отдельный модуль. Проект дизайна — в отчёте ZCode.
+
+## 17. День 2026-11-06 (вечер) — первый блок спринта B32+B33+B28
+
+Ревьюер: SHIP по P1/P2; реестр B28-B33 зафиксирован его коммитом 36a8c8c3;
+ТЗ с точными координатами. Реализован первый блок — три атомарных диффа.
+
+### B32 — скролл-якорь (d1b4c249, CI 42276415825 SUCCESS)
+[статус: РЕАЛИЗОВАНО+CI | улика: код+run | не хватает: подтверждение на устройстве]
+Корень (сверен по коду): `listState` — VM-scoped LazyListState (анти-white-flash,
+переживает смены чата, ChatViewModel:702); `flatItems = remember(sessionId)
+{emptyList()}` (ChatScreen:3002). Первая непустая публикация наследовала якорь
+предыдущей сессии → застревание в середине. Фикс: `LaunchedEffect(sessionId,
+flatItems.isNotEmpty()){ if (flatItems.isNotEmpty()) listState.scrollToItem(0,0) }`
+— ровно один прыжок на empty→filled; ручной скролл не затронут.
+
+### B33 — двойной нижний отступ (59a2ac75, CI 42276561879 SUCCESS)
+[статус: РЕАЛИЗОВАНО+CI | улика: код+run | не хватает: визуальное подтверждение]
+Иерархия сверена лично: Scaffold→Box(imePadding)→Column→[Box(weight(1f)){LazyColumn};
+…; Column-композер с navigationBarsPadding] (ChatScreen 2799-2821, 4625-4631) —
+композер НЕ оверлей, резерв `composerHeightDp+8dp` удваивал инпут. Отклонение от
+ТЗ: константа 20dp вместо 8..12dp — история [B22]/0a6d3c92: 14dp = «слегка
+обрезано», 20dp = благословённый фолбэк; 8..12 вернуло бы закрытый баг.
+Floating-ветвь не тронута. Замечание вне ТЗ: floating-ветвь тоже держит
+composerHeightDp — кандидат на пересмотр, менял без device-доказательства.
+
+### B28 — ретрай-политика (1cbbc57a, CI 42278177490 SUCCESS)
+[статус: РЕАЛИЗОВАНО+CI | улика: код+тесты+run | не хватает: живой обрыв линка]
+maxAttempts OFFLINE 6→10, CONNECTION 4→10; лестница 2/3/5/8/12/16/20/25/30/30
+(~151с, `linkRetryLadderSec` с плато); OFFLINE сохраняет connectivity-await
+поверх лестницы. НЕ тронуты (документированные причины): NO_RESPONSE=2 (каждая
+попытка жжёт 120s watchdog), GENERIC=3 (регрессионный guard теста). Статус:
+AppLogger `connect N/10 (waiting Ds for network) kind=… err=…`; баннер
+CONNECTION/GENERIC `… — connect N/M (waiting Ds)…`; OFFLINE — локализованные
+строки + waiting-network состояние. Инвариант теста расширен 0..15с→0..30с.
