@@ -739,6 +739,20 @@ class ChatViewModel(
     private val _isStreaming = MutableStateFlow(false)
     val isStreaming: StateFlow<Boolean> = _isStreaming.asStateFlow()
 
+    // [B13-idle-watchdog] Monotonic liveness counter bumped every
+    // TOOL_HEARTBEAT_MS while a tool call executes (see withToolHeartbeat /
+    // executeTool). A silent long-running tool — a build, a test sweep —
+    // produces NO message changes between its dispatch and its result, so a
+    // watchdog watching only the message list cannot tell "engine alive
+    // inside a quiet build" from "provider socket hung": both leave
+    // _isStreaming=true and _messages frozen. This counter is the
+    // difference — it ticks through the former, stays flat through the
+    // latter. Consumed by HeadlessChatRunner's idle watchdog (scheduled
+    // tasks); harmless to UI paths that never read it.
+    private val _toolHeartbeat = MutableStateFlow(0L)
+    val toolHeartbeat: StateFlow<Long> = _toolHeartbeat.asStateFlow()
+    private val TOOL_HEARTBEAT_MS = 30_000L
+
     /**
      * T261: tool detail sheet visibility, persistent across LazyColumn
      * recomposition / item disposal so a streaming tool's sheet doesn't
@@ -15877,6 +15891,35 @@ class ChatViewModel(
         status: String?,
     ): ToolExecutionResult = maybeAppendBudgetLineImpl(result, status)
 
+    /**
+     * [B13-idle-watchdog] Wraps every tool execution in a liveness pulse: a
+     * coroutine bumps [_toolHeartbeat] every [TOOL_HEARTBEAT_MS] until the
+     * execution completes (or the turn is cancelled — the ticker shares the
+     * caller's scope and dies with it). This is the ONLY pulse source that
+     * covers the silent interior of a long tool run: tool status flips
+     * (PENDING→RUNNING→terminal) and tool results are boundary events that
+     * leave minutes of frozen message list between them. A flat "no message
+     * changes = dead turn" reading would false-positive-kill a legitimate
+     * quiet build, so the idle watchdog (HeadlessChatRunner) must see this
+     * tick to spare it — and correctly observes silence when the engine
+     * itself is dead.
+     */
+    private suspend fun <T> withToolHeartbeat(block: suspend () -> T): T =
+        kotlinx.coroutines.coroutineScope {
+            val ticker = launch {
+                var tick = 0L
+                while (true) {
+                    delay(TOOL_HEARTBEAT_MS)
+                    _toolHeartbeat.value = ++tick
+                }
+            }
+            try {
+                block()
+            } finally {
+                ticker.cancel()
+            }
+        }
+
     private suspend fun executeTool(
         name: String,
         argsJson: String,
@@ -15891,6 +15934,18 @@ class ChatViewModel(
         // means every call site is right by construction instead of only the
         // ones that were found and patched.
         policySessionId: String = realSessionId.ifEmpty { sessionId },
+    ): ToolExecutionResult = withToolHeartbeat {
+        executeToolImpl(name, argsJson, toolId, toolBlocks, assistantId, currentText, policySessionId)
+    }
+
+    private suspend fun executeToolImpl(
+        name: String,
+        argsJson: String,
+        toolId: String,
+        toolBlocks: MutableList<AssistantBlock>,
+        assistantId: String,
+        currentText: String,
+        policySessionId: String,
     ): ToolExecutionResult {
         // [T-agent-graph] Second line of defence for the per-agent allowlist.
         // The primary barrier is schema-level: a tool absent from

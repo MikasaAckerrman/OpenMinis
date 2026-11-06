@@ -1,14 +1,17 @@
 package com.openminis.app.debug
 
 import android.content.Context
+import android.os.SystemClock
 import androidx.lifecycle.ViewModelProvider
 import com.openminis.app.MinisApp
 import com.openminis.app.data.model.ThinkingLevel
+import com.openminis.app.logging.AppLogger
 import com.openminis.app.ui.chat.ChatViewModel
 import com.openminis.app.ui.chat.ChatViewModelStore
 import com.openminis.app.ui.chat.InputAttachment
 import com.openminis.app.ui.chat.addAttachment
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -196,6 +199,9 @@ internal object HeadlessChatRunner {
         thinkingLevel: ThinkingLevel? = null,
         wait: Boolean,
         timeoutMs: Long,
+        // [B13-idle-watchdog] Null (default) = legacy flat-ceiling behavior;
+        // callers opt into the idle watchdog (see awaitTurnSettled).
+        idleMs: Long? = null,
     ): PromptResult = withContext(Dispatchers.Main) {
         val vm = viewModel(context, sessionId)
         // Apply per-call thinking override BEFORE sendMessage so streamMessage
@@ -282,14 +288,7 @@ internal object HeadlessChatRunner {
             // Either dropped (e.g. compacting in flight) or completed before we
             // returned to the suspension point — fall through to drain.
         }
-        val finished = withTimeoutOrNull(timeoutMs) {
-            // Skip the initial false (if we were called before sendMessage flipped true)
-            if (vm.isStreaming.value) {
-                // Wait for the next false transition.
-                vm.isStreaming.first { !it }
-            }
-            true
-        } ?: false
+        val finished = awaitTurnSettled(vm, timeoutMs, idleMs)
 
         // Best-effort: read the last assistant text from the DB so we don't
         // depend on the in-memory UI list (which may not have flushed yet).
@@ -330,6 +329,8 @@ internal object HeadlessChatRunner {
         messageId: String?,
         wait: Boolean,
         timeoutMs: Long,
+        // [B13-idle-watchdog] See prompt().
+        idleMs: Long? = null,
     ): PromptResult = withContext(Dispatchers.Main) {
         val app = app(context)
         val vm = viewModel(context, sessionId)
@@ -390,12 +391,7 @@ internal object HeadlessChatRunner {
                 retriedMessageId = targetMsgId,
             )
         }
-        val finished = withTimeoutOrNull(timeoutMs) {
-            if (vm.isStreaming.value) {
-                vm.isStreaming.first { !it }
-            }
-            true
-        } ?: false
+        val finished = awaitTurnSettled(vm, timeoutMs, idleMs)
         // Report the REAL deletion count from the DB delta, and only surface a
         // responseText that is genuinely newer than the retried anchor — a
         // stale last-assistant row left after truncation is NOT a regenerated
@@ -432,6 +428,8 @@ internal object HeadlessChatRunner {
         blockId: String,
         wait: Boolean,
         timeoutMs: Long,
+        // [B13-idle-watchdog] See prompt().
+        idleMs: Long? = null,
     ): PromptResult = withContext(Dispatchers.Main) {
         val app = app(context)
         val vm = viewModel(context, sessionId)
@@ -473,10 +471,7 @@ internal object HeadlessChatRunner {
                 retriedMessageId = assistantMessageId,
             )
         }
-        val finished = withTimeoutOrNull(timeoutMs) {
-            if (vm.isStreaming.value) vm.isStreaming.first { !it }
-            true
-        } ?: false
+        val finished = awaitTurnSettled(vm, timeoutMs, idleMs)
         val msgs = app.chatRepository.dao.loadMessages(sessionId)
         val lastAssistant = msgs.lastOrNull { it.role == "assistant" }
         PromptResult(
@@ -642,6 +637,111 @@ internal object HeadlessChatRunner {
     fun forget(sessionId: String) {
         providers.remove(sessionId)
     }
+
+    /**
+     * [B13-idle-watchdog] Content signature of one watchdog observation.
+     * Covers every liveness surface the turn mutates: row count, the last
+     * row's content (streaming text/thinking/tool-block growth — ChatMessage
+     * is a data class, so the hash follows content), the streaming flag,
+     * and the tool heartbeat counter.
+     */
+    private data class PulseSignature(
+        val rowCount: Int,
+        val lastRowHash: Int,
+        val streaming: Boolean,
+        val heartbeat: Long,
+    )
+
+    private fun pulseSignature(vm: ChatViewModel): PulseSignature {
+        val msgs = vm.messages.value
+        return PulseSignature(
+            rowCount = msgs.size,
+            lastRowHash = msgs.lastOrNull()?.hashCode() ?: 0,
+            streaming = vm.isStreaming.value,
+            heartbeat = vm.toolHeartbeat.value,
+        )
+    }
+
+    /**
+     * [B13-idle-watchdog] Shared wait loop behind prompt()/retry()/
+     * rerunFromToolBlock(). Replaces the flat
+     * `withTimeoutOrNull(timeoutMs) { isStreaming.first { !it } }` wait,
+     * which could not distinguish a live-but-quiet turn from a dead one: a
+     * legitimate 15-minute agent run was killed at the flat ceiling while
+     * still streaming, and a hung provider socket burned that same ceiling
+     * uselessly before being declared dead.
+     *
+     * Two ceilings ([RunWatchdogPolicy]): [timeoutMs] stays the absolute
+     * ceiling for alive-but-endless turns; [idleMs] declares the turn dead
+     * after that much time WITHOUT a liveness pulse. Pulses:
+     *   - any _messages emission (stream chunks, tool status flips, tool
+     *     results, queued-turn injections) — via [PulseSignature];
+     *   - _toolHeartbeat bumps (ChatViewModel ticks it inside executeTool) —
+     *     the only pulse inside a silent long tool run, whose dispatch→
+     *     result gap produces no message changes at all.
+     * The model-response wait (TTFT) deliberately does not pulse: a socket
+     * that never delivers the next chunk IS the stall this watches for.
+     *
+     * [idleMs] == null restores the legacy flat behavior — the RPC surface
+     * keeps its caller-chosen-ceiling semantics, and scheduled tasks opt in
+     * with ScheduledAgentRunner's 3-min idle / 30-min max.
+     *
+     * Runs on Dispatchers.Default: the loop only reads StateFlows, and the
+     * readiness waits in prompt() already hop off Main for the same reason.
+     */
+    private suspend fun awaitTurnSettled(vm: ChatViewModel, timeoutMs: Long, idleMs: Long?): Boolean =
+        withContext(Dispatchers.Default) {
+            val startMs = SystemClock.elapsedRealtime()
+            var lastPulseMs = startMs
+            var signature = pulseSignature(vm)
+            // null = still waiting; true = settled; false = watchdog abort.
+            var outcome: Boolean? = null
+            while (outcome == null) {
+                if (!vm.isStreaming.value) {
+                    outcome = true
+                    break
+                }
+                val now = SystemClock.elapsedRealtime()
+                val verdict = RunWatchdogPolicy.evaluate(
+                    elapsedRunMs = now - startMs,
+                    elapsedSilentMs = now - lastPulseMs,
+                    idleMs = idleMs,
+                    maxRunMs = timeoutMs,
+                )
+                if (verdict is RunWatchdogPolicy.Verdict.Abort) {
+                    AppLogger.warning(
+                        "HeadlessChatRunner",
+                        "watchdog abort reason=${verdict.reason} runMs=${now - startMs} " +
+                            "silentMs=${now - lastPulseMs} maxMs=$timeoutMs idleMs=$idleMs",
+                    )
+                    outcome = false
+                    break
+                }
+                // Sleep until the next relevant change, bounded by whichever
+                // ceiling is nearer (both strictly positive here — the
+                // verdict just cleared). A pulse landing inside the window
+                // resets the silence clock; silence outlasting the window
+                // re-enters the loop and fires the verdict.
+                val idleBudget = idleMs?.let { it - (now - lastPulseMs) } ?: Long.MAX_VALUE
+                val maxBudget = timeoutMs - (now - startMs)
+                val window = minOf(idleBudget, maxBudget).coerceAtLeast(1L)
+                val changed = withTimeoutOrNull(window) {
+                    combine(vm.messages, vm.isStreaming, vm.toolHeartbeat) { m, s, hb ->
+                        PulseSignature(
+                            rowCount = m.size,
+                            lastRowHash = m.lastOrNull()?.hashCode() ?: 0,
+                            streaming = s,
+                            heartbeat = hb,
+                        )
+                    }.first { it != signature }
+                }
+                if (changed != null) {
+                    signature = changed
+                    lastPulseMs = SystemClock.elapsedRealtime()
+                }
+            }
+            outcome == true
+        }
 
     private fun extractText(partsJson: String): String? {
         return try {

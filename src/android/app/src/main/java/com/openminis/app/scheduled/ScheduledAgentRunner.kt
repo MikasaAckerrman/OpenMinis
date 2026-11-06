@@ -31,7 +31,19 @@ import kotlinx.coroutines.withContext
 object ScheduledAgentRunner {
 
     private const val TAG = "ScheduledAgentRunner"
-    private const val RUN_TIMEOUT_MS = 10 * 60 * 1000L  // 10 min ceiling
+
+    // [B13-idle-watchdog] The flat 10-minute ceiling had two failure modes:
+    // it killed legitimate long runs (a 15-20 min build/test chain) at the
+    // ceiling while they were still streaming, and it burned the full 10
+    // minutes on a hung socket before declaring the turn dead. Split:
+    //   - RUN_IDLE_TIMEOUT_MS: no liveness pulse (stream chunk, message
+    //     change, or tool heartbeat — ChatViewModel ticks the latter inside
+    //     executeTool so quiet builds are spared) for this long → the turn
+    //     is dead; abort early with Timeout.
+    //   - RUN_MAX_TIMEOUT_MS: absolute ceiling against alive-but-endless
+    //     runs; raised from 10 min so legitimate long tasks survive.
+    private const val RUN_IDLE_TIMEOUT_MS = 3 * 60 * 1000L   // 3 min no pulse → dead turn
+    private const val RUN_MAX_TIMEOUT_MS = 30 * 60 * 1000L   // absolute ceiling
 
     /**
      * App-scoped scope for fire-and-forget completion work when a caller asks
@@ -131,7 +143,8 @@ object ScheduledAgentRunner {
                 sessionId = sessionId,
                 messageId = mode.messageId,
                 wait = wait,
-                timeoutMs = RUN_TIMEOUT_MS,
+                timeoutMs = RUN_MAX_TIMEOUT_MS,
+                idleMs = RUN_IDLE_TIMEOUT_MS,
             )
         } else {
             HeadlessChatRunner.prompt(
@@ -141,7 +154,8 @@ object ScheduledAgentRunner {
                 attachments = emptyList(),
                 thinkingLevel = null,
                 wait = wait,
-                timeoutMs = RUN_TIMEOUT_MS,
+                timeoutMs = RUN_MAX_TIMEOUT_MS,
+                idleMs = RUN_IDLE_TIMEOUT_MS,
             )
         }
     }.getOrElse { t ->
