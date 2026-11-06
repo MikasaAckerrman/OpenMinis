@@ -427,3 +427,44 @@ CONNECTION/GENERIC `… — connect N/M (waiting Ds)…`; OFFLINE — локал
 - DB-часть B30 (408 МБ minis.db: incremental_vacuum / вынос parts_json) —
   сознательно НЕ в диффе: схема+миграция = отдельный дизайн-раунд
   (согласуется с Шагом 3 направления по параллелизму).
+
+## 20. Ночь 2026-11-07 — B30 этап 2 (санация SQLite: bounded deleted_messages + трим pagecache)
+
+Ревьюер: SHIP диффа ДО коммита (по запросу); конфликт [T-archive-every-delete]
+разрешён вердиктом (старая «восстановимость» — иллюзия); правка
+rowid → archive_id в cap-запросе принята.
+
+### B30 этап 2 — a2190d98 + тест-фикс 27601e24, CI 42304574840 SUCCESS (attempt 2)
+[статус: РЕАЛИЗОВАНО+CI | улика: код+6 тестов+run | не хватает: meminfo + размер minis.db до/после свипов на iQOO]
+- onTrimMemory(≥UI_HIDDEN): SessionHistoryCache.clear() (ПЕРВЫЙ вызывающий
+  clear() в кодовой базе — 2 полных распарсенных сессии больше не висят
+  в статике) + PRAGMA shrink_memory (pagecache возвращается ОС; file-size
+  не трогает — VACUUM отдельный follow-up) + IO-корутина
+  runDeletedArchiveMaintenance.
+- Удаление сессии: dao.deleteSessionWithArchive (@Transaction) — архив
+  сессии уходит атомарно с сессией; бессмысленная копия сообщений перед
+  делитом удалена (FK CASCADE, MessageEntity:16);
+  MutationJournal.recordWipe сохранён (форензика не потеряна).
+- Политический конфликт разрешён ревьюером кодом: restore() без
+  родительской строки sessions падает SQLiteConstraintException
+  (DeletedMessagesMethods → insertMessages), UI восстановления не
+  существует. Архив теперь bounded: сироты (session_id NOT IN sessions) /
+  retention 30 дней / потолок 100 новейших на сессию (коррелированный
+  COUNT — без window-функций; тай-брейк archive_id — правка ревьюера:
+  Room-валидатор не принимает псевдо-колонку rowid вне FTS).
+  retry/edit/rerun не тронуты — [T-no-destructive-retry] сохранён.
+- Тесты: 5 Robolectric (DeletedArchiveMaintenanceTest: сироты;
+  транзакционный делит архива, чужая сессия нетронута; retention-cutoff;
+  cap 130→100 newest-first; интеграционный sweep репо-точки входа) +
+  clear-контракт (SessionHistoryCacheTest).
+- CI-постмортем (2 раунда): (1) прогон a2190d98 — failure на 1/2089,
+  МОЯ тестовая фикстура: «ok»-строка deletedAt=5000 оказалась НИЖЕ
+  cutoff'а 10000 (nowMs 30d+10s − 30d), retention законно её снёс —
+  assert DeletedArchiveMaintenanceTest.kt:141 expected 1 was 0 (строка
+  128 в консоли — внешняя frame runBlocking; полный трейс восстановлен
+  из артефакта unit-test-report-no-apk). Прод-код НЕ виноват — свип
+  отработал ровно по спецификации. Фикс 27601e24: deletedAt=20000.
+  (2) Прогон 2 на 27601e24 — транзиентный InstallFailedException
+  ndk;27.0.12077973 при конфигурации Gradle (CDN; в прогоне 1 та же
+  авто-установка прошла за 13с; до компиляции Kotlin не дошло) →
+  rerun-failed-jobs → SUCCESS (run_attempt 2).
