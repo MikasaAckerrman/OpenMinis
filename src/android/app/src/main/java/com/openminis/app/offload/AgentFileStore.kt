@@ -43,6 +43,19 @@ object AgentFileStore {
     fun find(context: Context, name: String): AgentFileParser.AgentFile? =
         list(context).firstOrNull { it.name.equals(name.trim(), ignoreCase = true) }
 
+    /**
+     * [B16] The backing file for an agent-file name (Custom Agents screen
+     * edit/delete). Null = no such file. The caller validates names before
+     * constructing them; this only resolves inside the fixed agents dir.
+     */
+    fun fileFor(context: Context, fileName: String): File? {
+        if (fileName.contains('/') || fileName.contains('\\') || fileName.contains("..")) {
+            return null
+        }
+        val f = File(agentsDir(context), fileName)
+        return if (f.isFile) f else null
+    }
+
     /** Where the user drops agent files, for messages and docs. */
     const val SANDBOX_DIR = "/var/minis/agents"
 }

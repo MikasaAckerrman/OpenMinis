@@ -42,6 +42,7 @@ import androidx.compose.material.icons.outlined.Psychology
 import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Shield
+import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -80,6 +81,9 @@ fun SettingsScreen(
     onEnvVarsClick: () -> Unit = {},
     onSkillsClick: () -> Unit = {},
     onTerminalClick: () -> Unit = {},
+    // [B16] Custom agents (files under /var/minis/agents). Default no-op for
+    // callers that haven't wired the route yet.
+    onCustomAgentsClick: () -> Unit = {},
     onMemoryClick: () -> Unit = {},
     // [T-mcp-integration-android] MCP Integrations page, listed directly below
     // Memory. Default no-op for callers that haven't wired the route yet.
@@ -190,6 +194,17 @@ fun SettingsScreen(
                     title = stringResource(R.string.settings_skills),
                     subtitle = stringResource(R.string.settings_skills_subtitle),
                     onClick = onSkillsClick,
+                )
+                // [B16] Custom agents live next to Skills: both are "extend
+                // the agent with files" mechanisms. No resource strings yet —
+                // the screen ships hardcoded English (stage 1), localization
+                // pass is a follow-up.
+                SettingsItem(
+                    icon = Icons.Outlined.SmartToy,
+                    iconColor = Color(0xFF5856D6),
+                    title = "Custom agents",
+                    subtitle = "Create and edit subagent files (var/minis/agents)",
+                    onClick = onCustomAgentsClick,
                 )
                 // [T-soul-md] insertion between Skills and Memory per spec.
                 SettingsItem(

@@ -51,10 +51,19 @@ object AgentFileParser {
         "planner", "analyst", "architect", "coder", "reviewer", "tester",
     )
 
-    private val KNOWN_TOOL_NAMES = setOf(
-        "shell_execute", "file_read", "file_write", "file_edit",
-        "read_image", "browser_use", "memory_write", "memory_get",
-    )
+    /**
+     * [B16] The parse-time allowlist validator. Was hand-pinned to 8 names
+     * while the schema registry (ToolSurfaceAdapter.buildRegistry) registers
+     * 34 — a `tools:` line naming webfetch/grep/spawn_subagent/… was
+     * SILENTLY dropped (tools=null → the agent ran with the runner default
+     * instead of the requested subset). Now derived from the engine's
+     * category table: one structural source with
+     * [com.openminis.app.tools.AgentTools.ALL_TOOL_NAMES], so the parser,
+     * the allowlist enforcer and the Custom Agents screen can never drift
+     * apart. Unknown names are STILL dropped (same contract as before) —
+     * the set just no longer lies about what is real.
+     */
+    private val KNOWN_TOOL_NAMES = com.openminis.app.engine.ToolCategories.ALL_TOOLS
 
     fun parse(fileName: String, content: String): AgentFile? {
         val text = content.trim()
@@ -140,6 +149,9 @@ object AgentFileParser {
         "edit", "edit_file" -> "file_edit"
         "image", "read_image" -> "read_image"
         "browser" -> "browser_use"
+        // [B16] aliases for the surface the parser now accepts.
+        "search" -> "web_search"
+        "fetch" -> "webfetch"
         else -> raw.lowercase()
     }
 }

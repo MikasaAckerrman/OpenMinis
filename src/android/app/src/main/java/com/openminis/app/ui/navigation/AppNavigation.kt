@@ -122,6 +122,9 @@ object Routes {
     const val SKILL_FILE = "skill_file/{skillId}/{relativePath}"
     const val MINIS_SKILLS_BROWSER = "minis_skills_browser"
 
+    // [B16] Custom agents (files under /var/minis/agents) list + editor.
+    const val CUSTOM_AGENTS = "custom_agents"
+
     fun skillDetail(skillId: String) = "skill/$skillId"
     fun skillFile(skillId: String, relativePath: String = "SKILL.md"): String {
         // Path may contain `/`, which the nav library treats as a route
@@ -583,6 +586,7 @@ fun AppNavigation(
                 onEnvVarsClick = { navController.safeNavigate(Routes.ENV_VARS) },
                 onSkillsClick = { navController.safeNavigate(Routes.SKILLS) },
                 onTerminalClick = { navController.safeNavigate(Routes.terminal()) },
+                onCustomAgentsClick = { navController.safeNavigate(Routes.CUSTOM_AGENTS) },
                 onMemoryClick = { navController.safeNavigate(Routes.MEMORY) },
                 onMcpClick = { navController.safeNavigate(Routes.MCP) },
                 onTelegramLoginClick = { navController.safeNavigate(Routes.TG_LOGIN) },
@@ -1101,6 +1105,14 @@ fun AppNavigation(
                     },
                 )
             }
+        }
+
+        // [B16] Custom agents screen — reads/writes the agent files the
+        // spawner discovers; no repository dependency needed.
+        composable(Routes.CUSTOM_AGENTS) {
+            com.openminis.app.ui.settings.CustomAgentsScreen(
+                onBack = { navController.safePopBackStack() },
+            )
         }
 
         // [T-mcp-integration-android] MCP Integrations management screen.

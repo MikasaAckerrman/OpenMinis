@@ -103,4 +103,47 @@ class AgentFileParserTest {
         assertEquals("y", a!!.name)
         assertEquals("d", a.description)
     }
+
+    // ─── [B16] the registry is the full tool surface, not the old 8 ────────
+
+    @Test
+    fun `every category tool survives parsing (old 8-name clamp is gone)`() {
+        // One tool per B16 category beyond the legacy 8: the parser used to
+        // silently drop each of these from a `tools:` line.
+        val a = AgentFileParser.parse(
+            "x.md",
+            "---\ntools: webfetch, grep, glob, spawn_subagent, todo_write, " +
+                "bg_run, mcp, memory_blocks_edit, supermemory_search\n---\nBody.",
+        )
+        assertEquals(
+            listOf(
+                "webfetch", "grep", "glob", "spawn_subagent", "todo_write",
+                "bg_run", "mcp", "memory_blocks_edit", "supermemory_search",
+            ),
+            a!!.tools,
+        )
+    }
+
+    @Test
+    fun `plan_submit is never allowlist-able (plan-mode exit, not a worker tool)`() {
+        val a = AgentFileParser.parse("x.md", "---\ntools: plan_submit, file_read\n---\nBody.")
+        assertEquals(listOf("file_read"), a!!.tools)
+    }
+
+    @Test
+    fun `new aliases resolve (search, fetch)`() {
+        val a = AgentFileParser.parse("x.md", "---\ntools: search, fetch\n---\nBody.")
+        assertEquals(listOf("web_search", "webfetch"), a!!.tools)
+    }
+
+    @Test
+    fun `parser and enforcer agree on the canonical set`() {
+        // The parser must accept exactly what ToolAllowlistEnforcer considers
+        // real — if the two drift, a file parses but the graph is rejected
+        // (or worse: the enforcer passes a name the schema never had).
+        assertEquals(
+            com.openminis.app.engine.ToolCategories.ALL_TOOLS,
+            com.openminis.app.tools.AgentTools.ALL_TOOL_NAMES,
+        )
+    }
 }

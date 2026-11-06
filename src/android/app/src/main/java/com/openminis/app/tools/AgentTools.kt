@@ -16,17 +16,18 @@ object AgentTools {
      * allowlist without hardcoding strings. Kept in one place because the
      * graph config (`allowedTools` on an AgentNode) is written by users and
      * validated against this set.
+     *
+     * [B16] The set used to be hand-pinned to 8 names while the actual
+     * schema registry (ToolSurfaceAdapter.buildRegistry) registers 34 —
+     * every allowlist naming anything else was rejected as unknown and the
+     * agent-file parser silently dropped it. The set is now DERIVED from
+     * the engine's category table ([ToolCategories.ALL_TOOLS]): one
+     * structural source, same names the dispatcher switch and the registry
+     * actually speak. `plan_submit` stays out — it is the PLAN-mode exit,
+     * injected engine-side only while the mode is armed, never an
+     * allowlist-able worker tool.
      */
-    val ALL_TOOL_NAMES: Set<String> = setOf(
-        "shell_execute",
-        FileReadTool.NAME,
-        FileWriteTool.NAME,
-        FileEditTool.NAME,
-        ReadImageTool.NAME,
-        "browser_use",
-        "memory_write",
-        "memory_get",
-    )
+    val ALL_TOOL_NAMES: Set<String> = com.openminis.app.engine.ToolCategories.ALL_TOOLS
 
     /**
      * Accept the loose aliases people naturally write in a graph JSON
