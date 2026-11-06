@@ -3010,6 +3010,23 @@ fun ChatScreen(
                 val renderFlatItems by remember(sessionId) {
                     derivedStateOf { filterTurnInternalItems(flatItems, expandedTurns) }
                 }
+                // [B32-scroll-anchor] LazyListState lives on the session VM and
+                // deliberately survives chat switches (anti-white-flash — see
+                // ChatViewModel.listState). Without an explicit reset the first
+                // non-empty flatItems of a freshly opened session inherits the
+                // PREVIOUS session's anchor (index+offset measured against a
+                // different list), so the viewport lands mid-history instead of
+                // on the newest message. reverseLayout index 0 == visual bottom
+                // == newest row: jump there once per session, on the first
+                // non-empty publish. Keyed on isNotEmpty, this fires exactly on
+                // the empty→filled transition (and on session change, where
+                // remember(sessionId) resets flatItems to empty first); manual
+                // scrolling afterwards is untouched — the keys never flip again.
+                LaunchedEffect(sessionId, flatItems.isNotEmpty()) {
+                    if (flatItems.isNotEmpty()) {
+                        listState.scrollToItem(0, 0)
+                    }
+                }
                 // [T-android-coldload-offmain-parse] Composition-snapshot
                 // prewarmer (captures the markdown palette) used by the
                 // flatten effect below to warm the parse caches for the
