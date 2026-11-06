@@ -274,8 +274,9 @@ class ChatTurnReducer(
             }
 
             // the turn's terminal events carry no additional block state
+            // ([B29-engine-usage] Usage is accounting only — no block state)
             is AgentEvent.PlanProposed, is AgentEvent.TurnFinished,
-            is AgentEvent.Error -> {
+            is AgentEvent.Error, is AgentEvent.Usage -> {
                 // terminal: the caller drains pending UI/persist effects
                 return emptyList()
             }

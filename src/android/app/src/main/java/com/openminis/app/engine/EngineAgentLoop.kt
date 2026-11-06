@@ -208,7 +208,12 @@ class EngineAgentLoop(
                         is StreamEvent.ToolInputDelta ->
                             if (failure == null) emit(AgentEvent.ToolInputDelta(event.callId, event.fragment))
                         is StreamEvent.ToolCall -> pendingCalls.add(event.call)
-                        is StreamEvent.Usage -> Unit // accounting is the caller's seam
+                        is StreamEvent.Usage ->
+                            // [B29-engine-usage] "Accounting is the caller's
+                            // seam" — but the raw StreamEvents END here, so the
+                            // seam went nowhere and engine turns persisted
+                            // token_usage = NULL. Bridge it out instead.
+                            emit(AgentEvent.Usage(event.inputTokens, event.outputTokens))
                         is StreamEvent.Failure -> failure = AgentEvent.Error(
                             event.message, event.recoverable,
                         )

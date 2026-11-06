@@ -57,6 +57,41 @@ class EngineAgentLoopTest {
         mode = PermissionMode.AUTO,
     )
 
+    /** file_write + shell_execute + file_read, for the barrier tests. */
+    private fun ioRegistry(): ToolRegistry = ToolRegistry().apply {
+        register(object : EngineTool {
+            override val name = "file_write"
+            override val mutation = MutationKind.WRITE
+            override fun definition() = AgentToolDefinition(
+                name = "file_write",
+                description = "Write",
+                parameters = mapOf("path" to AgentToolParam(type = "string", description = "p")),
+                required = listOf("path"),
+            )
+            override suspend fun execute(argsJson: String, ctx: ToolContext) =
+                com.openminis.app.tools.ToolExecutionResult("written", true)
+        })
+        register(object : EngineTool {
+            override val name = "shell_execute"
+            override val mutation = MutationKind.EXECUTE
+            override fun definition() = AgentToolDefinition(
+                name = "shell_execute",
+                description = "Shell",
+                parameters = emptyMap(),
+                required = emptyList(),
+            )
+            override suspend fun execute(argsJson: String, ctx: ToolContext) =
+                com.openminis.app.tools.ToolExecutionResult("shell ok", true)
+        })
+        register(object : EngineTool {
+            override val name = "file_read"
+            override val mutation = MutationKind.READ
+            override fun definition() = fileReadDef
+            override suspend fun execute(argsJson: String, ctx: ToolContext) =
+                com.openminis.app.tools.ToolExecutionResult("ok", true)
+        })
+    }
+
     @Test
     fun `driver max_tokens budget reaches the gateway not the 8192 default`() = runTest {
         // [T-engine-maxtokens-parity] The loop used to hardcode 8192:
@@ -180,6 +215,105 @@ class EngineAgentLoopTest {
         val events = loop.runTurn(turnInput()).toList()
         assertEquals(2, start.get())
         assertEquals(2, events.filterIsInstance<AgentEvent.ToolCallFinished>().size)
+    }
+
+    @Test
+    fun `gateway usage bridges out as AgentEvent Usage`() = runTest {
+        // [B29-engine-usage] The loop used to swallow StreamEvent.Usage
+        // ("accounting is the caller's seam" — the seam went nowhere):
+        // engine turns persisted token_usage = NULL.
+        val gw = ScriptedGateway(
+            listOf(
+                listOf(
+                    StreamEvent.TextDelta("x"),
+                    StreamEvent.Usage(120, 34),
+                    StreamEvent.Done,
+                ),
+            ),
+        )
+        val events = EngineAgentLoop(gw, registry()).runTurn(turnInput()).toList()
+        val usage = events.filterIsInstance<AgentEvent.Usage>().single()
+        assertEquals(120, usage.inputTokens)
+        assertEquals(34, usage.outputTokens)
+    }
+
+    @Test
+    fun `shell_execute stays hermetic between parallel file ops`() = runTest {
+        // [B29-engine-shell-isolation] planReactive: an UNDECLARED call
+        // (shell_execute — no resource keys) is a two-sided GLOBAL barrier.
+        // The mixed batch [file_write(a), shell, file_read(b)] must execute
+        // strictly fw -> shell -> fr: nothing runs BESIDE the shell and
+        // nothing jumps over it, even though the two file ops are mutually
+        // independent (disjoint fs keys).
+        val gw = ScriptedGateway(
+            listOf(
+                listOf(
+                    StreamEvent.ToolCall(EngineToolCall("c1", "file_write", "{\"path\":\"/a.txt\"}")),
+                    StreamEvent.ToolCall(EngineToolCall("c2", "shell_execute", "{}")),
+                    StreamEvent.ToolCall(EngineToolCall("c3", "file_read", "{\"path\":\"/b.txt\"}")),
+                    StreamEvent.Done,
+                ),
+                listOf(StreamEvent.Done),
+            ),
+        )
+        val log = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val sched = ToolScheduler(resourceKeysOf = { name, args ->
+            val p = runCatching { org.json.JSONObject(args).optString("path", "") }.getOrDefault("")
+            if (name == "shell_execute" || p.isBlank()) null else setOf("fs:$p")
+        })
+        val loop = EngineAgentLoop(gw, ioRegistry(), toolScheduler = sched) { name, _ ->
+            log.add("start:$name")
+            Thread.sleep(120) // widen the window so an illegal overlap cannot hide
+            log.add("end:$name")
+            EngineAgentLoop.ToolOutcome("ok:$name", true)
+        }
+        val events = loop.runTurn(turnInput()).toList()
+        assertEquals(3, events.filterIsInstance<AgentEvent.ToolCallFinished>().size)
+        assertEquals(
+            listOf(
+                "start:file_write", "end:file_write",
+                "start:shell_execute", "end:shell_execute",
+                "start:file_read", "end:file_read",
+            ),
+            log,
+        )
+    }
+
+    @Test
+    fun `disjoint file ops still overlap inside one batch`() = runTest {
+        // [P1-io-concurrency regression guard] The shell barrier must not
+        // re-serialize the world: three I/O tools on DISJOINT paths all
+        // START before any of them finishes.
+        val gw = ScriptedGateway(
+            listOf(
+                listOf(
+                    StreamEvent.ToolCall(EngineToolCall("c1", "file_write", "{\"path\":\"/a.txt\"}")),
+                    StreamEvent.ToolCall(EngineToolCall("c2", "file_write", "{\"path\":\"/b.txt\"}")),
+                    StreamEvent.ToolCall(EngineToolCall("c3", "file_read", "{\"path\":\"/c.txt\"}")),
+                    StreamEvent.Done,
+                ),
+                listOf(StreamEvent.Done),
+            ),
+        )
+        val started = java.util.concurrent.atomic.AtomicInteger(0)
+        val sched = ToolScheduler(resourceKeysOf = { name, args ->
+            val p = runCatching { org.json.JSONObject(args).optString("path", "") }.getOrDefault("")
+            if (name == "shell_execute" || p.isBlank()) null else setOf("fs:$p")
+        })
+        val loop = EngineAgentLoop(gw, ioRegistry(), toolScheduler = sched) { name, _ ->
+            started.incrementAndGet()
+            // Barrier: every executor waits for the other two to have
+            // STARTED — generous real-time patience for slow CI runners
+            // (same pattern as the parallel-safe test above).
+            var waited = 0
+            while (started.get() < 3 && waited < 4000) {
+                Thread.sleep(5); waited += 5
+            }
+            EngineAgentLoop.ToolOutcome("ok:$name", true)
+        }
+        val events = loop.runTurn(turnInput()).toList()
+        assertEquals(3, started.get())
+        assertEquals(3, events.filterIsInstance<AgentEvent.ToolCallFinished>().size)
     }
 
     @Test

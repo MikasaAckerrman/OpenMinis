@@ -51,6 +51,16 @@ sealed interface AgentEvent {
         val summary: String,
     ) : AgentEvent
 
+    /**
+     * [B29-engine-usage] Token accounting for one gateway round. The loop
+     * previously DROPPED this ("accounting is the caller's seam" — but the
+     * raw StreamEvents end inside the loop, so the seam went nowhere) and
+     * engine-driven turns persisted token_usage = NULL: cost accounting
+     * blind, context-pressure gates blind, dynamicMaxTokens guessing.
+     * Emitted once per gateway round; the driver accumulates the turn.
+     */
+    data class Usage(val inputTokens: Int, val outputTokens: Int) : AgentEvent
+
     /** PLAN mode: the agent finished exploring and presents its plan. */
     data class PlanProposed(val markdown: String) : AgentEvent
 

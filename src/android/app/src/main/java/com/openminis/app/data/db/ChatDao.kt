@@ -521,6 +521,16 @@ interface ChatDao {
     @Query("UPDATE messages SET parts_json = :partsJson, updated_at = :updatedAt WHERE id = :id")
     suspend fun updateMessageParts(id: String, partsJson: String, updatedAt: Long = System.currentTimeMillis())
 
+    // [B29-engine-usage] The engine's incremental row is born before usage
+    // exists; the turn end writes the accounting onto it directly (that row
+    // bypasses persistAssistantTurn, which is where legacy rows get theirs).
+    @Query("UPDATE messages SET token_usage = :tokenUsage, updated_at = :updatedAt WHERE id = :id")
+    suspend fun updateMessageTokenUsage(
+        id: String,
+        tokenUsage: String?,
+        updatedAt: Long = System.currentTimeMillis(),
+    )
+
     // [T-edit-keeps-date] Rewrite parts_json WITHOUT touching updated_at.
     // The chat UI renders an assistant row's finish time from updated_at
     // (see toChatMessages' finishedAtMs), so the legacy single update that

@@ -13433,6 +13433,15 @@ class ChatViewModel(
         var textChars = 0
         var toolCalls = 0
         var persistEffects = 0
+        // [B29-engine-usage] Per-turn token accounting. Legacy keeps the
+        // LAST chunk's usage; the engine path carries what a per-turn row
+        // should honestly hold: outputTokens = Σ over rounds (a multi-round
+        // tool turn otherwise undercounts its cost), inputTokens = the
+        // FINAL round's request size (the context state the gates reason
+        // about — published live per round via publishContextUsage).
+        var usageSeen = false
+        var usageInputTokens = 0
+        var usageOutputTokens = 0
         // [T-engine-incremental-persist] engineRowId + upsertEngineRow are
         // declared WITH the reducer above (the queue-interrupt split runs
         // earlier in the source — see the comment there).
@@ -13535,6 +13544,18 @@ class ChatViewModel(
                             reducer.currentBlocks(),
                         )
                     }
+                    is com.openminis.app.engine.AgentEvent.Usage -> {
+                        // [B29-engine-usage] Accumulate the round's accounting
+                        // and publish the round's input size through the SAME
+                        // seam legacy uses on its usage chunk — context-
+                        // pressure gates and max-token sizing see real numbers
+                        // again on engine turns.
+                        usageSeen = true
+                        usageInputTokens = event.inputTokens
+                        usageOutputTokens += event.outputTokens
+                        publishContextUsage(event.inputTokens, provider)
+                        lastStreamActivityMs = System.currentTimeMillis()
+                    }
                     else -> {
                         if (event is com.openminis.app.engine.AgentEvent.TextDelta) {
                             textChars += event.text.length
@@ -13565,12 +13586,22 @@ class ChatViewModel(
                     val reasoning = reducer.currentBlocks()
                         .firstOrNull { it.kind == "thinking" && it.content.isNotEmpty() }
                         ?.content
+                    // [B29-engine-usage] The turn's honest accounting: summed
+                    // outputs, final-round input as the context size. The
+                    // engine gateway does not report cache splits yet — zeros,
+                    // the same JSON shape persistAssistantTurn writes for
+                    // legacy rows.
+                    val turnUsage = if (usageSeen) LLMUsage(
+                        inputTokens = usageInputTokens,
+                        outputTokens = usageOutputTokens,
+                        latestContextTokens = usageInputTokens,
+                    ) else null
                     // [T-engine-incremental-persist] when the incremental row
                     // exists the finish is an UPDATE of that very row — never
                     // a duplicate append.
                     val assistantDbId = engineRowId ?: persistAssistantTurn(
                         parts,
-                        usage = null,
+                        usage = turnUsage,
                         reasoningContent = reasoning,
                         toolBlockMeta = reducer.currentBlocks()
                             .filter { it.kind == "tool_use" }
@@ -13589,6 +13620,23 @@ class ChatViewModel(
                                 TAG_STREAM,
                                 "[Engine] final incremental update failed: ${e.message}",
                             )
+                        }
+                        // [B29-engine-usage] The incremental row bypasses
+                        // persistAssistantTurn — write the accounting onto it
+                        // directly, else every tool turn (the common case)
+                        // still lands with token_usage = NULL.
+                        if (turnUsage != null) {
+                            runCatching {
+                                chatRepository.dao.updateMessageTokenUsage(
+                                    engineRowId!!,
+                                    tokenUsageJson(turnUsage),
+                                )
+                            }.onFailure {
+                                AppLogger.warning(
+                                    TAG_STREAM,
+                                    "[Engine] token_usage update failed: ${it.message}",
+                                )
+                            }
                         }
                     }
                     // [T-engine-history-mirror] Legacy appends the finished
@@ -18374,6 +18422,10 @@ class ChatViewModel(
         append("]")
     }
 
+    /** [B29-engine-usage] The one token_usage JSON shape for assistant rows. */
+    private fun tokenUsageJson(u: LLMUsage): String =
+        """{"inputTokens":${u.inputTokens},"outputTokens":${u.outputTokens},"cacheCreationTokens":${u.cacheCreationInputTokens ?: 0},"cacheReadTokens":${u.cacheReadInputTokens ?: 0},"latestContextTokens":${u.latestContextTokens}}"""
+
     private suspend fun persistAssistantTurn(
         parts: List<AgentContentPart>,
         usage: LLMUsage?,
@@ -18390,9 +18442,7 @@ class ChatViewModel(
         val partsJson = withContext(Dispatchers.Default) {
             buildAssistantPartsJson(parts, toolBlockMeta)
         }
-        val tokenJson = usage?.let {
-            """{"inputTokens":${it.inputTokens},"outputTokens":${it.outputTokens},"cacheCreationTokens":${it.cacheCreationInputTokens ?: 0},"cacheReadTokens":${it.cacheReadInputTokens ?: 0},"latestContextTokens":${it.latestContextTokens}}"""
-        }
+        val tokenJson = usage?.let { tokenUsageJson(it) }
         val entity = chatRepository.appendMessage(
             realSessionId.ifEmpty { sessionId }, "assistant", partsJson, tokenJson,
             reasoningContent = reasoningContent,
@@ -18503,9 +18553,7 @@ class ChatViewModel(
             }
             append("]")
         }
-        val tokenJson = usage?.let {
-            """{"inputTokens":${it.inputTokens},"outputTokens":${it.outputTokens},"cacheCreationTokens":${it.cacheCreationInputTokens ?: 0},"cacheReadTokens":${it.cacheReadInputTokens ?: 0},"latestContextTokens":${it.latestContextTokens}}"""
-        }
+        val tokenJson = usage?.let { tokenUsageJson(it) }
         chatRepository.appendMessage(
             realSessionId.ifEmpty { sessionId }, "assistant", partsJson, tokenJson,
             reasoningContent = reasoningContent,

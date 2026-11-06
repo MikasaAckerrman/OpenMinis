@@ -11,14 +11,17 @@ import android.content.pm.PackageManager
  * (ProviderModelGateway, ChatTurnReducer) instead of the legacy
  * in-ViewModel loop.
  *
- * ON by default (flipped 08.10 by the user's decision after the shadow
- * campaign: the engine chain proved itself live — tool turns, multi-round
- * turns, memory recall, multimodal, dead-turn degradation, 55-minute
- * 107-tool stress — while every failure found was in the routing AROUND
- * it, all fixed). The legacy in-ViewModel loop stays compiled as the
- * BACKUP: per-turn degradation (engine failure → legacy automatically)
- * plus a manual escape hatch — the engine button in the chat top bar
- * (green bolt = new engine leads, amber shield = legacy leads).
+ * Default: ON ([B29-engine-swap-default], 06.11). History: flipped ON
+ * 08.10 after the shadow campaign; reverted to OFF 09.10 ("the engine
+ * earns its default on the stand") after the second-system mirror seams;
+ * ON again 06.11 once the blocker list was closed — the gateway Usage
+ * seam bridged ([B29-engine-usage]: engine turns no longer persist
+ * token_usage = NULL) and the CPU/IO concurrency gates ([P1]) removed
+ * the parallelism bottleneck. The legacy in-ViewModel loop stays
+ * compiled as the BACKUP: per-turn degradation (engine failure → legacy
+ * automatically) plus a manual escape hatch — the engine button in the
+ * chat top bar (green bolt = new engine leads, amber shield = legacy
+ * leads).
  *
  *   debug.engineSwap {"enabled":false}  — RPC, immediate (legacy)
  *
@@ -57,14 +60,14 @@ object EngineSwapPrefs {
         val current = currentVersionCode(context)
         val stored = prefs?.getInt(KEY_ARMED_AT_VERSION, Int.MIN_VALUE) ?: Int.MIN_VALUE
         if (mustResetOnUpgrade(stored, current)) {
-            // Cross-build (or first run): reset to the default — LEGACY
-            // leads (the 09.10 agreement: the engine earns its default on
-            // the stand, the toggle is one tap away). My earlier flip
-            // changed only isEnabled()'s default and left this reset
-            // writing TRUE — vc120 silently re-armed the engine on
-            // install. The reset now honors the same default.
+            // Cross-build (or first run): reset to the CURRENT default —
+            // the engine leads ([B29-engine-swap-default], 06.11). The
+            // vc98/vc120 landmine this guard exists for stays defused: no
+            // stale flag survives an upgrade in EITHER direction, and the
+            // user's manual legacy choice is re-applied by the toggle in
+            // one tap after the update.
             prefs?.edit()
-                ?.putBoolean(KEY, false)
+                ?.putBoolean(KEY, true)
                 ?.putInt(KEY_ARMED_AT_VERSION, current)
                 ?.putStringSet(KEY_SESSION_OVERRIDES, null)
                 ?.apply()
@@ -72,15 +75,17 @@ object EngineSwapPrefs {
     }
 
     fun isEnabled(): Boolean {
-        // [T-engine-earns-default] Default OFF: the legacy loop leads
-        // production turns. The engine stays one tap away (the ⚡/shield
-        // top-bar toggle) and earns its default through the autonomous
-        // stand battery, not through the user's sessions (the 09.10
-        // agreement after the second-system mirror seams). The pref
-        // default below follows suit — a missing key or a wiped store
-        // lands the user on the proven loop, never silently on the engine.
+        // [B29-engine-swap-default] Default ON since 06.11 (reviewer+user
+        // decision): the blocker list that kept the engine opt-in is
+        // closed — Usage bridged ([B29-engine-usage]), CPU/IO gates ([P1]),
+        // and every engine failure degrades to legacy PER TURN (the
+        // send-path catch), so a bad turn costs one turn, not a session.
+        // A missing key or a wiped store lands on the ENGINE. The
+        // null-prefs pre-init state stays conservative (legacy): init()
+        // runs in MinisApp before any send can happen, so this branch is
+        // a broken-setup guard only.
         val p = prefs ?: return false
-        return p.getBoolean(KEY, false)
+        return p.getBoolean(KEY, true)
     }
 
     fun setEnabled(value: Boolean) {

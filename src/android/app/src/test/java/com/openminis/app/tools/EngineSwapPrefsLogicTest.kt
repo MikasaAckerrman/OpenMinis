@@ -5,27 +5,28 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * [T-engine-earns-default] Default OFF since the 09.10 agreement: the
- * legacy loop leads production turns. The engine stays one tap away (the
- * ⚡/shield top-bar toggle) and earns its default through the autonomous
- * stand battery, not through the user's sessions. The unsafe default
- * direction is a silent engine takeover on install/upgrade — the vc119
- * live incident: the version-bump reset re-enabled the engine although
- * the agreement said legacy leads.
+ * [B29-engine-swap-default] Default ON since 06.11 — a missing KEY now
+ * resolves to the engine. These tests exercise the JVM no-init state
+ * (prefs==null): that path stays CONSERVATIVE (legacy) — init() runs in
+ * MinisApp before any send, so null here means a broken setup, not a
+ * fresh install. The missing-KEY default and the upgrade reset are
+ * Android-bound (SharedPreferences) and verified on-device via the
+ * debug.engineSwap RPC smoke protocol.
  */
 class EngineSwapPrefsLogicTest {
 
     @Test
     fun `unset prefs default to legacy engine OFF`() {
-        // prefs==null (no context wired, JVM test env): the default is the
-        // LEGACY loop — the engine is opt-in via the toggle.
+        // prefs==null (no context wired, JVM test env): the PRE-INIT state
+        // stays conservative — legacy. NOT the missing-KEY default (that
+        // is engine-ON since B29); this is the broken-setup guard only.
         assertFalse(EngineSwapPrefs.isEnabled())
     }
 
     @Test
     fun `setEnabled without init is a no-op not a crash`() {
         // JVM: init never ran; toggle must not throw and must not flip the
-        // effective state (still the default: legacy).
+        // effective state (still the conservative pre-init state).
         EngineSwapPrefs.setEnabled(true)
         assertFalse(EngineSwapPrefs.isEnabled())
     }
