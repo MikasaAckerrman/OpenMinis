@@ -2941,9 +2941,24 @@ fun ChatScreen(
                 // back. Floating-tools branch adds the overlay height ON TOP
                 // of the composer height (the overlay floats above the
                 // input bar's upper edge).
+                // [B33-blank-bottom-inset] The composer is NOT an overlay: it
+                // is a SIBLING below the messages Box in the same Column (see
+                // the input area at the bottom of this screen), so the
+                // LazyColumn's bottom edge already ends at the composer's top
+                // edge. The measured reserve (composerHeightDp + 8dp, B22)
+                // double-counted the input bar: contentPadding.bottom reserved
+                // a whole composer-height blank strip INSIDE the list on top
+                // of the composer itself — the reported blank bottom inset
+                // (~70-90dp of nothing above the input). Normal mode keeps
+                // only the breathing constant the [B22] history itself
+                // blessed: 14dp was reported as "slightly clipped" by the
+                // composer's rounded top / shadow, so 20dp — the no-tool
+                // branch's own fallback constant — is the floor, NOT 8..12dp.
+                // Only the floating tool overlay truly covers list rows, so
+                // its branch keeps the overlay terms untouched.
                 val bottomReserve =
                     if (hasFloatingTools) visualOverlayHeight + composerHeightDp + 8.dp
-                    else if (composerHeightPx > 0) composerHeightDp + 8.dp else 20.dp
+                    else 20.dp
                 // T174: when bottomReserve changes (toolbar appearing /
                 // disappearing or thumbnail height shift), re-pin to bottom
                 // if we are currently following. Without this, the new
