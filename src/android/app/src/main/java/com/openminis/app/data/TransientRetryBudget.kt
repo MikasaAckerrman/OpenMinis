@@ -36,7 +36,7 @@ object TransientRetryBudget {
          *
          * Split out of [CONNECTION] because the WAIT is already paid before the
          * error exists. A dropped socket fails in milliseconds, so CONNECTION's
-         * 4 attempts cost almost nothing; here each attempt costs a further two
+         * ladder costs almost nothing; here each attempt costs a further two
          * minutes, and 4 of them strand the turn for eight — during which the
          * user has no idea whether anything is happening. Eviction still applies
          * (a socket that swallowed a request is not reusable), but the budget has
@@ -117,14 +117,20 @@ object TransientRetryBudget {
 
     /** Total attempts allowed for [kind] before the turn is failed. */
     fun maxAttempts(kind: Kind): Int = when (kind) {
-        // An offline stretch is measured in tens of seconds, not seconds. Each
-        // attempt additionally waits for connectivity, so this is a time budget
-        // of roughly 6 × up-to-20s worst case — long enough for a handover or a
-        // lift ride, short enough to still answer the user.
-        Kind.OFFLINE -> 6
-        // Evict-and-retry usually succeeds on the first repeat; a couple of
-        // spares cover a proxy reaping several pooled sockets in a row.
-        Kind.CONNECTION -> 4
+        // [B28-connect-retry] An offline stretch is measured in tens of
+        // seconds, not seconds. Ten attempts x the progressive link ladder
+        // (~151s of delays) on top of the per-attempt connectivity wait
+        // rides out a 30-60s link drop (handover, lift ride) instead of
+        // burning out mid-handover; still bounded — a genuinely dead
+        // device fails in finite time.
+        Kind.OFFLINE -> 10
+        // [B28-connect-retry] Was 4 with a short 1/2/4 ladder: a mobile
+        // link drop lasting 30-60s burned every attempt before the socket
+        // came back, and the turn died with an error that said nothing
+        // about the real cause. Same 10-attempt budget and progressive
+        // ladder as OFFLINE — the "connect N/10" log line is this policy
+        // surfacing.
+        Kind.CONNECTION -> 10
         // Each attempt burns another 120s of the watchdog before it can fail, so
         // the budget buys minutes, not seconds. TWO attempts, because the retry
         // is the only recovery this class has: the pool eviction below hands it a
@@ -145,17 +151,31 @@ object TransientRetryBudget {
     }
 
     /**
+     * [B28-connect-retry] Progressive link-recovery ladder shared by OFFLINE
+     * and CONNECTION: 2, 3, 5, 8, 12, 16, 20, 25, 30, 30 — ~151s of growing
+     * patience across 10 attempts. Out-of-range attempts (should not happen:
+     * maxAttempts == ladder size) plateau at the last step rather than throw.
+     */
+    private val LINK_LADDER_SEC = intArrayOf(2, 3, 5, 8, 12, 16, 20, 25, 30, 30)
+
+    fun linkRetryLadderSec(attempt: Int): Int =
+        if (attempt < 0) 0 else LINK_LADDER_SEC[attempt.coerceIn(0, LINK_LADDER_SEC.lastIndex)]
+
+    /**
      * Backoff before attempt [attempt] (0-based) for [kind], in seconds.
      *
-     * OFFLINE stays short because the real waiting is done by the connectivity
-     * await that follows — sleeping here on top of that would only add dead
-     * time. CONNECTION/GENERIC keep the familiar 1/2/4 shape, extended by
-     * repeating the last step rather than growing without bound.
+     * OFFLINE/CONNECTION ride the progressive link ladder ([B28]) — for
+     * OFFLINE the real waiting additionally happens in the connectivity
+     * await that follows. GENERIC keeps the familiar 1/2/4 shape, extended
+     * by repeating the last step rather than growing without bound.
      */
     fun delaySecForAttempt(kind: Kind, attempt: Int): Int {
         if (attempt < 0) return 0
         return when (kind) {
-            Kind.OFFLINE -> 1
+            Kind.OFFLINE -> linkRetryLadderSec(attempt)
+            // [B28-connect-retry] A reaped socket on a flaky mobile link
+            // needs growing patience, not 1/2/4 — same ladder as OFFLINE.
+            Kind.CONNECTION -> linkRetryLadderSec(attempt)
             // A gateway switching upstream nodes needs seconds, not milliseconds,
             // and it answers instantly — so the ladder must supply the patience
             // the server does not. Caps at 10s: past that the user is better

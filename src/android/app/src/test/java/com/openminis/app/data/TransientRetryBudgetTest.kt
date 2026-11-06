@@ -130,26 +130,45 @@ class TransientRetryBudgetTest {
             assertTrue("$kind attempts=$attempts", attempts in 1..10)
             for (attempt in 0 until attempts) {
                 val d = TransientRetryBudget.delaySecForAttempt(kind, attempt)
-                assertTrue("$kind attempt=$attempt delay=$d", d in 0..15)
+                assertTrue("$kind attempt=$attempt delay=$d", d in 0..30)
             }
         }
     }
 
+    // ── [B28-connect-retry] the 10-attempt link budget + progressive ladder ──
+
     @Test
-    fun `offline gets the largest budget, generic keeps the old three`() {
-        assertEquals(6, TransientRetryBudget.maxAttempts(TransientRetryBudget.Kind.OFFLINE))
-        assertEquals(4, TransientRetryBudget.maxAttempts(TransientRetryBudget.Kind.CONNECTION))
+    fun `offline and connection get the 10-attempt link budget, generic keeps the old three`() {
+        assertEquals(10, TransientRetryBudget.maxAttempts(TransientRetryBudget.Kind.OFFLINE))
+        assertEquals(10, TransientRetryBudget.maxAttempts(TransientRetryBudget.Kind.CONNECTION))
         assertEquals(5, TransientRetryBudget.maxAttempts(TransientRetryBudget.Kind.BAD_GATEWAY))
         // Regression guard: unclassified transient errors must not silently get
         // more retries than they had before this policy existed.
         assertEquals(3, TransientRetryBudget.maxAttempts(TransientRetryBudget.Kind.GENERIC))
+        // NO_RESPONSE stays deliberately small — each attempt burns another
+        // 120s watchdog before the error even exists.
+        assertEquals(2, TransientRetryBudget.maxAttempts(TransientRetryBudget.Kind.NO_RESPONSE))
     }
 
     @Test
-    fun `offline backoff stays short because connectivity await does the waiting`() {
-        for (attempt in 0 until 6) {
-            assertEquals(1, TransientRetryBudget.delaySecForAttempt(TransientRetryBudget.Kind.OFFLINE, attempt))
+    fun `offline and connection ride the progressive link ladder`() {
+        val expected = intArrayOf(2, 3, 5, 8, 12, 16, 20, 25, 30, 30)
+        for (kind in listOf(TransientRetryBudget.Kind.OFFLINE, TransientRetryBudget.Kind.CONNECTION)) {
+            for (attempt in expected.indices) {
+                assertEquals(
+                    "$kind attempt=$attempt",
+                    expected[attempt],
+                    TransientRetryBudget.delaySecForAttempt(kind, attempt),
+                )
+            }
         }
+        // ~151s of total patience across the ladder — the recovery window the
+        // budget promises (more than 2.5 minutes of link restoration time).
+        val total = expected.sum()
+        assertTrue("total=$total", total > 150)
+        // Out-of-range attempts plateau at the last step instead of throwing.
+        assertEquals(30, TransientRetryBudget.linkRetryLadderSec(99))
+        assertEquals(0, TransientRetryBudget.linkRetryLadderSec(-1))
     }
 
     @Test

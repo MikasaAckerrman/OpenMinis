@@ -14576,6 +14576,15 @@ class ChatViewModel(
                         val retryWaitStartMs = System.currentTimeMillis()
                         var evictedPoolThisRetry = false
                         Log.w(TAG, "🔁 Transient error on ${currentProvider.model.displayName}, retry $retryAttempt/$maxAttempts (kind=$retryKind) in ${delaySec}s: $errDesc")
+                        // [B28-connect-retry] The file log carries the exact
+                        // recovery status — the user's "connect 1/10" reads
+                        // straight out of the exported minis-*.log.
+                        AppLogger.warning(
+                            TAG,
+                            "connect $retryAttempt/$maxAttempts " +
+                                "(waiting ${delaySec}s for network) kind=$retryKind " +
+                                "err=${errDesc.take(160)}",
+                        )
                         withContext(Dispatchers.Main) {
                             _autoRetryAttempt.value = retryAttempt
                             // Show the error inline on the streaming assistant message during countdown.
@@ -14600,7 +14609,10 @@ class ChatViewModel(
                                         context.getString(
                                             R.string.chat_retry_no_response, retryAttempt, maxAttempts,
                                         )
-                                    else -> "$errDesc — retrying ($retryAttempt/$maxAttempts)…"
+                                    // [B28-connect-retry] Precise recovery status inline:
+                                    // which attempt of how many, and the wait before the
+                                    // next one (the countdown UI ticks it down live).
+                                    else -> "$errDesc — connect $retryAttempt/$maxAttempts (waiting ${delaySec}s)…"
                                 },
                             )
                         }
