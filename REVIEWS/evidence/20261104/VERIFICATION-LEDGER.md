@@ -265,3 +265,50 @@
   сокете и спасение 15-минутного прогона наблюдаются только на устройстве
   (стресс-B/D1-протокол при iQOO). Пока [статус: РЕАЛИЗОВАНО+CI-зелёный | улика:
   код+тесты+CI | не хватает: runtime-демонстрация].
+
+## 16. День 2026-11-06 — P1 (CPU/IO-ворота, движок №2) + P2 (prefix-батчи, движок №1)
+
+Направление ревьюера: «параллелизм как в zcode» — разбор двух движков,
+диагноз (408 МБ minis.db, весь список в памяти, O(N*blocks) flatItems),
+Шаги 1-3. Реализованы Шаги 1-2 двумя АТОМАРНЫМИ диффами; Шаг 3 —
+дизайн-предложение без кода (риск для restore/dedup/compaction — ждёт
+благословения).
+
+### Дифф A — P1-io-concurrency (2d0e9c10, CI 42269766733 SUCCESS)
+[статус: РЕАЛИЗОВАНО+CI | улика: код+7 новых тестов+run 42269766733 |
+не хватает: runtime-демо параллельных file_write — движок №2 opt-in]
+- `AgentConcurrency.ioParallelCeiling`: 16 (≥8 ядер) / 8; БЕЗ thermal-делителя
+  (обоснование в док-комменте: thermal про CPU-работу, мелкие записи — нет).
+- `ToolConcurrencyClass` (pure): IO-набор = file_read/file_write/file_edit/
+  read_image/webfetch; всё остальное (shell/browser/spawn/mcp) — CPU-ворота.
+- `ToolScheduler`: ctor `ioMaxConcurrent` + `ioCap()`; webfetch в
+  KEY_DECLARING_TOOLS.
+- `JsonPathExtractor`: webfetch → `net:<url>`. БЫЛО: webfetch без ключей =
+  GLOBAL-герметик в planReactive (dependencies обе стороны) — т.е. кроме
+  семафора он сериализовался сам. Стало: разные URL независимы; одинаковый —
+  read+read (параллелен по правилу чтений; GET идемпотентен); пустой/битый
+  url → null (GLOBAL) — никогда пустой ключ.
+- `EngineAgentLoop`: cpuGate/ioGate, выбор ворота на вызов ПОСЛЕ await
+  зависимостей (ждущий вызов по-прежнему не держит слот).
+- Решение о thermal для IO — осознанное отклонение от возможного
+  «зеркалить divider»: зафиксировано в коде и таблице.
+
+### Дифф B — P2-prefix-batches (59a99502, CI 42271048740 SUCCESS)
+[статус: РЕАЛИЗОВАНО+CI | улика: код+5 тестов+run 42271048740 |
+не хватает: runtime-демо смешанного батча на устройстве]
+- `ToolBatchPlanner.parallelPrefixSize`: максимальный префикс safe+non-conflict;
+  первый барьерный тул и далее — последовательно. canParallelize не тронут
+  (полный параллельный случай + его тесты).
+- Экзекьютор (ChatViewModel ~15293-15676): параллельная ветвь над
+  take(prefix) (mark-RUNNING, async, пост-обработка, лог); исходный
+  последовательный путь НЕ изменён, работает над drop(prefix) либо всем
+  батчем; порядок resultParts/model intent сохранён; шаред пост-код раунда
+  (awaiting-model update, persistAssistantTurn, ...) общий для обеих фаз.
+- Честная оговорка: префикс — компромисс; полный «reactive-DAG» параллелизм
+  в проде достигается только свапом на движок №2 (И3) — решение продуктовое.
+
+### Шаг 3 — НЕ реализован (ждёт благословения)
+Hot window (последние ~50 сообщений в _messages, остальное лениво) затрагивает
+сердце: restore, source_prompt_ids-дедуп, compaction-границы, queued prompts,
+T180 attachment-restore. Rust seam (файловые манипуляции/индексация вне
+Android Context) — отдельный модуль. Проект дизайна — в отчёте ZCode.
