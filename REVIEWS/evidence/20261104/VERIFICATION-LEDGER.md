@@ -346,3 +346,47 @@ maxAttempts OFFLINE 6→10, CONNECTION 4→10; лестница 2/3/5/8/12/16/20
 AppLogger `connect N/10 (waiting Ds for network) kind=… err=…`; баннер
 CONNECTION/GENERIC `… — connect N/M (waiting Ds)…`; OFFLINE — локализованные
 строки + waiting-network состояние. Инвариант теста расширен 0..15с→0..30с.
+
+## 18. Ночь 2026-11-06/07 — B29 этап 1 (Usage-бридж + шелл-изоляция + дефолт свапа)
+
+Ревьюер: SHIP по B32/B33/B28 (§17); ТЗ на B29 с находкой №1 (потеря токенов).
+
+### Usage-бридж (20a4a0d0, CI 42285115383 SUCCESS)
+[статус: РЕАЛИЗОВАНО+CI | улика: код+3 теста+run | не хватает: живой движковый ход на устройстве]
+- Корень (сверен по коду): EngineAgentLoop:211 `is StreamEvent.Usage -> Unit` при том,
+  что raw StreamEvents заканчиваются внутри лупа — «caller's seam» вел в никуда;
+  runEngineTurn звал persistAssistantTurn(usage = null) → token_usage=NULL.
+- Решение: AgentEvent.Usage (input/output); мост в лупе; reducer — stateless-ветка
+  (when исчерпывающий — иначе компиляция падала, поймано до CI).
+- Аккумуляция (решение по семантике, задокументировано): outputs = Σ по раундам
+  (мультираундовый тул-ход иначе UNDERCOUNT-ит стоимость), input = финального
+  раунда (= живой размер контекста). Публикация КАЖДОГО раунда через
+  publishContextUsage — тот же seam, что у legacy на usage-чанке (14391).
+- Инкрементальный ряд: тул-ходы ОБХОДЯТ persistAssistantTurn (upsertEngineRow
+  рождает ряд с usage=null, финал — updateMessageParts без usage) → новый
+  ChatDao.updateMessageTokenUsage; tokenUsageJson() — единая форма для обоих сайтов
+  (второй сайт найден дублем при правке — dedup сделан replace_all).
+- Engine gateway НЕ репортит cache-сплиты — нули, та же JSON-форма, что legacy.
+
+### Шелл-изоляция (тесты в EngineAgentLoopTest)
+- Смешанный батч [file_write(/a), shell_execute, file_read(/b)] → строгий порядок
+  fw→shell→fr: GLOBAL без ключей — двусторонний барьер planReactive, ничего не
+  бежит СБОКУ от шелла и не перепрыгивает его (детерминировано виртуальными
+  зависимостями + Thread.sleep-окно 120мс против скрытого оверлапа).
+- Регрессионный guard P1: три дизъюнктных I/O тула стартуют ДО завершения любого
+  (барьер старта) — шелл-барьер не ресериализует мир.
+
+### Дефолт свапа (EngineSwapPrefs)
+- isEnabled(): getBoolean(KEY, true) — решение ревьюер+юзер 06.11; история
+  08.10-ON → 09.10-OFF → 06.11-ON переписана в KDoc (устаревшие комменты — грабли).
+- Upgrade-reset: putBoolean(KEY, true) — взводит ТЕКУЩИЙ дефолт; vc98/vc120
+  landmine остаётся обезврежен (флаг не переживает апгрейд в ОБЕ стороны).
+- Оставлено консервативным (сознательное решение, задокументировано в тесте):
+  null-prefs pre-init → false (legacy) — init() в MinisApp делает ветку
+  недостижимой на практике; это guard сломанного сетапа, не дефолт.
+- Тесты: EngineSwapPrefsLogicTest — ассерты не изменились (null-prefs → false),
+  комменты переписаны; UpgradeResetTest не задет (пинит mustResetOnUpgrade).
+
+### Чего не хватает
+Живой движковый ход на устройстве (свап де-факто, token_usage в DB, FGS-тик),
+прогон PersistentShell-стресса s11 — при ADB. B30/B31 — следующий блок по ТЗ.
