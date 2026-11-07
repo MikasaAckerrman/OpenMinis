@@ -607,3 +607,39 @@ LOADING-гейт, отсутствие фидбека, snapshot-discard, SELECT 
   - `unrestricted tools omits tools line in markdown`.
 - CI run: `42360094031` на `OpenMinis-canon` — SUCCESS.
 
+## 25. День 2026-11-07 — B16 этап 2b (серверный allowlist MCP для кастомных агентов)
+
+Вердикт ревьюера: SHIP.
+
+### B16 этап 2b — c805a98f + 4467d3d1 + 671e68af + 8319039c + dbebbbff, CI 42363798076 attempt 2 SUCCESS (на зеркале)
+[статус: РЕАЛИЗОВАНО+CI | улика: код+AgentMcpPolicyTest+локализация 4 ключей на 8 языках+run на canon | не хватает: UI-тест на iQOO при ADB]
+- Архитектурная цель: изоляция MCP-серверов per-agent. Если кастомному агенту нужен
+  только filesystem или telegram, он не должен видеть или вызывать остальные подключенные серверы.
+- Схема данных и фронтматтер:
+  - `AgentNode.kt:43`: добавлено поле `val mcpServers: List<String>? = null`;
+  - `AgentFileParser.kt:40`: парсер распознает `mcpServers:` и алиас `mcp_servers:` в YAML фронтматтере;
+  - `AgentDraft.kt`: сериализует `mcpServers:` в YAML при включенном ограничении.
+- Политика и хранилище:
+  - `AgentMcpPolicyStore.kt`: потокобезопасный process-scoped реестр на `ConcurrentHashMap<String, Set<String>>`
+    (хранит lowercase-имена разрешенных серверов по sessionId, структурный аналог `AgentToolPolicyStore`);
+  - `AgentSessionManager.kt:61` и `AgentGraphRunner.kt:783`: регистрация при старте сессии/ноды и очистка при завершении.
+- Гейткипинг в `McpCallTool.kt`:
+  - `filterListOutput`: фильтрует ответ команды `list`, оставляя только разрешенные серверы;
+  - команды `tools` и `call`: отклоняются с диагностическим сообщением до запуска гостевого процесса,
+    если сервер не входит в allowlist сессии.
+- UI в `CustomAgentsScreen.kt`:
+  - Редактор читает доступные серверы из `servers.json`;
+  - Переключатель ограничения MCP-серверов и чекбоксы для каждого сконфигурированного сервера;
+  - Карточка агента в списке отображает бейдж MCP со счетчиком разрешенных серверов;
+  - 4 строковых ресурса (`agents_row_mcp`, `agents_restrict_mcp`, `agents_restrict_mcp_hint`, `agents_no_mcp_servers`)
+    локализованы во всех 8 локалях (`values/`, `values-ru/`, `values-de/`, `values-fr/`, `values-ja/`, `values-ko/`, `values-zh/`, `values-zh-rTW/`).
+- Тесты:
+  - `AgentMcpPolicyTest.kt`: unit-тесты политик allow/block, case-insensitivity, фильтрации и очистки.
+- CI постмортем:
+  - `42361668834` (4467d3d1): AAPT syntax error в `values-fr/strings.xml` (неэкранированный апостроф `l\'instant`). Исправлено.
+  - `42361999564` (671e68af): лишняя закрывающая фигурная скобка в `McpCallTool.kt`. Исправлено.
+  - `42362480250` (8319039c): `LocalContext` не был захвачен внутри `AgentEditorScreen`. Исправлено.
+  - `42363111866` (dbebbbff): Robolectric пытался поднять `MinisApp` из манифеста, падая на `RootfsManager`. Добавлен `@Config(application = Application::class)`.
+  - `42363798076` attempt 2: SUCCESS на `OpenMinis-canon`.
+
+
