@@ -141,6 +141,22 @@ object HangDetector {
     private val lastHeartbeatAt = AtomicLong(0L)
     private val lastLogAt = AtomicLong(0L)
 
+    /**
+     * [B7] The heartbeat interval the CURRENT postDelayed was scheduled
+     * with — the watch loop derives its hang threshold from the same value,
+     * so a foreground→background cadence switch cannot make every beat look
+     * like a hang (the old flat 2500ms threshold against a 30s background
+     * heartbeat would fire on literally every poll).
+     */
+    @Volatile
+    private var currentHeartbeatIntervalMs: Long = HEARTBEAT_INTERVAL_MS
+
+    private fun currentActiveSessions(): Int = try {
+        com.openminis.app.service.SessionActivityTracker.activeSessions.value.size
+    } catch (t: Throwable) {
+        0
+    }
+
     private var appContext: Context? = null
 
     private val _renderBreakerActive = MutableStateFlow(false)
@@ -186,8 +202,11 @@ object HangDetector {
         // PrintStream when logging is on; when logging is off this still
         // surfaces under `adb logcat`. Same pattern is used by recordHang
         // so its output is also captured both ways.
-        val banner = "[T-HANG-DIAG] HangDetector started: threshold=${HANG_THRESHOLD_MS}ms " +
-            "interval=${HEARTBEAT_INTERVAL_MS}ms limit=$HANG_LIMIT_FOR_BREAKER"
+        val banner = "[T-HANG-DIAG] HangDetector started: adaptive cadence " +
+            "(fg ${WatchdogCadence.heartbeatIntervalMs(true, 0)}ms / bg-inference " +
+            "${WatchdogCadence.heartbeatIntervalMs(false, 1)}ms / bg-idle " +
+            "${WatchdogCadence.heartbeatIntervalMs(false, 0)}ms, " +
+            "threshold=interval+1500ms) limit=$HANG_LIMIT_FOR_BREAKER"
         println(banner)
         Log.i(TAG, banner)
     }
@@ -268,10 +287,18 @@ object HangDetector {
     // -- internals -----------------------------------------------------------
 
     private fun scheduleHeartbeat() {
+        // [B7] Adaptive cadence — re-evaluated on every beat, so a
+        // foreground/background or idle/inference transition takes effect
+        // at the next post without any listener machinery.
+        val interval = WatchdogCadence.heartbeatIntervalMs(
+            appForeground = appInForeground(),
+            activeSessions = currentActiveSessions(),
+        )
+        currentHeartbeatIntervalMs = interval
         mainHandler.postDelayed({
             lastHeartbeatAt.set(System.currentTimeMillis())
             scheduleHeartbeat()
-        }, HEARTBEAT_INTERVAL_MS)
+        }, interval)
     }
 
     /**
@@ -307,22 +334,63 @@ object HangDetector {
         // for messages) while the app sat backgrounded. Idle freezes must
         // not count toward the render-breaker / redirect-on-hang policy.
         var idleFreezeEpisode = false
+        // [B7] The evaluation gate from the previous iteration: on a
+        // background-idle → active transition the first watch poll would
+        // otherwise read a heartbeat gap of up to a full idle interval
+        // (30s) and record a phantom hang for a thread that was healthy
+        // the whole time. The baseline resets instead.
+        var wasActive = false
         while (true) {
+            val foreground = appInForeground()
+            val sessions = currentActiveSessions()
+            val active = WatchdogCadence.watchActive(foreground, sessions)
+            val pollMs = WatchdogCadence.watchPollMs(foreground, sessions)
             try {
-                Thread.sleep(500)
+                Thread.sleep(pollMs)
             } catch (e: InterruptedException) {
                 return
+            }
+            if (!active) {
+                // [B7] Background + idle: the UI is invisible and no work
+                // runs — the main thread is EXPECTED to go silent for whole
+                // minutes (OS freeze), so hang evaluation is skipped
+                // entirely and the episode state resets. The main-thread
+                // heartbeat itself is still scheduled (30s), this is the
+                // "fully asleep" state.
+                if (hangActive) {
+                    println("[T-HANG-DIAG] hang episode ABANDONED (watchdog went idle)")
+                }
+                hangActive = false
+                idleFreezeEpisode = false
+                wasActive = false
+                continue
+            }
+            if (!wasActive) {
+                // [B7] Just became active: the last heartbeat may be up to a
+                // full idle interval stale. Re-baseline instead of recording
+                // a phantom hang; the real ping lands within one foreground
+                // heartbeat (1s).
+                lastHeartbeatAt.set(System.currentTimeMillis())
+                hangActive = false
+                idleFreezeEpisode = false
+                wasActive = true
+                continue
             }
             ticks++
             val now = System.currentTimeMillis()
             val since = now - lastHeartbeatAt.get()
+            // [B7] The threshold derives from the interval the heartbeat is
+            // ACTUALLY running at (1s fg → 2500ms, exactly the old flat
+            // constant; 5s bg-inference → 6500ms), so a cadence switch never
+            // turns every beat into a false hang.
+            val thresholdMs = WatchdogCadence.hangThresholdMs(currentHeartbeatIntervalMs)
             // [T-HANG-DIAG] every 30 ticks (~15s) emit a liveness ping so we
             // can confirm the watchdog is alive even when nothing hangs.
             // Volume is intentionally tiny (~4 lines / minute).
             if (ticks % 30L == 0L) {
                 println("[T-HANG-DIAG] HangDetector tick=$ticks sinceHeartbeat=${since}ms")
             }
-            if (since < HANG_THRESHOLD_MS) {
+            if (since < thresholdMs) {
                 if (hangActive) {
                     // Episode over — the heartbeat landed. One labeled
                     // post-recovery snapshot closes the record (its stack is
@@ -342,7 +410,7 @@ object HangDetector {
                 episodePeakSinceMs = since
                 lastSampleAt = now
                 lastLogAt.set(now)
-                idleFreezeEpisode = !appInForeground()
+                idleFreezeEpisode = !foreground
                 if (idleFreezeEpisode) {
                     // [T-hangdetector-idle-filter] OS freeze of a background
                     // process: park, not a hang. The parked thread's stack is
