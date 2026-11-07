@@ -182,7 +182,6 @@ object McpCallTool {
         }
         return if (lines.isEmpty()) "[]" else lines.joinToString("\n")
     }
-    }
 
     /**
      * One guest invocation of minis-mcp-cli. Output is capped for the model
