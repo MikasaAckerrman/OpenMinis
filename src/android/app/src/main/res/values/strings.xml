@@ -1755,4 +1755,9 @@
     <string name="agents_row_default_model">default model</string>
     <string name="agents_row_tools">tools: %1$d</string>
     <string name="agents_row_default_tools">default tools</string>
+
+    <string name="agents_row_mcp">%1$d MCP server(s)</string>
+    <string name="agents_restrict_mcp">Restrict MCP servers</string>
+    <string name="agents_restrict_mcp_hint">Off = all enabled servers in servers.json are accessible</string>
+    <string name="agents_no_mcp_servers">No MCP servers configured in settings yet</string>
 </resources>

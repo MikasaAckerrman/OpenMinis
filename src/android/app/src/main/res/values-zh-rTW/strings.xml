@@ -767,4 +767,9 @@
     <string name="agents_row_default_model">預設模型</string>
     <string name="agents_row_tools">工具：%1$d</string>
     <string name="agents_row_default_tools">預設工具</string>
+
+    <string name="agents_row_mcp">%1$d 個 MCP 伺服器</string>
+    <string name="agents_restrict_mcp">限制 MCP 伺服器</string>
+    <string name="agents_restrict_mcp_hint">關閉 = 可存取 servers.json 中所有已啟用的伺服器</string>
+    <string name="agents_no_mcp_servers">設定中尚未設定任何 MCP 伺服器</string>
 </resources>

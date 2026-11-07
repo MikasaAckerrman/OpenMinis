@@ -303,6 +303,7 @@ internal object AgentGraphRunner {
                     AgentSessionManager.deleteSession(context, sid)
                 } else {
                     com.openminis.app.tools.AgentToolPolicyStore.clearPolicy(sid)
+                    com.openminis.app.tools.AgentMcpPolicyStore.clearPolicy(sid)
                     com.openminis.app.tools.AgentSystemPromptStore.clearPrompt(sid)
                     com.openminis.app.tools.AgentRuntimePolicyStore.clear(sid)
                     com.openminis.app.tools.AgentWorkspaceStore.clear(sid)
@@ -780,7 +781,11 @@ internal object AgentGraphRunner {
             // [T-worker-write-roots] Node-declared repo ownership widens
             // this worker's jail; empty for every node that didn't opt in.
             writeRoots = node.writeRoots,
+            mcpServers = node.mcpServers,
         ).also { sessionStore[sessionKey] = it }
+        if (existingSession != null) {
+            com.openminis.app.tools.AgentMcpPolicyStore.setPolicy(sessionId, node.mcpServers)
+        }
         if (existingSession != null && node.sessionGroup.isNotBlank()) {
             addTrace(
                 state, runtimeId, node.role, "SESSION",

@@ -264,8 +264,11 @@ private fun AgentListScreen(
                             val toolHint = agent.tools
                                 ?.let { stringResource(R.string.agents_row_tools, it.size) }
                                 ?: stringResource(R.string.agents_row_default_tools)
+                            val mcpHint = agent.mcpServers?.let {
+                                " · " + stringResource(R.string.agents_row_mcp, it.size)
+                            } ?: ""
                             Text(
-                                "$modelHint · $toolHint · maxTurns ${agent.maxTurns}",
+                                "$modelHint · $toolHint$mcpHint · maxTurns ${agent.maxTurns}",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -322,6 +325,8 @@ data class AgentDraft(
     val maxTurnsText: String,
     val restrictTools: Boolean,
     val tools: Set<String>,
+    val restrictMcpServers: Boolean = false,
+    val mcpServers: Set<String> = emptySet(),
     val instructions: String,
     /** Non-null when editing an existing file (its current name). */
     val originalFileName: String? = null,
@@ -332,7 +337,9 @@ data class AgentDraft(
         fun empty() = AgentDraft(
             name = "", description = "", modelRole = null, modelEntryId = null,
             maxTurnsText = AgentFileParser.AgentFile.DEFAULT_MAX_TURNS.toString(),
-            restrictTools = false, tools = emptySet(), instructions = "",
+            restrictTools = false, tools = emptySet(),
+            restrictMcpServers = false, mcpServers = emptySet(),
+            instructions = "",
         )
 
         fun fromFile(agent: AgentFileParser.AgentFile) = AgentDraft(
@@ -344,6 +351,8 @@ data class AgentDraft(
             // A file WITHOUT a tools line opens with the restriction off.
             restrictTools = agent.tools != null,
             tools = agent.tools.orEmpty().toSet(),
+            restrictMcpServers = agent.mcpServers != null,
+            mcpServers = agent.mcpServers.orEmpty().toSet(),
             instructions = agent.instructions,
             originalFileName = agent.fileName,
         )
@@ -374,6 +383,9 @@ data class AgentDraft(
         modelEntryId?.takeIf { it.isNotBlank() }?.let { fm.append("model: ").append(it.trim()).append('\n') }
         if (restrictTools && tools.isNotEmpty()) {
             fm.append("tools: ").append(tools.sorted().joinToString(", ")).append('\n')
+        }
+        if (restrictMcpServers && mcpServers.isNotEmpty()) {
+            fm.append("mcpServers: ").append(mcpServers.sorted().joinToString(", ")).append('\n')
         }
         maxTurnsText.toIntOrNull()?.let { fm.append("maxTurns: ").append(it).append('\n') }
         return "---\n$fm---\n\n${instructions.trim()}\n"
@@ -412,8 +424,35 @@ private fun AgentEditorScreen(
     var maxTurnsText by rememberSaveable { mutableStateOf(draft.maxTurnsText) }
     var restrictTools by rememberSaveable { mutableStateOf(draft.restrictTools) }
     val tools = remember { mutableStateOf(draft.tools.toSet()) }
+    var restrictMcpServers by rememberSaveable { mutableStateOf(draft.restrictMcpServers) }
+    val mcpServers = remember { mutableStateOf(draft.mcpServers.toSet()) }
     var instructions by rememberSaveable { mutableStateOf(draft.instructions) }
     var saveErrorRes by remember { mutableStateOf<Int?>(null) }
+
+    val configuredMcpServers = remember {
+        val serversJson = File(context.filesDir, "minis-global/mcp-servers/servers.json")
+        val names = mutableListOf<String>()
+        if (serversJson.exists()) {
+            runCatching {
+                val text = serversJson.readText()
+                val root = org.json.JSONObject(text)
+                val obj = root.optJSONObject("mcpServers")
+                if (obj != null) {
+                    names.addAll(obj.keys().asSequence().sorted())
+                } else {
+                    val arr = root.optJSONArray("servers")
+                    if (arr != null) {
+                        for (i in 0 until arr.length()) {
+                            val o = arr.optJSONObject(i) ?: continue
+                            val n = o.optString("name", o.optString("id", ""))
+                            if (n.isNotBlank()) names.add(n)
+                        }
+                    }
+                }
+            }
+        }
+        names
+    }
 
     Scaffold(
         topBar = {
@@ -442,6 +481,8 @@ private fun AgentEditorScreen(
                             maxTurnsText = maxTurnsText.trim(),
                             restrictTools = restrictTools,
                             tools = tools.value,
+                            restrictMcpServers = restrictMcpServers,
+                            mcpServers = mcpServers.value,
                             instructions = instructions,
                             originalFileName = draft.originalFileName,
                         )
@@ -568,6 +609,59 @@ private fun AgentEditorScreen(
                         }
                     },
                 )
+            }
+            val mcpAvailable = !restrictTools || "mcp" in tools.value
+            if (mcpAvailable) {
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            stringResource(R.string.agents_restrict_mcp),
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            stringResource(R.string.agents_restrict_mcp_hint),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(checked = restrictMcpServers, onCheckedChange = { restrictMcpServers = it })
+                }
+                if (restrictMcpServers) {
+                    if (configuredMcpServers.isEmpty()) {
+                        Text(
+                            stringResource(R.string.agents_no_mcp_servers),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 12.dp, top = 4.dp),
+                        )
+                    } else {
+                        configuredMcpServers.forEach { serverName ->
+                            Row(
+                                Modifier.fillMaxWidth()
+                                    .clickable {
+                                        mcpServers.value = mcpServers.value.toMutableSet().apply {
+                                            if (!add(serverName)) remove(serverName)
+                                        }
+                                    }
+                                    .padding(start = 12.dp, top = 2.dp, bottom = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Checkbox(
+                                    checked = serverName in mcpServers.value,
+                                    onCheckedChange = { _ ->
+                                        mcpServers.value = mcpServers.value.toMutableSet().apply {
+                                            if (!add(serverName)) remove(serverName)
+                                        }
+                                    },
+                                )
+                                Text(serverName, style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
+                }
             }
             OutlinedTextField(
                 value = instructions,

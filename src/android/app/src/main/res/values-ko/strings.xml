@@ -1091,4 +1091,9 @@
     <string name="agents_row_default_model">기본 모델</string>
     <string name="agents_row_tools">도구: %1$d</string>
     <string name="agents_row_default_tools">기본 도구</string>
+
+    <string name="agents_row_mcp">MCP 서버 %1$d개</string>
+    <string name="agents_restrict_mcp">MCP 서버 제한</string>
+    <string name="agents_restrict_mcp_hint">끄기 = servers.json의 활성화된 모든 서버에 접근 가능</string>
+    <string name="agents_no_mcp_servers">설정에 구성된 MCP 서버가 아직 없습니다</string>
 </resources>

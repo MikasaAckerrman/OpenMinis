@@ -57,10 +57,13 @@ internal object AgentSessionManager {
          *  (repo ownership for lone sequenced workers like the CI-fixer).
          *  Merged ON TOP of the default jail — never narrower. */
         writeRoots: List<String> = emptyList(),
+        /** [B16-stage2b] Server-scoped allowlist for MCP tools; null = unrestricted. */
+        mcpServers: List<String>? = null,
     ): String = withContext(Dispatchers.IO) {
         val sessionId = HeadlessChatRunner.ensureSession(context, null)
         HeadlessChatRunner.applyModelOverride(context, sessionId, modelEntryId, null)
         AgentToolPolicyStore.setPolicy(sessionId, allowedTools)
+        com.openminis.app.tools.AgentMcpPolicyStore.setPolicy(sessionId, mcpServers)
         AgentRuntimePolicyStore.setMaxOutputTokens(sessionId, maxOutputTokens)
         if (workspaceHostPath != null) AgentWorkspaceStore.set(sessionId, workspaceHostPath)
         if (agentRunId != null && agentRole != null) {
@@ -111,6 +114,7 @@ internal object AgentSessionManager {
         sessionId: String,
     ) = withContext(Dispatchers.IO) {
         AgentToolPolicyStore.clearPolicy(sessionId)
+        com.openminis.app.tools.AgentMcpPolicyStore.clearPolicy(sessionId)
         AgentSystemPromptStore.clearPrompt(sessionId)
         AgentRuntimePolicyStore.clear(sessionId)
         AgentWorkspaceStore.clear(sessionId)

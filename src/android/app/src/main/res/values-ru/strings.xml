@@ -1430,4 +1430,9 @@
     <string name="agents_row_default_model">дефолтная модель</string>
     <string name="agents_row_tools">тулов: %1$d</string>
     <string name="agents_row_default_tools">дефолтные тула</string>
+
+    <string name="agents_row_mcp">%1$d серв. MCP</string>
+    <string name="agents_restrict_mcp">Ограничить серверы MCP</string>
+    <string name="agents_restrict_mcp_hint">Выкл = доступны все включённые серверы из servers.json</string>
+    <string name="agents_no_mcp_servers">В настройках пока нет настроенных серверов MCP</string>
 </resources>

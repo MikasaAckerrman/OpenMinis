@@ -1099,4 +1099,9 @@
     <string name="agents_row_default_model">既定のモデル</string>
     <string name="agents_row_tools">ツール: %1$d</string>
     <string name="agents_row_default_tools">既定のツール</string>
+
+    <string name="agents_row_mcp">%1$d 個のMCPサーバー</string>
+    <string name="agents_restrict_mcp">MCPサーバーを制限</string>
+    <string name="agents_restrict_mcp_hint">オフ = servers.json 内の有効なすべてのサーバーにアクセス可能</string>
+    <string name="agents_no_mcp_servers">設定で構成されたMCPサーバーはまだありません</string>
 </resources>

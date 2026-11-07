@@ -120,4 +120,59 @@ class AgentDraftTest {
         assertFalse(restored.restrictTools)
         assertTrue(restored.tools.isEmpty())
     }
+
+    @Test
+    fun `roundtrip mcpServers with AgentFileParser`() {
+        val draft = AgentDraft(
+            name = "github-bot",
+            description = "Interacts with GitHub via MCP",
+            modelRole = "coder",
+            modelEntryId = null,
+            maxTurnsText = "8",
+            restrictTools = true,
+            tools = setOf("mcp", "file_read"),
+            restrictMcpServers = true,
+            mcpServers = setOf("github", "gmail"),
+            instructions = "Review PRs and send email summary.",
+        )
+
+        val md = draft.toMarkdown()
+        assertTrue(md.contains("mcpServers: github, gmail"))
+
+        val parsed = AgentFileParser.parse("github-bot.md", md)
+        assertNotNull(parsed)
+        parsed!!
+        assertEquals(listOf("github", "gmail"), parsed.mcpServers?.sorted())
+
+        val restored = AgentDraft.fromFile(parsed)
+        assertTrue(restored.restrictMcpServers)
+        assertEquals(setOf("github", "gmail"), restored.mcpServers)
+    }
+
+    @Test
+    fun `unrestricted mcpServers omits mcpServers line in markdown`() {
+        val draft = AgentDraft(
+            name = "open-bot",
+            description = "Accesses any MCP server",
+            modelRole = null,
+            modelEntryId = null,
+            maxTurnsText = "8",
+            restrictTools = true,
+            tools = setOf("mcp"),
+            restrictMcpServers = false,
+            mcpServers = setOf("github"),
+            instructions = "Instructions.",
+        )
+
+        val md = draft.toMarkdown()
+        assertFalse(md.contains("mcpServers:"))
+
+        val parsed = AgentFileParser.parse("open-bot.md", md)
+        assertNotNull(parsed)
+        assertNull(parsed!!.mcpServers)
+
+        val restored = AgentDraft.fromFile(parsed)
+        assertFalse(restored.restrictMcpServers)
+        assertTrue(restored.mcpServers.isEmpty())
+    }
 }

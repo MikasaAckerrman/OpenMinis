@@ -36,6 +36,8 @@ object AgentFileParser {
         val modelEntryId: String? = null,
         /** Tool allowlist; null = the default tools for the runner role. */
         val tools: List<String>? = null,
+        /** [B16-stage2b] Server allowlist for MCP tools; null = unrestricted. */
+        val mcpServers: List<String>? = null,
         /** Tool-call budget for the spawned run. */
         val maxTurns: Int = DEFAULT_MAX_TURNS,
         /** The whole body — developer instructions, injected verbatim. */
@@ -88,6 +90,12 @@ object AgentFileParser {
             ?.filter { it in KNOWN_TOOL_NAMES }
             ?.takeIf { it.isNotEmpty() }
 
+        val mcpServers = (fields["mcpServers"] ?: fields["mcp_servers"])
+            ?.split(',')
+            ?.map { it.trim().lowercase() }
+            ?.filter { it.isNotBlank() }
+            ?.takeIf { it.isNotEmpty() }
+
         val maxTurns = fields["maxTurns"]?.trim()?.toIntOrNull()
             ?.takeIf { it in 1..64 }
             ?: AgentFile.DEFAULT_MAX_TURNS
@@ -101,6 +109,7 @@ object AgentFileParser {
             modelRole = modelRole,
             modelEntryId = modelEntryId,
             tools = tools,
+            mcpServers = mcpServers,
             maxTurns = maxTurns,
             instructions = instructions,
             fileName = fileName,

@@ -982,4 +982,9 @@
     <string name="agents_row_default_model">modèle par défaut</string>
     <string name="agents_row_tools">outils : %1$d</string>
     <string name="agents_row_default_tools">outils par défaut</string>
+
+    <string name="agents_row_mcp">%1$d serveur(s) MCP</string>
+    <string name="agents_restrict_mcp">Restreindre les serveurs MCP</string>
+    <string name="agents_restrict_mcp_hint">Désactivé = tous les serveurs activés dans servers.json sont accessibles</string>
+    <string name="agents_no_mcp_servers">Aucun serveur MCP configuré dans les paramètres pour l'instant</string>
 </resources>

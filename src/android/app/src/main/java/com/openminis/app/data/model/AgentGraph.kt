@@ -40,6 +40,8 @@ data class AgentNode(
     val role: AgentRole,
     val systemPrompt: String,
     val allowedTools: List<String> = emptyList(),
+    /** [B16-stage2b] Server-scoped allowlist for MCP tools; null = unrestricted. */
+    val mcpServers: List<String>? = null,
     val modelEntryId: String = "",
     val modelRole: String = "",  // Alternative to modelEntryId: "planner" | "analyst" | "architect" | "coder" | "reviewer" | "tester"
     val maxTurns: Int = 10,

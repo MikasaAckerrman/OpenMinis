@@ -17552,8 +17552,9 @@ class ChatViewModel(
             appendLine("Custom agents (${agents.size}) — spawn with role=\"custom:<name>\":")
             for (a in agents) {
                 appendLine("- ${a.name}: ${a.description.ifBlank { "(no description)" }.take(180)}")
+                val mcpPart = a.mcpServers?.let { " | mcp=${it.joinToString(",")}" } ?: ""
                 appendLine(
-                    "  tools=${a.tools?.joinToString(",") ?: "default"} | maxTurns=${a.maxTurns} | " +
+                    "  tools=${a.tools?.joinToString(",") ?: "default"}$mcpPart | maxTurns=${a.maxTurns} | " +
                         "model=${a.modelEntryId ?: a.modelRole ?: "session model"}",
                 )
             }

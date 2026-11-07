@@ -547,6 +547,7 @@ object SubagentExecutor {
             maxTurns = agent.maxTurns,
             modelEntryId = agent.modelEntryId.orEmpty(),
             modelRole = if (agent.modelEntryId != null) "" else (agent.modelRole ?: "analyst"),
+            mcpServers = agent.mcpServers,
         )
         val graph = AgentGraph(
             id = "ephemeral-${node.id}",

@@ -1396,4 +1396,9 @@
     <string name="agents_row_default_model">默认模型</string>
     <string name="agents_row_tools">工具：%1$d</string>
     <string name="agents_row_default_tools">默认工具</string>
+
+    <string name="agents_row_mcp">%1$d 个 MCP 服务器</string>
+    <string name="agents_restrict_mcp">限制 MCP 服务器</string>
+    <string name="agents_restrict_mcp_hint">关闭 = 可访问 servers.json 中所有已启用的服务器</string>
+    <string name="agents_no_mcp_servers">设置中尚未配置任何 MCP 服务器</string>
 </resources>

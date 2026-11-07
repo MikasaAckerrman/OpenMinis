@@ -146,4 +146,24 @@ class AgentFileParserTest {
             com.openminis.app.tools.AgentTools.ALL_TOOL_NAMES,
         )
     }
+
+    @Test
+    fun `mcpServers frontmatter parses correctly`() {
+        val a = AgentFileParser.parse(
+            "auditor.md",
+            "---\nname: auditor\ntools: mcp, file_read\nmcpServers: github, gmail, telegram\n---\nBody instructions.",
+        )
+        assertNotNull(a)
+        assertEquals(listOf("github", "gmail", "telegram"), a!!.mcpServers)
+    }
+
+    @Test
+    fun `mcp_servers alias parses identically`() {
+        val a = AgentFileParser.parse(
+            "auditor.md",
+            "---\nname: auditor\nmcp_servers: github\n---\nBody instructions.",
+        )
+        assertNotNull(a)
+        assertEquals(listOf("github"), a!!.mcpServers)
+    }
 }

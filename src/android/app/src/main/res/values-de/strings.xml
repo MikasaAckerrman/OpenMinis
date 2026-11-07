@@ -1092,4 +1092,9 @@
     <string name="agents_row_default_model">Standardmodell</string>
     <string name="agents_row_tools">Werkzeuge: %1$d</string>
     <string name="agents_row_default_tools">Standard-Werkzeuge</string>
+
+    <string name="agents_row_mcp">%1$d MCP-Server</string>
+    <string name="agents_restrict_mcp">MCP-Server einschränken</string>
+    <string name="agents_restrict_mcp_hint">Aus = alle aktivierten Server in servers.json sind zugänglich</string>
+    <string name="agents_no_mcp_servers">Noch keine MCP-Server in den Einstellungen konfiguriert</string>
 </resources>

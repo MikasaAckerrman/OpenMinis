@@ -82,12 +82,29 @@ object McpCallTool {
         val toolArgs = args.optString("args", "").trim()
         val timeoutSec = args.optInt("timeout", DEFAULT_TIMEOUT_SEC).coerceIn(5, 300)
 
+        // [B16-stage2b] Server-scoped allowlist enforcement:
+        val allowedServers = AgentMcpPolicyStore.policyFor(sessionId)
+
         when (action) {
-            "list" -> runCli(sessionId, listOf("list"), timeoutSec, context)
+            "list" -> {
+                val res = runCli(sessionId, listOf("list"), timeoutSec, context)
+                if (allowedServers != null && res.success) {
+                    val filtered = filterListOutput(res.output, allowedServers)
+                    ToolExecutionResult(filtered, true)
+                } else {
+                    res
+                }
+            }
             "tools" -> {
                 if (server.isEmpty()) {
                     return@withContext ToolExecutionResult(
                         "Error: 'server' is required for action=tools", false)
+                }
+                if (allowedServers != null && !allowedServers.any { it.equals(server, ignoreCase = true) }) {
+                    return@withContext ToolExecutionResult(
+                        "Error: MCP server '$server' is not allowed for this agent (allowed: ${allowedServers.joinToString()})",
+                        false,
+                    )
                 }
                 runCli(sessionId, listOf("tools", server), timeoutSec, context)
             }
@@ -95,6 +112,12 @@ object McpCallTool {
                 if (server.isEmpty() || tool.isEmpty()) {
                     return@withContext ToolExecutionResult(
                         "Error: 'server' and 'tool' are required for action=call", false)
+                }
+                if (allowedServers != null && !allowedServers.any { it.equals(server, ignoreCase = true) }) {
+                    return@withContext ToolExecutionResult(
+                        "Error: MCP server '$server' is not allowed for this agent (allowed: ${allowedServers.joinToString()})",
+                        false,
+                    )
                 }
                 val argv = mutableListOf("call", server, tool)
                 if (toolArgs.isNotEmpty()) {
@@ -113,6 +136,52 @@ object McpCallTool {
             else -> ToolExecutionResult(
                 "Error: unknown action '$action' — use list | tools | call", false)
         }
+    }
+
+    /**
+     * [B16-stage2b] Filter MCP server listing to only allowed servers.
+     * Supports JSON array of objects, JSON object with "servers"/"mcpServers",
+     * or line-based format.
+     */
+    internal fun filterListOutput(output: String, allowedServers: List<String>): String {
+        val allowedSet = allowedServers.map { it.lowercase() }.toSet()
+        val jsonArray = runCatching { org.json.JSONArray(output) }.getOrNull()
+        if (jsonArray != null) {
+            val filtered = org.json.JSONArray()
+            for (i in 0 until jsonArray.length()) {
+                val item = jsonArray.optJSONObject(i) ?: continue
+                val name = item.optString("name", item.optString("id", "")).lowercase()
+                if (name in allowedSet) {
+                    filtered.put(item)
+                }
+            }
+            return filtered.toString(2)
+        }
+        val jsonObj = runCatching { JSONObject(output) }.getOrNull()
+        if (jsonObj != null) {
+            val key = if (jsonObj.has("servers")) "servers" else if (jsonObj.has("mcpServers")) "mcpServers" else null
+            if (key != null) {
+                val arr = jsonObj.optJSONArray(key)
+                if (arr != null) {
+                    val filteredArr = org.json.JSONArray()
+                    for (i in 0 until arr.length()) {
+                        val item = arr.optJSONObject(i) ?: continue
+                        val name = item.optString("name", item.optString("id", "")).lowercase()
+                        if (name in allowedSet) {
+                            filteredArr.put(item)
+                        }
+                    }
+                    val filteredObj = JSONObject()
+                    filteredObj.put(key, filteredArr)
+                    return filteredObj.toString(2)
+                }
+            }
+        }
+        val lines = output.lines().filter { line ->
+            allowedSet.any { server -> line.contains(server, ignoreCase = true) }
+        }
+        return if (lines.isEmpty()) "[]" else lines.joinToString("\n")
+    }
     }
 
     /**
