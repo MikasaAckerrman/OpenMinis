@@ -144,10 +144,9 @@ object SubagentExecutor {
             // (allowNesting=false) strips the delegation tools from the
             // grandchild's schema — the orchestrator delegation lives ONE
             // level deep, exactly as designed.
-            allowedTools = defaultToolsForRole(agentRole).let { tools ->
-                if (allowNesting) tools
-                else tools.filterNot { it == "spawn_subagent" || it == "spawn_many" || it == "cancel_subagent" }
-            },
+            allowedTools = SubagentRoles.toolsForChild(
+                defaultToolsForRole(agentRole), allowNesting,
+            ),
             maxTurns = 8,
             modelRole = modelRoleFor(agentRole),
         )
@@ -491,6 +490,14 @@ object SubagentExecutor {
         val spawnerRole = spawnerSessionId
             ?.let { app.chatRepository.dao.agentWorkerRole(it) }
             ?.let { runCatching { AgentRole.valueOf(it) }.getOrNull() }
+        // [B8] ADMISSION GATE (childRole == null is the matrix's encoding of
+        // a custom agent): a worker session hiring a custom agent is
+        // refused before any graph exists — same policy as the builtin
+        // spawn path above.
+        if (!mayDelegate(null, spawnerRole)) {
+            return "spawn refused: role '${spawnerRole?.name ?: "MAIN"}' is not permitted " +
+                "to spawn custom agents (delegation matrix policy)."
+        }
         val (graph, node) = buildCustomGraph(agent, task, spawnerRole == null)
         app.providerRepository.saveAgentGraph(graph)
 
@@ -539,11 +546,9 @@ object SubagentExecutor {
             // but the SAME structural cap applies: a spawn issued from a
             // worker session strips them — custom agents nest exactly one
             // level deep, like the builtin roles.
-            allowedTools = (agent.tools ?: defaultToolsForRole(AgentRole.DOCUMENTATION_AGENT))
-                .let { tools ->
-                    if (allowNesting) tools
-                    else tools.filterNot { it == "spawn_subagent" || it == "spawn_many" || it == "cancel_subagent" }
-                },
+            allowedTools = SubagentRoles.toolsForChild(
+                agent.tools ?: defaultToolsForRole(AgentRole.DOCUMENTATION_AGENT), allowNesting,
+            ),
             maxTurns = agent.maxTurns,
             modelEntryId = agent.modelEntryId.orEmpty(),
             modelRole = if (agent.modelEntryId != null) "" else (agent.modelRole ?: "analyst"),
@@ -635,6 +640,17 @@ object SubagentExecutor {
             } else if (resolveRole(spec.role) == null) {
                 return "Unknown role '${spec.role}'. Valid: ${SubagentRoles.SPAWNABLE.joinToString()} " +
                     "or custom:<name> (see list_agents)"
+            }
+        }
+        // [B8] ADMISSION GATE for the whole batch — checked BEFORE any
+        // coroutine, slot capture or graph build: one unauthorized spec
+        // refuses the batch with the matrix policy named, exactly like the
+        // single-spawn path. childRole == null encodes a custom: target.
+        for (spec in agents) {
+            val targetRole = if (spec.role.startsWith("custom:")) null else resolveRole(spec.role)
+            if (!mayDelegate(targetRole, spawnerRole)) {
+                return "spawn_many refused: role '${spawnerRole?.name ?: "MAIN"}' is not permitted " +
+                    "to spawn '${spec.role}' (delegation matrix policy)."
             }
         }
         // [T-agent-dedup] Mechanical duplicate gate, checked SEQUENTIALLY
@@ -733,9 +749,22 @@ object SubagentExecutor {
                                 // fixed): workers spawned from a worker
                                 // session get the delegation tools stripped,
                                 // same rule as spawn().
+                                // [B8] The child's nesting right is NOT the
+                                // matrix verdict: only an ORCHESTRATOR hired
+                                // from the main chat nests. A custom: target
+                                // (resolveRole == null) keeps the A8xA3
+                                // single/batch parity — a custom agent hired
+                                // from MAIN delegates, hired from a worker
+                                // session it does not.
+                                val targetRole = resolveRole(spec.role)
+                                val childCanNest = if (targetRole == null) {
+                                    spawnerRole == null
+                                } else {
+                                    targetRole == AgentRole.ORCHESTRATOR && spawnerRole == null
+                                }
                                 val pair = buildGraphFor(
                                     context, spec.role, spec.task,
-                                    mayDelegate(resolveRole(spec.role), spawnerRole),
+                                    childCanNest,
                                 )
                                     ?: return@runCatching "No custom agent '${spec.role.removePrefix("custom:")}' " +
                                         "in ${AgentFileStore.SANDBOX_DIR} (call list_agents)."
@@ -1058,8 +1087,22 @@ object SubagentExecutor {
         val spawnerRole = spawnerSessionId
             ?.let { app.chatRepository.dao.agentWorkerRole(it) }
             ?.let { runCatching { AgentRole.valueOf(it) }.getOrNull() }
-        val allowNesting = mayDelegate(agentRole, spawnerRole)
-        val (graph, node) = buildEphemeralGraph(agentRole, task, allowNesting)
+        // [B8] ADMISSION GATE. The matrix result used to feed only
+        // allowNesting — an unauthorized spawn (a worker hiring another
+        // worker) was never refused, the graph was built, saved and RUN.
+        // Now the refusal happens BEFORE any graph exists.
+        if (!mayDelegate(agentRole, spawnerRole)) {
+            return "spawn refused: role '${spawnerRole?.name ?: "MAIN"}' is not permitted " +
+                "to spawn '$role' (delegation matrix policy)."
+        }
+        // [B8] Spawn permission and the CHILD's own nesting right are two
+        // different questions. The old code handed the matrix verdict to
+        // buildEphemeralGraph as allowNesting, so a worker hired by the
+        // orchestrator formally kept its delegation tools. Only an
+        // ORCHESTRATOR launched from the main chat nests; every worker and
+        // reviewer child is a leaf.
+        val childCanNest = (agentRole == AgentRole.ORCHESTRATOR && spawnerRole == null)
+        val (graph, node) = buildEphemeralGraph(agentRole, task, childCanNest)
         app.providerRepository.saveAgentGraph(graph)
         val spawnId = node.id
         return if (foreground) {
@@ -1609,18 +1652,27 @@ object SubagentRoles {
     /**
      * [T-subagent-nesting] The delegation capability matrix.
      *
-     * MAIN chat (spawnerRole == null) may arm the ORCHESTRATOR (the entry
-     * delegator) and the reviewer roles. The ORCHESTRATOR may arm worker
-     * roles and reviewer roles - its tool surface has always granted
-     * spawn_subagent/spawn_many/cancel_subagent/task_board/await_result, and
-     * the orchestrator prompt tells it to split the task and hire workers, but
-     * the matrix answered "reviewers only", so the tool was there and the
-     * permission was not.
+     * MAIN chat (spawnerRole == null) arms the full advertised surface: the
+     * ORCHESTRATOR (the entry delegator), the reviewer roles, the worker
+     * roles and custom agents. [B8] Makes EXPLICIT what the gate bypass
+     * made de facto: the spawn_subagent / spawn_many schemas advertise the
+     * whole SPAWNABLE list to the main chat, and MAIN worker spawns have
+     * worked since the feature shipped (the old gate never refused, it
+     * only downgraded allowNesting). A strict "MAIN arms reviewers only"
+     * reading would have broken 9 of the 13 advertised roles. The matrix
+     * now tells the truth; the real security boundary this fix closes is
+     * the SPAWNER side — workers and reviewers arm NOBODY.
+     *
+     * The ORCHESTRATOR may arm worker roles and reviewer roles — its tool
+     * surface grants spawn_subagent/spawn_many/cancel_subagent/task_board/
+     * await_result, and the orchestrator prompt tells it to split the task
+     * and hire workers.
      *
      * The structural caps stay: an orchestrator cannot arm another
-     * orchestrator, a reviewer cannot arm a reviewer, a worker arms
-     * nobody. The workers a delegator may arm are leaves, so no chain can
-     * pass depth 3 and uncontrolled fan-out stays impossible.
+     * orchestrator (and cannot hire a custom agent — customs are the main
+     * chat's prerogative), a worker or reviewer spawner is refused flat.
+     * The children a delegator may arm are leaves, so no chain can pass
+     * depth 3 and uncontrolled fan-out stays impossible.
      */
     internal fun mayDelegate(childRole: AgentRole?, spawnerRole: AgentRole?): Boolean {
         val reviewers = setOf(
@@ -1643,12 +1695,11 @@ object SubagentRoles {
             AgentRole.EXPLORE,
         )
         return when (spawnerRole) {
-            // Event-matrix fix (A8 x A3): a custom agent (childRole == null)
-            // spawned from MAIN may delegate - spawnCustom() already grants
-            // exactly that (spawnerRole == null); the batch path disagreed
-            // with the single path for the same user action. Both entry
-            // points now answer identically.
-            null -> childRole == null || childRole == AgentRole.ORCHESTRATOR || childRole in reviewers
+            // MAIN arms the advertised surface: custom agents (childRole ==
+            // null, event-matrix fix A8 x A3), the orchestrator, reviewers
+            // and workers (B8: explicit, was a gate-bypass de facto).
+            null -> childRole == null || childRole == AgentRole.ORCHESTRATOR ||
+                childRole in reviewers || childRole in workers
             AgentRole.ORCHESTRATOR ->
                 childRole != null &&
                     childRole != AgentRole.ORCHESTRATOR &&
@@ -1656,6 +1707,20 @@ object SubagentRoles {
             else -> false
         }
     }
+
+    /**
+     * [T-subagent-nesting][B8] The tool-surface half of the depth cap,
+     * extracted as a pure seam so the rule is testable without a graph
+     * build: a child without the nesting right keeps its surface MINUS
+     * the delegation tools — a spawn schema a child may not answer with
+     * is a lie advertised to the model.
+     */
+    internal fun toolsForChild(tools: List<String>, allowNesting: Boolean): List<String> =
+        if (allowNesting) tools
+        else tools.filterNot {
+            it == "spawn_subagent" || it == "spawn_many" || it == "cancel_subagent"
+        }
+
     val SPAWNABLE = listOf(
         // [T-explore-role] First in the list: research-first agents spawn
         // explorers more often than any specialist.
