@@ -661,5 +661,46 @@ LOADING-гейт, отсутствие фидбека, snapshot-discard, SELECT 
     `CountDownLatch` (`entered.countDown()` внутри `blocking.read()` + `entered.await(5, TimeUnit.SECONDS)`).
 - CI run: `42366396231` (attempt 1) — SUCCESS на `OpenMinis-canon`.
 
+## 27. День 2026-11-07 — B25: Защита от пропажи сообщений из чата (in-memory tail preservation & queue parking)
+
+Вердикт ревьюера: SHIP.
+
+### Реализация и фиксы — 50a3d7e9 + 7c01c27c, CI 42369813130 SUCCESS (на зеркале)
+[статус: РЕАЛИЗОВАНО+CI | улика: код+run 42369813130 на canon]
+
+- Корневые причины (аудит ревьюера 07.11):
+  1. `ChatViewModel.kt:7977`: повторный паблиш `windowToInstall` на завершении полного парсинга
+     LLM-истории затирал in-memory хвост сообщений, поступивших между ранним открытием экрана
+     и завершением фонового разбора (восстановленные queued-пузыри, пользовательские отправки,
+     активный стриминг, системные уведомления).
+  2. `ChatViewModel.kt:20101`: `resumeQueueAfterCancel` при отсутствии активного провайдера
+     (`currentProvider == null`) полностью очищал очередь отложенных промптов и пузыри из UI.
+  3. `ChatViewModel.kt:10506`: `injectTurn` использовал устаревший pre-IO снимок `msgsAfterUnqueue`,
+     затирая сообщения, пришедшие в список во время выполнения `appendMessage`.
+
+- Решение архитектора:
+  1. Чистый хелпер `ChatHistoryWindow.preserveInMemoryTail(current, installedDbIds)`:
+     - Сохраняет эфемерные сообщения (`isQueued`, `queuedPromptId`, префиксы `queued_msg_`,
+       `pending_`, флаги `isStreaming`, `isAwaitingModelResponse`, системные нотисы).
+     - Исключает строки, уже вошедшие в установленное окно БД (`installedDbIds`), предотвращая дубликаты.
+     - Исключает устаревшие строки БД, отсутствующие в окне (окно БД - единственный источник правды).
+     - Исключает compact-разделители (пересоздаются фазой graying).
+  2. `ChatViewModel.kt:7996`: монтаж `_messages.value = finalizedWindow + inMemoryTail`.
+  3. `ChatViewModel.kt:20121`: безопасная парковка очереди при `currentProvider == null`
+     вместо деструктивного сброса.
+  4. `ChatViewModel.kt:10428, 10526`: фильтрация плейсхолдеров по актуальному состоянию
+     `_messages.value` с объединенным набором `unqueuedIds = injectedIds + acceptedSet`.
+  5. Модульные тесты `ChatHistoryWindowTest.kt`:
+     - 6 тестов, валидирующих сохранение очереди, стриминга, системных нотисов, отсечение дубликатов,
+       призраков старой БД и разделителей компактации.
+
+- CI диагностика и постмортем:
+  - Ран `42369126335` (50a3d7e9): падение `compact marker system row is not rescued (graying recreates it)`.
+    Диагностика: тестовая фикстура задавала `kind = "compact"`, в то время как предикат фильтрации
+    проверяет `toolName != "compact"` (канонический дискриминатор compact-разделителя).
+  - Коммит `7c01c27c`: фиксация `toolName = "compact"` в фикстуре теста.
+  - Ран `42369813130` (attempt 1): **SUCCESS** на `OpenMinis-canon`.
+
+
 
 
