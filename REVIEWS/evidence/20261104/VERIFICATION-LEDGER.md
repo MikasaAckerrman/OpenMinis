@@ -711,7 +711,7 @@ LOADING-гейт, отсутствие фидбека, snapshot-discard, SELECT 
 - Корневые причины (аудит ревьюера 07.11 по отчёту юзера 02.11):
   1. `ToolOverlayController.kt:254`: незащищённый `windowManager.addView(container, params)`
      при уходе приложения в фон (`isAppForegroundFlow == false`). На Android 14/15 и агрессивных
-     OEM-прошивках (OriginOS 5 на vivo V2425A / iQOO 13) отзыв `SYSTEM_ALERT_WINDOW` или блокировка
+     OEM-прошивках (OriginOS 5 на vivo V2425A / iQOO Neo 10) отзыв `SYSTEM_ALERT_WINDOW` или блокировка
      фонового показа плавающих окон выбрасывала `BadTokenException`/`SecurityException`,
      приводя к мгновенному падению процесса на главном потоке (`FATAL EXCEPTION: main`).
   2. `AgentForegroundService.kt:214-276`: `START_STICKY` рестарт сервиса с `intent == null`
@@ -746,8 +746,8 @@ LOADING-гейт, отсутствие фидбека, snapshot-discard, SELECT 
 
 Вердикт ревьюера: SHIP.
 
-### Реализация — коммит b606a03d, CI 42379901496 (на зеркале OpenMinis-canon)
-[статус: РЕАЛИЗОВАНО+CI | улика: коммит b606a03d, ран 42379901496 на canon]
+### Реализация — коммит b606a03d + фикс компиляции 7fc18201, CI 42380287628 (на зеркале OpenMinis-canon)
+[статус: РЕАЛИЗОВАНО+CI | улика: коммиты b606a03d + 7fc18201, ран 42380287628 на canon]
 
 - Корневые причины и контекст:
   1. `TelegramLoginState.kt`: состояние незавершённого входа (номер телефона, одноразовый код верификации, api_id, api_hash) сохранялось в `filesDir/tg-vault/login-state.json` в открытом виде (plaintext JSON). Несмотря на изоляцию `tg-vault` от сэндбоксов агентов, хранение чувствительных аутентификационных данных в открытом виде нарушало протокол P0.3 и создавало риск компрометации при резервном копировании или инспекции ФС.
