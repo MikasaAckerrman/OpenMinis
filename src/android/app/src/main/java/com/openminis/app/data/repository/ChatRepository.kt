@@ -432,6 +432,24 @@ class ChatRepository(internal val dao: ChatDao) {
         SessionHistoryCache.invalidateMessage(id)
     }
 
+    /**
+     * [B19] parts rewrite that PRESERVES the original created_at — the edit
+     * changes content, not the message's date. That stamp preservation is
+     * exactly what makes this write INVISIBLE to the SessionHistoryCache
+     * fingerprint (rowCount and MAX(created_at) both unchanged), so the
+     * wrapper MUST invalidate explicitly — and MUST be the only entry point
+     * for it. The rewrite path (ChatViewModel.rewriteMessageText) called the
+     * DAO directly and the cache never learned about the edit: the DB on
+     * disk held the new text while the next loadSession served the OLD
+     * parsed history from the Java heap ("правка не сохраняется" — bubble
+     * reverts on reload, model answers the old text).
+     */
+    suspend fun updateMessagePartsPreserveStamp(sessionId: String, id: String, partsJson: String) {
+        dao.updateMessagePartsPreserveStamp(id, partsJson)
+        SessionHistoryCache.invalidate(sessionId)
+        SessionHistoryCache.invalidateMessage(id)
+    }
+
     /** [T-error-persist-android] Set/clear the error sticker on a row by id. */
     suspend fun updateMessageErrorInfo(messageId: String, errorInfo: String?) {
         dao.updateMessageErrorInfo(messageId, errorInfo)

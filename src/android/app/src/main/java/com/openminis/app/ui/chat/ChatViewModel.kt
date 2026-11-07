@@ -4626,7 +4626,12 @@ class ChatViewModel(
                     val sib = rows.firstOrNull { it.id == cand } ?: continue
                     if (com.openminis.app.data.MessageSurgery.textOf(sib.partsJson).isEmpty()) continue
                     val stripped = com.openminis.app.data.MessageSurgery.removeTextParts(sib.partsJson)
-                    runCatching { chatRepository.dao.updateMessagePartsPreserveStamp(sib.id, stripped) }
+                    // [B19] Through the repository — the wrapper carries the
+                    // SessionHistoryCache invalidation the direct DAO call
+                    // skipped (the stale-heap reload is the reported bug).
+                    runCatching {
+                        chatRepository.updateMessagePartsPreserveStamp(sid, sib.id, stripped)
+                    }
                         .onSuccess { siblingsCleared++ }
                         .onFailure {
                             siblingsFailed++
@@ -4674,7 +4679,13 @@ class ChatViewModel(
                 val updateOutcome = runCatching {
                     // [T-edit-keeps-date] Preserve the original finish stamp —
                     // an edit changes content, not the message's date.
-                    chatRepository.dao.updateMessagePartsPreserveStamp(row.id, rewritten)
+                    // [B19] Repository wrapper, not the bare DAO: the
+                    // stamp-preserving UPDATE leaves the cache fingerprint
+                    // (rowCount + MAX(created_at)) untouched, so without the
+                    // explicit invalidation the next loadSession served the
+                    // OLD parsed history from SessionHistoryCache — the DB
+                    // was right and the screen/model were stale.
+                    chatRepository.updateMessagePartsPreserveStamp(sid, row.id, rewritten)
                 }
                 if (updateOutcome.isFailure) {
                     val reason = updateOutcome.exceptionOrNull()
@@ -4738,9 +4749,20 @@ class ChatViewModel(
                         // In-place list update — a full reloadSessionFromDb
                         // mid-stream resets stream-owned gates (loadSession
                         // tears down the whole session state).
+                        // [B19] An assistant bubble renders its prose FROM
+                        // toolBlocks (AssistantBlock kind="text", see
+                        // ChatFlatItems' AssistantMarkdownBlock) — `content`
+                        // alone is ignored for assistant messages. Rewriting
+                        // only `content` changed the model the user never
+                        // sees; the text blocks must carry the edit too.
                         _messages.value = _messages.value.map { m ->
                             if (m.id == messageId || m.sourceDbIds.contains(row.id)) {
-                                m.copy(content = newText)
+                                m.copy(
+                                    content = newText,
+                                    toolBlocks = m.toolBlocks.map { b ->
+                                        if (b.kind == "text") b.copy(content = newText) else b
+                                    },
+                                )
                             } else {
                                 m
                             }
