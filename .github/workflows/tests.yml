@@ -87,3 +87,28 @@ jobs:
           name: unit-test-report-no-apk
           path: src/android/app/build/reports/tests/
           retention-days: 7
+
+  # [M-R1] The Rust daemon's gate: request parsing, Bearer validation,
+  # JSON-RPC dispatch and a real-socket roundtrip — host cargo test, no
+  # Android SDK, no NDK. Same [test]/dispatch gate as the JVM job.
+  rust:
+    name: Rust daemon tests (minisd)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: contains(github.event.head_commit.message, '[test]') || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src/native/minisd
+
+      - name: cargo test
+        run: |
+          cd src/native/minisd
+          cargo test

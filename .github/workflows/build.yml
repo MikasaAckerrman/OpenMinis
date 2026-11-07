@@ -68,6 +68,37 @@ jobs:
           ./build_proot.sh
           ../scripts/prepare_android_sandbox.sh
 
+      # [M-R1] The native minisd daemon (docs/RUST_MIGRATION_SPEC.md):
+      # aarch64-linux-android ONLY (spec §3 — no x86_64, the Waydroid
+      # stand degrades documented), renamed to libminisd.so for the
+      # nativeLibraryDir exec-allowed location (the libproot precedent).
+      # Skeleton: contract-v1 echo; grammers/vault arrive in M-R2. NDK
+      # linker target api 26 = the project minSdk (deps/build_proot.sh
+      # L44-46). No target-cpu micro-arch flags — spec verdict.
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src/native/minisd
+
+      - name: Build minisd daemon (aarch64)
+        run: |
+          NDK="${ANDROID_NDK_HOME:-${ANDROID_HOME:-/usr/local/lib/android/sdk}/ndk/28.2.13676358}"
+          TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          ls "$TOOLCHAIN/aarch64-linux-android26-clang" > /dev/null
+          export RUSTFLAGS="-C linker=$TOOLCHAIN/aarch64-linux-android26-clang"
+          cd src/native/minisd
+          cargo build --release --target aarch64-linux-android
+          BIN="target/aarch64-linux-android/release/minisd"
+          test -f "$BIN"
+          cp "$BIN" ../../android/app/src/main/jniLibs/arm64-v8a/libminisd.so
+          file ../../android/app/src/main/jniLibs/arm64-v8a/libminisd.so
+          ls -la ../../android/app/src/main/jniLibs/arm64-v8a/
+
       - name: Grant Gradle permission
         run: chmod +x src/android/gradlew
 
@@ -184,7 +215,8 @@ jobs:
             --tests 'com.openminis.app.ui.chat.UiCopyCapsuleTest' \
             --tests 'com.openminis.app.ui.chat.UiCopyDiffVerdictTest' \
             --tests 'com.openminis.app.ui.chat.MinisTextKitSelectionOrderTest' \
-            --tests 'com.openminis.app.ui.chat.ShardOrderTest'
+            --tests 'com.openminis.app.ui.chat.ShardOrderTest' \
+            --tests 'com.openminis.app.daemon.*'
           fi
         # `offload.*` already covers AgentArtifactStoreTest — the artifact store
         # lives in that package on purpose, next to the runner that uses it.
