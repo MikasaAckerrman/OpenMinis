@@ -449,6 +449,9 @@ fun ChatScreen(
     // 0.5–1s DB read (no spinner, repeat clicks silently dropped).
     val isLoadingOlder by viewModel.isLoadingOlderMessages.collectAsState()
     val isStreaming by viewModel.isStreaming.collectAsState()
+    // [B6] Hoisted so the detail sheet SURVIVES the card scrolling off-screen
+    // (a sheet owned by the LazyColumn row would die with its row).
+    var agentBatchSheet by remember { mutableStateOf<FlatChatItem.SubagentBatch?>(null) }
     // [T-compact-progress] Live compact card (progress/percent/timer, or the
     // specific failure + retry). Hoisted beside isStreaming.
     val compactProgress by viewModel.compactProgress.collectAsState()
@@ -4296,6 +4299,12 @@ fun ChatScreen(
                                     TypingIndicator()
                                 }
                             }
+                            // [B6] The compact batch card for a spawn_many run —
+                            // the N per-agent pills collapsed into one summary;
+                            // the per-agent logs live in the detail sheet.
+                            is FlatChatItem.SubagentBatch -> SubagentBatchCard(item) {
+                                agentBatchSheet = item
+                            }
                             is FlatChatItem.AssistantError -> InlineErrorBanner(
                                 error = item.error,
                                 onRetry = {
@@ -4388,6 +4397,11 @@ fun ChatScreen(
                     reverseLayout = true,
                 )
                 MinisMarkdownTextToolbarHost(markdownToolbar)
+                // [B6] The batch detail sheet — screen-level so it survives
+                // the card scrolling out of the lazy viewport.
+                agentBatchSheet?.let { batch ->
+                    SubagentBatchSheet(item = batch, onDismiss = { agentBatchSheet = null })
+                }
                 // MinisTextKit floating toolbar — driven by selectionController.
                 MinisSelectionToolbarHost(
                     controller = selectionController,
