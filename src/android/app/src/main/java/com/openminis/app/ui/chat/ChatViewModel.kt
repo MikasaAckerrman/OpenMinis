@@ -7974,7 +7974,12 @@ class ChatViewModel(
             } else {
                 ordered
             }
-            _messages.value = if (marker == null) {
+            // [B25] Preserve the in-memory tail: the window is built ONLY
+            // from DB rows, so a bare assign wiped everything that had
+            // landed since the early-gate publish — restored queued bubbles,
+            // user messages sent while the full history was parsing, system
+            // notices ("messages disappear from the chat").
+            val finalizedWindow = if (marker == null) {
                 windowToInstall
             } else {
                 // Phase 2.5: historyDbIds above filters the createdAt
@@ -7991,6 +7996,11 @@ class ChatViewModel(
                     windowFromIndex = installFromIndex,
                 )
             }
+            val inMemoryTail = ChatHistoryWindow.preserveInMemoryTail(
+                current = _messages.value,
+                installedDbIds = windowToInstall.mapTo(HashSet()) { it.id },
+            )
+            _messages.value = finalizedWindow + inMemoryTail
 
             // Cold-start interrupt detection: an agent loop that was killed by
             // the OS (or app force-quit) leaves agentHistory in one of three
@@ -10394,10 +10404,10 @@ class ChatViewModel(
         // placeholder, once as the injected bubble. drainQueuedPrompts reuses
         // its placeholders and never re-appends, so it didn't dupe; this mid-
         // loop inject path appends a fresh bubble, so the placeholders must go.
-        val queuedIds = queued.map { it.id }.toSet()
-        val msgsAfterUnqueue = _messages.value.filterNot { m ->
-            m.queuedPromptId != null && queuedIds.contains(m.queuedPromptId)
-        }
+        // [B25] The removal itself happens at the Main install against the
+        // CURRENT list (unqueuedIds) — the old pre-IO snapshot
+        // (msgsAfterUnqueue) wiped everything that landed while appendMessage
+        // ran. `queued` here only feeds the dedup split.
 
         // Build the combined user message from all queued prompts.
         val sid = ensureSession()
@@ -10410,13 +10420,18 @@ class ChatViewModel(
         }.getOrDefault(emptySet())
         val dedupSplit = QueueDedupPolicy.split(queued, acceptedIds)
         val fresh = dedupSplit.fresh
-        if (dedupSplit.alreadyAccepted.isNotEmpty()) {
+        // [B25] Every prompt whose queue entry leaves the queue in THIS call
+        // — injected fresh + dedup-dropped already-accepted. Both lose their
+        // `queued_msg_…` placeholder bubbles at the Main install below; the
+        // old pre-IO snapshot removed the same union (queuedIds) — this
+        // preserves that removal semantics while fixing the staleness.
+        val acceptedSet = dedupSplit.alreadyAccepted.map { it.id }.toSet()
+        if (acceptedSet.isNotEmpty()) {
             AppLogger.info(
                 TAG_STREAM,
-                "[Queue] inject dedup: dropping ${dedupSplit.alreadyAccepted.size} already-accepted " +
+                "[Queue] inject dedup: dropping ${acceptedSet.size} already-accepted " +
                     "prompt(s) ids=${dedupSplit.alreadyAccepted.joinToString(",") { it.id.takeLast(12) }}",
             )
-            val acceptedSet = dedupSplit.alreadyAccepted.map { it.id }.toSet()
             _promptQueue.value = _promptQueue.value.filterNot { it.id in acceptedSet }
             persistPromptQueue()
         }
@@ -10482,6 +10497,7 @@ class ChatViewModel(
         // [T-queue-zombie-window] Durable now — take the injected entries
         // and persist the remainder state.
         val injectedIds = fresh.map { it.id }.toSet()
+        val unqueuedIds = injectedIds + acceptedSet
         _promptQueue.value = _promptQueue.value.filterNot { it.id in injectedIds }
         persistPromptQueue()
         agentHistory.add(
@@ -10503,7 +10519,13 @@ class ChatViewModel(
         val newAssistantId = "assistant_${System.currentTimeMillis()}"
         withContext(Dispatchers.Main) {
             // (a) + (b) one emit: build the post-finalize list.
-            _messages.value = msgsAfterUnqueue
+            // [B25] Filter the CURRENT list, not the pre-IO snapshot
+            // (msgsAfterUnqueue): everything that landed in _messages while
+            // the DB write ran (system notices, background-agent events)
+            // must survive the placeholder removal.
+            _messages.value = _messages.value.filterNot { m ->
+                m.queuedPromptId != null && m.queuedPromptId in unqueuedIds
+            }
             updateAssistantMessage(
                 finishedAssistantId,
                 finishedAccumulatedText,
@@ -20099,9 +20121,14 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
 
             val initialProvider = currentProvider
             if (initialProvider == null) {
-                AppLogger.warning(TAG, "resumeQueueAfterCancel: no provider, dropping queue")
-                _promptQueue.value = emptyList()
-                _messages.value = _messages.value.filterNot { it.isQueued }
+                // [B25] Provider not initialized yet (startup race, no
+                // key/network). The old shape WIPED the queue AND its queued
+                // bubbles here — the user's messages vanished with no
+                // warning and no retry. The queue is durable (persisted on
+                // enqueue), so park it exactly like the streaming/compact
+                // deferrals above: the next kick (provider ready, stale-
+                // stream re-arm, send path) delivers it.
+                AppLogger.warning(TAG, "resumeQueueAfterCancel: no provider yet, keeping queue parked")
                 return@launch
             }
             var provider: LLMProvider = initialProvider

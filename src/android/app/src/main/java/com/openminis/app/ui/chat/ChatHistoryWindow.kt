@@ -120,4 +120,37 @@ object ChatHistoryWindow {
         if (freshOlder.isEmpty()) return current
         return freshOlder + current
     }
+
+    /**
+     * [B25] The in-memory tail that must SURVIVE a window re-publish.
+     *
+     * `loadSession` publishes the DB window twice — at the early gate and
+     * again once the full LLM history has parsed (possibly re-grayed). The
+     * installed window is built ONLY from DB rows, so a bare assign wiped
+     * everything that had landed in the list since the first publish:
+     * restored queued bubbles, user messages sent before the gate opened,
+     * pending/streaming rows and system notices — the "messages disappear
+     * from the chat" report. A row is tail-rescuable when it does not come
+     * from the installed DB window AND it is ephemeral (queued / pending /
+     * streaming / awaiting / a non-compact system notice): DB-backed rows
+     * absent from the window are NOT rescued — the window is the authority
+     * on what the DB currently holds, and stale ghosts must not resurrect.
+     * Compact markers are excluded too: the divider is (re)created by the
+     * graying pass over the installed window, never carried from the old
+     * list.
+     *
+     * Returns ONLY the rescued rows (caller appends them after the window) —
+     * emptyList when there is nothing to rescue.
+     */
+    fun preserveInMemoryTail(
+        current: List<ChatMessage>,
+        installedDbIds: Set<String>,
+    ): List<ChatMessage> = current.filter { m ->
+        m.id !in installedDbIds && (
+            m.isQueued || m.queuedPromptId != null ||
+                m.id.startsWith("queued_msg_") || m.id.startsWith("pending_") ||
+                m.isStreaming || m.isAwaitingModelResponse ||
+                (m.role == "system" && m.toolBlocks.firstOrNull()?.toolName != "compact")
+            )
+    }
 }

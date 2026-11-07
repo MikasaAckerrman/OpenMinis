@@ -171,4 +171,93 @@ class ChatHistoryWindowTest {
             ChatHistoryWindow.mergeOlder(current, older) { it.id },
         )
     }
+
+    // ─── [B25] preserveInMemoryTail — the window re-publish must not wipe
+    // everything that landed since the early gate ───────────────────────────
+
+    private fun msg(
+        id: String,
+        role: String = "user",
+        isQueued: Boolean = false,
+        queuedPromptId: String? = null,
+        isStreaming: Boolean = false,
+        isAwaitingModelResponse: Boolean = false,
+        toolBlocks: List<AssistantBlock> = emptyList(),
+    ) = ChatMessage(
+        id = id,
+        role = role,
+        content = "",
+        isQueued = isQueued,
+        queuedPromptId = queuedPromptId,
+        isStreaming = isStreaming,
+        isAwaitingModelResponse = isAwaitingModelResponse,
+        toolBlocks = toolBlocks,
+    )
+
+    @Test
+    fun `queued pending streaming awaiting and system notice survive the republish`() {
+        val current = listOf(
+            msg("queued_msg_p1", isQueued = true, queuedPromptId = "p1"),
+            msg("pending_abc"),
+            msg("assistant_live", role = "assistant", isStreaming = true),
+            msg("assistant_wait", role = "assistant", isAwaitingModelResponse = true),
+            msg("notice_x", role = "system", toolBlocks = listOf(AssistantBlock(id = "b", kind = "text"))),
+        )
+        val tail = ChatHistoryWindow.preserveInMemoryTail(current, installedDbIds = setOf("db1"))
+        assertEquals(
+            listOf("queued_msg_p1", "pending_abc", "assistant_live", "assistant_wait", "notice_x"),
+            tail.map { it.id },
+        )
+    }
+
+    @Test
+    fun `db-backed rows that the window installs are dropped (no dupes)`() {
+        // A row whose id IS in the installed window is the window's business;
+        // rescuing it would duplicate it.
+        val current = listOf(
+            msg("db1"),
+            msg("db2"),
+            msg("queued_msg_p1", isQueued = true, queuedPromptId = "p1"),
+        )
+        val tail = ChatHistoryWindow.preserveInMemoryTail(current, installedDbIds = setOf("db1", "db2"))
+        assertEquals(listOf("queued_msg_p1"), tail.map { it.id })
+    }
+
+    @Test
+    fun `db-backed rows absent from the window are NOT rescued (no ghosts)`() {
+        // The window is the authority on what the DB holds; a plain user row
+        // missing from it is stale data, not an ephemeral bubble.
+        val current = listOf(
+            msg("stale-db-row"),
+            msg("db1"),
+        )
+        val tail = ChatHistoryWindow.preserveInMemoryTail(current, installedDbIds = setOf("db1"))
+        assertEquals(emptyList<String>(), tail.map { it.id })
+    }
+
+    @Test
+    fun `compact marker system row is not rescued (graying recreates it)`() {
+        val current = listOf(
+            msg("compact-marker", role = "system", toolBlocks = listOf(AssistantBlock(id = "b", kind = "compact"))),
+            msg("notice_x", role = "system", toolBlocks = listOf(AssistantBlock(id = "b", kind = "text"))),
+        )
+        val tail = ChatHistoryWindow.preserveInMemoryTail(current, installedDbIds = emptySet())
+        assertEquals(listOf("notice_x"), tail.map { it.id })
+    }
+
+    @Test
+    fun `system row without toolBlocks counts as a notice`() {
+        // appendSystemInfo rows may carry no tool block at all; firstOrNull
+        // is null so the != compact predicate holds.
+        val current = listOf(msg("bare-notice", role = "system"))
+        val tail = ChatHistoryWindow.preserveInMemoryTail(current, installedDbIds = emptySet())
+        assertEquals(listOf("bare-notice"), tail.map { it.id })
+    }
+
+    @Test
+    fun `nothing to rescue returns an empty tail`() {
+        val current = listOf(msg("db1"), msg("db2"))
+        val tail = ChatHistoryWindow.preserveInMemoryTail(current, installedDbIds = setOf("db1", "db2"))
+        assertEquals(emptyList<ChatMessage>(), tail)
+    }
 }
