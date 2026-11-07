@@ -950,3 +950,20 @@ LOADING-гейт, отсутствие фидбека, snapshot-discard, SELECT 
   * Полное покрытие тестами: 95 cargo unit-тестов проходят (95 passed, 0 failed).
   * CI: ран 42417596179 на canon (зеркало) - обе джобы `Rust daemon tests (minisd)` и `JVM unit tests (no APK)` завершены с SUCCESS с 1-й попытки.
   * Правило R1: 0 вхождений запрещённого символа во всех добавленных и изменённых файлах.
+
+## 36. Ночь 2026-11-08 — Этап 1 Parallel Tool Engine (Реактивный DAG-планировщик Kotlin)
+[статус: ВЕРИФИЦИРОВАНО В РЕВЬЮ + CI | улика: коммит e98caa0c, спека docs/PARALLEL_TOOL_ENGINE_SPEC.md, 22 новых unit-теста]
+
+- **Ликвидация ложных GLOBAL-барьеров (`JsonPathExtractor.kt`)**:
+  * Внедрена таксономия ресурсов §3.1:
+    - Filesystem tree read: `grep`, `glob` - `fs_tree:<normalized_dir>` (дефолт `/var/minis`);
+    - Network read: `web_search` - `net:search` (параллельные чтения), `webfetch` - `net:<url>`;
+    - Memory tier: `memory_get`, `supermemory_search`, `memory_blocks_view`, `todo_read` - `mem:store` READ; `memory_write`, `memory_blocks_edit`, `todo_write` - `mem:store` WRITE;
+    - Telegram MCP: `tg_read`, `tg_unread`, etc. - `mcp:tg:chat_<id>` per chat / `mcp:tg:global_read` для общих;
+  * Текстовая канонизация `normalizeResourcePath(p)`: схлопывание `.` и `..`, двойных слэшей, приводящая `./src/a.rs` к `src/a.rs`.
+- **Иерархический конфликт и WAR-правило (`ToolScheduler.kt`)**:
+  * Внедрён предикат `keysOverlap(a, b)`: дерево `fs_tree:/dir` перекрывается с файлом `fs:/dir/file`, но НЕ затрагивает не-fs ресурсы (`mem:`, `net:`, etc.), честно разрешая коллизии с `/` и `.`.
+  * Реализовано правило WAR (§4.2.3): писатель ждёт ВСЕХ читателей ресурса (а не только последнего по списку), закрывая race-window при параллельных чтениях.
+  * Пул I/O (`ToolConcurrencyClass.kt`): grep, glob, web_search, memory и tg_* переведены в IO-пул (cap 16), предотвращая троттлинг на CPU семафоре.
+- **Тесты**: 22 новых теста в `JsonPathExtractorTest` и `ToolSchedulerTest` (включая канонический research-батч T1-T5: T1, T2, T3, T5 запускаются одновременно, T4 ждёт только T2).
+- **Правило R1**: 0 вхождений запрещённого символа во всех добавленных и изменённых файлах.
