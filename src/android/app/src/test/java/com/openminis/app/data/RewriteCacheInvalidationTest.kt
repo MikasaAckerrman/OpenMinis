@@ -70,7 +70,7 @@ class RewriteCacheInvalidationTest {
         db.close()
     }
 
-    private fun cacheSessionWithCurrentFingerprint() {
+    private suspend fun cacheSessionWithCurrentFingerprint() {
         val rows = dao.loadMessages("s1")
         SessionHistoryCache.put(
             sessionId = "s1",
