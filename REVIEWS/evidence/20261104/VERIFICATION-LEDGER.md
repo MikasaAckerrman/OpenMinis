@@ -909,17 +909,27 @@ LOADING-гейт, отсутствие фидбека, snapshot-discard, SELECT 
   * Фоновый гостевой python3 (`minis-mcp-cli` PID 11636): PSS 20 066 КБ (~20 МБ), RSS 17 200 КБ (~17 МБ).
   * Процесс python-vault: 0 КБ (не запущен из-за vc144-01).
 
-### 2. Сборка APK с нативным minisd
-[статус: СОБРАНО В CI | улика: ран 42406493398 на canon, артефакт app-clone-apk (44 076 511 байт) + unstripped-native-libs (2 354 356 байт)]
+### 2. Сборка APK и инситу Device Smoke тест нативного minisd
+[статус: ВЕРИФИЦИРОВАНО НА УСТРОЙСТВЕ | улика: ран 42406493398 на canon, артефакт app-clone-apk (44 076 511 байт), adb install -r, тесты на iQOO Neo 10]
 
-- Кросс-компиляция Rust под `aarch64-linux-android` с линкером NDK clang API 26 (`libminisd.so`) прошла успешно на шаге `Build minisd daemon (aarch64)`.
-- Сборка Clone APK упаковала нативные библиотеки в `jniLibs/arm64-v8a/libminisd.so`.
-- В соответствии с регламентом `AGENTS.md` (§2, §3) автоматическая установка APK на устройство без подтверждения пользователя задержана.
+- Кросс-компиляция Rust под `aarch64-linux-android` с линкером NDK clang API 26 (`libminisd.so`, 466 КБ) успешно скомпилирована в CI и упакована в `jniLibs/arm64-v8a/libminisd.so`.
+- Артефакт установлен на iQOO Neo 10 через `adb install -r /tmp/openminis_apk/app-clone.apk` (Success).
+- Бинарник `libminisd.so` извлечён в `/data/app/.../lib/arm64/libminisd.so` (`extractNativeLibs=true`).
+- **Инситу Device Smoke**:
+  * Запуск бинарника в UID приложения (`run-as com.openminis.app.clone`): выполняется напрямую, `execve` прав не блокирует, SELinux не запрещает.
+  * Проба HTTP на сокете loopback:
+    1. Неверный Bearer-токен: `HTTP/1.1 401 Unauthorized` (`code: -32001, bearer token mismatch`).
+    2. Валидный токен, метод `initialize`: `HTTP/1.1 200 OK`, `serverInfo.name="telegram"`, версия `"0.1.0-minisd"` (полная совместимость с `TelegramVaultManager.isAlive()`).
+    3. Метод `tools/list`: `HTTP/1.1 200 OK`, `tools: []`.
+- **Сравнительный замер ОЗУ на реальном железе (dumpsys meminfo)**:
+  * Нативный `libminisd.so` (PID 25835): **PSS 1 258 КБ (~1.3 МБ)**, **RSS 4 344 КБ (~4.3 МБ)**.
+  * Python-vault (PID 25417) + PRoot (PID 25413): **PSS 23 063 КБ (~23.1 МБ)**, **RSS 27 728 КБ (~27.7 МБ)**.
+  * **Чистый выигрыш**: сокращение потребления памяти на **94.5% по PSS** и на **84.3% по RSS** при мгновенном старте (<10 мс против секундной трансляции proot).
 
 ### 3. Техническая спецификация маппинга M-R2 (`docs/M_R2_TOOL_MAPPING.md`)
-[статус: ДОКУМЕНТИРОВАНО | улика: docs/M_R2_TOOL_MAPPING.md]
+[статус: УТВЕРЖДЕНО РЕВЬЮЕРОМ (SHIP) | улика: docs/M_R2_TOOL_MAPPING.md, коммит 1d7fc7ae]
 
-- Разработана и согласована спецификация переноса 16 read-only инструментов Telegram на библиотеку `grammers` (`grammers-client` + `grammers-tl-types`).
-- Полная матрица вызовов, валидации схем, кэширования диалогов (`tg_chats_cache.json`, TTL 30 мин), Whitelist-контроля (`tg_whitelist.json`) и обработки `FloodWait`.
+- Разработана и утверждена спецификация переноса 16 read-only инструментов Telegram на библиотеку `grammers` (`grammers-client` + `grammers-tl-types`).
+- Полная матрица вызовов, валидации схем, кэширования диалогов (`tg_chats_cache.json`, TTL 30 мин), Whitelist-контроля (`tg_whitelist.json`) и обработки `FloodWait` (до 60с бэкофф).
 - Разрешено разделение: `yt_transcript` остаётся в гостевом сэндбоксе как не относящийся к MTProto.
-- Готовность к началу кодирования этапа M-R2 в `src/native/minisd/`.
+- Дана санкция на переход к кодированию этапа M-R2 в `src/native/minisd/`.
