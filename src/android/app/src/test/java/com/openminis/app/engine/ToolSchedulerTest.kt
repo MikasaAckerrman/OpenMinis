@@ -1,5 +1,6 @@
 package com.openminis.app.engine
 
+import com.openminis.app.tools.jsonObjectResourceKeys
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -239,7 +240,7 @@ class ToolSchedulerTest {
 class ToolSchedulerHierarchyTest {
 
     private fun realPlanner() = ToolScheduler(
-        resourceKeysOf = com.openminis.app.tools.jsonObjectResourceKeys,
+        resourceKeysOf = ::jsonObjectResourceKeys,
         maxConcurrent = 8,
     )
 
