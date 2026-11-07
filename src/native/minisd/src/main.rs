@@ -21,6 +21,7 @@
 //!
 //! fd-3 key injection of the spec §2.1 stays deferred (M-R3 wiring).
 
+pub mod engine;
 mod http;
 mod rpc;
 mod server;

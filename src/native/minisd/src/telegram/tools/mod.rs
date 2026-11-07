@@ -20,6 +20,7 @@ use serde_json::{json, Value};
 use std::path::PathBuf;
 
 /// Everything a handler needs besides the API seam.
+#[derive(Clone)]
 pub struct ToolCtx {
     /// filesDir/tg-vault equivalent: whitelist, cache, cursor, accounts.
     pub storage: PathBuf,

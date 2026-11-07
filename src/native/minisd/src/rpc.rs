@@ -98,6 +98,91 @@ pub async fn dispatch<A: crate::telegram::api::TgApi + 'static>(
                 }),
             }
         }
+        "engine/plan" => {
+            let calls_val = parsed.pointer("/params/calls").and_then(Value::as_array);
+            let mut calls = Vec::new();
+            if let Some(arr) = calls_val {
+                for item in arr {
+                    let call_id = item.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+                    let name = item.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+                    let args_json = item.get("args_json")
+                        .and_then(Value::as_str)
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| item.get("arguments").map(|v| v.to_string()).unwrap_or_else(|| "{}".to_string()));
+                    calls.push(crate::engine::ToolCallSpec::new(call_id, name, args_json));
+                }
+            }
+            let nodes = crate::engine::plan_reactive(&calls);
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": { "nodes": nodes }
+            })
+        }
+        "tools/batch_call" => {
+            let calls_val = parsed.pointer("/params/calls").and_then(Value::as_array);
+            let mut calls = Vec::new();
+            if let Some(arr) = calls_val {
+                for item in arr {
+                    let call_id = item.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+                    let name = item.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+                    let args_json = item.get("args_json")
+                        .and_then(Value::as_str)
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| item.get("arguments").map(|v| v.to_string()).unwrap_or_else(|| "{}".to_string()));
+                    calls.push(crate::engine::ToolCallSpec::new(call_id, name, args_json));
+                }
+            }
+            let nodes = crate::engine::plan_reactive(&calls);
+            let pools = crate::engine::ConcurrencyPools::default_limits();
+            let (tx, mut rx) = tokio::sync::mpsc::channel(calls.len().max(1));
+
+            let api_clone = api.clone();
+            let ctx_clone = ctx.clone();
+            let auth = authorized;
+
+            tokio::spawn(async move {
+                crate::engine::execute_dag(
+                    nodes,
+                    pools,
+                    move |_id, name, args_json| {
+                        let api = api_clone.clone();
+                        let ctx = ctx_clone.clone();
+                        async move {
+                            let params: Value = serde_json::from_str(&args_json).unwrap_or(json!({}));
+                            if !tools::TOOL_NAMES.contains(&name.as_str()) {
+                                return (false, json!({}), Some(format!("unknown tool: {name}")));
+                            }
+                            match tools::call(&api, &ctx, auth, &name, &params).await {
+                                Ok(payload) => (true, payload, None),
+                                Err(e) => (false, json!({}), Some(e.0)),
+                            }
+                        }
+                    },
+                    tx,
+                ).await;
+            });
+
+            let mut results = Vec::new();
+            while let Some(res) = rx.recv().await {
+                results.push(json!({
+                    "id": res.id,
+                    "name": res.name,
+                    "success": res.success,
+                    "result": if res.success {
+                        tools::mcp_success(&res.output)
+                    } else {
+                        tools::mcp_error(&tools::ToolError(res.error.unwrap_or_default()))
+                    }
+                }));
+            }
+
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": { "results": results }
+            })
+        }
         other => rpc_error(id, -32601, &format!("method not found: {other}")),
     }
 }
@@ -183,6 +268,34 @@ mod tests {
         let api = std::sync::Arc::new(crate::telegram::api::MockApi::new());
         let v = dispatch(body, true, &api, &test_ctx()).await;
         assert_eq!(v["error"]["code"], -32601);
+    }
+
+    #[tokio::test]
+    async fn engine_plan_returns_reactive_nodes_with_dependencies() {
+        let body = br#"{"jsonrpc":"2.0","id":42,"method":"engine/plan","params":{"calls":[
+            {"id":"1","name":"file_read","arguments":{"path":"a.txt"}},
+            {"id":"2","name":"file_write","arguments":{"path":"a.txt","content":"v2"}}
+        ]}}"#;
+        let api = std::sync::Arc::new(crate::telegram::api::MockApi::new());
+        let v = dispatch(body, true, &api, &test_ctx()).await;
+        assert_eq!(v["id"], 42);
+        let nodes = v["result"]["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0]["call"]["id"], "1");
+        assert_eq!(nodes[1]["depends_on"].as_array().unwrap()[0], "1");
+    }
+
+    #[tokio::test]
+    async fn tools_batch_call_executes_planned_calls_concurrently() {
+        let body = br#"{"jsonrpc":"2.0","id":99,"method":"tools/batch_call","params":{"calls":[
+            {"id":"c1","name":"tg_list_chats","arguments":{}},
+            {"id":"c2","name":"tg_whoami","arguments":{}}
+        ]}}"#;
+        let api = std::sync::Arc::new(crate::telegram::api::MockApi::new());
+        let v = dispatch(body, false, &api, &test_ctx()).await;
+        assert_eq!(v["id"], 99);
+        let results = v["result"]["results"].as_array().unwrap();
+        assert_eq!(results.len(), 2);
     }
 
     pub fn test_ctx() -> ToolCtx {
