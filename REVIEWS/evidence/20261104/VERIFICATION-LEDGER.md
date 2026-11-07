@@ -952,7 +952,7 @@ LOADING-гейт, отсутствие фидбека, snapshot-discard, SELECT 
   * Правило R1: 0 вхождений запрещённого символа во всех добавленных и изменённых файлах.
 
 ## 36. Ночь 2026-11-08 — Этап 1 Parallel Tool Engine (Реактивный DAG-планировщик Kotlin)
-[статус: ВЕРИФИЦИРОВАНО В РЕВЬЮ + CI | улика: коммит e98caa0c, спека docs/PARALLEL_TOOL_ENGINE_SPEC.md, 22 новых unit-теста]
+[статус: ВЕРИФИЦИРОВАНО В РЕВЬЮ + CI | улика: коммиты e98caa0c, 2208a7cb, CI ран 42425003963 SUCCESS, спека docs/PARALLEL_TOOL_ENGINE_SPEC.md, 22 новых unit-теста]
 
 - **Ликвидация ложных GLOBAL-барьеров (`JsonPathExtractor.kt`)**:
   * Внедрена таксономия ресурсов §3.1:
@@ -960,10 +960,29 @@ LOADING-гейт, отсутствие фидбека, snapshot-discard, SELECT 
     - Network read: `web_search` - `net:search` (параллельные чтения), `webfetch` - `net:<url>`;
     - Memory tier: `memory_get`, `supermemory_search`, `memory_blocks_view`, `todo_read` - `mem:store` READ; `memory_write`, `memory_blocks_edit`, `todo_write` - `mem:store` WRITE;
     - Telegram MCP: `tg_read`, `tg_unread`, etc. - `mcp:tg:chat_<id>` per chat / `mcp:tg:global_read` для общих;
-  * Текстовая канонизация `normalizeResourcePath(p)`: схлопывание `.` и `..`, двойных слэшей, приводящая `./src/a.rs` к `src/a.rs`.
+  * Текстовая канонизация `normalizeResourcePath(p)`: схлопывание `.` и `..`, двойных слэшей, приводящая `./src/a.rs` к `src/a.rs`, clamping корня `/`.
 - **Иерархический конфликт и WAR-правило (`ToolScheduler.kt`)**:
   * Внедрён предикат `keysOverlap(a, b)`: дерево `fs_tree:/dir` перекрывается с файлом `fs:/dir/file`, но НЕ затрагивает не-fs ресурсы (`mem:`, `net:`, etc.), честно разрешая коллизии с `/` и `.`.
   * Реализовано правило WAR (§4.2.3): писатель ждёт ВСЕХ читателей ресурса (а не только последнего по списку), закрывая race-window при параллельных чтениях.
   * Пул I/O (`ToolConcurrencyClass.kt`): grep, glob, web_search, memory и tg_* переведены в IO-пул (cap 16), предотвращая троттлинг на CPU семафоре.
 - **Тесты**: 22 новых теста в `JsonPathExtractorTest` и `ToolSchedulerTest` (включая канонический research-батч T1-T5: T1, T2, T3, T5 запускаются одновременно, T4 ждёт только T2).
+- **CI**: ран 42425003963 на зеркале завершён с SUCCESS (обе джобы `Rust daemon tests (minisd)` и `JVM unit tests (no APK)` зелёные).
+- **Правило R1**: 0 вхождений запрещённого символа во всех добавленных и изменённых файлах.
+
+## 37. Ночь 2026-11-08 — Этап 2 Parallel Tool Engine (Нативный Rust Tokio DAG Executor в `minisd`)
+[статус: ВЕРИФИЦИРОВАНО В РЕВЬЮ + 106 ТЕСТОВ | улика: коммит 34a4ee34, спека docs/PARALLEL_TOOL_ENGINE_SPEC.md §5.2]
+
+- **Архитектура модуля `engine` (`src/native/minisd/src/engine/`)**:
+  * `types.rs`: `ToolCallNode`, `ToolEffect` (Read, Write, GlobalBarrier, Meta), `ToolPool` (Io cap=16, Cpu cap=4), `ToolCallSpec`, `ToolCallResult`.
+  * `keys.rs`: чистая текстовая нормализация `normalize_resource_path` без системных вызовов stat/canonicalize; иерархический предикат `keys_overlap` (fs_tree против fs с поддержкой корня `/` и относительных путей `.`); экстрактор `classify_tool` для всех 21 Telegram-инструментов, файлов, сети и памяти.
+  * `scheduler.rs`: O(N*K) построение реактивного DAG `plan_reactive` с append-only KeyUse логом для соблюдения правил WAR/WAW/RAW и изоляцией под-агентов (`agent-spawn:<index>`).
+  * `executor.rs`: бесбарьерный асинхронный исполнитель `execute_dag` на Tokio:
+    - Гранулярные сигналы готовности предшественников через `tokio::sync::watch`;
+    - Раздельные семафоры `ConcurrencyPools` (IO = 16, CPU = 4);
+    - Захват слота строго ПОСЛЕ завершения всех предшественников (ожидающий инструмент не блокирует слоты);
+    - Потоковая передача результатов в `mpsc::Sender<ToolCallResult>` в реальном времени по мере завершения каждого инструмента.
+- **JSON-RPC интеграция (`src/native/minisd/src/rpc.rs`)**:
+  * Метод `engine/plan`: отдаёт реактивный граф зависимостей по списку вызовов;
+  * Метод `tools/batch_call`: параллельно и реактивно исполняет батч инструментов через DAG рантайм `minisd`.
+- **Тесты**: 106 cargo unit-тестов в `src/native/minisd` проходят (106 passed; 0 failed).
 - **Правило R1**: 0 вхождений запрещённого символа во всех добавленных и изменённых файлах.
