@@ -43,7 +43,7 @@ import com.openminis.app.offload.AgentRunProgress
  */
 private enum class BatchChip { RUNNING, DONE, ERROR }
 
-private fun chipOf(status: ToolBlockStatus): BatchChip = when (status) {
+private fun chipOf(status: ToolBlockStatus?): BatchChip = when (status) {
     ToolBlockStatus.SUCCESS -> BatchChip.DONE
     ToolBlockStatus.FAILED, ToolBlockStatus.CANCELLED, ToolBlockStatus.TIMEOUT -> BatchChip.ERROR
     else -> BatchChip.RUNNING
