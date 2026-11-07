@@ -250,8 +250,16 @@ class ToolOverlayController(private val context: Context) {
                     .coerceAtLeast(0)
             }
         }
+        // [B27-A] A dead window token (backgrounded process, OEM display
+        // reclaim) makes addView throw — an unguarded throw here is a
+        // GUARANTEED background crash. On failure the overlay simply stays
+        // detached (view=null, isShown=false); the next tool tick retries
+        // attach() with a fresh token.
+        val attached = OverlayAttachGuard.addViewSafely(TAG) {
+            windowManager.addView(container, params)
+        }
+        if (!attached) return
         layoutParams = params
-        windowManager.addView(container, params)
         view = container
         isShown = true
         // [T-overlay-v3-skin] Birth animation + frame driver from the

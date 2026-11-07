@@ -97,12 +97,23 @@ static void pc_module(uintptr_t pc, const char** module, uintptr_t* base) {
     }
 }
 
+// [B27-D] ARMv8.5+ PAC (ARMv9 / Snapdragon 8 Elite): return addresses in
+// registers AND on the stack carry a Pointer Authentication Code in the
+// high bits. Printed raw they are 0x3b7f…-style garbage that matches no
+// module range, so the native crash log on the iQOO 13 resolves nothing.
+// Masking the high bits restores the real VA; the low bits hold the whole
+// userspace address space.
+static uintptr_t strip_pac(uintptr_t addr) {
+    return addr & 0x00007FFFFFFFFFFFULL;
+}
+
 static _Unwind_Reason_Code unwind_frame_cb(struct _Unwind_Context* uctx, void* data) {
     UnwindCtx* out = static_cast<UnwindCtx*>(data);
     if (out->count >= MAX_UNWIND_FRAMES) return _URC_END_OF_STACK;
 
     uintptr_t pc = (uintptr_t)_Unwind_GetIP(uctx);
     if (pc == 0) return _URC_CONTINUE_UNWIND;
+    pc = strip_pac(pc);
 
     const char* module = "?";
     uintptr_t base = 0;
@@ -158,10 +169,13 @@ static void write_fault_context(int fd, void* ctx) {
     ucontext_t* uc = static_cast<ucontext_t*>(ctx);
 
 #if defined(__aarch64__)
-    const uintptr_t pc = static_cast<uintptr_t>(uc->uc_mcontext.pc);
+    // pc and lr are return addresses — PAC-signed on ARMv9; the frame
+    // pointer is NOT signed and must stay raw (it drives the chain walk
+    // and the alignment checks below).
+    const uintptr_t pc = strip_pac(static_cast<uintptr_t>(uc->uc_mcontext.pc));
     const uintptr_t sp = static_cast<uintptr_t>(uc->uc_mcontext.sp);
     uintptr_t fp = static_cast<uintptr_t>(uc->uc_mcontext.regs[29]);
-    const uintptr_t lr = static_cast<uintptr_t>(uc->uc_mcontext.regs[30]);
+    const uintptr_t lr = strip_pac(static_cast<uintptr_t>(uc->uc_mcontext.regs[30]));
 #else
     // The app is arm64-only (abiFilters), so this branch is never built.
     // It is left without register access on purpose: the field names for the
@@ -212,7 +226,10 @@ static void write_fault_context(int fd, void* ctx) {
         if (prev_fp != 0 && fp <= prev_fp) break;  // not moving up the stack
 
         uintptr_t next_fp = *reinterpret_cast<uintptr_t*>(fp);
-        uintptr_t ret = *reinterpret_cast<uintptr_t*>(fp + sizeof(uintptr_t));
+        // The return address in a frame record is PAC-signed on ARMv9 —
+        // strip before module resolution (used ONLY for printing here,
+        // never for control flow).
+        uintptr_t ret = strip_pac(*reinterpret_cast<uintptr_t*>(fp + sizeof(uintptr_t)));
         if (ret == 0) break;
 
         const char* module = "?";

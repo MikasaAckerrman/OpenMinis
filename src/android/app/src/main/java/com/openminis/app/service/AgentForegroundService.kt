@@ -39,6 +39,11 @@ class AgentForegroundService : Service() {
         private const val CHANNEL_NAME = "Agent Status"
         private const val NOTIFICATION_ID = 9001
 
+        // [B27-C] Backstop ceiling for the inference wake lock: a leaked
+        // hold must never outlive 2h (deterministic release stays in
+        // onDestroy; this only bounds the leak window).
+        private const val WAKELOCK_BACKSTOP_MS: Long = 2L * 60 * 60 * 1000
+
         // [T-bg-overlay phase 2 fix] Separate channel + notification id
         // for the SYSTEM_ALERT_WINDOW permission nudge so it can have a
         // higher importance than the ongoing FGS status row (which is
@@ -254,6 +259,22 @@ class AgentForegroundService : Service() {
             // the per-session cancel callbacks registered by each VM at
             // streamJob start.
             SessionActivityTracker.cancelAllActiveStreams()
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        // [B27-B] START_STICKY resurrection with nothing to run: a null
+        // intent means the system restarted us after a process kill — and
+        // with zero active sessions there is nothing to serve. Going
+        // foreground here would park a zombie service in the notification
+        // shade until the user force-stops the app. Stop instead; any real
+        // start (session open, tool tick) re-creates it with an explicit
+        // intent. Decision in AgentFgsRules (pure, unit-tested).
+        if (AgentFgsRules.shouldStopOnZombieRestart(
+                hasIntent = intent != null,
+                activeSessionCount = SessionActivityTracker.activeSessions.value.size,
+            )
+        ) {
+            Log.d(TAG, "null-intent restart with no active sessions — stopping zombie FGS")
             stopSelf()
             return START_NOT_STICKY
         }
@@ -723,9 +744,13 @@ class AgentForegroundService : Service() {
                 "minis:inference",
             ).apply {
                 setReferenceCounted(false)
-                // No timeout — release happens deterministically in onDestroy
-                // when SessionActivityTracker reports zero active sessions.
-                acquire()
+                // [B27-C] The deterministic release still lives in onDestroy
+                // (zero active sessions), but a leaked hold — a missed
+                // destroy path, an OEM lifecycle quirk — must not pin the
+                // CPU forever: the backstop caps any single hold at 2h.
+                // A live session re-acquires on the next start, so the cap
+                // cannot strand a running turn that still ticks the service.
+                acquire(WAKELOCK_BACKSTOP_MS)
             }
             Log.d(TAG, "WakeLock acquired (PARTIAL_WAKE_LOCK)")
         } catch (e: Exception) {
