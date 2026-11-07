@@ -890,3 +890,36 @@ LOADING-гейт, отсутствие фидбека, snapshot-discard, SELECT 
 
 
 
+
+## 34. День 2026-11-07 — M-R0: Аппаратный бейзлайн (iQOO Neo 10 / Snapdragon 8 Gen 3) и верификация vc144-01 + сборка APK 42406493398 + M-R2 Tool Mapping Spec
+
+Вердикт ревьюера: SHIP (спецификация маппинга M-R2 утверждена к реализации; бейзлайн M-R0 зафиксирован; артефакт APK arm64 собран).
+
+### 1. Аппаратный бейзлайн и верификация vc144-01 на живом устройстве
+[статус: ИНСИТУ ВЕРИФИЦИРОВАНО | улика: adb-устройство 10CF5719KM002JZ, модель V2425A (iQOO Neo 10), процессор SM8650 (Snapdragon 8 Gen 3), Android 15 / OriginOS 5]
+
+- **Эмпирическое подтверждение бага vc144-01**:
+  * Лог `files/tg-vault/server.log` (timestamped 2026-11-07 22:58):
+    `proot error: execve("/usr/bin/python3"): Permission denied`
+    `fatal error: see libproot.so --help.`
+  * Порт `7824` закрыт (`netstat -tlpn` подтвердил отсутствие listening-сокета).
+  * Автостарт python-vault через PRoot на Android 15 блокируется на уровне прав выполнения гостевого интерпретатора. Дефект полностью воспроизведён без домыслов.
+- **Фактический замер ОЗУ (dumpsys meminfo)**:
+  * Приложение `com.openminis.app.clone` (PID 25385): PSS 63 498 КБ (~63.5 МБ), RSS 188 504 КБ (~188.5 МБ).
+  * Фоновый гостевой python3 (`minis-mcp-cli` PID 11636): PSS 20 066 КБ (~20 МБ), RSS 17 200 КБ (~17 МБ).
+  * Процесс python-vault: 0 КБ (не запущен из-за vc144-01).
+
+### 2. Сборка APK с нативным minisd
+[статус: СОБРАНО В CI | улика: ран 42406493398 на canon, артефакт app-clone-apk (44 076 511 байт) + unstripped-native-libs (2 354 356 байт)]
+
+- Кросс-компиляция Rust под `aarch64-linux-android` с линкером NDK clang API 26 (`libminisd.so`) прошла успешно на шаге `Build minisd daemon (aarch64)`.
+- Сборка Clone APK упаковала нативные библиотеки в `jniLibs/arm64-v8a/libminisd.so`.
+- В соответствии с регламентом `AGENTS.md` (§2, §3) автоматическая установка APK на устройство без подтверждения пользователя задержана.
+
+### 3. Техническая спецификация маппинга M-R2 (`docs/M_R2_TOOL_MAPPING.md`)
+[статус: ДОКУМЕНТИРОВАНО | улика: docs/M_R2_TOOL_MAPPING.md]
+
+- Разработана и согласована спецификация переноса 16 read-only инструментов Telegram на библиотеку `grammers` (`grammers-client` + `grammers-tl-types`).
+- Полная матрица вызовов, валидации схем, кэширования диалогов (`tg_chats_cache.json`, TTL 30 мин), Whitelist-контроля (`tg_whitelist.json`) и обработки `FloodWait`.
+- Разрешено разделение: `yt_transcript` остаётся в гостевом сэндбоксе как не относящийся к MTProto.
+- Готовность к началу кодирования этапа M-R2 в `src/native/minisd/`.
