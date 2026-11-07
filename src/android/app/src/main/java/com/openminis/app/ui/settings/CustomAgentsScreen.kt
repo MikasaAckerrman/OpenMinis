@@ -1,5 +1,6 @@
 package com.openminis.app.ui.settings
 
+import androidx.annotation.StringRes
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -48,8 +49,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.openminis.app.R
 import com.openminis.app.engine.ToolCategories
 import com.openminis.app.offload.AgentFileParser
 import com.openminis.app.offload.AgentFileStore
@@ -72,9 +75,11 @@ import java.io.File
  * ([ToolCategories.CATEGORIES]) — the same structural source the file
  * parser validates against, so anything pickable here parses back.
  *
- * Stage-1 strings are hardcoded English (localization pass is a separate
- * follow-up; consistent with the newer settings screens that ship ahead of
- * their translation round).
+ * [B16-stage2] Fully localized: every user-facing string rides
+ * R.string.agents_* (8 locales). Technical tokens stay untranslated on
+ * purpose: model-role VALUES are the frontmatter values the parser accepts,
+ * tool names are the dispatcher names, `maxTurns`/`tools:` are file-format
+ * keywords.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -114,7 +119,12 @@ fun CustomAgentsScreen(onBack: () -> Unit) {
                             AgentFileStore.fileFor(context, agent.fileName)?.delete() == true
                         }.getOrDefault(false)
                     }
-                    if (!ok) hudError = "Could not delete ${agent.fileName}"
+                    if (!ok) {
+                        // Non-composable lambda: resolve the resource here.
+                        hudError = context.getString(
+                            R.string.agents_delete_failed, agent.fileName,
+                        )
+                    }
                     reload()
                 }
             },
@@ -163,10 +173,18 @@ private fun AgentListScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Custom agents", fontWeight = FontWeight.SemiBold) },
+                title = {
+                    Text(
+                        stringResource(R.string.agents_title),
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = stringResource(R.string.agents_back_cd),
+                        )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -178,14 +196,13 @@ private fun AgentListScreen(
             ExtendedFloatingActionButton(
                 onClick = onCreate,
                 icon = { Icon(Icons.Filled.Add, contentDescription = null) },
-                text = { Text("New agent") },
+                text = { Text(stringResource(R.string.agents_new)) },
             )
         },
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
             Text(
-                "Markdown agent files under ${AgentFileStore.SANDBOX_DIR}/ — " +
-                    "the same files the spawner reads. Save = live, no restart.",
+                stringResource(R.string.agents_files_footer, AgentFileStore.SANDBOX_DIR),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
@@ -201,7 +218,9 @@ private fun AgentListScreen(
                         style = MaterialTheme.typography.bodySmall,
                         modifier = Modifier.weight(1f),
                     )
-                    TextButton(onClick = onDismissError) { Text("Dismiss") }
+                    TextButton(onClick = onDismissError) {
+                        Text(stringResource(R.string.agents_dismiss))
+                    }
                 }
             }
             if (agents.isEmpty()) {
@@ -210,12 +229,13 @@ private fun AgentListScreen(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,
                 ) {
-                    Text("No custom agents yet", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        stringResource(R.string.agents_empty_title),
+                        fontWeight = FontWeight.SemiBold,
+                    )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Create one here, or drop a .md file into " +
-                            "${AgentFileStore.SANDBOX_DIR} (the agent can do it " +
-                            "via file_write).",
+                        stringResource(R.string.agents_empty_hint, AgentFileStore.SANDBOX_DIR),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -237,10 +257,13 @@ private fun AgentListScreen(
                                 )
                             }
                             val modelHint = agent.modelEntryId
-                                ?: agent.modelRole?.let { "role: $it" }
-                                ?: "default model"
-                            val toolHint = agent.tools?.let { "${it.size} tool(s)" }
-                                ?: "default tools"
+                                ?: agent.modelRole?.let {
+                                    stringResource(R.string.agents_row_role, it)
+                                }
+                                ?: stringResource(R.string.agents_row_default_model)
+                            val toolHint = agent.tools
+                                ?.let { stringResource(R.string.agents_row_tools, it.size) }
+                                ?: stringResource(R.string.agents_row_default_tools)
                             Text(
                                 "$modelHint · $toolHint · maxTurns ${agent.maxTurns}",
                                 style = MaterialTheme.typography.bodySmall,
@@ -255,7 +278,10 @@ private fun AgentListScreen(
                                         modifier = Modifier.size(16.dp),
                                     )
                                     Spacer(Modifier.width(4.dp))
-                                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                                    Text(
+                                        stringResource(R.string.agents_delete),
+                                        color = MaterialTheme.colorScheme.error,
+                                    )
                                 }
                             }
                         }
@@ -272,8 +298,15 @@ private fun AgentListScreen(
 /** Valid spawn names: what the parser accepts minus path-hostile characters. */
 private val NAME_REGEX = Regex("[A-Za-z0-9_-]+")
 
-private val MODEL_ROLE_OPTIONS = listOf("default") + listOf(
-    "planner", "analyst", "architect", "coder", "reviewer", "tester",
+/** [1] = the frontmatter value, [2] = the localized chip label. */
+private val MODEL_ROLE_OPTIONS = listOf(
+    "default" to R.string.agents_default_role,
+    "planner" to null,
+    "analyst" to null,
+    "architect" to null,
+    "coder" to null,
+    "reviewer" to null,
+    "tester" to null,
 )
 
 /**
@@ -316,14 +349,19 @@ data class AgentDraft(
         )
     }
 
-    /** Null = valid; otherwise the message to show at save time. */
-    fun validate(): String? {
+    /**
+     * Null = valid; otherwise the STRING RESOURCE to show at save time —
+     * a plain data class cannot resolve strings, so the composable renders
+     * it via stringResource.
+     */
+    @StringRes
+    fun validate(): Int? {
         if (!NAME_REGEX.matches(name.trim())) {
-            return "Name must be letters/digits/-/_ (no colon, no path chars)"
+            return R.string.agents_bad_name
         }
-        if (instructions.isBlank()) return "Instructions (the body) must not be empty"
+        if (instructions.isBlank()) return R.string.agents_empty_instructions
         val turns = maxTurnsText.toIntOrNull()
-        if (turns != null && turns !in 1..64) return "maxTurns must be 1..64"
+        if (turns != null && turns !in 1..64) return R.string.agents_bad_max_turns
         return null
     }
 
@@ -375,20 +413,23 @@ private fun AgentEditorScreen(
     var restrictTools by rememberSaveable { mutableStateOf(draft.restrictTools) }
     val tools = remember { mutableStateOf(draft.tools.toSet()) }
     var instructions by rememberSaveable { mutableStateOf(draft.instructions) }
-    var saveError by remember { mutableStateOf<String?>(null) }
+    var saveErrorRes by remember { mutableStateOf<Int?>(null) }
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = {
                     Text(
-                        if (isNew) "New agent" else "Edit agent",
+                        stringResource(if (isNew) R.string.agents_new else R.string.agents_edit),
                         fontWeight = FontWeight.SemiBold,
                     )
                 },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = stringResource(R.string.agents_back_cd),
+                        )
                     }
                 },
                 actions = {
@@ -406,12 +447,15 @@ private fun AgentEditorScreen(
                         )
                         val problem = candidate.validate()
                         if (problem != null) {
-                            saveError = problem
+                            saveErrorRes = problem
                         } else {
                             onSave(candidate)
                         }
                     }) {
-                        Icon(Icons.Filled.Save, contentDescription = "Save")
+                        Icon(
+                            Icons.Filled.Save,
+                            contentDescription = stringResource(R.string.agents_save_cd),
+                        )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -427,9 +471,9 @@ private fun AgentEditorScreen(
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp),
         ) {
-            if (saveError != null) {
+            if (saveErrorRes != null) {
                 Text(
-                    saveError!!,
+                    stringResource(saveErrorRes!!),
                     color = MaterialTheme.colorScheme.error,
                     style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.padding(vertical = 4.dp),
@@ -446,19 +490,19 @@ private fun AgentEditorScreen(
             OutlinedTextField(
                 value = name,
                 onValueChange = { name = it },
-                label = { Text("Name (spawn id, custom:<name>)") },
+                label = { Text(stringResource(R.string.agents_name_label)) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
             )
             OutlinedTextField(
                 value = description,
                 onValueChange = { description = it },
-                label = { Text("Description (one line for the catalog)") },
+                label = { Text(stringResource(R.string.agents_description_label)) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
             )
             Text(
-                "Model role",
+                stringResource(R.string.agents_model_role),
                 style = MaterialTheme.typography.labelMedium,
                 modifier = Modifier.padding(top = 12.dp),
             )
@@ -466,28 +510,35 @@ private fun AgentEditorScreen(
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                MODEL_ROLE_OPTIONS.forEach { role ->
+                MODEL_ROLE_OPTIONS.forEach { (role, labelRes) ->
                     val selected = if (role == "default") modelRole == null else modelRole == role
                     FilterChip(
                         selected = selected,
                         onClick = {
                             modelRole = if (role == "default") null else role
                         },
-                        label = { Text(role) },
+                        label = {
+                            Text(
+                                // The VALUE written to the file stays the
+                                // parser's enum; only the "default" chip has
+                                // a translated label.
+                                if (labelRes != null) stringResource(labelRes) else role,
+                            )
+                        },
                     )
                 }
             }
             OutlinedTextField(
                 value = modelEntryId,
                 onValueChange = { modelEntryId = it },
-                label = { Text("Model entry id (optional — beats role)") },
+                label = { Text(stringResource(R.string.agents_model_entry_label)) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
             )
             OutlinedTextField(
                 value = maxTurnsText,
                 onValueChange = { maxTurnsText = it },
-                label = { Text("maxTurns (1..64, default 8)") },
+                label = { Text(stringResource(R.string.agents_max_turns_label)) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
             )
@@ -496,9 +547,12 @@ private fun AgentEditorScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(Modifier.weight(1f)) {
-                    Text("Restrict tools", fontWeight = FontWeight.SemiBold)
                     Text(
-                        "Off = the runner default for the role (no tools: line)",
+                        stringResource(R.string.agents_restrict_tools),
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        stringResource(R.string.agents_restrict_tools_hint),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -518,13 +572,23 @@ private fun AgentEditorScreen(
             OutlinedTextField(
                 value = instructions,
                 onValueChange = { instructions = it },
-                label = { Text("Instructions (file body, injected verbatim)") },
+                label = { Text(stringResource(R.string.agents_instructions_label)) },
                 minLines = 6,
                 modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
             )
             Spacer(Modifier.height(32.dp))
         }
     }
+}
+
+/** Localized category titles, keyed by the engine's stable category keys. */
+private fun categoryTitle(key: String): Int = when (key) {
+    "file" -> R.string.agents_cat_file
+    "shell" -> R.string.agents_cat_shell
+    "web" -> R.string.agents_cat_web
+    "memory" -> R.string.agents_cat_memory
+    "subagent" -> R.string.agents_cat_subagent
+    else -> R.string.agents_cat_system
 }
 
 /** One expandable section per category; collapsed shows the selection count. */
@@ -545,7 +609,7 @@ private fun ToolCategoryPicker(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    "${category.title}  ($picked/${category.tools.size})",
+                    "${stringResource(categoryTitle(category.key))}  ($picked/${category.tools.size})",
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.weight(1f),
                 )
@@ -562,7 +626,7 @@ private fun ToolCategoryPicker(
                             .padding(start = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Checkbox(checked = toolName in selected, onCheckedChange = { onToggle(toolName) })
+                        Checkbox(checked = toolName in selected, onCheckedChange = { _ -> onToggle(toolName) })
                         Text(toolName, style = MaterialTheme.typography.bodySmall)
                     }
                 }

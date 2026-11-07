@@ -1395,4 +1395,39 @@
     <string name="error_diag_bad_gateway">🖥️ Ошибка шлюза — 5xx на стороне сервиса</string>
     <string name="delete_role_user">Ваше</string>
     <string name="delete_role_assistant">Ответ</string>
+
+    <!-- [B16] Экран кастомных агентов -->
+    <string name="agents_title">Кастомные агенты</string>
+    <string name="agents_back_cd">Назад</string>
+    <string name="agents_new">Новый агент</string>
+    <string name="agents_edit">Редактирование агента</string>
+    <string name="agents_save_cd">Сохранить</string>
+    <string name="agents_files_footer">Markdown-файлы агентов в %1$s/ — те же файлы, что читает спавнер. Сохранили — уже живой, без рестарта.</string>
+    <string name="agents_dismiss">Скрыть</string>
+    <string name="agents_empty_title">Кастомных агентов пока нет</string>
+    <string name="agents_empty_hint">Создайте здесь или положите .md-файл в %1$s (агент может сделать это через file_write).</string>
+    <string name="agents_delete">Удалить</string>
+    <string name="agents_delete_failed">Не удалось удалить %1$s</string>
+    <string name="agents_name_label">Имя (spawn id, custom:&lt;имя&gt;)</string>
+    <string name="agents_description_label">Описание (одна строка для каталога)</string>
+    <string name="agents_model_role">Роль модели</string>
+    <string name="agents_default_role">по умолчанию</string>
+    <string name="agents_model_entry_label">ID записи модели (опционально — важнее роли)</string>
+    <string name="agents_max_turns_label">maxTurns (1..64, по умолчанию 8)</string>
+    <string name="agents_restrict_tools">Ограничить тула</string>
+    <string name="agents_restrict_tools_hint">Выкл = дефолт раннера для роли (нет строки tools:)</string>
+    <string name="agents_instructions_label">Инструкции (тело файла, подставляются дословно)</string>
+    <string name="agents_bad_name">Имя: только буквы/цифры/-/_ (без двоеточия и путевых символов)</string>
+    <string name="agents_empty_instructions">Инструкции (тело) не могут быть пустыми</string>
+    <string name="agents_bad_max_turns">maxTurns должен быть 1..64</string>
+    <string name="agents_cat_file">Файлы</string>
+    <string name="agents_cat_shell">Оболочка</string>
+    <string name="agents_cat_web">Веб</string>
+    <string name="agents_cat_memory">Память</string>
+    <string name="agents_cat_subagent">Субагенты</string>
+    <string name="agents_cat_system">Система</string>
+    <string name="agents_row_role">роль: %1$s</string>
+    <string name="agents_row_default_model">дефолтная модель</string>
+    <string name="agents_row_tools">тулов: %1$d</string>
+    <string name="agents_row_default_tools">дефолтные тула</string>
 </resources>

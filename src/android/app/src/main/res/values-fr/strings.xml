@@ -948,4 +948,38 @@
     <string name="browser_downloads_cancel">Annuler le téléchargement</string>
     <string name="browser_downloads_failed">Échec</string>
     <string name="browser_downloads_open">Ouvrir</string>
+
+    <string name="agents_title">Agents personnalisés</string>
+    <string name="agents_back_cd">Retour</string>
+    <string name="agents_new">Nouvel agent</string>
+    <string name="agents_edit">Modifier l\'agent</string>
+    <string name="agents_save_cd">Enregistrer</string>
+    <string name="agents_files_footer">Fichiers d\'agents Markdown sous %1$s/ — les mêmes fichiers que lit le spawner. Enregistré = actif immédiatement, sans redémarrage.</string>
+    <string name="agents_dismiss">Ignorer</string>
+    <string name="agents_empty_title">Aucun agent personnalisé pour l\'instant</string>
+    <string name="agents_empty_hint">Créez-en un ici ou déposez un fichier .md dans %1$s (l\'agent peut le faire via file_write).</string>
+    <string name="agents_delete">Supprimer</string>
+    <string name="agents_delete_failed">Impossible de supprimer %1$s</string>
+    <string name="agents_name_label">Nom (spawn id, custom:&lt;nom&gt;)</string>
+    <string name="agents_description_label">Description (une ligne pour le catalogue)</string>
+    <string name="agents_model_role">Rôle du modèle</string>
+    <string name="agents_default_role">par défaut</string>
+    <string name="agents_model_entry_label">ID d\'entrée du modèle (optionnel — prime sur le rôle)</string>
+    <string name="agents_max_turns_label">maxTurns (1..64, défaut 8)</string>
+    <string name="agents_restrict_tools">Restreindre les outils</string>
+    <string name="agents_restrict_tools_hint">Désactivé = défaut du runner pour le rôle (pas de ligne tools:)</string>
+    <string name="agents_instructions_label">Instructions (corps du fichier, injectées telles quelles)</string>
+    <string name="agents_bad_name">Nom : lettres/chiffres/-/_ uniquement (pas de deux-points, pas de caractères de chemin)</string>
+    <string name="agents_empty_instructions">Les instructions (corps) ne doivent pas être vides</string>
+    <string name="agents_bad_max_turns">maxTurns doit être 1..64</string>
+    <string name="agents_cat_file">Fichiers</string>
+    <string name="agents_cat_shell">Shell</string>
+    <string name="agents_cat_web">Web</string>
+    <string name="agents_cat_memory">Mémoire</string>
+    <string name="agents_cat_subagent">Sous-agents</string>
+    <string name="agents_cat_system">Système</string>
+    <string name="agents_row_role">rôle : %1$s</string>
+    <string name="agents_row_default_model">modèle par défaut</string>
+    <string name="agents_row_tools">outils : %1$d</string>
+    <string name="agents_row_default_tools">outils par défaut</string>
 </resources>

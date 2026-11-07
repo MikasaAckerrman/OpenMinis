@@ -1362,4 +1362,38 @@
     <string name="browser_downloads_cancel">取消下载</string>
     <string name="browser_downloads_failed">失败</string>
     <string name="browser_downloads_open">打开</string>
+
+    <string name="agents_title">自定义智能体</string>
+    <string name="agents_back_cd">返回</string>
+    <string name="agents_new">新建智能体</string>
+    <string name="agents_edit">编辑智能体</string>
+    <string name="agents_save_cd">保存</string>
+    <string name="agents_files_footer">%1$s/ 下的 Markdown 智能体文件 — 与生成器读取的是同一批文件。保存即生效，无需重启。</string>
+    <string name="agents_dismiss">关闭</string>
+    <string name="agents_empty_title">还没有自定义智能体</string>
+    <string name="agents_empty_hint">在此创建，或将 .md 文件放入 %1$s（智能体可通过 file_write 自行创建）。</string>
+    <string name="agents_delete">删除</string>
+    <string name="agents_delete_failed">无法删除 %1$s</string>
+    <string name="agents_name_label">名称（生成 ID，custom:&lt;名称&gt;）</string>
+    <string name="agents_description_label">描述（目录中的一行说明）</string>
+    <string name="agents_model_role">模型角色</string>
+    <string name="agents_default_role">默认</string>
+    <string name="agents_model_entry_label">模型条目 ID（可选 — 优先于角色）</string>
+    <string name="agents_max_turns_label">maxTurns（1..64，默认 8）</string>
+    <string name="agents_restrict_tools">限制工具</string>
+    <string name="agents_restrict_tools_hint">关闭 = 使用该角色的运行器默认工具（无 tools: 行）</string>
+    <string name="agents_instructions_label">指令（文件正文，逐字注入）</string>
+    <string name="agents_bad_name">名称只能包含字母/数字/-/_（不含冒号和路径字符）</string>
+    <string name="agents_empty_instructions">指令（正文）不能为空</string>
+    <string name="agents_bad_max_turns">maxTurns 必须在 1..64 之间</string>
+    <string name="agents_cat_file">文件</string>
+    <string name="agents_cat_shell">Shell</string>
+    <string name="agents_cat_web">网络</string>
+    <string name="agents_cat_memory">记忆</string>
+    <string name="agents_cat_subagent">子智能体</string>
+    <string name="agents_cat_system">系统</string>
+    <string name="agents_row_role">角色：%1$s</string>
+    <string name="agents_row_default_model">默认模型</string>
+    <string name="agents_row_tools">工具：%1$d</string>
+    <string name="agents_row_default_tools">默认工具</string>
 </resources>

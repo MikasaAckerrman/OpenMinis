@@ -733,4 +733,38 @@
     <string name="browser_downloads_cancel">取消下載</string>
     <string name="browser_downloads_failed">失敗</string>
     <string name="browser_downloads_open">開啟</string>
+
+    <string name="agents_title">自訂智慧代理</string>
+    <string name="agents_back_cd">返回</string>
+    <string name="agents_new">新增智慧代理</string>
+    <string name="agents_edit">編輯智慧代理</string>
+    <string name="agents_save_cd">儲存</string>
+    <string name="agents_files_footer">%1$s/ 下的 Markdown 智慧代理檔案 — 與產生器讀取的是同一批檔案。儲存即生效，無需重新啟動。</string>
+    <string name="agents_dismiss">關閉</string>
+    <string name="agents_empty_title">尚無自訂智慧代理</string>
+    <string name="agents_empty_hint">在此建立，或將 .md 檔案放入 %1$s（智慧代理可透過 file_write 自行建立）。</string>
+    <string name="agents_delete">刪除</string>
+    <string name="agents_delete_failed">無法刪除 %1$s</string>
+    <string name="agents_name_label">名稱（產生 ID，custom:&lt;名稱&gt;）</string>
+    <string name="agents_description_label">描述（目錄用的一行說明）</string>
+    <string name="agents_model_role">模型角色</string>
+    <string name="agents_default_role">預設</string>
+    <string name="agents_model_entry_label">模型項目 ID（選填 — 優先於角色）</string>
+    <string name="agents_max_turns_label">maxTurns（1..64，預設 8）</string>
+    <string name="agents_restrict_tools">限制工具</string>
+    <string name="agents_restrict_tools_hint">關閉 = 使用該角色的執行器預設工具（無 tools: 行）</string>
+    <string name="agents_instructions_label">指示（檔案內文，逐字注入）</string>
+    <string name="agents_bad_name">名稱只能包含字母/數字/-/_（不含冒號與路徑字元）</string>
+    <string name="agents_empty_instructions">指示（內文）不可為空</string>
+    <string name="agents_bad_max_turns">maxTurns 必須介於 1..64</string>
+    <string name="agents_cat_file">檔案</string>
+    <string name="agents_cat_shell">Shell</string>
+    <string name="agents_cat_web">網路</string>
+    <string name="agents_cat_memory">記憶</string>
+    <string name="agents_cat_subagent">子智慧代理</string>
+    <string name="agents_cat_system">系統</string>
+    <string name="agents_row_role">角色：%1$s</string>
+    <string name="agents_row_default_model">預設模型</string>
+    <string name="agents_row_tools">工具：%1$d</string>
+    <string name="agents_row_default_tools">預設工具</string>
 </resources>

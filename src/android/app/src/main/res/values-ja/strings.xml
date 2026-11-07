@@ -1065,4 +1065,38 @@
     <string name="browser_downloads_cancel">ダウンロードをキャンセル</string>
     <string name="browser_downloads_failed">失敗</string>
     <string name="browser_downloads_open">開く</string>
+
+    <string name="agents_title">カスタムエージェント</string>
+    <string name="agents_back_cd">戻る</string>
+    <string name="agents_new">新規エージェント</string>
+    <string name="agents_edit">エージェントを編集</string>
+    <string name="agents_save_cd">保存</string>
+    <string name="agents_files_footer">%1$s/ 以下の Markdown エージェントファイル — スポーナーが読むのと同じファイルです。保存した時点で即反映、再起動は不要です。</string>
+    <string name="agents_dismiss">閉じる</string>
+    <string name="agents_empty_title">カスタムエージェントはまだありません</string>
+    <string name="agents_empty_hint">ここで作成するか、%1$s に .md ファイルを置いてください (file_write でエージェント自身も作成できます)。</string>
+    <string name="agents_delete">削除</string>
+    <string name="agents_delete_failed">%1$s を削除できませんでした</string>
+    <string name="agents_name_label">名前 (スポーンID、custom:&lt;名前&gt;)</string>
+    <string name="agents_description_label">説明 (カタログ用の1行)</string>
+    <string name="agents_model_role">モデルロール</string>
+    <string name="agents_default_role">デフォルト</string>
+    <string name="agents_model_entry_label">モデルエントリ ID (任意 — ロールより優先)</string>
+    <string name="agents_max_turns_label">maxTurns (1..64、デフォルト 8)</string>
+    <string name="agents_restrict_tools">ツールを制限</string>
+    <string name="agents_restrict_tools_hint">オフ = ロールのランナー既定 (tools: 行なし)</string>
+    <string name="agents_instructions_label">指示 (ファイル本文、そのまま注入)</string>
+    <string name="agents_bad_name">名前は英数字/-/_ のみ (コロンとパス文字は不可)</string>
+    <string name="agents_empty_instructions">指示 (本文) は空にできません</string>
+    <string name="agents_bad_max_turns">maxTurns は 1..64 である必要があります</string>
+    <string name="agents_cat_file">ファイル</string>
+    <string name="agents_cat_shell">シェル</string>
+    <string name="agents_cat_web">Web</string>
+    <string name="agents_cat_memory">メモリ</string>
+    <string name="agents_cat_subagent">サブエージェント</string>
+    <string name="agents_cat_system">システム</string>
+    <string name="agents_row_role">ロール: %1$s</string>
+    <string name="agents_row_default_model">既定のモデル</string>
+    <string name="agents_row_tools">ツール: %1$d</string>
+    <string name="agents_row_default_tools">既定のツール</string>
 </resources>

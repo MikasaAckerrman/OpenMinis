@@ -1057,4 +1057,38 @@
     <string name="browser_downloads_cancel">다운로드 취소</string>
     <string name="browser_downloads_failed">실패</string>
     <string name="browser_downloads_open">열기</string>
+
+    <string name="agents_title">커스텀 에이전트</string>
+    <string name="agents_back_cd">뒤로</string>
+    <string name="agents_new">새 에이전트</string>
+    <string name="agents_edit">에이전트 편집</string>
+    <string name="agents_save_cd">저장</string>
+    <string name="agents_files_footer">%1$s/ 아래의 Markdown 에이전트 파일 — 스포너가 읽는 것과 동일한 파일입니다. 저장하면 즉시 적용되며 재시작이 필요 없습니다.</string>
+    <string name="agents_dismiss">닫기</string>
+    <string name="agents_empty_title">아직 커스텀 에이전트가 없습니다</string>
+    <string name="agents_empty_hint">여기서 만들거나 %1$s 에 .md 파일을 넣으세요 (에이전트가 file_write로 직접 만들 수도 있습니다).</string>
+    <string name="agents_delete">삭제</string>
+    <string name="agents_delete_failed">%1$s 을(를) 삭제할 수 없습니다</string>
+    <string name="agents_name_label">이름 (스폰 ID, custom:&lt;이름&gt;)</string>
+    <string name="agents_description_label">설명 (카탈로그용 한 줄)</string>
+    <string name="agents_model_role">모델 역할</string>
+    <string name="agents_default_role">기본값</string>
+    <string name="agents_model_entry_label">모델 항목 ID (선택 — 역할보다 우선)</string>
+    <string name="agents_max_turns_label">maxTurns (1..64, 기본값 8)</string>
+    <string name="agents_restrict_tools">도구 제한</string>
+    <string name="agents_restrict_tools_hint">끔 = 역할의 러너 기본값 (tools: 줄 없음)</string>
+    <string name="agents_instructions_label">지침 (파일 본문, 그대로 주입)</string>
+    <string name="agents_bad_name">이름은 영숫자/-/_ 만 가능 (콜론·경로 문자 금지)</string>
+    <string name="agents_empty_instructions">지침 (본문)은 비워 둘 수 없습니다</string>
+    <string name="agents_bad_max_turns">maxTurns는 1..64 이어야 합니다</string>
+    <string name="agents_cat_file">파일</string>
+    <string name="agents_cat_shell">셸</string>
+    <string name="agents_cat_web">웹</string>
+    <string name="agents_cat_memory">메모리</string>
+    <string name="agents_cat_subagent">서브에이전트</string>
+    <string name="agents_cat_system">시스템</string>
+    <string name="agents_row_role">역할: %1$s</string>
+    <string name="agents_row_default_model">기본 모델</string>
+    <string name="agents_row_tools">도구: %1$d</string>
+    <string name="agents_row_default_tools">기본 도구</string>
 </resources>

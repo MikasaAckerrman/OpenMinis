@@ -1058,4 +1058,38 @@
     <string name="browser_downloads_cancel">Download abbrechen</string>
     <string name="browser_downloads_failed">Fehlgeschlagen</string>
     <string name="browser_downloads_open">Öffnen</string>
+
+    <string name="agents_title">Eigene Agenten</string>
+    <string name="agents_back_cd">Zurück</string>
+    <string name="agents_new">Neuer Agent</string>
+    <string name="agents_edit">Agent bearbeiten</string>
+    <string name="agents_save_cd">Speichern</string>
+    <string name="agents_files_footer">Markdown-Agentendateien unter %1$s/ — dieselben Dateien, die der Spawner liest. Gespeichert = sofort aktiv, kein Neustart.</string>
+    <string name="agents_dismiss">Schließen</string>
+    <string name="agents_empty_title">Noch keine eigenen Agenten</string>
+    <string name="agents_empty_hint">Hier erstellen oder eine .md-Datei in %1$s ablegen (der Agent kann das per file_write).</string>
+    <string name="agents_delete">Löschen</string>
+    <string name="agents_delete_failed">%1$s konnte nicht gelöscht werden</string>
+    <string name="agents_name_label">Name (Spawn-ID, custom:&lt;Name&gt;)</string>
+    <string name="agents_description_label">Beschreibung (eine Zeile für den Katalog)</string>
+    <string name="agents_model_role">Modellrolle</string>
+    <string name="agents_default_role">Standard</string>
+    <string name="agents_model_entry_label">Modelleintrag-ID (optional — Vorrang vor der Rolle)</string>
+    <string name="agents_max_turns_label">maxTurns (1..64, Standard 8)</string>
+    <string name="agents_restrict_tools">Werkzeuge einschränken</string>
+    <string name="agents_restrict_tools_hint">Aus = Laufzeit-Standard der Rolle (keine tools:-Zeile)</string>
+    <string name="agents_instructions_label">Anweisungen (Dateikörper, wörtlich eingefügt)</string>
+    <string name="agents_bad_name">Name: nur Buchstaben/Ziffern/-/_ (kein Doppelpunkt, keine Pfadzeichen)</string>
+    <string name="agents_empty_instructions">Anweisungen (Körper) dürfen nicht leer sein</string>
+    <string name="agents_bad_max_turns">maxTurns muss 1..64 sein</string>
+    <string name="agents_cat_file">Dateien</string>
+    <string name="agents_cat_shell">Shell</string>
+    <string name="agents_cat_web">Web</string>
+    <string name="agents_cat_memory">Speicher</string>
+    <string name="agents_cat_subagent">Subagenten</string>
+    <string name="agents_cat_system">System</string>
+    <string name="agents_row_role">Rolle: %1$s</string>
+    <string name="agents_row_default_model">Standardmodell</string>
+    <string name="agents_row_tools">Werkzeuge: %1$d</string>
+    <string name="agents_row_default_tools">Standard-Werkzeuge</string>
 </resources>

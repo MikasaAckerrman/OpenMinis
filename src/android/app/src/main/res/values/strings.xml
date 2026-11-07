@@ -1720,4 +1720,39 @@
     <!-- [T-reasoning-degeneracy] shown in the Deep Thinking block when the
          model's reasoning turned into a token loop -->
     <string name="thinking_degenerate_warning">Рассуждение вырождено — показать фрагмент?</string>
+
+    <!-- [B16] Custom agents screen -->
+    <string name="agents_title">Custom agents</string>
+    <string name="agents_back_cd">Back</string>
+    <string name="agents_new">New agent</string>
+    <string name="agents_edit">Edit agent</string>
+    <string name="agents_save_cd">Save</string>
+    <string name="agents_files_footer">Markdown agent files under %1$s/ — the same files the spawner reads. Save = live, no restart.</string>
+    <string name="agents_dismiss">Dismiss</string>
+    <string name="agents_empty_title">No custom agents yet</string>
+    <string name="agents_empty_hint">Create one here, or drop a .md file into %1$s (the agent can do it via file_write).</string>
+    <string name="agents_delete">Delete</string>
+    <string name="agents_delete_failed">Could not delete %1$s</string>
+    <string name="agents_name_label">Name (spawn id, custom:&lt;name&gt;)</string>
+    <string name="agents_description_label">Description (one line for the catalog)</string>
+    <string name="agents_model_role">Model role</string>
+    <string name="agents_default_role">default</string>
+    <string name="agents_model_entry_label">Model entry id (optional — beats role)</string>
+    <string name="agents_max_turns_label">maxTurns (1..64, default 8)</string>
+    <string name="agents_restrict_tools">Restrict tools</string>
+    <string name="agents_restrict_tools_hint">Off = the runner default for the role (no tools: line)</string>
+    <string name="agents_instructions_label">Instructions (file body, injected verbatim)</string>
+    <string name="agents_bad_name">Name must be letters/digits/-/_ (no colon, no path chars)</string>
+    <string name="agents_empty_instructions">Instructions (the body) must not be empty</string>
+    <string name="agents_bad_max_turns">maxTurns must be 1..64</string>
+    <string name="agents_cat_file">File</string>
+    <string name="agents_cat_shell">Shell</string>
+    <string name="agents_cat_web">Web</string>
+    <string name="agents_cat_memory">Memory</string>
+    <string name="agents_cat_subagent">Subagent</string>
+    <string name="agents_cat_system">System</string>
+    <string name="agents_row_role">role: %1$s</string>
+    <string name="agents_row_default_model">default model</string>
+    <string name="agents_row_tools">tools: %1$d</string>
+    <string name="agents_row_default_tools">default tools</string>
 </resources>
