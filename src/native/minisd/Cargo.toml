@@ -5,9 +5,19 @@ edition = "2021"
 description = "OpenMinis native daemon (M-R1 skeleton): vault mode serves the contract-v1 JSON-RPC echo on 127.0.0.1:7824"
 
 [dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "time", "sync"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# [M-R2] The MTProto stack (docs/M_R2_TOOL_MAPPING.md): grammers for the
+# Telegram client, rusqlite-bundled for tg_archive_chat (bundled = the
+# C SQLite compiled by the NDK toolchain — system libsqlite3 is not
+# available to a cross-compiled ELF). No regex/chrono dep: link
+# extraction and date formatting are hand-rolled and unit-tested to keep
+# the dependency surface at the reviewer's approved minimum.
+grammers-client = "0.7"
+grammers-session = "0.7"
+grammers-tl-types = "0.7"
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 # Spec §3 (docs/RUST_MIGRATION_SPEC.md): size discipline for the APK
 # budget — the python vault this eventually replaces costs tens of MB in

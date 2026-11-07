@@ -1,20 +1,19 @@
-//! [M-R1] The vault gateway's contract-v1 JSON-RPC, echo skeleton.
+//! [M-R2] JSON-RPC v1 contract of the vault gateway.
 //!
 //! `initialize` answers with the "telegram" server info — the
 //! `isAlive()` probe of `TelegramVaultManager` (TelegramVaultManager.kt
-//! :85-107) checks exactly that string, so the skeleton is probe-green
-//! before a single Telegram tool exists. `tools/list` is the HONEST
-//! empty list until M-R2 maps the 16 read-only tools onto grammers —
-//! advertising tools the skeleton cannot serve would be the same lie
-//! the B8 gate teaches children not to tell.
+//! :85-107) checks exactly that string. `tools/list` serves the 21
+//! schemas; `tools/call` routes into the vault module with the MCP
+//! envelope (`result.content[0].text` = the JSON-stringified payload).
 //!
 //! Bearer validation mirrors the B12 gate: any mismatch is HTTP 401.
 //! JSON-RPC-level errors ride HTTP 200 inside the envelope.
 
+use crate::telegram::tools::{self, ToolCtx};
 use serde_json::{json, Value};
 
 pub const SERVER_NAME: &str = "telegram";
-pub const SERVER_VERSION: &str = "0.1.0-minisd";
+pub const SERVER_VERSION: &str = "0.2.0-minisd";
 
 /// Byte-wise comparison without early exit on mismatch. The length
 /// early-return leaks only the length class — the expected token is a
@@ -42,42 +41,64 @@ fn rpc_error(id: Value, code: i64, message: &str) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
 }
 
-/// Dispatch one JSON-RPC request. Returns (http_status, body). A
-/// missing `id` echoes back as null (the skeleton answers every
-/// request; batch/notification semantics arrive with M-R2 if needed).
-pub fn dispatch(body: &[u8], authorized: bool) -> (u16, Value) {
-    if !authorized {
-        return (
-            401,
-            rpc_error(Value::Null, -32001, "unauthorized: bearer token mismatch"),
-        );
-    }
+/// Dispatch one JSON-RPC request against the tool surface: the HTTP
+/// status is always 200 (the Bearer gate answers 401 BEFORE dispatch);
+/// `authorized` = the daemon's session state (false short-circuits
+/// tools with the §5.2 session error).
+pub async fn dispatch<A: crate::telegram::api::TgApi + 'static>(
+    body: &[u8],
+    authorized: bool,
+    api: &std::sync::Arc<A>,
+    ctx: &ToolCtx,
+) -> Value {
     let parsed: Value = match serde_json::from_slice(body) {
         Ok(v) => v,
-        Err(e) => return (200, rpc_error(Value::Null, -32700, &format!("parse error: {e}"))),
+        Err(e) => return rpc_error(Value::Null, -32700, &format!("parse error: {e}")),
     };
     let id = parsed.get("id").cloned().unwrap_or(Value::Null);
     let Some(method) = parsed.get("method").and_then(Value::as_str) else {
-        return (200, rpc_error(id, -32600, "invalid request: missing method"));
+        return rpc_error(id, -32600, "invalid request: missing method");
     };
     match method {
-        "initialize" => (
-            200,
-            json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "serverInfo": { "name": SERVER_NAME, "version": SERVER_VERSION }
-                }
-            }),
-        ),
-        "tools/list" => (
-            200,
-            json!({ "jsonrpc": "2.0", "id": id, "result": { "tools": [] } }),
-        ),
-        other => (200, rpc_error(id, -32601, &format!("method not found: {other}"))),
+        "initialize" => json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}},
+                "serverInfo": { "name": SERVER_NAME, "version": SERVER_VERSION }
+            }
+        }),
+        "tools/list" => json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": { "tools": tools::schemas() }
+        }),
+        "tools/call" => {
+            let name = parsed
+                .pointer("/params/name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let params = parsed.get("params").cloned().unwrap_or(json!({}));
+            if !tools::TOOL_NAMES.contains(&name.as_str()) {
+                // §5.1: an unknown tool is a JSON-RPC error.
+                return rpc_error(id, -32601, &format!("unknown tool: {name}"));
+            }
+            match tools::call(api, ctx, authorized, &name, &params).await {
+                Ok(payload) => json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": tools::mcp_success(&payload)
+                }),
+                Err(e) => json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": tools::mcp_error(&e)
+                }),
+            }
+        }
+        other => rpc_error(id, -32601, &format!("method not found: {other}")),
     }
 }
 
@@ -110,63 +131,65 @@ mod tests {
         assert!(constant_time_eq(b"", b""));
     }
 
-    #[test]
-    fn unauthorized_is_http_401_with_error_envelope() {
-        let body = br#"{"jsonrpc":"2.0","id":7,"method":"initialize"}"#;
-        let (status, json) = dispatch(body, false);
-        assert_eq!(status, 401);
-        assert_eq!(json["error"]["code"], -32001);
-    }
-
-    #[test]
-    fn initialize_answers_with_the_telegram_server_info() {
-        let body = br#"{"jsonrpc":"2.0","id":7,"method":"initialize"}"#;
-        let (status, json) = dispatch(body, true);
-        assert_eq!(status, 200);
-        assert_eq!(json["id"], 7);
-        assert_eq!(json["result"]["serverInfo"]["name"], SERVER_NAME);
-        assert_eq!(json["result"]["serverInfo"]["name"], "telegram");
-        assert!(json["result"]["protocolVersion"].is_string());
-    }
-
-    #[test]
-    fn tools_list_is_the_honest_empty_list_until_m_r2() {
-        let body = br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
-        let (status, json) = dispatch(body, true);
-        assert_eq!(status, 200);
-        assert_eq!(json["result"]["tools"].as_array().map(Vec::len), Some(0));
-    }
-
-    #[test]
-    fn unknown_method_is_a_json_rpc_error_on_http_200() {
-        let body = br#"{"jsonrpc":"2.0","id":3,"method":"tools/call"}"#;
-        let (status, json) = dispatch(body, true);
-        assert_eq!(status, 200);
-        assert_eq!(json["error"]["code"], -32601);
-        assert_eq!(json["id"], 3);
-    }
-
-    #[test]
-    fn a_request_without_a_method_is_invalid() {
-        let body = br#"{"jsonrpc":"2.0","id":1}"#;
-        let (status, json) = dispatch(body, true);
-        assert_eq!(status, 200);
-        assert_eq!(json["error"]["code"], -32600);
-    }
-
-    #[test]
-    fn unparseable_body_is_a_parse_error_with_null_id() {
+    #[tokio::test]
+    async fn an_unparseable_body_is_a_parse_error_with_null_id() {
         let body = b"not json at all";
-        let (status, json) = dispatch(body, true);
-        assert_eq!(status, 200);
-        assert_eq!(json["error"]["code"], -32700);
-        assert!(json["id"].is_null());
+        let api = std::sync::Arc::new(crate::telegram::api::MockApi::new());
+        let v = dispatch(body, false, &api, &test_ctx()).await;
+        assert_eq!(v["error"]["code"], -32700);
+        assert!(v["id"].is_null());
     }
 
-    #[test]
-    fn a_missing_id_echoes_back_null() {
-        let body = br#"{"jsonrpc":"2.0","method":"tools/list"}"#;
-        let (_, json) = dispatch(body, true);
-        assert!(json["id"].is_null());
+    #[tokio::test]
+    async fn an_unknown_json_rpc_method_is_minus_32601() {
+        let body = br#"{"jsonrpc":"2.0","id":3,"method":"tools/nope"}"#;
+        let api = std::sync::Arc::new(crate::telegram::api::MockApi::new());
+        let v = dispatch(body, true, &api, &test_ctx()).await;
+        assert_eq!(v["error"]["code"], -32601);
+    }
+
+    #[tokio::test]
+    async fn initialize_answers_with_the_telegram_server_info() {
+        let body = br#"{"jsonrpc":"2.0","id":7,"method":"initialize"}"#;
+        let api = std::sync::Arc::new(crate::telegram::api::MockApi::new());
+        let v = dispatch(body, true, &api, &test_ctx()).await;
+        assert_eq!(v["id"], 7);
+        assert_eq!(v["result"]["serverInfo"]["name"], SERVER_NAME);
+        assert_eq!(v["result"]["serverInfo"]["name"], "telegram");
+    }
+
+    #[tokio::test]
+    async fn tools_list_serves_all_21_schemas() {
+        let body = br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+        let api = std::sync::Arc::new(crate::telegram::api::MockApi::new());
+        let v = dispatch(body, true, &api, &test_ctx()).await;
+        let tools = v["result"]["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 21);
+    }
+
+    #[tokio::test]
+    async fn tools_call_without_a_session_answers_the_verbatim_session_error() {
+        let body = br#"{"jsonrpc":"2.0","id":2,"params":{"name":"tg_read","arguments":{"chat_id":5}},"method":"tools/call"}"#;
+        let api = std::sync::Arc::new(crate::telegram::api::MockApi::new());
+        let v = dispatch(body, false, &api, &test_ctx()).await;
+        let inner: Value =
+            serde_json::from_str(v["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(inner["error"], "not authorized - run send-code/verify first");
+    }
+
+    #[tokio::test]
+    async fn an_unknown_tool_name_is_a_json_rpc_error_not_a_business_error() {
+        let body = br#"{"jsonrpc":"2.0","id":2,"params":{"name":"tg_delete_everything"},"method":"tools/call"}"#;
+        let api = std::sync::Arc::new(crate::telegram::api::MockApi::new());
+        let v = dispatch(body, true, &api, &test_ctx()).await;
+        assert_eq!(v["error"]["code"], -32601);
+    }
+
+    pub fn test_ctx() -> ToolCtx {
+        ToolCtx {
+            storage: std::env::temp_dir().join("minisd-rpc-test"),
+            archive_dir: std::env::temp_dir().join("minisd-rpc-test/archive"),
+            tz_offset_secs: 0,
+        }
     }
 }

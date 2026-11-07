@@ -68,13 +68,14 @@ jobs:
           ./build_proot.sh
           ../scripts/prepare_android_sandbox.sh
 
-      # [M-R1] The native minisd daemon (docs/RUST_MIGRATION_SPEC.md):
+      # [M-R1][M-R2] The native minisd daemon (docs/RUST_MIGRATION_SPEC.md):
       # aarch64-linux-android ONLY (spec §3 — no x86_64, the Waydroid
       # stand degrades documented), renamed to libminisd.so for the
       # nativeLibraryDir exec-allowed location (the libproot precedent).
-      # Skeleton: contract-v1 echo; grammers/vault arrive in M-R2. NDK
-      # linker target api 26 = the project minSdk (deps/build_proot.sh
-      # L44-46). No target-cpu micro-arch flags — spec verdict.
+      # M-R2 adds grammers (MTProto) and rusqlite-bundled (the C SQLite
+      # compiled by cc-crate — hence the CC/AR exports). NDK linker
+      # target api 26 = the project minSdk (deps/build_proot.sh L44-46).
+      # No target-cpu micro-arch flags — spec verdict.
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -91,6 +92,10 @@ jobs:
           TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
           ls "$TOOLCHAIN/aarch64-linux-android26-clang" > /dev/null
           export RUSTFLAGS="-C linker=$TOOLCHAIN/aarch64-linux-android26-clang"
+          # [M-R2] cc-crate needs the C toolchain for rusqlite-bundled.
+          export CC_aarch64_linux_android="$TOOLCHAIN/aarch64-linux-android26-clang"
+          export AR_aarch64_linux_android="$TOOLCHAIN/llvm-ar"
+          export CXX_aarch64_linux_android="$TOOLCHAIN/aarch64-linux-android26-clang++"
           cd src/native/minisd
           cargo build --release --target aarch64-linux-android
           BIN="target/aarch64-linux-android/release/minisd"

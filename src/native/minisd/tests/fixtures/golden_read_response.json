@@ -1,0 +1,14 @@
+{
+  "chat_id": -100500,
+  "messages": [
+    {
+      "id": 12345,
+      "date": "2026-11-07T10:42:00",
+      "sender": "John Doe (@johndoe)",
+      "text": "Текст сообщения до 2000 символов...",
+      "media": "[photo]",
+      "reply_to": 12340
+    }
+  ],
+  "count": 1
+}

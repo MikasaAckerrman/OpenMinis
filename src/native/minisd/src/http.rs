@@ -4,6 +4,7 @@
 //! hardened parser is an M-R2 item if the contract surface grows.
 
 /// One parsed HTTP/1.1 request — only what the contract needs.
+#[allow(dead_code)]
 pub struct Request {
     pub method: String,
     pub path: String,
