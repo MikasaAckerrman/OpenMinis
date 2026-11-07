@@ -582,3 +582,28 @@ LOADING-гейт, отсутствие фидбека, snapshot-discard, SELECT 
   rerun) инвалидирует только invalidateMessage — для владеющей сессии
   достаточно (индекс гасит её entry); симметрия с новой обёрткой = один
   параметр, по команде.
+
+## 24. День 2026-11-07 — B16 этап 2 (локализация CustomAgentsScreen + AgentDraftTest)
+
+Вердикт ревьюера: SHIP.
+
+### B16 этап 2 — 5d9b391f, CI 42360094031 SUCCESS (на зеркале)
+[статус: РЕАЛИЗОВАНО+CI | улика: код+33 ключа на 8 языках+AgentDraftTest (5 тестов)+run на canon | не хватает: визуальная проверка на iQOO — при ADB]
+- Локализация (8 языков): 33 строковых ресурса `agents_*` переведены и добавлены
+  в `res/values/strings.xml`, `values-ru`, `values-de`, `values-fr`, `values-ja`,
+  `values-ko`, `values-zh`, `values-zh-rTW`. Все 8 XML файлов валидны, без пропусков.
+- Технические токены сохранены без перевода: frontmatter keywords (name, description,
+  modelRole, tools, maxTurns), имена инструментов диспетчера, значения ролей моделей.
+- `CustomAgentsScreen.kt` полностью переведён на ресурсы:
+  - `AgentDraft.validate(): @StringRes Int?` — возврат ID ресурса вместо хардкода;
+  - `categoryTitle(key)` — сопоставление 6 категорий с локализованными заголовками;
+  - чип `default` переведён (`R.string.agents_default_role`), остальные чипы сохраняют технические имена;
+  - подсказки строк списка (role, tools, default model, default tools).
+- `AgentDraftTest` (5 тестов):
+  - `validate catches bad names` (пробелы, слэши, двоеточия, пустые строки);
+  - `validate catches empty instructions`;
+  - `validate catches invalid maxTurns` (диапазон 1..64);
+  - `roundtrip markdown with AgentFileParser` (полный цикл сериализации/парсинга);
+  - `unrestricted tools omits tools line in markdown`.
+- CI run: `42360094031` на `OpenMinis-canon` — SUCCESS.
+
