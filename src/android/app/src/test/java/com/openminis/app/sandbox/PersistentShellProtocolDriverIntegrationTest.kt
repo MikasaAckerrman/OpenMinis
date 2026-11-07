@@ -355,16 +355,18 @@ class PersistentShellProtocolDriverIntegrationTest {
                 // The reader must NOT consume a marker in this round, so the
                 // arrow script only becomes visible when the gate opens -
                 // which never happens while stop-first is asserted.
-                val gate = java.util.concurrent.CountDownLatch(1)
+                val entered = CountDownLatch(1)
+                val gate = CountDownLatch(1)
                 val blocking = object : InputStream() {
                     override fun read(): Int {
+                        entered.countDown()
                         gate.await()
                         return -1
                     }
                 }
                 val rt = spawnReader(drv, FakeProcess(blocking))
                 drv.protocol.start(cb)
-                Thread.sleep(30) // let the reader park inside the blocked read()
+                entered.await(5, TimeUnit.SECONDS) // wait until reader is parked inside read()
                 // stop wins deterministically: record still armed, reader parked.
                 drv.teardownForStop()
                 // release the parked reader AFTER the teardown: the next read
@@ -379,11 +381,11 @@ class PersistentShellProtocolDriverIntegrationTest {
                 assertNull("04b[$round]: protocol idle", drv.protocol.marker)
                 assertEquals("04b[$round]: nothing parked", 0, drv.protocol.drainParked()?.length ?: 0)
             } else {
-                // reader wins first (deterministic): feed, join, assert; then
+                // reader wins first (deterministic): start command before reading, feed, join, assert; then
                 // verify the stop-pass cannot resurrect or double-resume.
                 val script = "OUT_4b\n__MINIS_DONE_${marker}_EXIT_${round % 6}__\n".toByteArray()
-                val rt = spawnReader(drv, FakeProcess(ByteArrayInputStream(script)))
                 drv.protocol.start(cb)
+                val rt = spawnReader(drv, FakeProcess(ByteArrayInputStream(script)))
                 rt.join(5000)
                 assertFalse("04b[$round]: reader completed in time", rt.isAlive)
                 assertEquals("04b[$round]: dispatch resumed once", 1, resumed.get())
