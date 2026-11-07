@@ -933,3 +933,20 @@ LOADING-гейт, отсутствие фидбека, snapshot-discard, SELECT 
 - Полная матрица вызовов, валидации схем, кэширования диалогов (`tg_chats_cache.json`, TTL 30 мин), Whitelist-контроля (`tg_whitelist.json`) и обработки `FloodWait` (до 60с бэкофф).
 - Разрешено разделение: `yt_transcript` остаётся в гостевом сэндбоксе как не относящийся к MTProto.
 - Дана санкция на переход к кодированию этапа M-R2 в `src/native/minisd/`.
+
+## 35. Утро 2026-11-08 — M-R2 (Нативный Telegram Vault на `grammers` и 21 инструмент)
+[статус: РЕАЛИЗОВАНО+CI | улика: коммит f7fc155d, CI 42417596179 SUCCESS на зеркале, 95 cargo unit-тестов]
+
+- **Реализация `src/native/minisd` (Rust)**:
+  * Нативный стек на `grammers-client` 0.7, `grammers-tl-types` 0.7, `grammers-session` 0.7, `rusqlite` 0.32 (bundled C SQLite через clang NDK API 26).
+  * Реализованы все 21 инструмент шлюза Telegram:
+    1. Core read-only (16): `tg_whoami`, `tg_list_chats`, `tg_get_chat`, `tg_read`, `tg_read_new`, `tg_unread`, `tg_channel_digest`, `tg_scan_channels`, `tg_search`, `tg_global_search`, `tg_multi_search`, `tg_search_parallel`, `tg_read_parallel`, `tg_period_read`, `tg_replies`, `tg_stats`.
+    2. Расширенные инструменты (5): `tg_read_chunked`, `tg_link_search`, `tg_download_media`, `tg_archive_chat`, `tg_analyze_chat`.
+  * Канонический формат `_fmt_msg` и структуры ответов строго совместимы со старым питоновским сервером бит-в-бит (проверено golden-фикстурами `golden_fmt_msg.json` и `golden_read_response.json`).
+  * Whitelist-контроль (`tg_whitelist.json` - whitelist/blacklist/setup modes).
+  * Кэш диалогов (`tg_chats_cache.json`, TTL 30 мин) с атомарной записью через `.tmp`.
+  * Двойная защита от флуда: `FloodBackoff` (экспоненциальный бэкофф до 60с) + `RateLimiter` (300 мс между сетевыми чтениями).
+  * Локальный SQLite-архив (`tg_archive.db`) для оффлайн-анализа (`tg_archive_chat`, `tg_analyze_chat`).
+  * Полное покрытие тестами: 95 cargo unit-тестов проходят (95 passed, 0 failed).
+  * CI: ран 42417596179 на canon (зеркало) - обе джобы `Rust daemon tests (minisd)` и `JVM unit tests (no APK)` завершены с SUCCESS с 1-й попытки.
+  * Правило R1: 0 вхождений запрещённого символа во всех добавленных и изменённых файлах.
