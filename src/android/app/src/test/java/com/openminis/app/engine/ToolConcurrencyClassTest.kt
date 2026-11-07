@@ -15,14 +15,14 @@ class ToolConcurrencyClassTest {
 
     @Test
     fun `file and network tools route to the io gate`() {
-        for (tool in listOf("file_read", "file_write", "file_edit", "read_image", "webfetch")) {
+        for (tool in listOf("file_read", "file_write", "file_edit", "read_image", "webfetch", "memory_write")) {
             assertTrue("tool=$tool", ToolConcurrencyClass.isIo(tool))
         }
     }
 
     @Test
     fun `session-state tools stay on the cpu gate`() {
-        for (tool in listOf("shell_execute", "browser_use", "spawn_subagent", "mcp", "bg_run", "memory_write")) {
+        for (tool in listOf("shell_execute", "browser_use", "spawn_subagent", "mcp", "bg_run")) {
             assertFalse("tool=$tool", ToolConcurrencyClass.isIo(tool))
         }
     }

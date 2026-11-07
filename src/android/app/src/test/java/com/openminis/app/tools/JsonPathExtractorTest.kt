@@ -99,7 +99,7 @@ class JsonPathExtractorTaxonomyTest {
         assertEquals("src/main.rs", normalizeResourcePath("./src/main.rs"))
         assertEquals("src/main.rs", normalizeResourcePath("src/x/../main.rs"))
         assertEquals("/a/c", normalizeResourcePath("/a/b/../c"))
-        assertEquals("/a", normalizeResourcePath("/a/../.."))
+        assertEquals("/", normalizeResourcePath("/a/../.."))
         assertEquals("..", normalizeResourcePath(".."))
         assertEquals("a/c", normalizeResourcePath("a//c"))
     }

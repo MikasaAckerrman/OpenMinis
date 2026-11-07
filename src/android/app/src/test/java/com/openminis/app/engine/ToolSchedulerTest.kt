@@ -391,7 +391,7 @@ class ToolSchedulerHierarchyTest {
             ),
         )
         assertEquals(setOf("r1"), depsOf(nodes, "sh"))
-        assertEquals(setOf("r1", "sh"), depsOf(nodes, "r2"))
+        assertEquals(setOf("sh"), depsOf(nodes, "r2"))
     }
 
     @Test
