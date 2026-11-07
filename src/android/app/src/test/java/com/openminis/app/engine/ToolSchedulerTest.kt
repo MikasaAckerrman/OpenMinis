@@ -229,3 +229,227 @@ class ToolSchedulerTest {
         assertEquals(emptySet<String>(), deps["2"])
     }
 }
+
+/**
+ * [PARALLEL_TOOL_ENGINE_SPEC] The hierarchy + reactive-DAG pins, driven
+ * through the REAL platform extractor (jsonObjectResourceKeys) — the
+ * integration seam the engine loop actually wires (ChatViewModel
+ * injects exactly this function).
+ */
+class ToolSchedulerHierarchyTest {
+
+    private fun realPlanner() = ToolScheduler(
+        resourceKeysOf = com.openminis.app.tools.jsonObjectResourceKeys,
+        maxConcurrent = 8,
+    )
+
+    private fun call(id: String, name: String, argsJson: String = "{}") =
+        ToolScheduler.SchedCall(id, name, argsJson)
+
+    private fun fileRead(id: String, path: String) =
+        call(id, "file_read", """{"path":"$path"}""")
+
+    private fun fileWrite(id: String, path: String) =
+        call(id, "file_write", """{"path":"$path"}""")
+
+    private fun depsOf(nodes: List<ToolScheduler.ReactiveNode>, id: String) =
+        nodes.first { it.call.id == id }.dependsOn
+
+    @Test
+    fun `the canonical research batch runs four calls immediately`() {
+        // T1 web_search, T2 read a, T3 read b, T4 write a, T5 read c:
+        // T1/T2/T3/T5 carry no deps at t=0; T4 depends ONLY on T2.
+        val nodes = realPlanner().planReactive(
+            listOf(
+                call("T1", "web_search", """{"query":"q"}"""),
+                fileRead("T2", "src/a.rs"),
+                fileRead("T3", "src/b.rs"),
+                fileWrite("T4", "src/a.rs"),
+                fileRead("T5", "src/c.rs"),
+            ),
+        )
+        assertEquals(emptySet<String>(), depsOf(nodes, "T1"))
+        assertEquals(emptySet<String>(), depsOf(nodes, "T2"))
+        assertEquals(emptySet<String>(), depsOf(nodes, "T3"))
+        assertEquals(emptySet<String>(), depsOf(nodes, "T5"))
+        assertEquals(setOf("T2"), depsOf(nodes, "T4"))
+    }
+
+    @Test
+    fun `a write under a grepped tree waits for the tree read`() {
+        val nodes = realPlanner().planReactive(
+            listOf(
+                call("g", "grep", """{"pattern":"x","path":"src"}"""),
+                fileWrite("w", "src/main.rs"),
+                fileRead("r", "docs/readme.md"),
+            ),
+        )
+        assertEquals(setOf("g"), depsOf(nodes, "w"))
+        assertEquals(emptySet<String>(), depsOf(nodes, "r"))
+    }
+
+    @Test
+    fun `a write is blocked by ALL earlier readers of its file - not just the last`() {
+        // [PARALLEL_TOOL_ENGINE_SPEC §4.2.3] WAR: both reads must finish
+        // before the write; the old per-key lastUse map only remembered
+        // the last one. Reads run in parallel, so the first read may
+        // still be in flight when the last one returns.
+        val nodes = realPlanner().planReactive(
+            listOf(
+                fileRead("r1", "a.rs"),
+                fileRead("r2", "a.rs"),
+                fileWrite("w", "a.rs"),
+            ),
+        )
+        assertEquals(setOf("r1", "r2"), depsOf(nodes, "w"))
+        // The wave plan is the same story: read wave, then the write.
+        val waves = realPlanner().plan(
+            listOf(fileRead("r1", "a.rs"), fileRead("r2", "a.rs"), fileWrite("w", "a.rs")),
+        )
+        assertEquals(2, waves.size)
+        assertEquals(2, waves[0].calls.size)
+    }
+
+    @Test
+    fun `tree reads and file reads coexist inside one tree`() {
+        val waves = realPlanner().plan(
+            listOf(
+                call("g", "grep", """{"pattern":"x","path":"src"}"""),
+                fileRead("r", "src/main.rs"),
+                fileRead("r2", "src/other.rs"),
+            ),
+        )
+        assertEquals(1, waves.size)
+        assertEquals(3, waves[0].calls.size)
+    }
+
+    @Test
+    fun `normalized paths collide across textual variants`() {
+        val waves = realPlanner().plan(
+            listOf(
+                fileRead("r", "./src/a.rs"),
+                fileWrite("w", "src/a.rs"),
+            ),
+        )
+        assertEquals(2, waves.size)
+    }
+
+    @Test
+    fun `sibling writes stay parallel - no directory over-serialization`() {
+        // Two writes to DIFFERENT files in the same directory are
+        // independent: the reference model's rule 2. The spec's
+        // fs_parent key is realized as the hierarchy predicate, never
+        // as a literal shared key (that would serialize siblings).
+        val waves = realPlanner().plan(
+            listOf(fileWrite("w1", "dir/a.rs"), fileWrite("w2", "dir/b.rs")),
+        )
+        assertEquals(1, waves.size)
+    }
+
+    @Test
+    fun `tg reads of the same chat run in parallel`() {
+        val waves = realPlanner().plan(
+            listOf(
+                call("t1", "tg_read", """{"chat_id":-100500}"""),
+                call("t2", "tg_search", """{"chat_id":-100500,"query":"x"}"""),
+                call("t3", "tg_read", """{"chat_id":-100600}"""),
+            ),
+        )
+        assertEquals(1, waves.size)
+        assertEquals(3, waves[0].calls.size)
+    }
+
+    @Test
+    fun `a memory read orders against an earlier memory write`() {
+        val nodes = realPlanner().planReactive(
+            listOf(
+                call("w", "memory_write", """{"text":"x"}"""),
+                call("r", "memory_get", """{"key":"x"}"""),
+                call("s", "web_search", """{"query":"q"}"""),
+            ),
+        )
+        assertEquals(setOf("w"), depsOf(nodes, "r"))
+        assertEquals(emptySet<String>(), depsOf(nodes, "s"))
+    }
+
+    @Test
+    fun `two memory writes still serialize on the store key`() {
+        val waves = realPlanner().plan(
+            listOf(call("w1", "memory_write", "{}"), call("w2", "memory_write", "{}")),
+        )
+        assertEquals(2, waves.size)
+    }
+
+    @Test
+    fun `a global shell still hermetically separates the reactive graph`() {
+        val nodes = realPlanner().planReactive(
+            listOf(
+                fileRead("r1", "a.rs"),
+                call("sh", "shell_execute", """{"command":"ls"}"""),
+                fileRead("r2", "b.rs"),
+            ),
+        )
+        assertEquals(setOf("r1"), depsOf(nodes, "sh"))
+        assertEquals(setOf("r1", "sh"), depsOf(nodes, "r2"))
+    }
+
+    @Test
+    fun `the overlap predicate follows the spec rules exactly`() {
+        // Same key: always.
+        assert(ToolScheduler.keysOverlap("fs:/a", "fs:/a"))
+        // Tree contains file.
+        assert(ToolScheduler.keysOverlap("fs_tree:/a", "fs:/a/b.rs"))
+        // Deep tree ancestor.
+        assert(ToolScheduler.keysOverlap("fs_tree:/a", "fs:/a/b/c.rs"))
+        // Root tree covers all absolute files.
+        assert(ToolScheduler.keysOverlap("fs_tree:/", "fs:/a.txt"))
+        assert(!ToolScheduler.keysOverlap("fs_tree:/", "fs:a.txt"))
+        // Relative dot tree covers relative files only.
+        assert(ToolScheduler.keysOverlap("fs_tree:.", "fs:src/a.rs"))
+        assert(!ToolScheduler.keysOverlap("fs_tree:.", "fs:/var/a.rs"))
+        // Prefix must respect the separator: /a does NOT cover /ab.
+        assert(!ToolScheduler.keysOverlap("fs_tree:/a", "fs:/ab.rs"))
+        // Two trees never collide with each other (reads).
+        assert(!ToolScheduler.keysOverlap("fs_tree:/a", "fs_tree:/b"))
+        // Non-fs domains: exact equality only (never collides with fs_tree).
+        assert(!ToolScheduler.keysOverlap("fs_tree:", "mem:store"))
+        assert(!ToolScheduler.keysOverlap("fs_tree:", "net:search"))
+        assert(!ToolScheduler.keysOverlap("net:search", "net:other"))
+        assert(!ToolScheduler.keysOverlap("mem:store", "fs:/a"))
+    }
+
+    @Test
+    fun `io pool covers the newly declared reads`() {
+        assert(ToolConcurrencyClass.isIo("grep"))
+        assert(ToolConcurrencyClass.isIo("web_search"))
+        assert(ToolConcurrencyClass.isIo("memory_get"))
+        assert(ToolConcurrencyClass.isIo("tg_read"))
+        assert(ToolConcurrencyClass.isIo("tg_list_chats"))
+        // shell/browser/spawn stay on the conservative CPU gate.
+        assert(!ToolConcurrencyClass.isIo("shell_execute"))
+        assert(!ToolConcurrencyClass.isIo("browser_use"))
+        assert(!ToolConcurrencyClass.isIo("spawn_subagent"))
+    }
+
+    @Test
+    fun `every tg tool is a read - the vault surface is read-only`() {
+        for (name in listOf(
+            "tg_read", "tg_search", "tg_list_chats", "tg_get_chat", "tg_unread",
+            "tg_global_search", "tg_channel_digest", "tg_scan_channels", "tg_period_read",
+            "tg_replies", "tg_stats", "tg_link_search", "tg_multi_search",
+            "tg_download_media", "tg_archive_chat", "tg_read_parallel",
+            "tg_read_new", "tg_read_chunked", "tg_search_parallel", "tg_analyze_chat",
+            "tg_whoami",
+        )) {
+            assertEquals("$name must be READ", ToolScheduler.Effect.READ, ToolScheduler.effectOf(name))
+        }
+    }
+
+    @Test
+    fun `todo_write is a resource write now, not turn state`() {
+        assertEquals(ToolScheduler.Effect.WRITE, ToolScheduler.effectOf("todo_write"))
+        // The rest of the META family stays META.
+        assertEquals(ToolScheduler.Effect.META, ToolScheduler.effectOf("ask_user"))
+        assertEquals(ToolScheduler.Effect.META, ToolScheduler.effectOf("plan_submit"))
+    }
+}

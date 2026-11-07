@@ -18,10 +18,18 @@ package com.openminis.app.engine
  */
 object ToolConcurrencyClass {
 
-    /** Disk/network tools: high fan-out is safe and desirable. */
+    /** Disk/network tools: high fan-out is safe and desirable.
+     *  [PARALLEL_TOOL_ENGINE_SPEC §3.1] adds the tree reads (grep/glob),
+     *  web_search and the whole memory tier — plus the tg_* MCP surface
+     *  (all read-only) — to the I/O pool; without that a 5-way tg_read
+     *  batch would serialize on the subagent-sized CPU gate. */
     val IO_TOOLS: Set<String> = setOf(
         "file_read", "file_write", "file_edit", "read_image", "webfetch",
+        "grep", "glob", "web_search",
+        "memory_get", "supermemory_search", "memory_blocks_view",
+        "todo_read", "memory_write", "memory_blocks_edit", "todo_write",
     )
 
-    fun isIo(toolName: String): Boolean = toolName in IO_TOOLS
+    fun isIo(toolName: String): Boolean =
+        toolName in IO_TOOLS || toolName.startsWith("tg_")
 }

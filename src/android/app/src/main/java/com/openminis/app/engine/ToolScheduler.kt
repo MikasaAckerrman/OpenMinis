@@ -52,38 +52,95 @@ class ToolScheduler(
     data class Wave(val calls: List<SchedCall>)
 
     companion object {
-        /** Effect class per tool name; unknown -> GLOBAL (safe default). */
-        fun effectOf(toolName: String): Effect = when (toolName) {
-            "file_read", "read_image", "memory_get", "supermemory_search",
-            "memory_blocks_view", "todo_read", "bg_check", "bg_list",
-            "grep", "glob", "list_agents", "task_board", "await_result", "web_search", "webfetch",
-            -> Effect.READ
+        /**
+         * Effect class per tool name; unknown -> GLOBAL (safe default).
+         * [PARALLEL_TOOL_ENGINE_SPEC §3.1] adds the tg_* MCP surface as
+         * READ (all 21 vault tools are read-only by the iron rule — a
+         * future account-mutating tg tool must opt OUT of this prefix
+         * rule explicitly) and moves todo_write from META to WRITE:
+         * it is a resource write on `mem:store`, not turn state.
+         */
+        fun effectOf(toolName: String): Effect = when {
+            toolName.startsWith("tg_") -> Effect.READ
 
-            "file_write", "file_edit", "memory_write", "memory_blocks_edit",
-            -> Effect.WRITE
+            toolName in setOf(
+                "file_read", "read_image", "memory_get", "supermemory_search",
+                "memory_blocks_view", "todo_read", "bg_check", "bg_list",
+                "grep", "glob", "list_agents", "task_board", "await_result",
+                "web_search", "webfetch",
+            ) -> Effect.READ
 
-            "todo_write", "ask_user", "plan_submit", "subagent_task",
-            "bg_steer", "turn_timer",
-            -> Effect.META
+            toolName in setOf(
+                "file_write", "file_edit", "memory_write", "memory_blocks_edit",
+                "todo_write",
+            ) -> Effect.WRITE
+
+            toolName in setOf(
+                "ask_user", "plan_submit", "subagent_task",
+                "bg_steer", "turn_timer",
+            ) -> Effect.META
 
             else -> Effect.GLOBAL // shell_execute, bg_run, browser_use, mcp,
             // root_shell, spawn_*, run_graph, session_gc, anything unknown
         }
 
         /**
-         * Tools whose resource keys the platform knows how to extract.
+         * Tools whose resource keys the platform knows how to extract
+         * (see jsonObjectResourceKeys for the full taxonomy).
          * Everything else returns GLOBAL via resourceKeysOf injection
-         * (undeclared = global lock).
+         * (undeclared = global lock). The tg_* MCP surface is covered
+         * by PREFIX: every tool the vault serves (tg_read, tg_search,
+         * tg_multi_search, ...) declares mcp:tg:* keys.
          */
         val KEY_DECLARING_TOOLS: Set<String> = setOf(
             "file_read", "file_write", "file_edit", "read_image",
-            "memory_write", "memory_blocks_edit",
-            // [P1-io-concurrency] webfetch declares net:<url> (pure GET,
-            // idempotent): two fetches of DIFFERENT urls run in parallel;
-            // same url is read+read — parallel by the read rule. A missing
-            // url stays UNDECLARED -> GLOBAL lock (never an empty key).
-            "webfetch",
+            // [PARALLEL_TOOL_ENGINE_SPEC] tree reads — a whole-tree read
+            // genuinely races any write under that tree, and reads among
+            // themselves stay parallel.
+            "grep", "glob",
+            // network reads: one shared key for searches (pure reads),
+            // per-url for the idempotent GET. A missing url stays
+            // UNDECLARED -> GLOBAL lock (never an empty key).
+            "web_search", "webfetch",
+            // the memory tier: one shared store key, reads and writes.
+            "memory_get", "supermemory_search", "memory_blocks_view",
+            "todo_read", "memory_write", "memory_blocks_edit", "todo_write",
+            // + every "tg_*" name (prefix rule in the extractor).
         )
+
+        /**
+         * [PARALLEL_TOOL_ENGINE_SPEC §3.1] The ONE cross-key conflict
+         * rule: a filesystem tree key overlaps a file key when the file
+         * lives inside the tree. Everything outside the fs/fs_tree pair
+         * (net, mcp, mem, agent-spawn) collides only on exact equality.
+         * Reads never conflict through this predicate among themselves —
+         * it is applied against the held WRITE side for readers and
+         * against BOTH held sides for writers.
+         */
+        fun keysOverlap(a: String, b: String): Boolean {
+            if (a == b) return true
+            val aTree = a.startsWith("fs_tree:")
+            val bTree = b.startsWith("fs_tree:")
+            if (!aTree && !bTree) return false
+            val (dir, file) = when {
+                aTree && !bTree -> {
+                    if (!b.startsWith("fs:")) return false
+                    a.removePrefix("fs_tree:") to b.removePrefix("fs:")
+                }
+                bTree && !aTree -> {
+                    if (!a.startsWith("fs:")) return false
+                    b.removePrefix("fs_tree:") to a.removePrefix("fs:")
+                }
+                else -> return false // two trees, different roots: reads coexist
+            }
+            val dirNorm = dir.trimEnd('/')
+            if (dirNorm.isEmpty() || dirNorm == ".") {
+                return if (dirNorm == ".") !file.startsWith("/")
+                else file.startsWith("/") || dir.isEmpty()
+            }
+            return file.startsWith(dirNorm) &&
+                (file.length == dirNorm.length || file[dirNorm.length] == '/')
+        }
     }
 
     /**
@@ -141,9 +198,15 @@ class ToolScheduler(
                 if (waveHasMeta[w] && effect == Effect.META) continue
                 val wRead = waveReadKeys[w]
                 val wWrite = waveWriteKeys[w]
+                // [PARALLEL_TOOL_ENGINE_SPEC §3.2] Hierarchical conflict:
+                // a tree READ blocks only a WRITE under that tree, a file
+                // WRITE blocks every tree READ of its ancestors — exact
+                // equality stays the rule outside the fs/fs_tree pair.
                 val conflict = when (effect) {
-                    Effect.READ -> keys.any { it in wWrite }
-                    Effect.WRITE -> keys.any { it in wRead || it in wWrite }
+                    Effect.READ -> keys.any { k -> wWrite.any { keysOverlap(k, it) } }
+                    Effect.WRITE -> keys.any { k ->
+                        wWrite.any { keysOverlap(k, it) } || wRead.any { keysOverlap(k, it) }
+                    }
                     Effect.META -> waveHasMeta[w]
                     Effect.GLOBAL -> true // unreachable: handled above
                 }
@@ -185,10 +248,15 @@ class ToolScheduler(
      * plan is correct, but a wave BARRIER idles fast calls behind the
      * slowest member of the previous wave.
      *
-     * Semantics are exactly plan()'s, expressed as per-call dependencies:
-     *   - per key, model order is preserved against every conflicting use
-     *     (a WRITE waits for the last reader OR writer of that key; a READ
-     *     waits only for the last writer);
+     * Semantics are exactly plan()'s, expressed as per-call dependencies
+     * ([PARALLEL_TOOL_ENGINE_SPEC §4.2]):
+     *   - a WRITE waits for EVERY earlier overlapping use (read or write —
+     *     the WAR/WAW rules; parallel readers all finish-before the write,
+     *     not just the last one by model order);
+     *   - a READ waits only for earlier overlapping WRITES (RAW; reads run
+     *     in parallel among themselves, including overlapping tree reads);
+     *   - overlap = exact equality outside the fs/fs_tree pair,
+     *     [keysOverlap]'s prefix rule inside it;
      *   - GLOBAL (undeclared) is hermetic in BOTH directions: it depends on
      *     all earlier calls and every later call depends on it;
      *   - spawn_* declares a unique key, so spawns stay parallel.
@@ -197,17 +265,19 @@ class ToolScheduler(
      * executor launch every coroutine up front in list order and let each
      * one await just its own dependencies — no wave barrier, no idle time,
      * maxConcurrent enforced by a semaphore acquired AFTER the waits (a
-     * waiting call holds no slot).
+     * waiting call holds no slot). The per-key scan is O(N) per call —
+     * N <= ~20 calls per turn makes the whole DAG build microseconds.
      */
     data class ReactiveNode(val call: SchedCall, val dependsOn: Set<String>)
 
+    /** One recorded key use: which call touched which key, and whether
+     *  the touch was a write. The WAR rule needs ALL earlier readers of
+     *  a resource, so a flat append-only log beats per-key "last" maps. */
+    private data class KeyUse(val key: String, val id: String, val wrote: Boolean)
+
     fun planReactive(calls: List<SchedCall>): List<ReactiveNode> {
         val nodes = mutableListOf<ReactiveNode>()
-        // Per key: the last call that USED it (read or write) and the last
-        // call that WROTE it. A write depends on the last use (order against
-        // readers and writers); a read depends only on the last write.
-        val lastUseBy = HashMap<String, String>()
-        val lastWriteBy = HashMap<String, String>()
+        val uses = mutableListOf<KeyUse>()
         var globalBarrier: String? = null
         var lastMeta: String? = null
 
@@ -230,13 +300,15 @@ class ToolScheduler(
                     lastMeta = call.id
                 } else {
                     for (k in keys) {
-                        if (effect == Effect.WRITE) lastUseBy[k]?.let { deps.add(it) }
-                        lastWriteBy[k]?.let { deps.add(it) }
+                        when {
+                            effect == Effect.WRITE ->
+                                uses.filter { keysOverlap(k, it.key) }.forEach { deps.add(it.id) }
+                            else ->
+                                uses.filter { it.wrote && keysOverlap(k, it.key) }
+                                    .forEach { deps.add(it.id) }
+                        }
                     }
-                }
-                for (k in keys) {
-                    lastUseBy[k] = call.id
-                    if (effect == Effect.WRITE) lastWriteBy[k] = call.id
+                    for (k in keys) uses.add(KeyUse(k, call.id, effect == Effect.WRITE))
                 }
             }
             nodes.add(ReactiveNode(call, deps))
