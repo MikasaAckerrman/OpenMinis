@@ -1,5 +1,6 @@
 package com.openminis.app.ui.settings
 
+import com.openminis.app.sandbox.VaultKeystoreCipher
 import java.io.File
 import org.json.JSONObject
 
@@ -92,11 +93,29 @@ data class TelegramLoginState(
  * and the API credentials never leave the app's own storage. Writes go
  * through a temporary file and a rename, so a process kill in the middle
  * of a write leaves the previous state intact instead of a truncated file.
+ *
+ * [B4] The state is ENCRYPTED at rest (`login-state.enc`, AES-GCM-256 via
+ * [VaultKeystoreCipher], format `[12-byte IV] + [ciphertext+tag]`): the
+ * plaintext JSON held the verification code and the api credentials on
+ * disk, which violates the P0.3 secrets protocol even inside the
+ * agent-isolated tg-vault directory. The cipher is injected as lambdas so
+ * JVM tests can drive the file mechanics with a software key (the default
+ * resolves the AndroidKeyStore key — untestable on the JVM by design).
  */
-class TelegramLoginStateStore(private val file: File) {
+class TelegramLoginStateStore(
+    private val file: File,
+    private val encrypt: (ByteArray) -> ByteArray = { VaultKeystoreCipher.encrypt(it) },
+    private val decrypt: (ByteArray) -> ByteArray? = { VaultKeystoreCipher.decrypt(it) },
+) {
 
     fun load(): TelegramLoginState = try {
-        TelegramLoginState.fromJson(file.readText())
+        if (!file.exists()) TelegramLoginState()
+        else TelegramLoginState.fromJson(
+            decrypt(file.readBytes())?.decodeToString()
+                // A corrupted/tampered ciphertext degrades to "no state" —
+                // the same contract the plaintext store had for a broken file.
+                ?: return TelegramLoginState(),
+        )
     } catch (_: Exception) {
         TelegramLoginState()
     }
@@ -109,13 +128,31 @@ class TelegramLoginStateStore(private val file: File) {
         try {
             file.parentFile?.mkdirs()
             val tmp = File(file.parentFile, file.name + ".tmp")
-            tmp.writeText(state.toJson().toString())
+            tmp.writeBytes(encrypt(state.toJson().toString().encodeToByteArray()))
             if (!tmp.renameTo(file)) {
-                file.writeText(state.toJson().toString())
+                file.writeBytes(tmp.readBytes())
                 tmp.delete()
             }
         } catch (_: Exception) {
             // Losing the state must never break the sign-in screen.
+        }
+    }
+
+    /**
+     * [B4] One-time migration from the PLAINTEXT era: read the old
+     * `login-state.json` as-is, re-save it encrypted, and delete the
+     * plaintext file — after this call no unencrypted credential copy
+     * survives on disk. Idempotent (a missing legacy file is a no-op).
+     */
+    fun migrateLegacyIfNeeded(legacy: File) {
+        try {
+            if (!legacy.exists()) return
+            val state = TelegramLoginState.fromJson(legacy.readText())
+            if (!state.isEmpty) save(state)
+            legacy.delete()
+        } catch (_: Exception) {
+            // A failed migration must not break the sign-in screen; the
+            // legacy file stays and the next attempt retries.
         }
     }
 

@@ -1,6 +1,7 @@
 package com.openminis.app.ui.settings
 
 import android.app.Activity
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -11,13 +12,16 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -45,6 +49,21 @@ private fun driverJson(output: String): JSONObject = runCatching {
     val line = output.trim().lines().lastOrNull { it.contains("RESULT ") } ?: ""
     JSONObject(line.substringAfter("RESULT ", line))
 }.getOrDefault(JSONObject())
+
+/**
+ * [B17-C] Mask a phone number for display: keep the country prefix and the
+ * last four digits, mask the rest — the same discipline the account card
+ * applies when several accounts are on screen. Degenerate inputs degrade
+ * to a full mask.
+ */
+internal fun maskTgPhone(phone: String): String {
+    val digits = phone.filter { it.isDigit() }
+    // Below 7 digits a partial mask would reveal most of the number —
+    // degrade to a full mask instead.
+    if (digits.length <= 6) return "***"
+    val prefix = phone.trim().take(2)
+    return "$prefix *** ***-${digits.takeLast(4)}"
+}
 
 /**
  * [T-telegram-login] Telegram-styled login screen. Guides the user through
@@ -79,8 +98,13 @@ fun TelegramLoginScreen(
             // directory as the Telegram session: filesDir/tg-vault is not
             // bind-mounted into any agent sandbox, so no agent process can
             // read the phone number, the code or the api credentials.
-            File(File(context.filesDir, "tg-vault"), "login-state.json"),
-        )
+            // [B4] The state is ENCRYPTED at rest now (AES-GCM-256,
+            // AndroidKeyStore): the plaintext login-state.json is migrated
+            // into login-state.enc and deleted on the first open.
+            File(File(context.filesDir, "tg-vault"), "login-state.enc"),
+        ).also { store ->
+            store.migrateLegacyIfNeeded(File(File(context.filesDir, "tg-vault"), "login-state.json"))
+        }
     }
     val savedState = remember(loginStore) { loginStore.load() }
     var phone by remember { mutableStateOf(savedState.phone) }
@@ -102,8 +126,17 @@ fun TelegramLoginScreen(
     val accountStore = remember { TelegramAccountStore(vaultDir) }
     var accounts by remember { mutableStateOf<List<TgAccount>>(emptyList()) }
     var addingAccount by remember { mutableStateOf(false) }
+    // [B17-C] Gateway status pill + the user-only unlink flow (agents have
+    // NO tool that removes accounts — this dialog is the only door).
+    var gatewayAlive by remember { mutableStateOf<Boolean?>(null) }
+    var unlinkTarget by remember { mutableStateOf<TgAccount?>(null) }
     fun reloadAccounts() { accounts = accountStore.load() }
-    LaunchedEffect(Unit) { reloadAccounts() }
+    LaunchedEffect(Unit) {
+        reloadAccounts()
+        gatewayAlive = withContext(Dispatchers.IO) {
+            com.openminis.app.sandbox.TelegramVaultManager.isAlive(context)
+        }
+    }
 
     // [T-telegram-login-state] Keep the flow on disk as it advances: the
     // verification code is only valid for a few minutes, so losing it to a
@@ -244,16 +277,45 @@ fun TelegramLoginScreen(
         )
         Spacer(Modifier.height(32.dp))
 
+        // [B17-C] Gateway status pill: the MCP tools ride the local vault
+        // server on 127.0.0.1:7824 — the user should see whether it is up.
+        gatewayAlive?.let { alive ->
+            Surface(
+                color = surface,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .background(if (alive) accent else textSecondary, CircleShape),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "Local gateway 127.0.0.1:7824 — " + if (alive) "active" else "not running",
+                        color = if (alive) textPrimary else textSecondary,
+                        fontSize = 12.sp,
+                    )
+                }
+            }
+        }
+
         // [T-tg-accounts] Account cards (B17 stage C): every registered
-        // account with an initials avatar, @username/phone and the exclusive
-        // active radio. Deleting an account is deliberately NOT offered to
-        // agents — only the user decides that here.
+        // account with an avatar (photo or initials), the name bold, the
+        // @username and the MASKED phone secondary, the exclusive active
+        // radio and the user-only unlink button. Deleting an account is
+        // deliberately NOT offered to agents — only the user decides that
+        // here, behind a confirm dialog.
         if (accounts.isNotEmpty()) {
             Spacer(Modifier.height(16.dp))
             accounts.forEach { acc ->
                 Surface(
                     color = surface,
-                    shape = RoundedCornerShape(12.dp),
+                    shape = RoundedCornerShape(16.dp),
                     border = androidx.compose.foundation.BorderStroke(1.dp, border),
                     modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                 ) {
@@ -261,30 +323,57 @@ fun TelegramLoginScreen(
                         modifier = Modifier.padding(12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(40.dp)
-                                .background(if (acc.isActive) accent else border, CircleShape),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text(
-                                (acc.firstName?.take(1) ?: acc.username?.take(1) ?: "?").uppercase(),
-                                color = Color.White,
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold,
+                        val avatarBitmap = remember(acc.avatarPath) {
+                            acc.avatarPath?.takeIf { it.isNotBlank() }
+                                ?.let { path ->
+                                    runCatching {
+                                        android.graphics.BitmapFactory.decodeFile(path)
+                                    }.getOrNull()
+                                }
+                        }
+                        if (avatarBitmap != null) {
+                            Image(
+                                bitmap = avatarBitmap.asImageBitmap(),
+                                contentDescription = null,
+                                modifier = Modifier.size(40.dp).clip(CircleShape),
                             )
+                        } else {
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .background(if (acc.isActive) accent else border, CircleShape),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text(
+                                    (acc.firstName?.take(1) ?: acc.username?.take(1) ?: "?").uppercase(),
+                                    color = Color.White,
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.Bold,
+                                )
+                            }
                         }
                         Spacer(Modifier.width(12.dp))
                         Column(Modifier.weight(1f)) {
                             Text(
-                                acc.username?.let { "@$it" } ?: (acc.firstName ?: "Account"),
+                                acc.firstName ?: acc.username?.let { "@$it" } ?: "Account",
                                 color = textPrimary,
                                 fontSize = 15.sp,
-                                fontWeight = FontWeight.Medium,
+                                fontWeight = FontWeight.Bold,
                             )
-                            if (!acc.phone.isNullOrBlank()) {
-                                Text(acc.phone, color = textSecondary, fontSize = 12.sp)
+                            if (acc.firstName != null && !acc.username.isNullOrBlank()) {
+                                Text("@${acc.username}", color = textSecondary, fontSize = 12.sp)
                             }
+                            if (!acc.phone.isNullOrBlank()) {
+                                Text(maskTgPhone(acc.phone), color = textSecondary, fontSize = 12.sp)
+                            }
+                        }
+                        IconButton(onClick = { unlinkTarget = acc }) {
+                            Icon(
+                                Icons.Default.Delete,
+                                contentDescription = "Unlink account",
+                                tint = textSecondary,
+                                modifier = Modifier.size(18.dp),
+                            )
                         }
                         RadioButton(
                             selected = acc.isActive,
@@ -492,6 +581,42 @@ fun TelegramLoginScreen(
                 if (busy) { CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp), strokeWidth = 2.dp) }
                 else { Icon(Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Sign In", fontSize = 16.sp) }
             }
+        }
+
+        // [B17-C] Unlink confirmation — the ONLY account-removal door, and
+        // it belongs to the user alone (no agent tool reaches this).
+        unlinkTarget?.let { target ->
+            AlertDialog(
+                onDismissRequest = { unlinkTarget = null },
+                title = {
+                    Text("Unlink account?", color = textPrimary, fontWeight = FontWeight.SemiBold)
+                },
+                text = {
+                    Text(
+                        "The session files for " +
+                            (target.firstName ?: target.username?.let { "@$it" } ?: target.dirName) +
+                            " will be removed from this device. The Telegram account itself " +
+                            "is not deleted — you can sign in again any time.",
+                        color = textSecondary,
+                        fontSize = 14.sp,
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        accountStore.remove(target.dirName)
+                        unlinkTarget = null
+                        reloadAccounts()
+                    }) {
+                        Text("Unlink", color = Color(0xFFFF6B6B))
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { unlinkTarget = null }) {
+                        Text("Cancel", color = textPrimary)
+                    }
+                },
+                containerColor = surface,
+            )
         }
 
         // Error banner

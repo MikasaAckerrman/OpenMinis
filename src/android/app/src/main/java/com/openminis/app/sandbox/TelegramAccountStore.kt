@@ -89,6 +89,29 @@ class TelegramAccountStore(private val vaultDir: File) {
         save(load().filter { it.dirName != account.dirName } + account)
     }
 
+    /**
+     * [B17-C] User-initiated unbind — the ONLY unlink path. Agents have no
+     * tool that removes accounts (by design: a compromised agent session
+     * must not be able to wipe the user's Telegram identities); this is
+     * called exclusively from the settings screen behind a confirm dialog.
+     * Removes the registry entry and the account's session directory. The
+     * legacy "pending" account's session lives at the CLASSIC vault path
+     * (stage-A layout), so unlinking it deletes that file too — otherwise
+     * the unbind would be a fiction and the next migrateLegacyIfNeeded()
+     * would resurrect the account.
+     */
+    fun remove(dirName: String): Boolean {
+        val accounts = load()
+        val target = accounts.firstOrNull { it.dirName == dirName } ?: return false
+        save(accounts.filter { it.dirName != dirName })
+        val dir = File(accountsDir, dirName)
+        if (dir.exists()) dir.deleteRecursively()
+        if (dirName == "pending") {
+            File(vaultDir, "tg_session.session").delete()
+        }
+        return true
+    }
+
     /** Exclusive active flag: exactly one account (or none) is active. */
     fun setActive(dirName: String) {
         save(load().map { it.copy(isActive = it.dirName == dirName) })
