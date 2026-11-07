@@ -20,6 +20,12 @@ import org.robolectric.RuntimeEnvironment
  * in [AgentMcpPolicyStore] and [McpCallTool].
  */
 @RunWith(RobolectricTestRunner::class)
+// Plain application — with the manifest default (MinisApp) Robolectric boots
+// the real Application.onCreate, whose RootfsManager init NPEs on a null
+// path under the JVM sandbox and kills every test before its body runs
+// (CI run 42363111866 post-mortem). Same pattern as the other Robolectric
+// tests in this repo.
+@org.robolectric.annotation.Config(sdk = [35], application = android.app.Application::class)
 class AgentMcpPolicyTest {
 
     private val sessionId = "test-session-mcp"
