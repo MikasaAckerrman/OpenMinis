@@ -701,6 +701,48 @@ LOADING-гейт, отсутствие фидбека, snapshot-discard, SELECT 
   - Коммит `7c01c27c`: фиксация `toolName = "compact"` в фикстуре теста.
   - Ран `42369813130` (attempt 1): **SUCCESS** на `OpenMinis-canon`.
 
+## 28. День 2026-11-07 — B27: Гарантированный вылет в фоне (OverlayAttachGuard, Zombie FGS, ARMv9 PAC, WakeLock)
+
+Вердикт ревьюера: SHIP.
+
+### Реализация — коммит a8928b8a, CI 42374549734 SUCCESS (на зеркале)
+[статус: РЕАЛИЗОВАНО+CI | улика: коммит a8928b8a, ран 42374549734 SUCCESS на canon]
+
+- Корневые причины (аудит ревьюера 07.11 по отчёту юзера 02.11):
+  1. `ToolOverlayController.kt:254`: незащищённый `windowManager.addView(container, params)`
+     при уходе приложения в фон (`isAppForegroundFlow == false`). На Android 14/15 и агрессивных
+     OEM-прошивках (OriginOS 5 на vivo V2425A / iQOO 13) отзыв `SYSTEM_ALERT_WINDOW` или блокировка
+     фонового показа плавающих окон выбрасывала `BadTokenException`/`SecurityException`,
+     приводя к мгновенному падению процесса на главном потоке (`FATAL EXCEPTION: main`).
+  2. `AgentForegroundService.kt:214-276`: `START_STICKY` рестарт сервиса с `intent == null`
+     после убийства процесса системой порождал зомби-FGS: сервис вывешивал постоянное уведомление,
+     захватывал бессрочный WakeLock при 0 активных сессий, попадал под отстрел демоном питания
+     OriginOS через `SIGKILL`/`SIGABRT` и уходил в бесконечный цикл фоновых падений.
+  3. `crash_handler.cpp`: процессор Snapdragon 8 Elite (ARMv9.2-A) подписывает адреса возврата
+     в стеке криптографическими PAC-сигнатурами (старшие 16 бит). Функция `pc_module()` передавала
+     зашумлённые адреса в `dladdr()`, linker возвращал 0, маскируя кадры под `?+0x...` и ослепляя диагностику.
+  4. `AgentForegroundService.kt:728`: бессрочный `wakeLock.acquire()` без максимального таймаута.
+
+- Решение архитектора:
+  1. `OverlayAttachGuard.kt` + `ToolOverlayController.kt:258`: безопасная обёртка
+     `OverlayAttachGuard.addViewSafely(TAG)`. Отказ WindowManager перехватывается, логируется,
+     оверлей остаётся detached (`view = null`, `layoutParams = null`, `isShown = false`) без краша.
+  2. `AgentFgsRules.kt` + `AgentForegroundService.kt:266`: чистая политика
+     `AgentFgsRules.shouldStopOnZombieRestart(hasIntent, activeSessionCount)`. При `intent == null`
+     и `activeSessionCount <= 0` сервис немедленно вызывает `stopSelf()` и возвращает `START_NOT_STICKY`.
+  3. `crash_handler.cpp`: маска `strip_pac(addr) = addr & 0x00007FFFFFFFFFFFULL` применена ко всем
+     четырём точкам извлечения адресов (unwind-PC, ucontext `pc`/`lr`, frame-pointer chain `ret`).
+  4. `AgentForegroundService.kt:43, 753`: предохранительный потолок `WAKELOCK_BACKSTOP_MS = 2L * 60 * 60 * 1000`
+     (2 часа) при `acquire(WAKELOCK_BACKSTOP_MS)`.
+  5. Модульные тесты `AgentFgsRulesTest.kt`:
+     - 4 теста `AgentFgsRulesTest` (зомби-рестарт гасится, живые сессии сохраняются, явные интенты активны);
+     - 3 теста `OverlayAttachGuardTest` (`BadTokenException` и `Throwable` не роняют процесс).
+
+- CI верификация:
+  - Ран `42374549734` (SHA `a8928b8a`): **SUCCESS** с первого прогона на зеркале `OpenMinis-canon`.
+  - 2136 unit-тестов зелёные. Физическая сверка PAC-маски по дампу tombstones запланирована на Блок 2 при ADB.
+
+
 
 
 
