@@ -840,6 +840,26 @@ LOADING-гейт, отсутствие фидбека, snapshot-discard, SELECT 
      - Матрица активности `watchActive`.
      - Инвариант пробуждения (порог строго превышает интервал).
 
+## 32. День 2026-11-07 — B8: Admission-гейт делегации `mayDelegate` (жёсткий отказ неавторизованного спавна)
+
+Вердикт ревьюера: SHIP (предкоммитный аудит диффа +207/−45; оба отклонения ZCode утверждены аудитором).
+
+### Корневой дефект (аудит ревьюера 07.11, подтверждён реализацией)
+
+`SubagentExecutor.spawn()` вычислял `mayDelegate(agentRole, spawnerRole)`, но результат скармливался ТОЛЬКО в `allowNesting` графа — вердикт матрицы делегации никогда не превращался в отказ. Неавторизованный спавн (воркер нанимает другого воркера или custom-агента) строил граф, сохранял его через `saveAgentGraph` в БД и ЗАПУСКАЛСЯ; структурный кап глубины держался единственно на strip делегационных тулов у внука. То же отверстие — в `spawnCustom()` (нет гейта вовсе) и в `spawnMany()` (валидация батча проверяла только существование ролей).
+
+### Реализация — коммит 0043eb72, CI 42395557498 SUCCESS (на зеркале OpenMinis-canon)
+[статус: РЕАЛИЗОВАНО+CI | улика: коммит 0043eb72, ран 42395557498 (1 джоба «JVM unit tests (no APK)», success, steps-clean), пуш в origin и mirror через `http.version=HTTP/1.1`]
+
+- Три точки отказа (ДО построения графа, записи в БД и захвата лимитеров):
+  1. `spawn()` (~:1094): `if (!mayDelegate(agentRole, spawnerRole)) return "spawn refused: …"` + отделение права ребёнка гнездиться от вердикта матрицы: `childCanNest = (agentRole == ORCHESTRATOR && spawnerRole == null)`.
+  2. `spawnCustom()` (~:497): гейт `mayDelegate(null, spawnerRole)` — кастомные агенты (`childRole == null` — кодировка матрицы) от воркер-сессий не нанимаются.
+  3. `spawnMany()` (~:651): батч-гейт циклом после role-existence и до dedup/корутин — один неавторизованный spec детерминированно бракует весь батч; в dispatch-цикле честный `childCanNest` (custom-таргет: `spawnerRole == null` — паритет A8xA3 с одиночным спавном, отклонение №2).
+- Шов `SubagentRoles.toolsForChild(tools, allowNesting)` (~:1717): strip-фильтр делегационных тулов (`spawn_subagent`/`spawn_many`/`cancel_subagent`) вынесен из двух дублированных inline-`filterNot` (`buildEphemeralGraph`/`buildCustomGraph`) в чистый internal-метод — правило тестируемо без построения графа.
+- Матрица `SubagentRoles.mayDelegate` (~:1677): MAIN-ветка легализует полный рекламный набор (`childRole in workers` добавлено; отклонение №1 — схема spawn-инструментов рекламирует все 13 SPAWNABLE-ролей главному чату, строгий отказ сломал бы 9/13; реальная закрываемая граница — сторона СПАВНЕРА). KDoc переписан честно.
+- Тесты `SubagentRolesDelegationTest` (10 pure-JVM): пин полноты `SPAWNABLE == enum − ORCHESTRATOR`; MAIN нанимает всю рекламную поверхность (пин отклонения №1); ORCHESTRATOR→ORCHESTRATOR и ORCHESTRATOR→custom отказаны; исчерпывающие отказы воркер-спавнеров (SENIOR_IMPLEMENTER/EXPLORE/DOCUMENTATION_AGENT × 14 ролей + custom) и ревьюер-спавнеров (4 × 14 + custom); 3 теста `toolsForChild` (nesting сохраняет поверхность, leaf теряет ровно 3 тула, формула childCanNest на дефолтных поверхностях). Старый тест (:14) заякоривал ДО-B8 семантику «MAIN не нанимает EXPLORE» — переписан в составе диффа.
+- Честные пробелы: исполнение гейтов внутри spawn/spawnCustom/spawnMany не покрыто тестом (требует MinisApp-гарнитуры) — логика отказа = чистая матрица (закреплена), проводка — 3 однострочника `if(!…) return`, верифицирована компиляцией CI; батч-ветка custom `childCanNest` — inline, закрыта инспекцией.
+
 
 
 
