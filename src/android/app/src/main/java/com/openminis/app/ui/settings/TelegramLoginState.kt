@@ -108,16 +108,17 @@ class TelegramLoginStateStore(
     private val decrypt: (ByteArray) -> ByteArray? = { VaultKeystoreCipher.decrypt(it) },
 ) {
 
-    fun load(): TelegramLoginState = try {
-        if (!file.exists()) TelegramLoginState()
-        else TelegramLoginState.fromJson(
-            decrypt(file.readBytes())?.decodeToString()
-                // A corrupted/tampered ciphertext degrades to "no state" —
-                // the same contract the plaintext store had for a broken file.
-                ?: return TelegramLoginState(),
-        )
-    } catch (_: Exception) {
-        TelegramLoginState()
+    fun load(): TelegramLoginState {
+        if (!file.exists()) return TelegramLoginState()
+        return try {
+            val plain = decrypt(file.readBytes())?.decodeToString()
+            // A corrupted/tampered ciphertext degrades to "no state" —
+            // the same contract the plaintext store had for a broken file.
+            if (plain != null) TelegramLoginState.fromJson(plain)
+            else TelegramLoginState()
+        } catch (_: Exception) {
+            TelegramLoginState()
+        }
     }
 
     fun save(state: TelegramLoginState) {
