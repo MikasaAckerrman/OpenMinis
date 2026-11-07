@@ -237,8 +237,14 @@ class ChatHistoryWindowTest {
 
     @Test
     fun `compact marker system row is not rescued (graying recreates it)`() {
+        // The marker row is identified by toolName == "compact" (the same
+        // discriminator the notices filter has always used) — kind alone
+        // is not the marker signature.
         val current = listOf(
-            msg("compact-marker", role = "system", toolBlocks = listOf(AssistantBlock(id = "b", kind = "compact"))),
+            msg(
+                "compact-marker", role = "system",
+                toolBlocks = listOf(AssistantBlock(id = "b", kind = "compact", toolName = "compact")),
+            ),
             msg("notice_x", role = "system", toolBlocks = listOf(AssistantBlock(id = "b", kind = "text"))),
         )
         val tail = ChatHistoryWindow.preserveInMemoryTail(current, installedDbIds = emptySet())
