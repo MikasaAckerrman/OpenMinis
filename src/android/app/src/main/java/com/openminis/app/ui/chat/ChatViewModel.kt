@@ -418,7 +418,18 @@ class ChatViewModel(
 
     val hasOlderMessages: StateFlow<Boolean> = _hasUnloadedOlderMessages.asStateFlow()
 
-    /** Load the previous DB page and rebuild the materialized window. */
+    /**
+     * [B26] Live state of the "load older" pagination read. The button used
+     * to be a silent no-op from the user's perspective: a click fired a
+     * 500–1000 ms DB read with NO visual feedback, repeat clicks were eaten
+     * by the job-activity guard, and the result could be discarded by the
+     * snapshot race below — so the button read as broken. The spinner plus
+     * the merge-based install close that.
+     */
+    private val _isLoadingOlderMessages = MutableStateFlow(false)
+    val isLoadingOlderMessages: StateFlow<Boolean> = _isLoadingOlderMessages.asStateFlow()
+
+    /** Load the previous DB page and prepend it to the materialized window. */
     fun loadOlderMessages() {
         // [T-send-gate-deadlock] Читает страницу из БД напрямую и НЕ зависит от
         // полноты agentHistory.
@@ -431,65 +442,70 @@ class ChatViewModel(
         // страницы, ни ошибки после первого раза. Именно то поведение, на
         // которое жаловался пользователь.
         //
-        // Пагинация — операция ЧТЕНИЯ: она ничего не удаляет и не считает
-        // якорей по памяти, ей нужен только `messages` в БД. Поэтому блокируем
-        // её только пока история честно ЗАГРУЖАЕТСЯ; в DEGRADED она наоборот
-        // единственный способ показать пользователю старую часть переписки.
-        val historyState = com.openminis.app.data.SendGatePolicy.stateOf(
-            fullHistoryReady = fullHistoryReady.value,
-            degraded = historyDegraded.value,
-        )
-        if (historyState == com.openminis.app.data.SendGatePolicy.HistoryState.LOADING) {
-            requireFullSessionHistory()
-            return
-        }
-        if (!_hasUnloadedOlderMessages.value || _isStreaming.value || _isCompacting.value ||
-            _promptQueue.value.isNotEmpty()
-        ) return
+        // [B26] Снят и последний гейт — LOADING. Пагинация — операция ЧТЕНИЯ:
+        // она ничего не удаляет, не считает якорей по памяти и не строит
+        // LLM-историю, ей нужен только `messages` в БД; полнота agentHistory
+        // на неё не влияет (отправка всё равно ждёт полную историю через
+        // SendGatePolicy). Инсталл merge-безопасен (см. ChatHistoryWindow.
+        // mergeOlder): состояние читается в момент установки, а все прочие
+        // писатели `_messages` перестраивают список ОТ ТЕКУЩЕГО значения
+        // (`+` / filter / map), поэтому prepend компонуется с ними, а не
+        // гоняется с ними. Единственное состояние, при котором bookkeeping
+        // окна реально меняется под ногами, — COMPACTING (compaction
+        // переписывает границы/маркер) — он по-прежнему честно блокирует.
+        if (!_hasUnloadedOlderMessages.value || _isCompacting.value) return
         if (olderHistoryLoadJob?.isActive == true) return
         val sid = realSessionId.ifEmpty { sessionId }
         if (sid.isEmpty()) return
         val page = ChatHistoryWindow.older(loadedHistoryFromIndex)
         if (page.count <= 0) return
-        val expectedSnapshot = _messages.value
-
+        // РОВНО страница, а не весь хвост диалога: раньше limit был
+        // `currentTotal - page.fromIndex`, т.е. вместе со СТАРЫМИ строками
+        // вычитывался и заново парсился ВЕСЬ уже загруженный конец сессии —
+        // двойной SQLite-read и двойной parts_json-parse на каждый клик.
+        _isLoadingOlderMessages.value = true
         olderHistoryLoadJob = viewModelScope.launch(Dispatchers.IO) {
-            val currentTotal = chatRepository.messageCount(sid)
-            val rows = chatRepository.loadMessagePageRaw(
-                sessionId = sid,
-                offset = page.fromIndex,
-                limit = (currentTotal - page.fromIndex).coerceAtLeast(0),
-            )
-            val jsonCache = PartsJsonCache(rows.size)
-            val rebuiltUi = rows.toChatMessages(jsonCache, sessionKey = sid)
-            jsonCache.clear()
-            val marker = _cachedLatestMarker
-            val rebuiltWithMarker = if (marker == null) {
-                rebuiltUi
-            } else {
-                applyCompactMarkerGraying(
-                    messages = rebuiltUi,
-                    marker = marker,
-                    rawMessages = rows,
-                    historyDbIds = agentHistory.mapNotNullTo(mutableSetOf()) { it.dbMessageId },
-                    allowMarkerSelfHeal = false,
-                    // [T-compact-divider-count] The divider must describe the
-                    // window we are installing, not the one still in the field.
-                    windowFromIndex = page.fromIndex,
+            try {
+                val rows = chatRepository.loadMessagePageRaw(
+                    sessionId = sid,
+                    offset = page.fromIndex,
+                    limit = page.count,
                 )
-            }
-            withContext(Dispatchers.Main) {
-                if (_messages.value !== expectedSnapshot || _isStreaming.value ||
-                    _isCompacting.value || _promptQueue.value.isNotEmpty()
-                ) {
-                    return@withContext
+                val jsonCache = PartsJsonCache(rows.size)
+                val rebuiltUi = rows.toChatMessages(jsonCache, sessionKey = sid)
+                jsonCache.clear()
+                val marker = _cachedLatestMarker
+                val rebuiltWithMarker = if (marker == null) {
+                    rebuiltUi
+                } else {
+                    applyCompactMarkerGraying(
+                        messages = rebuiltUi,
+                        marker = marker,
+                        rawMessages = rows,
+                        historyDbIds = agentHistory.mapNotNullTo(mutableSetOf()) { it.dbMessageId },
+                        allowMarkerSelfHeal = false,
+                        // [T-compact-divider-count] The divider must describe the
+                        // window we are installing, not the one still in the field.
+                        windowFromIndex = page.fromIndex,
+                    )
                 }
-                val notices = _messages.value.filter { msg ->
-                    msg.role == "system" && msg.toolBlocks.firstOrNull()?.toolName != "compact"
+                withContext(Dispatchers.Main) {
+                    // [B26] Merge вместо discard: даже если между чтением и
+                    // установкой список мутировал (тик стрима, системное
+                    // уведомление, догрузка) — свежие старые строки
+                    // пристыковываются к ТОМУ, что есть сейчас, по id;
+                    // in-memory notices (role=system) остаются на месте —
+                    // они часть current, отдельная переприцепка больше не нужна.
+                    _messages.value = ChatHistoryWindow.mergeOlder(
+                        current = _messages.value,
+                        older = rebuiltWithMarker,
+                        idOf = { it.id },
+                    )
+                    loadedHistoryFromIndex = page.fromIndex
+                    _hasUnloadedOlderMessages.value = page.hasOlder
                 }
-                _messages.value = rebuiltWithMarker + notices
-                loadedHistoryFromIndex = page.fromIndex
-                _hasUnloadedOlderMessages.value = page.hasOlder
+            } finally {
+                _isLoadingOlderMessages.value = false
             }
         }
     }
@@ -7894,8 +7910,18 @@ class ChatViewModel(
             // Publish the same initial DB window that was emitted above. A
             // compact marker may add its divider/graying now that the complete
             // history and marker row are available.
-            loadedHistoryFromIndex = loaded.uiFromIndex
-            _hasUnloadedOlderMessages.value = loaded.uiFromIndex > 0
+            //
+            // [B26] The LOADING gate on loadOlderMessages is gone, so the user
+            // may have paginated DEEPER than this initial window while the
+            // full LLM history was still parsing. Re-publishing the ORIGINAL
+            // window here would silently wipe those merged pages AND rewind
+            // the window bookkeeping (button reappears over content the user
+            // already loaded). Respect the deeper start: rebuild the display
+            // window from the full row set we ALREADY hold in memory, from
+            // the user's window start.
+            val installFromIndex = loadedHistoryFromIndex.coerceAtMost(loaded.uiFromIndex)
+            loadedHistoryFromIndex = installFromIndex
+            _hasUnloadedOlderMessages.value = installFromIndex > 0
             // [T-jank-stats-rpc] Frame attribution anchor: session opens are
             // one of the user's three lag complaints. If a frame drops
             // during the open burst, the jank report now shows this marker
@@ -7904,27 +7930,43 @@ class ChatViewModel(
             com.openminis.app.diagnostics.JankMonitor.mark(
                 "session.open rows=${loaded.messages.size} ui=${ordered.size}",
             )
-            _messages.value = if (marker == null) {
-                ordered
-            } else {
-                // Phase 2.5: build the historyDbIds set used by the
-                // createdAt self-heal to filter to anchors that are
-                // actually represented in agentHistory. Mirrors iOS
-                // AIChatViewModel+Persistence.swift:406-408.
-                val historyDbIds: Set<String> = buildSet {
-                    for (m in loaded.llmHistory) {
-                        m.dbMessageId?.takeIf { it.isNotEmpty() }?.let { add(it) }
-                    }
+            val historyDbIds: Set<String> = buildSet {
+                for (m in loaded.llmHistory) {
+                    m.dbMessageId?.takeIf { it.isNotEmpty() }?.let { add(it) }
                 }
+            }
+            val windowToInstall = if (installFromIndex < loaded.uiFromIndex) {
+                // [B26] Paginated-while-loading: rebuild the deeper window
+                // from the full rows (one extra parse of the paginated slice,
+                // bounded by INITIAL_WINDOW + pages the user actually loaded).
+                // drop() is index-hardened: rows can only have SHRUNK mid-load
+                // through a non-compaction path (rare); an out-of-range index
+                // would silently blank the screen otherwise.
+                val deeperRows = loaded.messages.drop(
+                    installFromIndex.coerceAtMost(loaded.messages.size),
+                )
+                val deeperCache = PartsJsonCache(deeperRows.size)
+                val deeperUi = deeperRows.toChatMessages(deeperCache, sessionKey = sessionId)
+                deeperCache.clear()
+                deeperUi
+            } else {
+                ordered
+            }
+            _messages.value = if (marker == null) {
+                windowToInstall
+            } else {
+                // Phase 2.5: historyDbIds above filters the createdAt
+                // self-heal to anchors actually represented in agentHistory.
+                // Mirrors iOS AIChatViewModel+Persistence.swift:406-408.
                 applyCompactMarkerGraying(
-                    ordered,
+                    windowToInstall,
                     marker,
                     loaded.messages,
                     historyDbIds,
-                    // [T-compact-divider-count] `loadedHistoryFromIndex` was
-                    // already set to loaded.uiFromIndex a few lines above, but
-                    // pass it explicitly so the dependency is visible.
-                    windowFromIndex = loaded.uiFromIndex,
+                    // [T-compact-divider-count] The divider describes the
+                    // window being installed: the user's (possibly deeper)
+                    // start, not necessarily the initial one.
+                    windowFromIndex = installFromIndex,
                 )
             }
 

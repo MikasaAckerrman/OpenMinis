@@ -445,6 +445,9 @@ fun ChatScreen(
     // continue to read viewModel.messages directly inside the VM.
     val messages by viewModel.uiMessages.collectAsState()
     val hasOlderMessages by viewModel.hasOlderMessages.collectAsState()
+    // [B26] Pagination feedback: the button used to look dead during the
+    // 0.5–1s DB read (no spinner, repeat clicks silently dropped).
+    val isLoadingOlder by viewModel.isLoadingOlderMessages.collectAsState()
     val isStreaming by viewModel.isStreaming.collectAsState()
     // [T-compact-progress] Live compact card (progress/percent/timer, or the
     // specific failure + retry). Hoisted beside isStreaming.
@@ -4338,20 +4341,35 @@ fun ChatScreen(
                     // tool-result pairs remain intact across page boundaries.
                     if (hasOlderMessages) {
                         item(key = "__load_older_messages__", contentType = "load_older") {
+                            // [B26] Spinner while the page reads; the click
+                            // target is removed (not just ignored) so the
+                            // button cannot stack no-op taps during the read.
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(vertical = 12.dp)
                                     .clip(RoundedCornerShape(16.dp))
-                                    .clickable { viewModel.loadOlderMessages() }
+                                    .then(
+                                        if (isLoadingOlder) Modifier else {
+                                            Modifier.clickable { viewModel.loadOlderMessages() }
+                                        }
+                                    )
                                     .padding(vertical = 8.dp, horizontal = 12.dp),
                                 contentAlignment = Alignment.Center,
                             ) {
-                                Text(
-                                    text = stringResource(R.string.chat_load_older_messages),
-                                    color = ChatColors.secondaryText,
-                                    style = MaterialTheme.typography.bodySmall,
-                                )
+                                if (isLoadingOlder) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp,
+                                        color = ChatColors.secondaryText,
+                                    )
+                                } else {
+                                    Text(
+                                        text = stringResource(R.string.chat_load_older_messages),
+                                        color = ChatColors.secondaryText,
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
                             }
                         }
                     }

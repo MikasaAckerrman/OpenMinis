@@ -19,14 +19,24 @@ package com.openminis.app.ui.chat
 object ChatHistoryWindow {
 
     /**
-     * Rows materialised on open. Chosen so a normal conversation opens whole —
-     * the window only kicks in on the long sessions that actually hurt — while
-     * staying small enough that the parse cost is bounded.
+     * Rows materialised on open. [B24] Was 120 — chosen when a "message"
+     * meant a couple of text lines. In practice one agent turn unfolds into
+     * thinking + a tool_use card (often a several-hundred-line file) + the
+     * tool result + markdown body ≈ 5–10 composable nodes, so 120 rows
+     * materialised 600–1200 nodes that Compose held and re-laid-out on every
+     * scroll. 40 keeps the open burst bounded (~3× cheaper cold start) while
+     * still covering a screenful-plus of context; anything older rides the
+     * [OLDER_PAGE] pagination.
      */
-    const val INITIAL_WINDOW = 120
+    const val INITIAL_WINDOW = 40
 
-    /** Rows prepended per "load older" step when the user scrolls up. */
-    const val OLDER_PAGE = 120
+    /**
+     * Rows prepended per "load older" step when the user scrolls up.
+     * [B24] Matched to [INITIAL_WINDOW]: one page, one parse burst, one
+     * layout pass — 120-row pages made every pagination click as expensive
+     * as the open itself.
+     */
+    const val OLDER_PAGE = 40
 
     data class Window(
         /** Index of the first row to materialise, inclusive. */
@@ -78,4 +88,36 @@ object ChatHistoryWindow {
      * history is built once, off the main thread, before the first send.
      */
     fun llmHistoryNeedsFullLoad(hasOlder: Boolean): Boolean = hasOlder
+
+    /**
+     * [B26] Idempotent prepend of freshly loaded older rows onto the current
+     * display list. Replaces the old `_messages.value !== expectedSnapshot`
+     * discard: the snapshot check threw away the whole page whenever ANY
+     * list write landed between the IO read and the Main-thread install
+     * (a streaming tick, a background notice) — with no retry, no error, and
+     * no window-start update, which is exactly the "button does nothing"
+     * report. Merging reads the list AS IT IS at install time, so
+     * concurrent writers (whose every mutation rebuilds from the current
+     * value) compose with the prepend instead of racing it.
+     *
+     * Duplicate ids (an overlap between the page and what other writers
+     * installed meanwhile) are dropped from [older]; current is never
+     * touched. Order: older rows keep their relative order and land before
+     * the current list (chronological head).
+     */
+    fun <T> mergeOlder(
+        current: List<T>,
+        older: List<T>,
+        idOf: (T) -> String,
+    ): List<T> {
+        if (older.isEmpty()) return current
+        val existingIds = current.mapTo(HashSet()) { idOf(it) }
+        val freshOlder = if (existingIds.isEmpty()) {
+            older
+        } else {
+            older.filter { idOf(it) !in existingIds }
+        }
+        if (freshOlder.isEmpty()) return current
+        return freshOlder + current
+    }
 }
