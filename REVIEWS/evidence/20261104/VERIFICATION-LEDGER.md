@@ -860,6 +860,29 @@ LOADING-гейт, отсутствие фидбека, snapshot-discard, SELECT 
 - Тесты `SubagentRolesDelegationTest` (10 pure-JVM): пин полноты `SPAWNABLE == enum − ORCHESTRATOR`; MAIN нанимает всю рекламную поверхность (пин отклонения №1); ORCHESTRATOR→ORCHESTRATOR и ORCHESTRATOR→custom отказаны; исчерпывающие отказы воркер-спавнеров (SENIOR_IMPLEMENTER/EXPLORE/DOCUMENTATION_AGENT × 14 ролей + custom) и ревьюер-спавнеров (4 × 14 + custom); 3 теста `toolsForChild` (nesting сохраняет поверхность, leaf теряет ровно 3 тула, формула childCanNest на дефолтных поверхностях). Старый тест (:14) заякоривал ДО-B8 семантику «MAIN не нанимает EXPLORE» — переписан в составе диффа.
 - Честные пробелы: исполнение гейтов внутри spawn/spawnCustom/spawnMany не покрыто тестом (требует MinisApp-гарнитуры) — логика отказа = чистая матрица (закреплена), проводка — 3 однострочника `if(!…) return`, верифицирована компиляцией CI; батч-ветка custom `childCanNest` — inline, закрыта инспекцией.
 
+## 33. День 2026-11-07 — M-R1: скелет нативного демона `minisd` и Android-супервизор (Блок 3 стартовал)
+
+Вердикт ревьюера: SHIP (предкоммитный аудит; локальная верификация 19/19 cargo-тестов включая 2 end-to-end на реальном TCP-сокете; устранена единственная санация — неиспользуемый `use std::io::Read` в main.rs: `read_line` — inherent-метод `Stdin`, трейт-импорт не нужен). Спека docs/RUST_MIGRATION_SPEC.md утверждена ранее в тот же день (APPROVED WITH REFINEMENTS).
+
+### Контекст
+
+`KNOWN-ISSUE vc144-01` (docs/KNOWN_ISSUES_v144.md): vault-автостарт мёртв — `execve("/usr/bin/python3"): Permission denied` на loader-цепочке proot→musl→python; расследование 20.10 не дало вердикта. Класс отказа (proot-loader-интерпретатор) чинится только устранением proot+интерпретатора из host-сервиса — решено вердиктом по спеке: pyrogram удаляется полностью после M-R3, Node-mtcute-план отменён (воспроизводил бы тот же класс).
+
+### Реализация — коммит 8ae3ba89, CI 42405391867 SUCCESS (на зеркале OpenMinis-canon)
+[статус: РЕАЛИЗОВАНО+CI | улика: коммит 8ae3ba89 (12 файлов, +1034/−1), ран 42405391867 — ОБЕ джобы зелёные с 1-й попытки: «Rust daemon tests (minisd)» 128501866946 + «JVM unit tests (no APK)» 128501867282, steps-clean; пуш в origin и mirror через `http.version=HTTP/1.1`]
+
+- Rust-воркспейс `src/native/minisd` (525 строк, 19 тестов):
+  - контракт-v1 echo: `initialize` → `serverInfo.name="telegram"` — пин под isAlive()-пробу TelegramVaultManager (:85-107); `tools/list` → честный пустой список до M-R2 (не рекламировать несуществующие тула); Bearer по семантике B12: HTTP 401 при любом несоответствии, constant-time сравнение байт; JSON-RPC-ошибки (-32601/-32600/-32700) в HTTP 200;
+  - минимальный HTTP/1.1-парсер на голом tokio — НОЛЬ зависимостей сверх tokio/serde/serde_json (план ревьюера соблюдён дословно); case-insensitive заголовки, Content-Length, частичное чтение; accept-loop: кап 1 МиБ (413), read-timeout 10 с, Connection: close;
+  - секрет: stdin-строка «no secret, no service» (EOF без секрета → exit 2) или `--smoke-token` для ручного ADB-smoke; fd-3/JNI-форк из спеки §2.1 сознательно отложен в M-R2;
+  - 2 end-to-end теста на реальном сокете 127.0.0.1:0 (факторинг serve/serve_on устраняет bind-гонку): `200 OK` с `"telegram"` и `401 Unauthorized` по проводу;
+  - release-профиль: opt-level=z, lto=fat, panic=abort, strip; микро-арх `target-cpu` запрещён вердиктом спеки (кластер X4+A720+A520).
+- `SupervisorBackoffPolicy` (pure JVM): 1000 мс → удвоение → кап 60 000; ресет эскалации при аптайме строго >60 с (граница 60_000 включительно пинится тестом); `onCleanStop()` — намеренная остановка не краш; 6 тестов, включая антипереполнение на 500-кратном цикле.
+- `DaemonSupervisor` (`com.openminis.app.daemon`): бинарник из nativeLibraryDir (exec-allowed API 29+, прецедент libproot/librg, `extractNativeLibs=true` манифест :168); идемпотентный `start()`, честный `isAvailable()` (false на x86_64 — Waydroid-деградация без краша); `stop()` = SIGTERM → 2 с бэкстоп → SIGKILL в dedicated killExecutor (урок 3.4-секундного фриза PersistentShell.kt:695-727 — никогда на main); secret через stdin ребёнка с БЕЗУСЛОВНЫМ закрытием stdin — миссконфиг умирает у демона по EOF вместо тихого зависания; starter-сим; 6 тестов в полном гейте + добавлены в [quick]-смоук-фильтр build.yml.
+- Архитектурный гейт (утверждён аудитом): MinisApp НЕ подключает супервизора в M-R1 — echo-скелет на 7824 на каждом старте app бился бы с живым python-vault за порт; `vault_impl=rust|python` — M-R3.
+- CI: tests.yml + джоба `rust` (cargo test на хосте, dtolnay/rust-toolchain@stable + Swatinem/rust-cache); build.yml + 3 шага: rust-toolchain с target aarch64-linux-android, rust-cache, `cargo build --release` с линкером `aarch64-linux-android26-clang` (api 26 = minSdk, сверено с deps/build_proot.sh:44-46) → rename → `jniLibs/arm64-v8a/libminisd.so` (паттерн libproot.so); Cargo.lock v4 в коммите (детерминизм раннеров); .gitignore + `src/native/minisd/target/`.
+- Честные пробелы: garbage-запрос с `\r\n\r\n` отвечает 413 по капу вместо 400 (задокументировано в http.rs, хардендинг парсера — M-R2); device-smoke автостарта vc144-01 на echo-протоколе — при ADB-раунде; M-R0-бейзлайн python-vault (RSS/холодный старт) обязателен до любого кода M-R2.
+
 
 
 
