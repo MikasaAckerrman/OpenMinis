@@ -551,3 +551,34 @@ LOADING-гейт, отсутствие фидбека, snapshot-discard, SELECT 
   попытка №3 с `-c http.version=HTTP/1.1` → УСПЕХ; workaround зафиксирован.
   Наблюдение вне скоупа (передано ревьюеру): restore queued-бабблов на
   раннем гейте стоит перед тем же пере-паблишем — та же семья гонок.
+
+## 23. День 2026-11-07 — B19 (правка сообщений: кэш-инвалидация + toolBlocks)
+
+Вердикт ревьюера: SHIP диффа до коммита; корень вскрыт ЕГО аудитом — два
+100% доказанных факта.
+
+### B19 — 33a1efc7 + 1829800e, CI 42355453075 SUCCESS (на зеркале)
+[статус: РЕАЛИЗОВАНО+CI | улика: код+3 Robolectric-кейса+run на canon | не хватает: живое репро на устройстве (правка → перезаход; правка в стриме) — при ADB]
+- Факт 1 (главный): dao-запись в обход репозитория → invalidateMessage
+  не звался; stamp-preserving UPDATE оставляет fingerprint (rowCount +
+  MAX(created_at)) ИДЕНТИЧНЫМ → кэш отдавал старьё из Java Heap при верной
+  БД. Фикс: ChatRepository.updateMessagePartsPreserveStamp(sessionId, id,
+  partsJson) — запись + invalidate(sessionId) + invalidateMessage(id);
+  оба dao-сайта (строка + сиблинги merged-хода) переведены на обёртку.
+- Факт 2: in-place правка в стриме меняла только content — рендер читает
+  текст из toolBlocks (AssistantBlock kind="text"). Фикс: блоки тоже
+  переписываются (b.kind=="text" → b.copy(content=newText)).
+- Тест RewriteCacheInvalidationTest: (1) fingerprint НЕДВИЖИМ после записи —
+  пин причины невидимости; (2) hit → обёртка → miss + read-back свежих
+  parts (путь «правка откатывается» закрыт структурно); (3) message-id
+  индекс гасит связанные кэш-записи (s2-view).
+- CI-постмортем: прогон 1 (33a1efc7) — компил моего теста: хелпер
+  cacheSessionWithCurrentFingerprint зовёт suspend loadMessages, но не был
+  suspend (в DeletedArchiveMaintenanceTest хелперы suspend — проморгал).
+  Фикс 1829800e → run 42355453075 SUCCESS. Пуш-триггер на зеркале работает
+  без dispatch (в отличие от B24/B26, где ран потребовалось дёргать руками —
+  вероятно, задержка доставки события тогда же).
+- Наблюдение (передано ревьюеру, вне скоупа): updateMessageParts (путь
+  rerun) инвалидирует только invalidateMessage — для владеющей сессии
+  достаточно (индекс гасит её entry); симметрия с новой обёрткой = один
+  параметр, по команде.
