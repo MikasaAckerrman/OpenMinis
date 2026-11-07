@@ -429,6 +429,10 @@ private fun AgentEditorScreen(
     var instructions by rememberSaveable { mutableStateOf(draft.instructions) }
     var saveErrorRes by remember { mutableStateOf<Int?>(null) }
 
+    // The servers.json read below needs app-private storage; this composable
+    // is separate from the list screen and must resolve its own context.
+    val context = LocalContext.current
+
     val configuredMcpServers = remember {
         val serversJson = File(context.filesDir, "minis-global/mcp-servers/servers.json")
         val names = mutableListOf<String>()
