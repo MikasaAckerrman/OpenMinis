@@ -642,4 +642,24 @@ LOADING-гейт, отсутствие фидбека, snapshot-discard, SELECT 
   - `42363111866` (dbebbbff): Robolectric пытался поднять `MinisApp` из манифеста, падая на `RootfsManager`. Добавлен `@Config(application = Application::class)`.
   - `42363798076` attempt 2: SUCCESS на `OpenMinis-canon`.
 
+## 26. День 2026-11-07 — Харденинг PersistentShellProtocolDriverIntegrationTest (i04b FiftyRounds)
+
+Вердикт ревьюера: SHIP.
+
+### Тест-фикс — 21664eb9, CI 42366396231 SUCCESS (на зеркале)
+[статус: РЕАЛИЗОВАНО+CI | улика: код+run на canon]
+- Корневая причина флака: в тесте `i04bStopVersusDispatchFiftyRoundsSingleWinner`
+  ветка `readerWins` вызывала `val rt = spawnReader(...)` ДО вызова `drv.protocol.start(cb)`.
+  В отличие от ветки `!readerWins`, где поток был заблокирован на `gate.await()`,
+  здесь ридер читал `ByteArrayInputStream` без блокировок. При задержке планировщика
+  потоков ридер вычитывал весь стрим до того, как главный поток успевал вызвать `start(cb)`.
+  В результате `ShellProtocolEngine.feedLive` видел `current == null`, отправлял маркер в `orphanAccumulate`,
+  и `resumed.get()` оставался равен 0 вместо 1.
+- Устранение гонки:
+  - В ветке `readerWins`: `drv.protocol.start(cb)` перенесён строго ДО `spawnReader`.
+  - В ветке `!readerWins`: эвристический `Thread.sleep(30)` заменён на строгий детерминированный
+    `CountDownLatch` (`entered.countDown()` внутри `blocking.read()` + `entered.await(5, TimeUnit.SECONDS)`).
+- CI run: `42366396231` (attempt 1) — SUCCESS на `OpenMinis-canon`.
+
+
 
