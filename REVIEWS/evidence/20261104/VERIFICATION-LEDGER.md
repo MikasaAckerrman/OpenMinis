@@ -515,3 +515,39 @@ Markdown+YAML в /var/minis/agents/<name>.md, подхват без рестар
   гейтам), ToolSurfaceAdapterTest/PlanFilter/ScopedToggles не задеты;
   меняется ТОЛЬКО валидация: больше валидных имён принимается, опечатки
   по-прежнему отвергаются.
+
+## 22. День 2026-11-07 — B24 этап 1 + B26 (hot window 40 + merge-пагинация)
+
+ТЗ = директива ревьюера по итогам аудита (5 дефектов: гигантское окно,
+LOADING-гейт, отсутствие фидбека, snapshot-discard, SELECT всего хвоста).
+
+### B24+B26 — b3ad1ee7, CI 42352865416 SUCCESS (на ЗЕРКАЛЕ)
+[статус: РЕАЛИЗОВАНО+CI | улика: код+17 тестов окна/merge+run на canon | не хватает: замер кадров + кнопка на устройстве — при ADB]
+- Окно 120→40 (B24): 5-10 composable-нод на агент-ход ⇒ 120 строк =
+  600-1200 нод. Пин тестом; параметризационный тест остался.
+- Пагинация (B26): LOADING-гейт снят; ровно страница (limit=page.count,
+  messageCount выпал); snapshot-discard заменён чистым
+  ChatHistoryWindow.mergeOlder (дедуп по id / prepend / идемпотентность);
+  _isLoadingOlderMessages + спиннер 16dp/2dp, клик-таргет снят.
+  ОСОЗНАННЫЕ решения (все УТВЕРЖДЕНЫ ревьюером): (а) streaming/queue-гейты
+  тоже сняты — merge читает состояние в момент установки, все прочие
+  писатели _messages перестраивают от текущего (`+`/filter/map, проверены
+  все 27 сайтов), токен-уровень идёт мимо списка (_streamingById);
+  COMPACTING остался (bookkeeping окна/маркера меняется под ногами);
+  (в) notices-переприцепка удалена (merge сохраняет их в current).
+- (б) Гонка, порождённая снятием гейта (ревьюер: «ОТЛИЧНАЯ НАХОДКА»):
+  пере-паблиш окна на завершении полной загрузки стёр бы смёрженные
+  страницы и отмотал bookkeeping → installFromIndex =
+  loadedHistoryFromIndex.coerceAtMost(loaded.uiFromIndex), пересборка
+  глубокого окна из loaded.messages.drop(install) (index-hardened),
+  graying с windowFromIndex=installFromIndex.
+- ИНФРАСТРУКТУРНОЕ: Actions на origin (MikasaAckerrman/OpenMinis) ОТКЛЮЧЁН
+  уровнем выше настроек (0 ранов по валидному триггеру + dispatch 422
+  «Actions has been disabled» при permissions enabled=true и ПУБЛИЧНОМ
+  репо; последний успешный ран 23:08:35Z). CI-верификация перенесена на
+  ЗЕРКАЛО (OpenMinis-canon): workflow_dispatch tests.yml по b3ad1ee7 →
+  ран 42352865416 SUCCESS. Владельцу — включить Actions в Settings.
+  Push в mirror: HTTP/2 рвался SSL «unexpected eof» (read жив) ×2,
+  попытка №3 с `-c http.version=HTTP/1.1` → УСПЕХ; workaround зафиксирован.
+  Наблюдение вне скоупа (передано ревьюеру): restore queued-бабблов на
+  раннем гейте стоит перед тем же пере-паблишем — та же семья гонок.
