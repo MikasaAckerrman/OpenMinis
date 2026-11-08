@@ -454,3 +454,38 @@ class ToolSchedulerHierarchyTest {
         assertEquals(ToolScheduler.Effect.META, ToolScheduler.effectOf("plan_submit"))
     }
 }
+
+/**
+ * [PARALLEL_TOOL_ENGINE_SPEC Опора 1] The ONLINE builder and the batch
+ * planner are ONE dependency algorithm — the streaming dispatcher plans
+ * each call against the calls dispatched before it, so the two paths
+ * must produce identical nodes or a call would race in one of them.
+ */
+class ToolSchedulerBuilderParityTest {
+
+    private fun calls() = listOf(
+        ToolScheduler.SchedCall("1", "file_read", """{"path":"src/a.rs"}"""),
+        ToolScheduler.SchedCall("2", "grep", """{"pattern":"x","path":"src"}"""),
+        ToolScheduler.SchedCall("3", "shell_execute", "{}"),
+        ToolScheduler.SchedCall("4", "file_write", """{"path":"src/a.rs"}"""),
+        ToolScheduler.SchedCall("5", "file_read", """{"path":"src/c.rs"}"""),
+    )
+
+    @Test
+    fun `the online builder and planReactive agree node by node`() {
+        val batch = planner().planReactive(calls())
+        val online = planner().ReactiveDagBuilder().apply { calls().forEach { add(it) } }.build()
+        assertEquals(batch, online)
+    }
+
+    @Test
+    fun `the builder exposes the immediate count for the scheduler log`() {
+        val builder = planner().ReactiveDagBuilder()
+        calls().forEach { builder.add(it) }
+        val nodes = builder.build()
+        assertEquals(nodes.size, builder.size)
+        // read + grep are immediate; shell is the hermetic barrier; the
+        // write chains on read+grep; the last read chains on the shell.
+        assertEquals(2, nodes.count { it.dependsOn.isEmpty() })
+    }
+}

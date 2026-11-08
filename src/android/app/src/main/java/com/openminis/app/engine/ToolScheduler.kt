@@ -275,13 +275,25 @@ class ToolScheduler(
      *  a resource, so a flat append-only log beats per-key "last" maps. */
     private data class KeyUse(val key: String, val id: String, val wrote: Boolean)
 
-    fun planReactive(calls: List<SchedCall>): List<ReactiveNode> {
-        val nodes = mutableListOf<ReactiveNode>()
-        val uses = mutableListOf<KeyUse>()
-        var globalBarrier: String? = null
-        var lastMeta: String? = null
+    /**
+     * [PARALLEL_TOOL_ENGINE_SPEC Опора 1] The DAG builder as an ONLINE
+     * object: one call in, its node out. planReactive() folds a finished
+     * list through this; the streaming dispatch in EngineAgentLoop adds
+     * calls the moment the provider's ToolCall event lands (the args
+     * JSON closed) and launches each node while the model is still
+     * generating. ONE dependency algorithm for both paths — a semantic
+     * divergence between batch and streaming planning would be a race
+     * in waiting.
+     */
+    inner class ReactiveDagBuilder internal constructor() {
+        private val uses = mutableListOf<KeyUse>()
+        private var globalBarrier: String? = null
+        private var lastMeta: String? = null
+        private val nodes = mutableListOf<ReactiveNode>()
 
-        for (call in calls) {
+        val size: Int get() = nodes.size
+
+        fun add(call: SchedCall): ReactiveNode {
             val declaredKeys = resourceKeysOf(call.name, call.argsJson)
             val isSpawn = declaredKeys == null && call.name.startsWith("spawn_")
             val effect = if (isSpawn) Effect.WRITE else effectOf(call.name)
@@ -311,8 +323,17 @@ class ToolScheduler(
                     for (k in keys) uses.add(KeyUse(k, call.id, effect == Effect.WRITE))
                 }
             }
-            nodes.add(ReactiveNode(call, deps))
+            val node = ReactiveNode(call, deps)
+            nodes.add(node)
+            return node
         }
-        return nodes
+
+        fun build(): List<ReactiveNode> = nodes.toList()
+    }
+
+    fun planReactive(calls: List<SchedCall>): List<ReactiveNode> {
+        val builder = ReactiveDagBuilder()
+        calls.forEach { builder.add(it) }
+        return builder.build()
     }
 }

@@ -119,23 +119,38 @@ class EngineAgentLoop(
             // stream, so a loop in the middle of the reasoning is still provable
             // after the tail moved on.
             val reasoningWatch = ReasoningLoopWatch()
-            val pendingCalls = mutableListOf<EngineToolCall>()
+            // [PARALLEL_TOOL_ENGINE_SPEC Опора 1] Streaming speculative
+            // dispatch: a tool call whose args JSON has CLOSED (the
+            // provider emits StreamEvent.ToolCall exactly then) launches
+            // into execution IMMEDIATELY — while the model is still
+            // generating the rest of its response. The dispatcher owns
+            // the calls in model order (the history round is built from
+            // this list) and the two concurrency gates.
+            val dispatcher = BatchDispatcher(schema)
+            val pendingCalls = dispatcher.callsInOrder
             var failure: AgentEvent.Error? = null
 
             // [T-engine-maxtokens-parity] production budget from the driver
             // (default 8192 for headless callers) — see TurnInput.maxTokens.
-            gateway.stream(workingHistory.toList(), schema, maxTokens = input.maxTokens)
-                .collect { event ->
-                    when (event) {
-                        is StreamEvent.TextDelta -> {
-                            if (failure == null) {
-                                // [T-output-arrows] Collapse the arrow-run degeneration
-                                // before it reaches the user and the saved message.
-                                val clean = OutputSanitizer.sanitizeArrows(event.text)
-                                turnText.append(clean)
-                                emit(AgentEvent.TextDelta(clean))
+            // coroutineScope joins the speculative coroutines on exit: a
+            // failed stream drains its in-flight tools before the error is
+            // surfaced (await-and-discard — a mid-write cancel would risk
+            // a torn file), and a user STOP cancels them through the same
+            // structured scope ([T-m12-cancel-semantics] preserved).
+            coroutineScope {
+                val scope = this
+                gateway.stream(workingHistory.toList(), schema, maxTokens = input.maxTokens)
+                    .collect { event ->
+                        when (event) {
+                            is StreamEvent.TextDelta -> {
+                                if (failure == null) {
+                                    // [T-output-arrows] Collapse the arrow-run degeneration
+                                    // before it reaches the user and the saved message.
+                                    val clean = OutputSanitizer.sanitizeArrows(event.text)
+                                    turnText.append(clean)
+                                    emit(AgentEvent.TextDelta(clean))
+                                }
                             }
-                        }
                         // Progressive surfaces pass straight through: the
                         // consumer renders reasoning/arg-echo UI exactly as
                         // the ViewModel loop does today — the engine never
@@ -207,7 +222,23 @@ class EngineAgentLoop(
                             }
                         is StreamEvent.ToolInputDelta ->
                             if (failure == null) emit(AgentEvent.ToolInputDelta(event.callId, event.fragment))
-                        is StreamEvent.ToolCall -> pendingCalls.add(event.call)
+                        is StreamEvent.ToolCall -> if (failure == null) {
+                            // [Опора 1] The call's args JSON is CLOSED: launch
+                            // it into the gates NOW, while the model keeps
+                            // generating. The "about to run" signal moves to
+                            // dispatch time too — the UI card appears while
+                            // the response is still streaming (preflight/
+                            // schema rejections still surface as
+                            // ToolCallFinished(success=false) below).
+                            emit(
+                                AgentEvent.ToolCallStarted(
+                                    callId = event.call.id,
+                                    toolName = event.call.name,
+                                    title = event.call.name,
+                                ),
+                            )
+                            dispatcher.dispatch(scope, event.call)
+                        }
                         is StreamEvent.Usage ->
                             // [B29-engine-usage] "Accounting is the caller's
                             // seam" — but the raw StreamEvents END here, so the
@@ -220,6 +251,7 @@ class EngineAgentLoop(
                         StreamEvent.Done -> Unit
                     }
                 }
+            }
             failure?.let {
                 emit(it)
                 return@flow
@@ -230,19 +262,20 @@ class EngineAgentLoop(
                 return@flow
             }
 
-            // "About to run" signals — the UI renders running blocks from
-            // these (preflight/gate/hooks rejections still surface as
-            // ToolCallFinished(success=false) below).
-            for (call in pendingCalls) {
-                emit(
-                    AgentEvent.ToolCallStarted(
-                        callId = call.id,
-                        toolName = call.name,
-                        title = call.name,
-                    ),
-                )
-            }
-            val results = executeBatch(pendingCalls, schema, input)
+            // [Scheduler] observability rides the same seam as before —
+            // but the numbers describe the ONLINE build now: "immediate"
+            // means launched while the model was still generating.
+            val planned = dispatcher.dagSnapshot()
+            val immediate = planned.count { it.dependsOn.isEmpty() }
+            onEngineEvent(
+                "[Scheduler] ${pendingCalls.size} call(s) reactive (streamed): " +
+                    "$immediate immediate, ${planned.size - immediate} chained on resource deps",
+            )
+
+            // Results surface in model order; awaiting call k does not
+            // hold back an EARLIER call that already finished, so finished
+            // events land progressively as each await returns.
+            val results = dispatcher.awaitAll()
             results.forEach { (call, outcome) ->
                 emit(
                     AgentEvent.ToolCallFinished(
@@ -298,16 +331,43 @@ class EngineAgentLoop(
     }
 
     /**
-     * Execute one batch: preflight every call, then run through the
-     * executor — concurrently when the planner allows, else in model
-     * order. Results keep the model's original order regardless.
+     * [PARALLEL_TOOL_ENGINE_SPEC Опора 1] The streaming batch dispatcher:
+     * calls arrive ONE AT A TIME from the provider stream (each when its
+     * args JSON has closed) and launch into the gates immediately — the
+     * DAG is built ONLINE through [ToolScheduler.ReactiveDagBuilder], so
+     * a call that just closed depends only on the calls dispatched
+     * before it, exactly like planReactive would have decided for the
+     * finished batch. Results keep the model's original order.
+     *
+     * Same safety rules as the old executeBatch, moved verbatim:
+     * the schema is the allowlist (an unknown name is a failed outcome,
+     * never an execution), preflight runs per call at dispatch time,
+     * a waiting call holds no gate slot (the semaphore is acquired
+     * AFTER the dependency waits).
      */
-    private suspend fun executeBatch(
-        calls: List<EngineToolCall>,
-        schema: List<com.openminis.app.data.model.AgentToolDefinition>,
-        input: TurnInput,
-    ): List<Pair<EngineToolCall, ToolOutcome>> {
-        val preflighted = calls.map { call ->
+    private inner class BatchDispatcher(
+        private val schema: List<com.openminis.app.data.model.AgentToolDefinition>,
+    ) {
+        // [P1-io-concurrency] Two gates, one per tool class. The CPU gate
+        // keeps its subagent-sized cap (a spawn is a live model stream +
+        // a socket + a rate-limit share); disk/network tools get the I/O
+        // cap — a 10-way file_write batch to 10 distinct paths must not
+        // wait behind spawns. Resource conflicts stay the scheduler's
+        // job (the DAG deps); the gates only bound how many calls may
+        // run AT ONCE.
+        private val cpuGate = Semaphore(toolScheduler.cap())
+        private val ioGate = Semaphore(toolScheduler.ioCap())
+        private val dag = toolScheduler.ReactiveDagBuilder()
+        private val deferreds =
+            java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Deferred<ToolOutcome>>()
+        private val blocked = java.util.concurrent.ConcurrentHashMap<String, ToolOutcome>()
+
+        /** The calls in model order — the history round is built from
+         *  this list, preflight-blocked entries included. */
+        val callsInOrder = mutableListOf<EngineToolCall>()
+
+        fun dispatch(scope: kotlinx.coroutines.CoroutineScope, call: EngineToolCall) {
+            callsInOrder.add(call)
             val def = schema.firstOrNull { it.name == call.name }
             if (def == null) {
                 // A tool that is not in this turn's schema has no permission
@@ -316,64 +376,37 @@ class EngineAgentLoop(
                 // here is what keeps a subagent restricted to file_read from
                 // reaching file_write through a name the model invented or
                 // replayed from an earlier turn.
-                return@map call to ToolOutcome(
+                blocked[call.id] = ToolOutcome(
                     "Tool not available in this session: ${call.name}",
                     success = false,
                 )
+                return
             }
             val reason = preflightArgs(call, def)
-            if (reason != null) return@map call to ToolOutcome(reason, success = false)
-            call to null
-        }
-        val toRun = preflighted.mapNotNull { (call, outcome) ->
-            if (outcome == null) call else null
-        }
-        // [T-tool-scheduler-reactive] Barrier-free dispatch. Dependencies
-        // point backward in model order only: a call launches up front and
-        // awaits JUST its conflicting predecessors — a finished tool frees
-        // its resource instantly for the next dependent, with no wave
-        // barrier idling fast calls behind the slowest one. The
-        // maxConcurrent semaphore is acquired AFTER the waits, so a waiting
-        // call holds no slot. Each call executes exactly once; results land
-        // in the map by call id.
-        val sched = toRun.map { ToolScheduler.SchedCall(it.id, it.name, it.argsJson) }
-        val nodes = toolScheduler.planReactive(sched)
-        val immediate = nodes.count { it.dependsOn.isEmpty() }
-        onEngineEvent(
-            "[Scheduler] ${toRun.size} call(s) reactive: $immediate immediate, " +
-                "${nodes.size - immediate} chained on resource deps",
-        )
-        val ran: Map<String, ToolOutcome> = if (toRun.size > 1) {
-            coroutineScope {
-                // [P1-io-concurrency] Two gates, one per tool class. The CPU
-                // gate keeps its subagent-sized cap (a spawn is a live model
-                // stream + a socket + a rate-limit share); disk/network tools
-                // get the I/O cap — a 10-way file_write batch to 10 distinct
-                // paths must not wait behind spawns. Resource conflicts stay
-                // the scheduler's job (planReactive deps); the gates only
-                // bound how many calls may run AT ONCE.
-                val cpuGate = Semaphore(toolScheduler.cap())
-                val ioGate = Semaphore(toolScheduler.ioCap())
-                val deferreds = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Deferred<ToolOutcome>>()
-                for (node in nodes) {
-                    val call = toRun.first { it.id == node.call.id }
-                    val gate = if (ToolConcurrencyClass.isIo(call.name)) ioGate else cpuGate
-                    deferreds[node.call.id] = async(Dispatchers.Default) {
-                        node.dependsOn.forEach { depId -> deferreds.getValue(depId).await() }
-                        gate.withPermit { runExecutor(call) }
-                    }
-                }
-                deferreds.mapValues { it.value.await() }
+            if (reason != null) {
+                blocked[call.id] = ToolOutcome(reason, success = false)
+                return
             }
-        } else {
-            toRun.associate { call -> call.id to runExecutor(call) }
+            val node = dag.add(ToolScheduler.SchedCall(call.id, call.name, call.argsJson))
+            val gate = if (ToolConcurrencyClass.isIo(call.name)) ioGate else cpuGate
+            deferreds[call.id] = scope.async(Dispatchers.Default) {
+                node.dependsOn.forEach { depId -> deferreds.getValue(depId).await() }
+                gate.withPermit { runExecutor(call) }
+            }
         }
-        // Original order, preflight-blocked entries in place.
-        return preflighted.map { (call, outcome) ->
-            call to (outcome ?: ran[call.id] ?: ToolOutcome(
-                "Error: tool did not run.", success = false,
-            ))
-        }
+
+        /** Model order, preflight-blocked entries in place. */
+        suspend fun awaitAll(): List<Pair<EngineToolCall, ToolOutcome>> =
+            callsInOrder.map { call ->
+                call to (
+                    blocked[call.id]
+                        ?: deferreds[call.id]?.await()
+                        ?: ToolOutcome("Error: tool did not run.", success = false)
+                )
+            }
+
+        /** The DAG as built so far — observability and tests. */
+        fun dagSnapshot(): List<ToolScheduler.ReactiveNode> = dag.build()
     }
 
     private suspend fun runExecutor(call: EngineToolCall): ToolOutcome =
