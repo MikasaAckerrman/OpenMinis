@@ -41,7 +41,7 @@ object SearchTools {
             ),
             "path" to AgentToolParam(
                 type = "string",
-                description = "File or directory to search (default: /var/minis).",
+                description = "File or directory to search (default: this session's /var/minis/workspace).",
             ),
             "glob" to AgentToolParam(
                 type = "string",
@@ -83,7 +83,7 @@ object SearchTools {
             ),
             "path" to AgentToolParam(
                 type = "string",
-                description = "Root directory (default: /var/minis).",
+                description = "Root directory (default: this session's /var/minis/workspace).",
             ),
             "max_results" to AgentToolParam(
                 type = "integer",
@@ -112,6 +112,14 @@ object SearchTools {
             val host = resolveHost(sessionId, guestPath, context)
                 ?: return@withContext ToolExecutionResult(
                     "Error: cannot resolve path: $guestPath", false)
+            // [T-embedded-search-default] A missing host target must fail
+            // with a model-actionable message BEFORE rg turns it into an
+            // unexplained exit 2.
+            if (!host.exists()) {
+                return@withContext ToolExecutionResult(
+                    "Error: path not present in this session's sandbox: $guestPath " +
+                        "(search inside /var/minis/workspace)", false)
+            }
 
             val argv = mutableListOf<String>()
             if (!args.optBoolean("case_sensitive", false)) argv.add("-i")
@@ -147,6 +155,11 @@ object SearchTools {
             val host = resolveHost(sessionId, guestPath, context)
                 ?: return@withContext ToolExecutionResult(
                     "Error: cannot resolve path: $guestPath", false)
+            if (!host.exists()) {
+                return@withContext ToolExecutionResult(
+                    "Error: path not present in this session's sandbox: $guestPath " +
+                        "(search inside /var/minis/workspace)", false)
+            }
 
             val argv = mutableListOf<String>()
             argv += listOf("--files", "--glob", pattern)
@@ -164,7 +177,16 @@ object SearchTools {
         context: android.content.Context,
     ): File? {
         val abs = if (guestPath.startsWith("/")) guestPath else "/var/minis/$guestPath"
-        return com.openminis.app.sandbox.PRootKernel.resolveSessionHostPath(sessionId, abs, context)
+        // [T-embedded-search-default] The bare /var/minis has NO host
+        // counterpart (the workspace is a per-session bind; the rest rides
+        // minis-global) — resolveHostPath("/var/minis") hands rg a host
+        // path that does not exist and rg dies exit 2 (vc155 live, 08.11).
+        // The honest default is THIS session's workspace: where the
+        // model's own files actually live.
+        if (abs == "/var/minis" || abs == "/var/minis/") {
+            return resolveSessionHostPath(sessionId, "/var/minis/workspace", context)
+        }
+        return resolveSessionHostPath(sessionId, abs, context)
     }
 
     private fun finishSearch(out: String, code: Int, tool: String): ToolExecutionResult {
