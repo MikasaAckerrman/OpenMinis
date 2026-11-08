@@ -1086,3 +1086,21 @@ LOADING-гейт, отсутствие фидбека, snapshot-discard, SELECT 
   * Дефект D1: в `STALL_SENTINEL` был записан бинарный null-байт `\0`, из-за чего git/инструменты определяли `.kt` как binary; заменён на строковый маркер `__stall_sentinel_b36__`;
   * Дефект D2: `touch(taskId)` безусловно писал в `lastActivityMs`, из-за чего тест `touch for an unknown run is a cheap no-op` возвращал не-null `idleMs`; добавлен guard `if (!runs.value.containsKey(taskId)) return`.
 - **Правило R1**: 0 вхождений запрещённого символа во всех добавленных и изменённых файлах.
+
+
+## 44. Утро 2026-11-08 — Верификация Unit Tests CI, очистка квоты артефактов и релиз vc152
+[статус: ВЕРИФИЦИРОВАНО В CI 2222/2222 ТЕСТОВ | улика: коммиты ac531d43, 0aca0a7c, f310db92, CI Unit Tests 42444591718 SUCCESS, Build APK 42445998384]
+
+- **Поимки компиляции и регрессионного теста при ревью (D3/D4)**:
+  * Поимка D3: в `SubagentExecutor.kt` отсутствовал явный импорт `import kotlinx.coroutines.isActive` для фонового watchdog-цикла (коммит `ac531d43`);
+  * Поимка D4: в `ChatFlatItemsSubagentTest.kt` тест `interleaved commentary leaves every agent its own card` проверял `it is FlatChatItem.AssistantText`, в то время как интерливинг-текст эмиттится фрагментами `FlatChatItem.AssistantMarkdownBlock` с ключом `parentBlockId == "txt1"` (коммит `0aca0a7c`).
+- **Верификация полного сьюта в CI**:
+  * CI ран `42444591718` (Unit Tests) на зеркале canon: `Rust daemon tests (minisd)` SUCCESS (118/118 тестов), `JVM unit tests (no APK)` SUCCESS (все 2222 теста пройдены);
+  * Полный паритет чистого рантайма подтверждён: ни одной регрессии во всём коде Minis.
+- **Очистка квоты артефактов GitHub Actions**:
+  * Удалено 60 устаревших сборок APK и тестовых отчётов за 1–7 ноября на `MikasaAckerrman/OpenMinis` и `MikasaAckerrman/OpenMinis-canon`, освобождено более 1 ГБ дискового пространства;
+  * Риск блокировки загрузки релизных артефактов полностью устранён.
+- **Релиз vc152**:
+  * Бамп `versionCode = 152` в `src/android/app/build.gradle.kts` (коммит `f310db92` с тегом `[quick]`);
+  * Синхронизация обоих репозиториев (`origin` и `mirror`), запущен рабочий процесс сборки APK `42445998384`.
+- **Правило R1**: 0 вхождений запрещённого символа во всех добавленных и изменённых файлах.
