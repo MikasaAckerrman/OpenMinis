@@ -141,8 +141,15 @@ class ProviderModelGatewayTest {
             },
         )
         val events = g.stream(emptyList(), emptyList(), 100).toList()
+        // [B42-network-retry] The gateway's cause classification rides the
+        // event — an IOException is the transport class, so transient=true
+        // is part of the contract the loop's retry gate consumes.
         assertEquals(
-            StreamEvent.Failure("connection closed", recoverable = true),
+            StreamEvent.Failure(
+                "connection closed",
+                recoverable = true,
+                transient = true,
+            ),
             events.last(),
         )
     }
