@@ -38,6 +38,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.openminis.app.offload.AgentRunProgress
+import com.openminis.app.ui.theme.ChatColors
 
 /**
  * [B34] The inline ZCode-style card for one `spawn_subagent` call.
