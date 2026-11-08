@@ -5,6 +5,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.IOException
 import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
@@ -23,7 +24,7 @@ class NetworkRetryPolicyTest {
         assertTrue(NetworkRetryPolicy.isTransientCause(SocketTimeoutException("read timed out")))
         assertTrue(NetworkRetryPolicy.isTransientCause(UnknownHostException("api.example.com")))
         assertTrue(NetworkRetryPolicy.isTransientCause(ConnectException("refused")))
-        assertTrue(NetworkRetryPolicy.isTransientCause(java.io.IOException("connection closed")))
+        assertTrue(NetworkRetryPolicy.isTransientCause(IOException("connection closed")))
     }
 
     @Test
