@@ -47,7 +47,10 @@ android {
         // SubagentSessionView + reviewer verdict contract (2c511e13 + 32cc7f71).
         // vc154: Run Inspector polish (e5da0865) + five thinking tiers +
         // native minisd grep/glob + PIP subagent capsule (8ca2685f..e9c13805).
-        versionCode = 154
+        // vc155: B42 — in-round network auto-retry (1.5/3/6s x3), fan-out
+        // prompt, tg_whoami profile bridge, B39 legacy runAgentLoop demolished
+        // (215bab7f..b326e983, Unit Tests 42499284543 green).
+        versionCode = 155
         // vc69: 97 commits — kotlincheck infra + strict preflight (types/enums,
         // parallel-batch gate) + atomic tool budget + budget footer + symmetric
         // supermemory lifecycle (FPS guard) + thermal telemetry + review fixes
