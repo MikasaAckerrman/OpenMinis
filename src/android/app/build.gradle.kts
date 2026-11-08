@@ -45,7 +45,9 @@ android {
         // watchdog 90s/stall 30s) — release build.
         // vc153: B40 no-legacy-degrade/no-auto-provider-switch + B34-UI
         // SubagentSessionView + reviewer verdict contract (2c511e13 + 32cc7f71).
-        versionCode = 153
+        // vc154: Run Inspector polish (e5da0865) + five thinking tiers +
+        // native minisd grep/glob + PIP subagent capsule (8ca2685f..e9c13805).
+        versionCode = 154
         // vc69: 97 commits — kotlincheck infra + strict preflight (types/enums,
         // parallel-batch gate) + atomic tool budget + budget footer + symmetric
         // supermemory lifecycle (FPS guard) + thermal telemetry + review fixes
