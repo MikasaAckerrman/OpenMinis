@@ -50,24 +50,36 @@ class EngineStreamingDispatchTest {
         mode = PermissionMode.AUTO,
     )
 
+    private fun singleRoundGateway(
+        onFirstRound: suspend kotlinx.coroutines.flow.FlowCollector<StreamEvent>.() -> Unit,
+    ): ModelGateway = object : ModelGateway {
+        override val modelId = "fake"
+        private var called = false
+        override fun stream(
+            messages: List<EngineMessage>,
+            tools: List<AgentToolDefinition>,
+            maxTokens: Int,
+        ) = flow {
+            if (!called) {
+                called = true
+                onFirstRound()
+            } else {
+                emit(StreamEvent.Done)
+            }
+        }
+    }
+
     @Test
     fun `a closed tool call executes while the model is still generating`() = runTest {
         val readStarted = java.util.concurrent.atomic.AtomicBoolean(false)
         var doneEmittedAtNs = 0L
-        val gw = object : ModelGateway {
-            override val modelId = "fake"
-            override fun stream(
-                messages: List<EngineMessage>,
-                tools: List<AgentToolDefinition>,
-                maxTokens: Int,
-            ) = flow {
-                emit(StreamEvent.ToolCall(EngineToolCall("c1", "file_read", """{"path":"/a.kt"}""")))
-                // The model "keeps talking": block the stream while the
-                // speculative dispatch has every chance to start the read.
-                Thread.sleep(400)
-                doneEmittedAtNs = System.nanoTime()
-                emit(StreamEvent.Done)
-            }
+        val gw = singleRoundGateway {
+            emit(StreamEvent.ToolCall(EngineToolCall("c1", "file_read", """{"path":"/a.kt"}""")))
+            // The model "keeps talking": block the stream while the
+            // speculative dispatch has every chance to start the read.
+            Thread.sleep(400)
+            doneEmittedAtNs = System.nanoTime()
+            emit(StreamEvent.Done)
         }
         val loop = EngineAgentLoop(gw, registry()) { _, _ ->
             readStarted.set(true)
@@ -82,94 +94,69 @@ class EngineStreamingDispatchTest {
     }
 
     @Test
-    fun `a write streamed mid-generation waits for the earlier in-flight read`() {
-        runTest {
-            val stamps = java.util.concurrent.ConcurrentHashMap<String, Long>()
-            val gw = object : ModelGateway {
-                override val modelId = "fake"
-                override fun stream(
-                    messages: List<EngineMessage>,
-                    tools: List<AgentToolDefinition>,
-                    maxTokens: Int,
-                ) = flow {
-                    emit(StreamEvent.ToolCall(EngineToolCall("c1", "file_read", """{"path":"/a.kt"}""")))
-                    // The read is now IN FLIGHT (its executor sleeps below);
-                    // the model "decides" to write the same file next.
-                    Thread.sleep(300)
-                    emit(StreamEvent.ToolCall(EngineToolCall("c2", "file_write", """{"path":"/a.kt"}""")))
-                    emit(StreamEvent.Done)
-                }
-            }
-            val loop = EngineAgentLoop(gw, registry()) { name, _ ->
-                stamps["${name}:start"] = System.nanoTime()
-                Thread.sleep(400) // widen the read's in-flight window
-                stamps["${name}:end"] = System.nanoTime()
-                EngineAgentLoop.ToolOutcome("ok:$name", true)
-            }
-            val events = loop.runTurn(turnInput()).toList()
-            assertEquals(2, events.filterIsInstance<AgentEvent.ToolCallFinished>().size)
-            // WAR (spec §4.2.3): the write started only AFTER the read
-            // finished, even though its call arrived while the read was
-            // still running.
-            assertTrue(
-                "read must start before write",
-                stamps["file_read:start"]!! < stamps["file_write:start"]!!,
-            )
-            assertTrue(
-                "write must wait for the read's END (WAR)",
-                stamps["file_read:end"]!! <= stamps["file_write:start"]!!,
-            )
+    fun `a write streamed mid-generation waits for the earlier in-flight read`() = runTest {
+        val stamps = java.util.concurrent.ConcurrentHashMap<String, Long>()
+        val gw = singleRoundGateway {
+            emit(StreamEvent.ToolCall(EngineToolCall("c1", "file_read", """{"path":"/a.kt"}""")))
+            // The read is now IN FLIGHT (its executor sleeps below);
+            // the model "decides" to write the same file next.
+            Thread.sleep(300)
+            emit(StreamEvent.ToolCall(EngineToolCall("c2", "file_write", """{"path":"/a.kt"}""")))
+            emit(StreamEvent.Done)
         }
+        val loop = EngineAgentLoop(gw, registry()) { name, _ ->
+            stamps["${name}:start"] = System.nanoTime()
+            Thread.sleep(400) // widen the read's in-flight window
+            stamps["${name}:end"] = System.nanoTime()
+            EngineAgentLoop.ToolOutcome("ok:$name", true)
+        }
+        val events = loop.runTurn(turnInput()).toList()
+        assertEquals(2, events.filterIsInstance<AgentEvent.ToolCallFinished>().size)
+        // WAR (spec §4.2.3): the write started only AFTER the read
+        // finished, even though its call arrived while the read was
+        // still running.
+        assertTrue(
+            "read must start before write",
+            stamps["file_read:start"]!! < stamps["file_write:start"]!!,
+        )
+        assertTrue(
+            "write must wait for the read's END (WAR)",
+            stamps["file_read:end"]!! <= stamps["file_write:start"]!!,
+        )
     }
 
     @Test
-    fun `independent reads streamed one by one still overlap`() {
-        runTest {
-            val started = java.util.concurrent.atomic.AtomicInteger(0)
-            val gw = object : ModelGateway {
-                override val modelId = "fake"
-                override fun stream(
-                    messages: List<EngineMessage>,
-                    tools: List<AgentToolDefinition>,
-                    maxTokens: Int,
-                ) = flow {
-                    emit(StreamEvent.ToolCall(EngineToolCall("c1", "file_read", """{"path":"/a.kt"}""")))
-                    Thread.sleep(60)
-                    emit(StreamEvent.ToolCall(EngineToolCall("c2", "file_read", """{"path":"/b.kt"}""")))
-                    Thread.sleep(60)
-                    emit(StreamEvent.ToolCall(EngineToolCall("c3", "file_read", """{"path":"/c.kt"}""")))
-                    emit(StreamEvent.Done)
-                }
-            }
-            val loop = EngineAgentLoop(gw, registry()) { _, _ ->
-                started.incrementAndGet()
-                var waited = 0
-                while (started.get() < 3 && waited < 4000) {
-                    Thread.sleep(5); waited += 5
-                }
-                EngineAgentLoop.ToolOutcome("ok", true)
-            }
-            val events = loop.runTurn(turnInput()).toList()
-            // The zero-barrier promise under streaming: all three reads
-            // START although each call arrived only after a pause.
-            assertEquals(3, started.get())
-            assertEquals(3, events.filterIsInstance<AgentEvent.ToolCallFinished>().size)
+    fun `independent reads streamed one by one still overlap`() = runTest {
+        val started = java.util.concurrent.atomic.AtomicInteger(0)
+        val gw = singleRoundGateway {
+            emit(StreamEvent.ToolCall(EngineToolCall("c1", "file_read", """{"path":"/a.kt"}""")))
+            Thread.sleep(60)
+            emit(StreamEvent.ToolCall(EngineToolCall("c2", "file_read", """{"path":"/b.kt"}""")))
+            Thread.sleep(60)
+            emit(StreamEvent.ToolCall(EngineToolCall("c3", "file_read", """{"path":"/c.kt"}""")))
+            emit(StreamEvent.Done)
         }
+        val loop = EngineAgentLoop(gw, registry()) { _, _ ->
+            started.incrementAndGet()
+            var waited = 0
+            while (started.get() < 3 && waited < 4000) {
+                Thread.sleep(5); waited += 5
+            }
+            EngineAgentLoop.ToolOutcome("ok", true)
+        }
+        val events = loop.runTurn(turnInput()).toList()
+        // The zero-barrier promise under streaming: all three reads
+        // START although each call arrived only after a pause.
+        assertEquals(3, started.get())
+        assertEquals(3, events.filterIsInstance<AgentEvent.ToolCallFinished>().size)
     }
 
     @Test
     fun `a schema violation streamed mid-generation never executes`() = runTest {
-        val gw = object : ModelGateway {
-            override val modelId = "fake"
-            override fun stream(
-                messages: List<EngineMessage>,
-                tools: List<AgentToolDefinition>,
-                maxTokens: Int,
-            ) = flow {
-                emit(StreamEvent.ToolCall(EngineToolCall("c1", "root_shell", "{}")))
-                Thread.sleep(200)
-                emit(StreamEvent.Done)
-            }
+        val gw = singleRoundGateway {
+            emit(StreamEvent.ToolCall(EngineToolCall("c1", "root_shell", "{}")))
+            Thread.sleep(200)
+            emit(StreamEvent.Done)
         }
         var executed = 0
         val loop = EngineAgentLoop(gw, registry()) { _, _ ->
