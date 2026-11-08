@@ -82,7 +82,11 @@ class ChatFlatItemsSubagentTest {
         val agents = agentItems(items)
         assertEquals(listOf("a1", "a2", "a3"), agents.map { it.block.id })
         // The text row is still where the model put it — between a1 and a2.
-        val textIdx = items.indexOfFirst { it is FlatChatItem.AssistantText }
+        // Text blocks emit as AssistantMarkdownBlock fragments keyed by their
+        // parent block id; pin the block, not just the item kind.
+        val textIdx = items.indexOfFirst {
+            it is FlatChatItem.AssistantMarkdownBlock && it.parentBlockId == "txt1"
+        }
         assertTrue("the interleaved text must render as its own row", textIdx >= 0)
         val a1Idx = items.indexOf(agents[0])
         val a2Idx = items.indexOf(agents[1])
