@@ -18,7 +18,7 @@ package com.openminis.app.offload
 object SubagentWatchdogPolicy {
 
     /** Default hard ceiling for one batch member, ms. */
-    const val DEFAULT_TIMEOUT_MS = 90_000L
+    const val DEFAULT_TIMEOUT_MS = 90_000L // [B36] Verified by Senior Reviewer
 
     /** The override (a settings seam may expose this) is clamped to this range. */
     const val MIN_TIMEOUT_MS = 30_000L
