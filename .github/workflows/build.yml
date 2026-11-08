@@ -284,11 +284,16 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="v152"
+          # [vc-tag-autofollow] The tag follows the versionCode in
+          # build.gradle.kts, so a version bump commit publishes vcN to a
+          # release tagged vN — a hardcoded TAG would attach the new APK
+          # to a stale release title (vc153 would have landed on v152).
+          TAG="v$(grep -oP 'versionCode = \K[0-9]+' src/android/app/build.gradle.kts | head -1)"
+          echo "Publishing release $TAG"
           gh release delete "$TAG" --yes 2>/dev/null || true
           gh release create "$TAG" src/android/app/build/outputs/apk/clone/app-clone.apk \
             --title "OpenMinis Clone APK $TAG" \
-            --notes "Automated release build for vc152 (B34-B36 subagent overhaul)" \
+            --notes "Automated release build for $TAG (B40 no-legacy-degrade + B34-UI session view + reviewer verdict contract)" \
             --target "$GITHUB_SHA" || true
 
       - name: Upload Clone APK artifact
