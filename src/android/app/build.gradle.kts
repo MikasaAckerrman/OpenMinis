@@ -41,7 +41,9 @@ android {
         // bump), and Android refuses to install vc54 over vc55. 56 clears it.
         // vc149 STABLE: stage-complete release build (B15 + B12 + И3 + TaskDedup +
         // B17-A/B/C + B20 DeviceGuard/DynamicGate + B21 + B22 + B23 KaTeX + B18 SessionMutex).
-        versionCode = 151
+        // vc152: B34/B35/B36 subagent overhaul (ZCode-style cards, early results,
+        // watchdog 90s/stall 30s) — release build.
+        versionCode = 152
         // vc69: 97 commits — kotlincheck infra + strict preflight (types/enums,
         // parallel-batch gate) + atomic tool budget + budget footer + symmetric
         // supermemory lifecycle (FPS guard) + thermal telemetry + review fixes
