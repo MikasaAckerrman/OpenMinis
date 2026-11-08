@@ -1064,3 +1064,25 @@ LOADING-гейт, отсутствие фидбека, snapshot-discard, SELECT 
   * Исправление: авторизация сессии ограничена строго инструментами `name.starts_with("tg_")`, аргументы распаковываются с fallback на `params`;
   * Добавлен unit-тест `multi_file_read_is_accessible_without_telegram_authorization` в `mock_tests.rs`. 118 cargo-тестов в `minisd` проходят (118 passed; 0 failed).
 - **Правило R1**: 0 вхождений запрещённого символа во всех добавленных и изменённых файлах.
+
+## 43. Утро 2026-11-08 — Субагенты ZCode-стиля, ранний забор результатов и watchdog (B34–B36)
+[статус: ВЕРИФИЦИРОВАНО В РЕВЬЮ + 18 ТЕСТОВ | улика: коммит 9dc1ed47, спека docs/SUBAGENT_ZCODE_STYLE_SPEC.md]
+
+- **Опора 1 (B34) — UI субагентов ZCode-стиля (ликвидация SubagentBatchCard)**:
+  * Полностью удалены `FlatChatItem.SubagentBatch`, `aggregateAgentBatchItems` и компонент `SubagentBatchCard.kt`;
+  * Реализована `SubagentToolCard.kt`: каждый субагент отображается как самостоятельная тёмная карточка в ленте среди обычных тулов (роль, пульсирующий циан-статус `RUNNING`/`DONE`/`ERROR`, превью задачи, длительность);
+  * Клик на карточку вызывает `onOpenDetail(block.id)` через hoisted `ToolDetailSheet`, отображая мини-окно превью (`SubagentDetailContent`) с живой карточкой `AgentRunProgressCard`, задачей и результатом;
+  * 4 unit-теста в `ChatFlatItemsSubagentTest` подтверждают отсутствие схлопывания и сохранение позиций комментариев.
+- **Опора 2 (B35) — Ранний забор результатов (Channel early streaming)**:
+  * В `SubagentExecutor.kt` устранён блокирующий барьер `awaitAll()` для батча;
+  * Результаты передаются через `Channel<Pair<Int, String>>(Channel.UNLIMITED)`: как только первый субагент завершил работу, его результат немедленно записывается в секцию и на `task_board` без ожидания медленных собратьев.
+- **Опора 3 (B36) — Watchdog, таймауты и fail-fast**:
+  * Выделен чистый модуль `SubagentWatchdogPolicy.kt`: потолок 90с (override 30–180с), stall-порог 30с, интервал проверки 5с;
+  * `AgentRunProgress.kt`: регистрация liveness-пульсов `touch()` и `idleMs()` без лишнего churn StateFlow;
+  * `ChatViewModel.kt`: touch-пульсы из heartbeat-каденции генерации текста и мышления;
+  * Зависший субагент отменяется индивидуально без срыва остальных агентов батча;
+  * 9 unit-тестов в `SubagentWatchdogPolicyTest` + 5 unit-тестов в `AgentRunProgressActivityTest`.
+- **Поимки ревьюера при аудите предкоммитного диффа**:
+  * Дефект D1: в `STALL_SENTINEL` был записан бинарный null-байт `\0`, из-за чего git/инструменты определяли `.kt` как binary; заменён на строковый маркер `__stall_sentinel_b36__`;
+  * Дефект D2: `touch(taskId)` безусловно писал в `lastActivityMs`, из-за чего тест `touch for an unknown run is a cheap no-op` возвращал не-null `idleMs`; добавлен guard `if (!runs.value.containsKey(taskId)) return`.
+- **Правило R1**: 0 вхождений запрещённого символа во всех добавленных и изменённых файлах.
