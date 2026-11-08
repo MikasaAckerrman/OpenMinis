@@ -61,7 +61,11 @@ object TelegramVaultManager {
      * app's 127.0.0.1 port, so the privileged Telegram reader must
      * authenticate its callers.
      */
-    private fun authSecret(context: Context): String = try {
+    /**
+     * [B42-task4] internal: the profile sync rides the SAME gate — one
+     * secret, one auth model, no second copy of the key material.
+     */
+    internal fun authSecret(context: Context): String = try {
         val f = File(vaultDir(context), "auth.key")
         val existing = f.takeIf { it.exists() }?.readText()?.trim()
         if (!existing.isNullOrEmpty()) existing else {

@@ -133,8 +133,19 @@ fun TelegramLoginScreen(
     fun reloadAccounts() { accounts = accountStore.load() }
     LaunchedEffect(Unit) {
         reloadAccounts()
-        gatewayAlive = withContext(Dispatchers.IO) {
+        val alive = withContext(Dispatchers.IO) {
             com.openminis.app.sandbox.TelegramVaultManager.isAlive(context)
+        }
+        gatewayAlive = alive
+        // [B42-task4] The migrated "pending" account renders as "Account / ?"
+        // until SOMETHING fills the registry: the vault's tg_whoami writes
+        // the DAEMON's accounts.json, not this app's registry — the bridge
+        // is here. One call per screen open, best-effort, then re-read.
+        if (alive) {
+            withContext(Dispatchers.IO) {
+                com.openminis.app.sandbox.TelegramProfileSync.syncActiveProfile(context)
+            }
+            reloadAccounts()
         }
     }
 
