@@ -645,10 +645,42 @@ class AgentForegroundService : Service() {
             // as they leave tracker state alone (see comment above): a
             // re-enable picks up where we left off.
             if (state.isForeground) hasCompletionPending = false
+            // [B41-pip-subagent] The user is back in-app: the pin's purpose
+            // (live subagent view OUTSIDE the app) is served — drop it so
+            // the next backgrounding mirrors the normal session view again.
+            SessionActivityTracker.unpinSubagent()
             lingerJob?.cancel()
             lingerJob = null
             if (controller.isShown) controller.hide()
             return
+        }
+
+        // [B41-pip-subagent] A pinned subagent OWNS the capsule while it
+        // runs: role + current tool projected live from AgentRunProgress
+        // (the same registry the sheet's session view reads). The pin is
+        // ONE window's content reroute — never a second overlay. It drops
+        // itself when the run settles, and when the user comes back to the
+        // foreground (the early-return above already hid the capsule — the
+        // purpose of the pin, live view OUTSIDE the app, is served; the
+        // next backgrounding shows the normal session view again).
+        val pinnedTaskId = SessionActivityTracker.pinnedSubagentId.value
+        if (pinnedTaskId != null) {
+            val snap = com.openminis.app.offload.AgentRunProgress.snapshotFor(pinnedTaskId)
+            if (snap == null || !snap.isRunning) {
+                SessionActivityTracker.unpinSubagent()
+            } else {
+                val node = snap.activeNode
+                controller.show(
+                    toolName = node?.tool,
+                    statusText = if (node?.tool != null) "running" else "working",
+                    isRunning = true,
+                    outcome = ToolOutcome.Unknown,
+                    replyExcerpt = null,
+                    targetSessionId = state.currentSessionId,
+                    toolTitle = snap.graphName,
+                )
+                return
+            }
         }
 
         if (shouldShow) {

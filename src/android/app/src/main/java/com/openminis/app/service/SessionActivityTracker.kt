@@ -73,6 +73,25 @@ object SessionActivityTracker {
     val currentToolName: StateFlow<String?> = _currentToolName.asStateFlow()
 
     /**
+     * [B41-pip-subagent] The subagent run the PIP capsule is pinned to, or
+     * null — the capsule then mirrors the main session exactly as before.
+     * Written from the subagent sheet's PIP button (pin) and by the FGS
+     * collector (auto-unpin when the pinned run settles or the user returns
+     * to the foreground). The capsule stays ONE window: the pin reroutes
+     * its CONTENT, it never adds a second overlay.
+     */
+    private val _pinnedSubagentId = MutableStateFlow<String?>(null)
+    val pinnedSubagentId: StateFlow<String?> = _pinnedSubagentId.asStateFlow()
+
+    fun pinSubagent(taskId: String) {
+        _pinnedSubagentId.value = taskId
+    }
+
+    fun unpinSubagent() {
+        _pinnedSubagentId.value = null
+    }
+
+    /**
      * [T-android-overlay-tool-title] Model-supplied `tool_title` for the
      * tool currently in flight (e.g. "Open Baidu home page", "Take screenshot of
      * current page"). Null when the model didn't supply one OR no tool is

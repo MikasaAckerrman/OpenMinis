@@ -23,6 +23,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountTree
+import androidx.compose.material.icons.filled.PictureInPictureAlt
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -225,7 +226,12 @@ internal fun AgentStatusDot(chip: AgentChip, size: Int = 7) {
  *    cross-session data-path feature, not a UI restyle.
  */
 @Composable
-internal fun SubagentSessionView(block: AssistantBlock) {
+internal fun SubagentSessionView(
+    block: AssistantBlock,
+    /** [B41-pip-subagent] Fired after the PIP button pins the run — the
+     * sheet closes itself (the capsule takes over the live view). */
+    onPip: () -> Unit = {},
+) {
     val args = remember(block.toolArgs) {
         runCatching { org.json.JSONObject(block.toolArgs) }.getOrNull()
     }
@@ -284,6 +290,25 @@ internal fun SubagentSessionView(block: AssistantBlock) {
                     },
                     color = Color(0xFF8B95A5),
                     fontSize = 11.sp,
+                )
+            }
+            // [B41-pip-subagent] Pin a RUNNING agent to the bottom-left
+            // capsule ("Minis в minis"): the sheet closes, the capsule
+            // mirrors this run's role + current tool until it settles or
+            // the user returns to the foreground. Settled agents have no
+            // live state to project — no button, never a dead control.
+            if (chip == AgentChip.RUNNING && taskId.isNotBlank()) {
+                Spacer(Modifier.width(6.dp))
+                Icon(
+                    Icons.Default.PictureInPictureAlt,
+                    contentDescription = "Pin to capsule",
+                    tint = Color(0xFF8B95A5),
+                    modifier = Modifier
+                        .size(18.dp)
+                        .clickable {
+                            com.openminis.app.service.SessionActivityTracker.pinSubagent(taskId)
+                            onPip()
+                        },
                 )
             }
         }

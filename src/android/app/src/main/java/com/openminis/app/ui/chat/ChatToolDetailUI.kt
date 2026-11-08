@@ -470,8 +470,9 @@ internal fun ToolDetailSheet(
                 when (block.toolName) {
                     // ── [B34-UI] Subagent session view (мини-окно): header,
                     // the task as a user bubble, the agent's live tool calls,
-                    // the settled report card. ──
-                    AGENT_TOOL -> SubagentSessionView(block = block)
+                    // the settled report card. The PIP button reuses this
+                    // sheet's own dismiss to close it after pinning. ──
+                    AGENT_TOOL -> SubagentSessionView(block = block, onPip = onDismiss)
                     // ── Shell: black rounded terminal card (mirrors iOS ToolLiveSheet) ──
                     "shell_execute" -> {
                         val command = extractShellCommand(toolArgsObj, block)

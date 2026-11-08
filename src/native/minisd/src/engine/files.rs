@@ -325,7 +325,10 @@ pub async fn grep(ctx: &ToolCtx, params: &Value) -> Result<Value, ToolError> {
     let ignore_case = params.get("ignore_case").and_then(Value::as_bool).unwrap_or(false);
     let root_raw = params.get("path").and_then(Value::as_str).unwrap_or("");
     let root = resolve_search_root(ctx, root_raw).map_err(ToolError)?;
-    let outcome = tokio::task::spawn_blocking(move || grep_sync(&root, &pattern, ignore_case))
+    // Clone before the move-closure: the json! envelope below still needs
+    // `pattern` (E0382, CI 42486749610).
+    let pat = pattern.clone();
+    let outcome = tokio::task::spawn_blocking(move || grep_sync(&root, &pat, ignore_case))
         .await
         .map_err(|e| ToolError(format!("minisd error: grep join failed: {e}")))?;
     Ok(json!({
@@ -450,7 +453,10 @@ pub async fn glob(ctx: &ToolCtx, params: &Value) -> Result<Value, ToolError> {
         .clamp(1, GLOB_DEFAULT_LIMIT as u64) as usize;
     let root_raw = params.get("path").and_then(Value::as_str).unwrap_or("");
     let root = resolve_search_root(ctx, root_raw).map_err(ToolError)?;
-    let outcome = tokio::task::spawn_blocking(move || glob_sync(&root, &pattern, limit))
+    // Clone before the move-closure: the json! envelope below still needs
+    // `pattern` (E0382, CI 42486749610).
+    let pat = pattern.clone();
+    let outcome = tokio::task::spawn_blocking(move || glob_sync(&root, &pat, limit))
         .await
         .map_err(|e| ToolError(format!("minisd error: glob join failed: {e}")))?;
     Ok(json!({
