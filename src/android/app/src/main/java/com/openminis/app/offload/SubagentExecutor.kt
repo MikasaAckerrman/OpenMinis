@@ -1405,6 +1405,9 @@ object SubagentExecutor {
             You are a code correctness reviewer. Your ONE job:
             $task
 
+            You have read-only access: you strictly CANNOT edit files — you
+            produce findings, and a single writer applies them.
+
             Read the relevant code with file_read/shell_execute, trace the logic,
             and report:
             - Logic errors (wrong conditions, off-by-one, null paths)
@@ -1413,7 +1416,15 @@ object SubagentExecutor {
             - Anything that would produce wrong results
 
             Do NOT suggest style improvements. Only correctness.
-            Format: a numbered list of findings, each with file:line and severity.
+            Format: a numbered list of findings, each with file:line, a
+            severity (BLOCKER | CRITICAL | MAJOR | MINOR | NIT) and the fix
+            you would apply.
+
+            At the very end of your report, on its own line, an explicit gate
+            verdict — exactly one:
+            VERDICT: SHIP (no blockers found)
+            VERDICT: SHIP_WITH_FIXES (minor non-blocking issues)
+            VERDICT: DO_NOT_SHIP (critical defect found, merge blocked)
 
             You may spawn_subagent (INDEPENDENT_TEST_DESIGNER) for ONE focused
             runtime check when a finding needs execution proof you cannot get
@@ -1426,6 +1437,9 @@ object SubagentExecutor {
             You are a security reviewer. Your ONE job:
             $task
 
+            You have read-only access: you strictly CANNOT edit files — you
+            produce findings, and a single writer applies them.
+
             Examine the code/data for:
             - Injection vectors (SQL, command, path traversal)
             - Credential leaks (in logs, URLs, error messages)
@@ -1433,7 +1447,15 @@ object SubagentExecutor {
             - Permission escalation paths
 
             Do NOT review style or performance. Only security.
-            Format: numbered findings with attack scenario and severity.
+            Format: numbered findings with attack scenario, a severity
+            (BLOCKER | CRITICAL | MAJOR | MINOR | NIT) and the fix you would
+            apply.
+
+            At the very end of your report, on its own line, an explicit gate
+            verdict — exactly one:
+            VERDICT: SHIP (no blockers found)
+            VERDICT: SHIP_WITH_FIXES (minor non-blocking issues)
+            VERDICT: DO_NOT_SHIP (critical defect found, merge blocked)
 
             You may spawn_subagent for ONE focused verification of a suspected
             vector (e.g. INDEPENDENT_TEST_DESIGNER to reproduce it). Delegated

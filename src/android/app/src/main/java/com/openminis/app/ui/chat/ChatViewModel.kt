@@ -11335,17 +11335,46 @@ class ChatViewModel(
                                 AppLogger.info(TAG_STREAM, "send runEngineTurn RETURN normal")
                             } catch (e: Exception) {
                                 if (e is CancellationException) throw e
-                                AppLogger.info(
-                                    TAG_STREAM,
-                                    "send engine path failed (${e.javaClass.simpleName}: ${e.message?.take(80)}) — degrading to legacy with fallback",
-                                )
-                                runAgentLoop(
-                                    provider = provider,
-                                    systemPrompt = systemPrompt,
-                                    fallbackProviders = fallbackProviders,
-                                    fallbackStrategy = activeFallbackStrategy,
-                                    placeholderAssistantId = preAssistantId,
-                                )
+                                // [B40] An engine failure NEVER degrades to the
+                                // legacy runAgentLoop and NEVER switches providers
+                                // automatically — the user owns the provider
+                                // choice (explicit decision 08.11: «провайдера я
+                                // сам решу менять или нет»; auto-switching bred
+                                // instability, and the legacy loop's sequential
+                                // shell barrier is what killed the turn's
+                                // parallelism — the exact defect this catch used
+                                // to import mid-turn, vc152 log 08:59:46).
+                                // Two exits only:
+                                //  - EngineHistoryContractException: the engine
+                                //    pipeline itself is broken (the blind-turn
+                                //    guard et al. — a code defect, not a network
+                                //    failure). The guard's own contract names the
+                                //    legacy loop as its handler; that one
+                                //    documented path stays.
+                                //  - everything else: rethrow. The outer send-
+                                //    catch surfaces it with withRescueHint +
+                                //    dead-turn persist + draft restore — the user
+                                //    sees the error, may switch the provider
+                                //    MANUALLY and Retry.
+                                if (e is com.openminis.app.engine.EngineHistoryContractException) {
+                                    AppLogger.info(
+                                        TAG_STREAM,
+                                        "send engine path failed (contract: ${e.message?.take(80)}) — legacy fallback (engine-contract protection, B40)",
+                                    )
+                                    runAgentLoop(
+                                        provider = provider,
+                                        systemPrompt = systemPrompt,
+                                        fallbackProviders = fallbackProviders,
+                                        fallbackStrategy = activeFallbackStrategy,
+                                        placeholderAssistantId = preAssistantId,
+                                    )
+                                } else {
+                                    AppLogger.info(
+                                        TAG_STREAM,
+                                        "send engine path failed (${e.javaClass.simpleName}: ${e.message?.take(80)}) — surfaced to the UI (B40: no legacy degrade, no auto provider switch)",
+                                    )
+                                    throw e
+                                }
                             }
                         } else {
                         AppLogger.info(TAG_STREAM, "send runAgentLoop CALL")

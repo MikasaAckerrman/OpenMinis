@@ -188,17 +188,28 @@ internal fun AgentStatusDot(chip: AgentChip, size: Int = 7) {
 }
 
 /**
- * [B34] The per-agent preview inside ToolDetailSheet — the "мини-окно":
- * role + status chip, the task it was given, the LIVE progress card for a
- * running agent (the same [AgentRunProgressCard] the single-run slot uses —
- * current node, current tool, attempt counter) and the result text for a
- * settled one. The ephemeral note is honest by design: spawn-path workers
- * keep no openable chat session (T-spawn-subagent-ephemeral — their
- * narration lives in the task board and the batch result), so the sheet
- * does not pretend there is a chat to enter.
+ * [B34-UI] The per-agent SESSION view inside ToolDetailSheet — the
+ * "мини-окно" structured like the chat itself:
+ *
+ *  - header: role icon + role badge + live status chip + timer;
+ *  - the TASK as a user-message bubble (what the orchestrator asked for);
+ *  - the agent's own tool calls, LIVE from AgentRunProgress (label, the
+ *    tool in flight, attempt counter) while the run is alive;
+ *  - the RESULT as an assistant card once the agent settles.
+ *
+ * Two elements of the ZCode reference are deliberately ABSENT, with the
+ * facts that keep them absent:
+ *  - «Войти в сессию»: no session-switch API exists in ChatScreen/
+ *    ChatViewModel, and spawn-path worker sessions are ephemeral and
+ *    deleted when the run ends (T-spawn-subagent-ephemeral) — a button
+ *    here would be dead code pointing at a deleted row;
+ *  - thinking accordion: AssistantBlock carries NO reasoningContent for
+ *    spawn blocks — the worker's reasoning streams inside the worker's
+ *    own session and never reaches the parent block. Capturing it is a
+ *    cross-session data-path feature, not a UI restyle.
  */
 @Composable
-internal fun SubagentDetailContent(block: AssistantBlock) {
+internal fun SubagentSessionView(block: AssistantBlock) {
     val args = remember(block.toolArgs) {
         runCatching { org.json.JSONObject(block.toolArgs) }.getOrNull()
     }
@@ -220,39 +231,132 @@ internal fun SubagentDetailContent(block: AssistantBlock) {
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
+        // ── Header: role badge + status chip + timer ──
         Row(verticalAlignment = Alignment.CenterVertically) {
-            AgentStatusDot(chip, size = 8)
+            Icon(
+                Icons.Default.AccountTree,
+                contentDescription = null,
+                tint = Color(0xFFFF2D55),
+                modifier = Modifier.size(16.dp),
+            )
             Spacer(Modifier.width(8.dp))
             Text(
-                "$role · ${agentChipLabel(chip)}",
+                role,
                 color = Color.White,
                 fontSize = 15.sp,
                 fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
             )
-        }
-        if (task.isNotBlank()) {
-            Spacer(Modifier.height(8.dp))
-            Text(task, color = Color(0xFF8B95A5), fontSize = 13.sp)
-        }
-        if (chip == AgentChip.RUNNING) {
-            Spacer(Modifier.height(10.dp))
-            if (snapshot != null) {
-                AgentRunProgressCard(snapshot = snapshot)
-            } else {
-                Text("Работает…", color = Color(0xFF32ADE6), fontSize = 13.sp)
+            Spacer(Modifier.width(8.dp))
+            AgentStatusDot(chip)
+            Spacer(Modifier.width(4.dp))
+            Text(
+                agentChipLabel(chip),
+                color = agentChipColor(chip),
+                fontSize = 10.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            if (block.durationMs > 0 && agentChipSettled(chip)) {
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    run {
+                        val seconds = block.durationMs / 1000.0
+                        if (seconds < 10) String.format("%.1fs", seconds)
+                        else String.format("%.0fs", seconds)
+                    },
+                    color = Color(0xFF8B95A5),
+                    fontSize = 11.sp,
+                )
             }
-        } else if (block.content.isNotBlank()) {
-            Spacer(Modifier.height(10.dp))
-            Text(block.content, color = Color(0xFFD0D4DC), fontSize = 13.sp)
-        } else {
+        }
+
+        // ── Task: styled as the user message bubble that commissioned it ──
+        if (task.isNotBlank()) {
             Spacer(Modifier.height(10.dp))
             Text(
-                if (chip == AgentChip.DONE) "Готово (без текстового вывода)" else "Ошибка без деталей",
+                "ЗАДАЧА",
                 color = Color(0xFF8B95A5),
-                fontSize = 12.sp,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.SemiBold,
             )
+            Spacer(Modifier.height(4.dp))
+            Surface(
+                color = ChatColors.userBubble,
+                shape = RoundedCornerShape(18.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    task,
+                    color = androidx.compose.material3.MaterialTheme.colorScheme.onSurface,
+                    fontSize = 13.5.sp,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                )
+            }
         }
+
+        // ── The agent's own tools, LIVE while the run is alive ──
+        if (snapshot != null && snapshot.isRunning && snapshot.nodes.isNotEmpty()) {
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "ТУЛЫ АГЕНТА",
+                color = Color(0xFF8B95A5),
+                fontSize = 10.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.height(4.dp))
+            snapshot.nodes.forEach { node ->
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 2.dp),
+                ) {
+                    AgentNodeStateDot(node.state)
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        buildString {
+                            append(node.label)
+                            node.tool?.let { append(" · $it") }
+                            if (node.maxAttempts > 1) append(" · attempt ${node.attempt}/${node.maxAttempts}")
+                        },
+                        color = Color(0xFFD0D4DC),
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+
+        // ── Result: the assistant report card ──
+        if (agentChipSettled(chip)) {
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "ОТЧЁТ",
+                color = Color(0xFF8B95A5),
+                fontSize = 10.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.height(4.dp))
+            Surface(
+                color = Color(0xFF16191E),
+                shape = RoundedCornerShape(12.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF262A33)),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    block.content.ifBlank {
+                        if (chip == AgentChip.DONE) "Готово (без текстового вывода)" else "Ошибка без деталей"
+                    },
+                    color = Color(0xFFD0D4DC),
+                    fontSize = 13.sp,
+                    modifier = Modifier.padding(12.dp),
+                )
+            }
+        }
+
         Spacer(Modifier.height(12.dp))
         Text(
             "Рабочая сессия субагента эфемерна: её журнал — task_board и board-артефакт батча.",
@@ -260,4 +364,43 @@ internal fun SubagentDetailContent(block: AssistantBlock) {
             fontSize = 11.sp,
         )
     }
+}
+
+/**
+ * [B34-UI] State dot for one node of the agent's own tool list. Maps the
+ * registry's NodeState onto the card's chip palette; BLOCKED reads as
+ * waiting (cyan, static), SKIPPED as a dim gray.
+ */
+@Composable
+internal fun AgentNodeStateDot(state: com.openminis.app.offload.AgentRunProgress.NodeState) {
+    val (color, pulse) = when (state) {
+        com.openminis.app.offload.AgentRunProgress.NodeState.RUNNING ->
+            Color(0xFF32ADE6) to true
+        com.openminis.app.offload.AgentRunProgress.NodeState.COMPLETED ->
+            Color(0xFF34C759) to false
+        com.openminis.app.offload.AgentRunProgress.NodeState.FAILED ->
+            Color(0xFFFF6B6B) to false
+        com.openminis.app.offload.AgentRunProgress.NodeState.BLOCKED ->
+            Color(0xFF32ADE6) to false
+        com.openminis.app.offload.AgentRunProgress.NodeState.SKIPPED ->
+            Color(0xFF8B95A5) to false
+    }
+    val alpha = if (pulse) {
+        val transition = rememberInfiniteTransition(label = "agentNodePulse")
+        val p by transition.animateFloat(
+            initialValue = 0.35f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 900, easing = LinearEasing),
+                repeatMode = RepeatMode.Reverse,
+            ),
+            label = "agentNodePulseAlpha",
+        )
+        p
+    } else 1f
+    Box(
+        modifier = Modifier
+            .size(6.dp)
+            .background(color.copy(alpha = alpha), CircleShape),
+    )
 }
