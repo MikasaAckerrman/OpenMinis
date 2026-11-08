@@ -502,6 +502,38 @@ Never do these:
 .trimIndent()
 
     /**
+     * [T-parallel-tool-discipline][PARALLEL_TOOL_ENGINE_SPEC Опора 3] The
+     * behavioural contract against single-tool ping-pong. The reactive DAG
+     * scheduler executes independent calls in parallel, but it can only
+     * parallelize what the model EMITS in one response — a greedy model
+     * that issues one call per turn serializes itself no matter what the
+     * engine does. This block teaches the batching habit (zero cognitive
+     * load: the model never coordinates anything; the engine resolves
+     * resources and preserves order automatically).
+     *
+     * Same static-tail placement as ENGINEERING_DISCIPLINE/BACKGROUND_
+     * MONITORING: byte-stable inside the cacheable prompt prefix. The
+     * attention budget is guarded by ParallelToolPromptTest (400..1500
+     * chars) — past that, more text means less adherence.
+     */
+    val PARALLEL_TOOL_DISCIPLINE: String = """
+Parallel tool discipline (applies whenever a task needs reading code, files, or facts):
+
+Do not ping-pong. Never issue one tool call, wait for its result, then issue the next. Formulate ALL your search and file hypotheses up front and emit them ALL as tool calls in ONE response. The engine runs independent calls in parallel (I/O pool, cap 16) and preserves your order automatically where they touch the same file — a write waits for earlier reads of that file. You never coordinate anything yourself.
+
+Example — one response, three calls issued together:
+  1. file_read {"path": "src/main.rs"}
+  2. grep {"pattern": "plan_reactive", "path": "src"}
+  3. web_search {"query": "tokio watch channel"}
+
+Never do these:
+- one call per response for independent reads (single-tool ping-pong);
+- holding back a known call until an earlier result arrives;
+- serializing reads of different files "to be safe" — even parallel reads of the SAME file are safe.
+"""
+.trimIndent()
+
+    /**
      * The identity sentence template. `{name}` is substituted from the
      * SOUL metadata. This wording matches the pre-SOUL literal that
      * lived inline in ChatViewModel.buildSystemPrompt — keep it in sync
