@@ -1,5 +1,8 @@
 name: Build APK
 
+permissions:
+  contents: write
+
 on:
   workflow_dispatch:
   push:
@@ -277,8 +280,20 @@ jobs:
           cd src/android
           ./gradlew :app:assembleClone --no-daemon -Dorg.gradle.jvmargs="-Xmx4g"
 
+      - name: Publish Clone APK to GitHub Releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v152"
+          gh release delete "$TAG" --yes 2>/dev/null || true
+          gh release create "$TAG" src/android/app/build/outputs/apk/clone/app-clone.apk \
+            --title "OpenMinis Clone APK $TAG" \
+            --notes "Automated release build for vc152 (B34-B36 subagent overhaul)" \
+            --target "$GITHUB_SHA" || true
+
       - name: Upload Clone APK artifact
         uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: app-clone-apk
           path: src/android/app/build/outputs/apk/clone/app-clone.apk
@@ -315,6 +330,7 @@ jobs:
 
       - name: Upload unstripped native symbols (for ndk-stack)
         uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: unstripped-native-libs
           path: symbol-libs/
