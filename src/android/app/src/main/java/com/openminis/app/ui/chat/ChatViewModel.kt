@@ -2515,7 +2515,7 @@ class ChatViewModel(
             if (entry != null) {
                 return entry.effectiveMaxThinkingLevel
             }
-            val model = currentModel ?: return ThinkingLevel.XHIGH
+            val model = currentModel ?: return ThinkingLevel.HIGH
             return model.catalogMaxThinkingLevel
         }
 
@@ -7499,11 +7499,13 @@ class ChatViewModel(
             }
             // T239: hydrate persisted thinking-mode override. null = unset
             // (use OFF as the legacy default); non-null = explicit user
-            // choice persisted across cold-start. runCatching guards against
-            // a stale enum name from a future rename — fall back silently
-            // rather than crashing the session load.
+            // choice persisted across cold-start. decoded() (not valueOf)
+            // maps the removed-scale names a previous build may have written
+            // ("XHIGH"→HIGH, "ULTRA"→MAX) and clamps unknowns to HIGH — a
+            // stale name degrades to a valid tier instead of silently
+            // dropping the user's override.
             _thinkingLevel.value = session.thinkingOverride
-                ?.let { runCatching { ThinkingLevel.valueOf(it) }.getOrNull() }
+                ?.let { ThinkingLevel.decoded(it) }
                 ?: ThinkingLevel.OFF
 
             // [T-scoped-agent-toggles] Hydrate this session's Auto Mode /

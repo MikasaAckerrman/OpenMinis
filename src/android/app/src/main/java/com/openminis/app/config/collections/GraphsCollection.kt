@@ -80,7 +80,7 @@ class GraphsCollection(
             val maxTurns = (nObj["maxTurns"] as? ConfigValue.Int)?.value ?: 10
             val thinkingLevel = (nObj["thinkingLevel"] as? ConfigValue.Str)?.value
                 ?.takeIf { it.isNotBlank() }
-                ?.let { runCatching { com.openminis.app.data.model.ThinkingLevel.valueOf(it) }.getOrNull() }
+                ?.let { com.openminis.app.data.model.ThinkingLevel.decoded(it) }
             val temperature = (nObj["temperature"] as? ConfigValue.Double)?.value?.toFloat()
             
             // [T-agent-graph-scope] Scope + parallelism fields.

@@ -2196,12 +2196,9 @@ class OpenAIProvider private constructor(
                 ThinkingLevel.LOW -> "low"
                 ThinkingLevel.MEDIUM -> "medium"
                 ThinkingLevel.HIGH -> "high"
-                ThinkingLevel.XHIGH -> "xhigh"
-                // [T-android-thinking-level-arch] MAX → "max". ULTRA is a
-                // client-side "Max + orchestration" concept, never a valid
-                // server effort — clamp it to "max" on the wire (mirrors iOS
-                // reasoningEffort case .max, .ultra: "max").
-                ThinkingLevel.MAX, ThinkingLevel.ULTRA -> "max"
+                // [T-thinking-level-5] MAX → "max" — the only effort above
+                // "high", and only for models whose catalog ceiling allows it.
+                ThinkingLevel.MAX -> "max"
                 ThinkingLevel.OFF -> return
             })
             body.put("reasoning", JSONObject().put("effort", effort))
@@ -2219,10 +2216,9 @@ class OpenAIProvider private constructor(
         if (lid.contains("deepseek-v4") && !usesUnifiedReasoningEffort) {
             if (level.isEnabled) {
                 val effort = when (level) {
-                    // [T-android-thinking-level-arch] DeepSeek V4 tops out at
-                    // "max"; every high-and-above tier collapses onto it.
-                    ThinkingLevel.HIGH, ThinkingLevel.XHIGH,
-                    ThinkingLevel.MAX, ThinkingLevel.ULTRA -> "max"
+                    // [T-thinking-level-5] DeepSeek V4 tops out at "max";
+                    // every high-and-above tier collapses onto it.
+                    ThinkingLevel.HIGH, ThinkingLevel.MAX -> "max"
                     else -> "high"
                 }
                 body.put("thinking", JSONObject().apply {
@@ -2278,10 +2274,8 @@ class OpenAIProvider private constructor(
             ThinkingLevel.LOW -> "low"
             ThinkingLevel.MEDIUM -> "medium"
             ThinkingLevel.HIGH -> "high"
-            ThinkingLevel.XHIGH -> "xhigh"
-            // [T-android-thinking-level-arch] MAX → "max"; ULTRA also → "max"
-            // (ultra is client-side only, never a valid server effort).
-            ThinkingLevel.MAX, ThinkingLevel.ULTRA -> "max"
+            // [T-thinking-level-5] MAX → "max" — the only effort above "high".
+            ThinkingLevel.MAX -> "max"
             ThinkingLevel.OFF -> return
         })
 
@@ -2302,11 +2296,9 @@ class OpenAIProvider private constructor(
                     ThinkingLevel.LOW -> 4096
                     ThinkingLevel.MEDIUM -> 16384
                     ThinkingLevel.HIGH -> 32768
-                    ThinkingLevel.XHIGH -> 65536
-                    // [T-android-thinking-level-arch] Budget mode is "higher is
-                    // better, capped to maxTokens" — MAX/ULTRA reuse the ceiling.
+                    // [T-thinking-level-5] Budget mode is "higher is better,
+                    // capped to maxTokens" — MAX reuses the ceiling.
                     ThinkingLevel.MAX -> 65536
-                    ThinkingLevel.ULTRA -> 65536
                     ThinkingLevel.OFF -> 0
                 }
                 // [T-android-qwen3-thinking-budget-max-tokens-constraint] (issue #35, #641)
@@ -3014,11 +3006,9 @@ class OpenAIProvider private constructor(
         ThinkingLevel.LOW -> "low"
         ThinkingLevel.MEDIUM -> "medium"
         ThinkingLevel.HIGH -> "high"
-        ThinkingLevel.XHIGH -> "xhigh"
-        // [T-android-thinking-level-arch] MAX → "max"; ULTRA also → "max" —
-        // the Responses/Codex endpoint rejects a literal "ultra"; ultra is a
-        // client-side "Max + orchestration" concept only (mirrors iOS).
-        ThinkingLevel.MAX, ThinkingLevel.ULTRA -> "max"
+        // [T-thinking-level-5] MAX → "max" — the only effort above "high";
+        // the Responses/Codex endpoint rejects anything nonstandard.
+        ThinkingLevel.MAX -> "max"
     }
 
     /**

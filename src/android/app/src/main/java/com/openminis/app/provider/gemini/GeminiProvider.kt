@@ -469,7 +469,7 @@ class GeminiProvider(
                         put("thinkingLevel", when (level) {
                             ThinkingLevel.LOW -> "low"
                             ThinkingLevel.MEDIUM -> "medium"
-                            ThinkingLevel.HIGH, ThinkingLevel.XHIGH -> "high"
+                            ThinkingLevel.HIGH -> "high"
                             else -> "low"
                         })
                         put("includeThoughts", true)
@@ -483,11 +483,9 @@ class GeminiProvider(
                         ThinkingLevel.LOW -> 2048
                         ThinkingLevel.MEDIUM -> 8192
                         ThinkingLevel.HIGH -> 16384
-                        // [T-android-thinking-level-arch] Gemini 2.5 Pro caps at
-                        // 32768; XHIGH and above all take the ceiling.
-                        ThinkingLevel.XHIGH,
-                        ThinkingLevel.MAX,
-                        ThinkingLevel.ULTRA -> 32768
+                        // [T-thinking-level-5] Gemini 2.5 Pro caps at 32768;
+                        // MAX takes the ceiling.
+                        ThinkingLevel.MAX -> 32768
                     })
                     if (level.isEnabled) put("includeThoughts", true)
                 }
@@ -499,11 +497,9 @@ class GeminiProvider(
                         ThinkingLevel.LOW -> 1024
                         ThinkingLevel.MEDIUM -> 4096
                         ThinkingLevel.HIGH -> 8192
-                        // [T-android-thinking-level-arch] Gemini 2.5 Flash caps at
-                        // 16384; XHIGH and above all take the ceiling.
-                        ThinkingLevel.XHIGH,
-                        ThinkingLevel.MAX,
-                        ThinkingLevel.ULTRA -> 16384
+                        // [T-thinking-level-5] Gemini 2.5 Flash caps at 16384;
+                        // MAX takes the ceiling.
+                        ThinkingLevel.MAX -> 16384
                     })
                     if (level.isEnabled) put("includeThoughts", true)
                 }

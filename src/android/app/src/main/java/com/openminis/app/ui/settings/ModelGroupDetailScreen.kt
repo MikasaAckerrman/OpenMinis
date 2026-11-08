@@ -418,7 +418,7 @@ fun ModelGroupDetailScreen(
                         //      Opus supports.
                         // The per-request clamp (provider layer) still caps to the
                         // ACTUAL model at send time, so offering the true ceiling
-                        // here is safe. Exclude OFF; fall back to XHIGH when no
+                        // here is safe. Exclude OFF; fall back to HIGH when no
                         // member reasons (only reached with reasoning enabled).
                         val groupMaxThinkingLevel = remember(group.memberEntryIds, config.modelEntries) {
                             group.memberEntryIds
@@ -428,16 +428,14 @@ fun ModelGroupDetailScreen(
                                 }
                                 .filter { it != ThinkingLevel.OFF }
                                 .maxByOrNull { it.rank }
-                                ?: ThinkingLevel.XHIGH
+                                ?: ThinkingLevel.HIGH
                         }
                         val labelFor: @Composable (ThinkingLevel) -> String = { level ->
                             when (level) {
                                 ThinkingLevel.LOW -> stringResource(R.string.model_group_detail_thinking_low)
                                 ThinkingLevel.MEDIUM -> stringResource(R.string.model_group_detail_thinking_medium)
                                 ThinkingLevel.HIGH -> stringResource(R.string.model_group_detail_thinking_high)
-                                ThinkingLevel.XHIGH -> stringResource(R.string.model_group_detail_thinking_xhigh)
                                 ThinkingLevel.MAX -> stringResource(R.string.model_group_detail_thinking_max)
-                                ThinkingLevel.ULTRA -> stringResource(R.string.model_group_detail_thinking_ultra)
                                 ThinkingLevel.OFF -> stringResource(R.string.model_group_detail_thinking_low)
                             }
                         }

@@ -22,7 +22,7 @@ data class ChatSessionEntity(
     // T239: per-session thinking-mode override. null = unset (use the
     // current model/group default — i.e. existing pre-T239 behaviour, which
     // is OFF on Android today). Non-null is one of ThinkingLevel.name
-    // ("OFF"/"LOW"/"MEDIUM"/"HIGH"/"XHIGH") and represents an explicit user
+    // ("OFF"/"LOW"/"MEDIUM"/"HIGH"/"MAX") and represents an explicit user
     // choice that survives cold-start.
     @ColumnInfo(name = "thinking_override") val thinkingOverride: String? = null,
 

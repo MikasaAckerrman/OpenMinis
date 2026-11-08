@@ -71,11 +71,13 @@ pub fn schemas() -> Vec<Value> {
         json!({"name": "tg_search_parallel", "description": "Parallel search across chats (<=10 in flight).", "inputSchema": {"type": "object", "required": ["chat_ids", "query"], "properties": {"chat_ids": {"type": "array", "items": {"type": "integer"}}, "query": {"type": "string"}, "limit": {"type": "integer", "default": 10}}}}),
         json!({"name": "tg_analyze_chat", "description": "Top words and senders from archive.db (or a live sample).", "inputSchema": {"type": "object", "required": ["chat_id"], "properties": {"chat_id": {"type": "integer"}, "limit": {"type": "integer", "default": 10}}}}),
         json!({"name": "multi_file_read", "description": "Read up to 64 files in ONE call: the engine fans out 16 parallel reads under the I/O pool; per-file byte cap with UTF-8-safe truncation; a missing file degrades per-file, never fails the batch.", "inputSchema": {"type": "object", "required": ["paths"], "properties": {"paths": {"type": "array", "items": {"type": "string"}, "description": "file paths, relative to the session workspace (or /var/minis/workspace/...)"}, "max_bytes_per_file": {"type": "integer", "default": 65536}}}}),
+        json!({"name": "grep", "description": "Native substring search over the workspace tree (zero ptrace overhead): per-match file/line/text, binary and >2MiB files skipped, .git/target/node_modules pruned, 200-hit cap with a truncation flag.", "inputSchema": {"type": "object", "required": ["pattern"], "properties": {"pattern": {"type": "string", "description": "literal substring to find (no regex)"}, "path": {"type": "string", "description": "search root relative to the workspace; defaults to the workspace root"}, "ignore_case": {"type": "boolean", "default": false}}}}),
+        json!({"name": "glob", "description": "Native glob path search over the workspace tree: a pattern without '/' matches basenames at any depth; '*' and '?' never cross '/'; '**/' spans whole directories; '.git'/build dirs pruned; 200-hit cap.", "inputSchema": {"type": "object", "required": ["pattern"], "properties": {"pattern": {"type": "string", "description": "glob like '*.rs', 'src/**/*.toml'"}, "path": {"type": "string", "description": "search root relative to the workspace; defaults to the workspace root"}, "limit": {"type": "integer", "default": 200}}}}),
     ]
 }
 
 /// Names the dispatcher knows — pinned equal to `schemas()` by a test.
-pub const TOOL_NAMES: [&str; 22] = [
+pub const TOOL_NAMES: [&str; 24] = [
     "tg_whoami",
     "tg_list_chats",
     "tg_read",
@@ -98,6 +100,8 @@ pub const TOOL_NAMES: [&str; 22] = [
     "tg_search_parallel",
     "tg_analyze_chat",
     "multi_file_read",
+    "grep",
+    "glob",
 ];
 
 /// The `tools/call` dispatcher. `authorized == false` short-circuits
@@ -146,6 +150,9 @@ pub async fn call<A: TgApi + 'static>(
         "tg_analyze_chat" => media::analyze_chat(api, ctx, &args).await,
         // [Опора 2] The read multiplier: one call, the engine fans out.
         "multi_file_read" => crate::engine::files::multi_file_read(ctx, &args).await,
+        // [T-native-grep-glob] The walk lives in the daemon: zero ptrace tax.
+        "grep" => crate::engine::files::grep(ctx, &args).await,
+        "glob" => crate::engine::files::glob(ctx, &args).await,
         other => Err(ToolError(format!("unknown tool: {other}"))),
     }
 }
@@ -218,13 +225,13 @@ mod tests {
             .iter()
             .filter_map(|s| s["name"].as_str())
             .collect();
-        assert_eq!(schema_names.len(), 22);
+        assert_eq!(schema_names.len(), 24);
         assert_eq!(schema_names, TOOL_NAMES.to_vec());
         // Uniqueness: no duplicate tool names in tools/list.
         let mut sorted = schema_names.clone();
         sorted.sort();
         sorted.dedup();
-        assert_eq!(sorted.len(), 22);
+        assert_eq!(sorted.len(), 24);
     }
 
     #[test]

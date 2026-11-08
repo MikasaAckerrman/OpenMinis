@@ -1086,15 +1086,15 @@ internal fun ThinkingLevelPicker(
     // [T-android-thinking-level-arch] Levels the CURRENT model actually supports
     // (OFF + everything up to its effectiveMaxThinkingLevel). Passed in so the
     // picker only ever offers reachable tiers; the row scrolls horizontally so
-    // the extra GPT-5.6 tiers (MAX/ULTRA) don't overflow a narrow composer.
+    // the five tiers don't overflow a narrow composer.
     availableLevels: List<ThinkingLevel>,
     onSelect: (ThinkingLevel) -> Unit,
 ) {
     val context = LocalContext.current
     val scrollState = rememberScrollState()
     // [T-android-thinking-level-arch] Clamped state: the stored level is higher
-    // than what the current model can reach (e.g. ULTRA persisted, then the user
-    // switched to DeepSeek which caps at XHIGH). `current` then isn't in
+    // than what the current model can reach (e.g. MAX persisted, then the user
+    // switched to a model that caps at HIGH). `current` then isn't in
     // availableLevels, so no capsule would match `level == current` and the row
     // would look entirely unselected — as if thinking were off. Mirror iOS
     // (fb349342): highlight the highest available capsule in orange with an

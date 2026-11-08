@@ -407,7 +407,7 @@ class AnthropicProviderTest {
         // HIGH: min(maxTokens, 65536) == maxTokens here → must be maxTokens-1.
         assertEquals(maxTokens - 1, AnthropicProvider.thinkingBudget(maxTokens, ThinkingLevel.HIGH))
         // Top tiers take the full budget → also pulled back by one.
-        for (level in listOf(ThinkingLevel.XHIGH, ThinkingLevel.MAX, ThinkingLevel.ULTRA)) {
+        for (level in listOf(ThinkingLevel.MAX)) {
             val budget = AnthropicProvider.thinkingBudget(maxTokens, level)
             assertTrue("$level budget $budget must be < $maxTokens", budget < maxTokens)
             assertEquals(maxTokens - 1, budget)

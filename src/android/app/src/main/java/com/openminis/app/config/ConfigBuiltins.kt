@@ -252,10 +252,7 @@ internal object ConfigBuiltins {
         ThinkingLevel.LOW -> "low"
         ThinkingLevel.MEDIUM -> "medium"
         ThinkingLevel.HIGH -> "high"
-        ThinkingLevel.XHIGH -> "xhigh"
-        // [T-android-thinking-level-arch] GPT-5.6 higher tiers.
         ThinkingLevel.MAX -> "max"
-        ThinkingLevel.ULTRA -> "ultra"
     }
 
     private fun thinkingLevelFromToken(token: String): ThinkingLevel? = when (token) {
@@ -263,9 +260,11 @@ internal object ConfigBuiltins {
         "low" -> ThinkingLevel.LOW
         "medium" -> ThinkingLevel.MEDIUM
         "high" -> ThinkingLevel.HIGH
-        "xhigh" -> ThinkingLevel.XHIGH
+        // [T-thinking-level-5] Legacy 7-scale tokens decode onto their honest
+        // tiers so an exported config from an older build still loads.
+        "xhigh" -> ThinkingLevel.HIGH
+        "ultra" -> ThinkingLevel.MAX
         "max" -> ThinkingLevel.MAX
-        "ultra" -> ThinkingLevel.ULTRA
         else -> null
     }
 

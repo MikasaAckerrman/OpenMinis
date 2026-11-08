@@ -31,7 +31,7 @@ object OpenAIModelsApi {
     // pill in chat is disabled and the user can't pick low/medium/high.
     fun fetchModelsOAuth(): List<LLMModel> = listOf(
         // [T-android-thinking-level-arch] GPT-5.6 family — Codex OAuth only
-        // (not in LLMModel.allOpenAI, matching iOS). sol/terra reach ULTRA,
+        // (not in LLMModel.allOpenAI, matching iOS). sol/terra reach MAX,
         // luna reaches MAX (see ThinkingLevelCatalog).
         LLMModel("gpt-5.6-sol", "GPT-5.6 Sol", "OpenAI", supportsReasoning = true),
         LLMModel("gpt-5.6-terra", "GPT-5.6 Terra", "OpenAI", supportsReasoning = true),

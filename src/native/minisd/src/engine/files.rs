@@ -174,6 +174,294 @@ pub async fn multi_file_read(ctx: &ToolCtx, params: &Value) -> Result<Value, Too
     }))
 }
 
+// ── [T-native-grep-glob] Native filesystem search ──
+// grep/glob live HERE so the walk pays zero PRoot ptrace tax: the old shell
+// pipeline ran every stat/read 3.3x slower under the tracer (vc152 live
+// log, bg_check wall stretch). Plain std::fs walk — and deliberately NO
+// regex crate: Cargo.toml keeps the cross-compiled ELF lean ("No regex
+// chrono dep: link"), so grep is a substring matcher (+ ignore_case) and
+// glob is a hand-rolled backtracking matcher; a real regex engine is a
+// separate, explicitly-sanctioned dependency decision.
+
+pub const GREP_MAX_RESULTS: usize = 200;
+pub const GREP_MAX_FILE_BYTES: u64 = 2_097_152; // 2 MiB — archives/logs skip
+pub const WALK_MAX_DEPTH: usize = 12;
+pub const LINE_DISPLAY_MAX: usize = 240;
+pub const GLOB_DEFAULT_LIMIT: usize = 200;
+
+/// Directory names the walker never descends into — VCS, build outputs and
+/// package caches are noise for code search and would dominate the walk.
+const PRUNED_DIRS: &[&str] = &[
+    ".git", ".gradle", ".m2", ".idea", ".kotlin",
+    "target", "node_modules", "build", "obj", "bin", "__pycache__",
+];
+
+/// The root of a search tree. Unlike [resolve_workspace_path] the workspace
+/// root ITSELF is a valid target ("search everything"), so an empty or
+/// guest-prefixed-only path resolves to the root; anything else reuses the
+/// strict per-path guards (no "..", canonicalize inside the root).
+fn resolve_search_root(ctx: &ToolCtx, raw: &str) -> Result<PathBuf, String> {
+    let normalized = crate::engine::keys::normalize_resource_path(raw);
+    let stripped = normalized
+        .strip_prefix(GUEST_WORKSPACE_PREFIX)
+        .map(|s| s.trim_start_matches('/'))
+        .unwrap_or(normalized.as_str());
+    if stripped.is_empty() {
+        return ctx.workspace.as_ref().map(|w| w.clone()).ok_or_else(|| {
+            "minisd error: workspace root is not configured (pass --workspace)".to_string()
+        });
+    }
+    resolve_workspace_path(ctx, raw)
+}
+
+/// Depth-capped, prune-aware file walker (iterative — no recursion bombs).
+fn walk_files(root: &Path, out: &mut Vec<PathBuf>) {
+    let mut stack = vec![(root.to_path_buf(), 0usize)];
+    while let Some((dir, depth)) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            let Ok(ft) = entry.file_type() else { continue };
+            if ft.is_dir() {
+                if depth >= WALK_MAX_DEPTH || PRUNED_DIRS.contains(&name.as_str()) {
+                    continue;
+                }
+                stack.push((path, depth + 1));
+            } else if ft.is_file() {
+                out.push(path);
+            }
+        }
+    }
+}
+
+struct GrepOutcome {
+    matches: Vec<Value>,
+    files_matched: usize,
+    files_scanned: usize,
+    truncated: bool,
+}
+
+fn grep_sync(root: &Path, needle: &str, ignore_case: bool) -> GrepOutcome {
+    let needle_lower = needle.to_lowercase();
+    let mut files = Vec::new();
+    walk_files(root, &mut files);
+    // Deterministic output: sort so the model sees a stable order across
+    // identical queries (readdir order is arbitrary).
+    files.sort();
+    let mut matches = Vec::new();
+    let mut files_matched = 0usize;
+    let mut files_scanned = 0usize;
+    let mut truncated = false;
+    for path in files {
+        if matches.len() >= GREP_MAX_RESULTS {
+            truncated = true;
+            break;
+        }
+        let Ok(meta) = std::fs::metadata(&path) else { continue };
+        if meta.len() > GREP_MAX_FILE_BYTES {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&path) else { continue };
+        // Binary probe: a NUL byte in the first 8 KiB is not a text file.
+        if bytes[..bytes.len().min(8192)].contains(&0) {
+            continue;
+        }
+        files_scanned += 1;
+        let text = String::from_utf8_lossy(&bytes);
+        let mut file_hit = false;
+        for (idx, line) in text.lines().enumerate() {
+            let hit = if ignore_case {
+                line.to_lowercase().contains(&needle_lower)
+            } else {
+                line.contains(needle)
+            };
+            if !hit {
+                continue;
+            }
+            file_hit = true;
+            if matches.len() < GREP_MAX_RESULTS {
+                let display: String = line.chars().take(LINE_DISPLAY_MAX).collect();
+                matches.push(json!({
+                    "file": path.strip_prefix(root).unwrap_or(&path).to_string_lossy(),
+                    "line": idx + 1,
+                    "text": display,
+                }));
+            } else {
+                truncated = true;
+                break;
+            }
+        }
+        if file_hit {
+            files_matched += 1;
+        }
+    }
+    GrepOutcome { matches, files_matched, files_scanned, truncated }
+}
+
+/// `pub async fn grep` — substring search over the workspace tree.
+/// Args: `pattern` (required), `path` (optional search root, default the
+/// workspace root), `ignore_case` (optional, default false).
+pub async fn grep(ctx: &ToolCtx, params: &Value) -> Result<Value, ToolError> {
+    if ctx.workspace.is_none() {
+        return Err(ToolError(
+            "minisd error: workspace root is not configured (pass --workspace)".to_string(),
+        ));
+    }
+    let pattern = params
+        .get("pattern")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .filter(|p| !p.is_empty())
+        .ok_or_else(|| ToolError("missing required parameters: pattern".to_string()))?;
+    if pattern.contains("..") {
+        return Err(ToolError(format!(
+            "minisd error: grep pattern '{pattern}' may not contain '..'"
+        )));
+    }
+    let ignore_case = params.get("ignore_case").and_then(Value::as_bool).unwrap_or(false);
+    let root_raw = params.get("path").and_then(Value::as_str).unwrap_or("");
+    let root = resolve_search_root(ctx, root_raw).map_err(ToolError)?;
+    let outcome = tokio::task::spawn_blocking(move || grep_sync(&root, &pattern, ignore_case))
+        .await
+        .map_err(|e| ToolError(format!("minisd error: grep join failed: {e}")))?;
+    Ok(json!({
+        "pattern": pattern,
+        "path": root_raw,
+        "ignore_case": ignore_case,
+        "matches": outcome.matches,
+        "files_matched": outcome.files_matched,
+        "files_scanned": outcome.files_scanned,
+        "truncated": outcome.truncated,
+    }))
+}
+
+/// Recursive glob match against a single path component (`*` — any run
+/// WITHOUT '/', `?` — one non-'/', `**/` — zero or more whole directories,
+/// bare trailing `**` — anything). Classic backtracking, no regex dep.
+fn glob_match(pat: &[u8], name: &[u8]) -> bool {
+    if pat.is_empty() {
+        return name.is_empty();
+    }
+    match pat[0] {
+        b'*' => {
+            if pat.len() >= 2 && pat[1] == b'*' {
+                // `**/` — zero or more whole directories. The conventional
+                // `src/**/*.rs` MUST also match `src/x.rs` (zero dirs).
+                if pat.len() >= 3 && pat[2] == b'/' {
+                    let rest = &pat[3..];
+                    if glob_match(rest, name) {
+                        return true;
+                    }
+                    for i in 0..name.len() {
+                        if name[i] == b'/' && glob_match(rest, &name[i + 1..]) {
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+                // bare trailing `**` — anything at all.
+                if pat.len() == 2 {
+                    return true;
+                }
+                // `**x` degenerates to `*x`.
+                return glob_match(&pat[1..], name);
+            }
+            let rest = &pat[1..];
+            for i in 0..=name.len() {
+                if i > 0 && name[i - 1] == b'/' {
+                    break; // a single `*` never crosses a '/'
+                }
+                if glob_match(rest, &name[i..]) {
+                    return true;
+                }
+            }
+            false
+        }
+        b'?' => !name.is_empty() && name[0] != b'/' && glob_match(&pat[1..], &name[1..]),
+        c => !name.is_empty() && name[0] == c && glob_match(&pat[1..], &name[1..]),
+    }
+}
+
+struct GlobOutcome {
+    matches: Vec<Value>,
+    files_scanned: usize,
+    truncated: bool,
+}
+
+fn glob_sync(root: &Path, pattern: &str, limit: usize) -> GlobOutcome {
+    let pat = pattern.trim_start_matches('/');
+    let bytes = pat.as_bytes();
+    let mut files = Vec::new();
+    walk_files(root, &mut files);
+    files.sort();
+    let mut matches = Vec::new();
+    let mut files_scanned = 0usize;
+    let mut truncated = false;
+    for path in files {
+        files_scanned += 1;
+        if matches.len() >= limit {
+            truncated = true;
+            break;
+        }
+        let rel = path.strip_prefix(root).unwrap_or(&path);
+        // A pattern without '/' matches the BASENAME at any depth (the
+        // common "find me every Cargo.toml" expectation); a pattern with
+        // '/' matches the path relative to the search root.
+        let target = if pat.contains('/') {
+            rel.to_string_lossy().to_string()
+        } else {
+            path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+        };
+        if glob_match(bytes, target.as_bytes()) {
+            matches.push(json!(rel.to_string_lossy()));
+        }
+    }
+    GlobOutcome { matches, files_scanned, truncated }
+}
+
+/// `pub async fn glob` — glob path search over the workspace tree.
+/// Args: `pattern` (required; `*`, `?`, `**/`), `path` (optional root),
+/// `limit` (optional, default 200).
+pub async fn glob(ctx: &ToolCtx, params: &Value) -> Result<Value, ToolError> {
+    if ctx.workspace.is_none() {
+        return Err(ToolError(
+            "minisd error: workspace root is not configured (pass --workspace)".to_string(),
+        ));
+    }
+    let pattern = params
+        .get("pattern")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .filter(|p| !p.is_empty())
+        .ok_or_else(|| ToolError("missing required parameters: pattern".to_string()))?;
+    if pattern.contains("..") {
+        return Err(ToolError(format!(
+            "minisd error: glob pattern '{pattern}' may not contain '..'"
+        )));
+    }
+    let limit = params
+        .get("limit")
+        .and_then(Value::as_u64)
+        .unwrap_or(GLOB_DEFAULT_LIMIT as u64)
+        .clamp(1, GLOB_DEFAULT_LIMIT as u64) as usize;
+    let root_raw = params.get("path").and_then(Value::as_str).unwrap_or("");
+    let root = resolve_search_root(ctx, root_raw).map_err(ToolError)?;
+    let outcome = tokio::task::spawn_blocking(move || glob_sync(&root, &pattern, limit))
+        .await
+        .map_err(|e| ToolError(format!("minisd error: glob join failed: {e}")))?;
+    Ok(json!({
+        "pattern": pattern,
+        "path": root_raw,
+        "matches": outcome.matches,
+        "files_scanned": outcome.files_scanned,
+        "truncated": outcome.truncated,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -379,5 +667,142 @@ mod tests {
         let (keys2, effect2, _) = crate::engine::keys::classify_tool("multi_file_read", r#"{"paths":[]}"#);
         assert_eq!(keys2, None);
         assert_eq!(effect2, crate::engine::types::ToolEffect::GlobalBarrier);
+    }
+
+    // ── [T-native-grep-glob] ──
+
+    fn temp_workspace(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("minisd-search-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("workspace/src/deep")).unwrap();
+        root
+    }
+
+    #[tokio::test]
+    async fn grep_finds_needle_with_line_numbers_and_prunes_vcs() {
+        let root = temp_workspace("grep");
+        let ws = root.join("workspace");
+        std::fs::write(ws.join("src/a.rs"), "use std::io;\ntokio::spawn(async {});\n").unwrap();
+        std::fs::write(ws.join("src/deep/b.txt"), "nothing to see here\n").unwrap();
+        std::fs::create_dir_all(ws.join(".git")).unwrap();
+        std::fs::write(ws.join(".git/needle.txt"), "tokio::spawn in the VCS dir\n").unwrap();
+        let ctx = ctx_with_workspace(&root);
+        let out = grep(&ctx, &json!({"pattern": "tokio::spawn"})).await.unwrap();
+        assert_eq!(out["files_matched"], json!(1));
+        assert_eq!(out["files_scanned"], json!(2)); // .git pruned, b.txt scanned
+        let matches = out["matches"].as_array().unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0]["file"], json!("src/a.rs"));
+        assert_eq!(matches[0]["line"], json!(2));
+        assert_eq!(out["truncated"], json!(false));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn grep_ignore_case_and_search_root_scoping() {
+        let root = temp_workspace("grep-ci");
+        let ws = root.join("workspace");
+        std::fs::write(ws.join("a.txt"), "Hello World\nbye\n").unwrap();
+        std::fs::create_dir_all(ws.join("sub")).unwrap();
+        std::fs::write(ws.join("sub/b.txt"), "hello WORLD\n").unwrap();
+        let ctx = ctx_with_workspace(&root);
+        // Case-sensitive: only a.txt line 1.
+        let out = grep(&ctx, &json!({"pattern": "Hello World"})).await.unwrap();
+        assert_eq!(out["files_matched"], json!(1));
+        // ignore_case: both files.
+        let out2 = grep(&ctx, &json!({"pattern": "hello world", "ignore_case": true})).await.unwrap();
+        assert_eq!(out2["files_matched"], json!(2));
+        // Scoped root: only sub/ is searched.
+        let out3 = grep(&ctx, &json!({"pattern": "hello world", "ignore_case": true, "path": "sub"})).await.unwrap();
+        assert_eq!(out3["files_matched"], json!(1));
+        assert_eq!(out3["matches"][0]["file"], json!("sub/b.txt"));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn grep_skips_binary_and_oversized_files() {
+        let root = temp_workspace("grep-bin");
+        let ws = root.join("workspace");
+        std::fs::write(ws.join("bin.dat"), [0u8, 1, 2, b't', b'o']).unwrap();
+        std::fs::write(ws.join("huge.txt"), "tokio ".repeat(500_000)).unwrap(); // > 2 MiB
+        std::fs::write(ws.join("ok.txt"), "tokio here\n").unwrap();
+        let ctx = ctx_with_workspace(&root);
+        let out = grep(&ctx, &json!({"pattern": "tokio"})).await.unwrap();
+        assert_eq!(out["files_scanned"], json!(1));
+        assert_eq!(out["files_matched"], json!(1));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn glob_basename_pattern_matches_any_depth() {
+        let root = temp_workspace("glob-base");
+        let ws = root.join("workspace");
+        std::fs::write(ws.join("main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(ws.join("src/deep/main.rs"), "fn deep() {}\n").unwrap();
+        std::fs::write(ws.join("src/other.rs"), "fn o() {}\n").unwrap();
+        let ctx = ctx_with_workspace(&root);
+        let out = glob(&ctx, &json!({"pattern": "main.rs"})).await.unwrap();
+        let matches = out["matches"].as_array().unwrap();
+        assert_eq!(matches.len(), 2);
+        assert!(matches.contains(&json!("main.rs")));
+        assert!(matches.contains(&json!("src/deep/main.rs")));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn glob_single_star_does_not_cross_directories() {
+        let root = temp_workspace("glob-star");
+        let ws = root.join("workspace");
+        std::fs::write(ws.join("a.rs"), "1\n").unwrap();
+        std::fs::write(ws.join("src/b.rs"), "2\n").unwrap();
+        let ctx = ctx_with_workspace(&root);
+        let out = glob(&ctx, &json!({"pattern": "*.rs", "path": "src"})).await.unwrap();
+        assert_eq!(out["matches"], json!(["src/b.rs"]));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn glob_double_star_crosses_and_matches_zero_dirs() {
+        let root = temp_workspace("glob-dstar");
+        let ws = root.join("workspace");
+        std::fs::write(ws.join("src/x.rs"), "1\n").unwrap();
+        std::fs::write(ws.join("src/deep/y.rs"), "2\n").unwrap();
+        let ctx = ctx_with_workspace(&root);
+        let out = glob(&ctx, &json!({"pattern": "src/**/*.rs"})).await.unwrap();
+        let matches = out["matches"].as_array().unwrap();
+        assert_eq!(matches.len(), 2);
+        assert!(matches.contains(&json!("src/x.rs")));
+        assert!(matches.contains(&json!("src/deep/y.rs")));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn glob_and_grep_refuse_workspace_less_ctx_and_dotdot() {
+        let ctx = ctx_without_workspace();
+        let err = glob(&ctx, &json!({"pattern": "*.rs"})).await.unwrap_err();
+        assert!(err.0.contains("workspace"));
+        let root = temp_workspace("glob-guard");
+        let ctx2 = ctx_with_workspace(&root);
+        let err2 = glob(&ctx2, &json!({"pattern": "../outside.rs"})).await.unwrap_err();
+        assert!(err2.0.contains(".."));
+        let err3 = grep(&ctx2, &json!({"pattern": "a..b"})).await.unwrap_err();
+        assert!(err3.0.contains(".."));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn glob_matcher_semantics() {
+        // Single '*' never crosses '/'.
+        assert!(glob_match(b"*.rs", b"main.rs"));
+        assert!(!glob_match(b"*.rs", b"deep/main.rs"));
+        // `?` — exactly one non-'/'.
+        assert!(glob_match(b"m?in.rs", b"main.rs"));
+        assert!(!glob_match(b"m?in.rs", b"miin.rs"));
+        // `**/` — zero or more whole directories.
+        assert!(glob_match(b"src/**/*.rs", b"src/x.rs"));
+        assert!(glob_match(b"src/**/*.rs", b"src/deep/y.rs"));
+        assert!(!glob_match(b"src/**/*.rs", b"other/x.rs"));
+        // Bare trailing '**' — anything.
+        assert!(glob_match(b"src/**", b"src/a/b/c.rs"));
     }
 }

@@ -17,13 +17,15 @@ object ThinkingLevelCatalog {
     private data class Rule(val match: (String) -> Boolean, val max: ThinkingLevel)
 
     private val rules: List<Rule> = listOf(
-        // GPT-5.6 family: sol / terra / luna all reach MAX. ULTRA is a
-        // client-side "Max + orchestration" concept, never a wire effort — the
-        // effort layer maps both MAX and ULTRA to "max". Keep in lockstep with
-        // iOS ThinkingLevelCatalog.swift.
+        // GPT-5.6 family: sol / terra / luna all reach MAX — the one wire
+        // effort above "high" OpenAI's own backend accepts. Keep in lockstep
+        // with iOS ThinkingLevelCatalog.swift.
         Rule({ it.startsWith("gpt-5.6-sol") || it.startsWith("gpt-5.6-terra") }, ThinkingLevel.MAX),
         Rule({ it.startsWith("gpt-5.6-luna") }, ThinkingLevel.MAX),
-        Rule({ it.startsWith("gpt-5.5") }, ThinkingLevel.XHIGH),
+        // gpt-5.5 tops out at HIGH on the honest five-tier scale: "xhigh" was
+        // a non-portable wire value that third-party OpenAI-compatible
+        // backends reject with HTTP 400 before the first token.
+        Rule({ it.startsWith("gpt-5.5") }, ThinkingLevel.HIGH),
         // Third-party models known to top out at high.
         // MiMo ships BOTH id spellings in the wild: catalog docs say
         // "MiMo-2.5" but the live API (api.xiaomimimo.com /v1/models) returns
@@ -39,8 +41,9 @@ object ThinkingLevelCatalog {
         // startsWith("claude-opus-4.7"/"claude-opus-4.6") checks never matched:
         // LLMModel.id separates the minor version with a hyphen
         // (claude-opus-4-8 / claude-opus-4-6), not a dot, so every Claude Opus
-        // fell through to the XHIGH default instead of MAX — and Opus 4.8 had no
-        // rule at all. Normalize dots→hyphens first, then a single prefix match
+        // fell through to the unknown-model default instead of MAX — and Opus
+        // 4.8 had no rule at all. Normalize dots→hyphens first, then a single
+        // prefix match
         // covers 4.6 / 4.7 / 4.8 and future 4.x (mirrors iOS normalizedHasPrefix).
         Rule({ normalizedHasPrefix(it, "claude-opus-4") }, ThinkingLevel.MAX),
     )
@@ -65,9 +68,9 @@ object ThinkingLevelCatalog {
  *   1. supportsReasoning == false → OFF (checked BEFORE catalog rules so a
  *      broadened family rule can't lift a non-reasoning member's ceiling).
  *   2. ThinkingLevelCatalog rule.
- *   3. true/null → XHIGH (conservative default so a reasoning model isn't
- *      accidentally capped below the tiers every provider already accepted
- *      pre-GPT-5.6).
+ *   3. true/null → HIGH (conservative default: the level every
+ *      OpenAI-compatible backend accepts, so an unknown reasoning model can
+ *      never leak a non-portable wire value again).
  */
 val LLMModel.catalogMaxThinkingLevel: ThinkingLevel
     get() {
@@ -77,7 +80,7 @@ val LLMModel.catalogMaxThinkingLevel: ThinkingLevel
         // ceiling of that family's non-reasoning members (mimo-v2.5-tts/-asr).
         // [T-fallback-thinking-preclamp]
         if (supportsReasoning == false) return ThinkingLevel.OFF
-        return ThinkingLevelCatalog.declaredMaxLevel(id) ?: ThinkingLevel.XHIGH
+        return ThinkingLevelCatalog.declaredMaxLevel(id) ?: ThinkingLevel.HIGH
     }
 
 /**

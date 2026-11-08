@@ -33,13 +33,21 @@ enum class ProviderCredential {
     oauth,
 }
 
-@Serializable
+/**
+ * [T-thinking-level-5] The five honest reasoning tiers. XHIGH and ULTRA are
+ * REMOVED: no mainstream backend accepts them as reasoning_effort — "HTTP
+ * 400 Invalid reasoning_effort: xhigh. Allowed values: [low, medium, high]"
+ * fires before the first token — and the old XHIGH default ceiling for
+ * unknown models leaked that wire value onto every OpenAI-compatible
+ * provider (the vc152 429/400 class).
+ *
+ * Kotlinx Serialization encodes enums by NAME string, so legacy persisted
+ * names decode through [LenientThinkingLevelSerializer]: "XHIGH"→HIGH,
+ * "ULTRA"→MAX. New cases MUST be appended at the end.
+ */
+@Serializable(with = LenientThinkingLevelSerializer::class)
 enum class ThinkingLevel {
-    // [T-android-thinking-level-arch] New cases MUST be appended at the end.
-    // Kotlinx Serialization encodes enums by NAME string ("OFF"/"LOW"/...),
-    // not declaration-order ordinal, so appending does not corrupt already-
-    // persisted data. GPT-5.6 sol/terra reach ULTRA, luna reaches MAX.
-    OFF, LOW, MEDIUM, HIGH, XHIGH, MAX, ULTRA;
+    OFF, LOW, MEDIUM, HIGH, MAX;
 
     val isEnabled: Boolean get() = this != OFF
 
@@ -49,9 +57,7 @@ enum class ThinkingLevel {
             LOW -> "Low"
             MEDIUM -> "Medium"
             HIGH -> "High"
-            XHIGH -> "XHigh"   // was "Max"; the label now belongs to the new MAX case
             MAX -> "Max"
-            ULTRA -> "Ultra"
         }
 
     /** Intensity ordinal used for intersection / clamp comparisons —
@@ -64,13 +70,41 @@ enum class ThinkingLevel {
          * level string that this app build doesn't recognize — e.g. an older
          * build reading a token a NEWER build persisted (Room DB / JSON mirror).
          * Mirrors the `runCatching { … }.getOrNull()` guard already used for
-         * ImageEndpointMode (ProviderConfigMapping.kt). NEVER throws: an unknown
-         * value clamps to the highest level THIS build knows (XHIGH) rather than
-         * letting the caller handle an exception or drop the whole config. Use
-         * this for every "read from persisted data" path.
+         * ImageEndpointMode (ProviderConfigMapping.kt). NEVER throws: the
+         * removed-scale aliases map onto their honest tiers ("XHIGH"→HIGH,
+         * "ULTRA"→MAX) and anything else unknown clamps to HIGH — the default
+         * every OpenAI-compatible backend already accepts — rather than
+         * letting the caller handle an exception or drop the whole config.
+         * Use this for every "read from persisted data" path.
          */
-        fun decoded(raw: String): ThinkingLevel =
-            runCatching { valueOf(raw) }.getOrElse { XHIGH }
+        fun decoded(raw: String): ThinkingLevel = when (raw.uppercase()) {
+            "XHIGH" -> HIGH
+            "ULTRA" -> MAX
+            else -> runCatching { valueOf(raw.uppercase()) }.getOrElse { HIGH }
+        }
+    }
+}
+
+/**
+ * [T-thinking-level-5] Lenient kotlinx serializer: provider config blobs
+ * (ModelOverrides.maxThinkingLevel) may carry a name from the removed
+ * 7-level scale a previous build persisted. A plain enum decode would
+ * throw and — absent a fallback — lose the WHOLE overrides blob (display
+ * name, context window, modalities). This form maps the aliases onto the
+ * honest tiers and writes the clean five names from here on.
+ */
+object LenientThinkingLevelSerializer : kotlinx.serialization.KSerializer<ThinkingLevel> {
+    override val descriptor: kotlinx.serialization.descriptors.SerialDescriptor =
+        kotlinx.serialization.descriptors.PrimitiveSerialDescriptor(
+            "ThinkingLevel",
+            kotlinx.serialization.descriptors.PrimitiveKind.STRING,
+        )
+
+    override fun deserialize(decoder: kotlinx.serialization.encoding.Decoder): ThinkingLevel =
+        ThinkingLevel.decoded(decoder.decodeString())
+
+    override fun serialize(encoder: kotlinx.serialization.encoding.Encoder, value: ThinkingLevel) {
+        encoder.encodeString(value.name)
     }
 }
 

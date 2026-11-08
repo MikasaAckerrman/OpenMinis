@@ -564,13 +564,12 @@ internal object ChatMutationMethods {
             "low" -> ThinkingLevel.LOW
             "medium" -> ThinkingLevel.MEDIUM
             "high" -> ThinkingLevel.HIGH
-            "xhigh" -> ThinkingLevel.XHIGH
-            // [T-android-thinking-level-arch] MAX/ULTRA are now distinct tiers.
-            // "max" previously aliased XHIGH (when XHIGH's label was "Max"); it
-            // now maps to the real MAX tier.
+            // [T-thinking-level-5] Legacy 7-scale tokens alias onto their
+            // honest tiers (debug RPC stays compatible with old scripts).
+            "xhigh" -> ThinkingLevel.HIGH
             "max" -> ThinkingLevel.MAX
-            "ultra" -> ThinkingLevel.ULTRA
-            else -> throw RPCException(-32602, "Invalid thinkingLevel: $raw (expected off/low/medium/high/xhigh/max/ultra)")
+            "ultra" -> ThinkingLevel.MAX
+            else -> throw RPCException(-32602, "Invalid thinkingLevel: $raw (expected off/low/medium/high/max)")
         }
     }
 

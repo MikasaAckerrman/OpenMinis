@@ -539,7 +539,7 @@ interface ChatDao {
 
     // Session: thinking_override (T239) — null clears the explicit choice and
     // falls back to the current model/group default; non-null is a
-    // ThinkingLevel.name string ("OFF"/"LOW"/"MEDIUM"/"HIGH"/"XHIGH").
+    // ThinkingLevel.name string ("OFF"/"LOW"/"MEDIUM"/"HIGH"/"MAX").
     @Query("UPDATE sessions SET thinking_override = :value, updated_at = :updatedAt WHERE id = :id")
     suspend fun updateThinkingOverride(id: String, value: String?, updatedAt: Long = System.currentTimeMillis())
 

@@ -1043,11 +1043,9 @@ class AnthropicProvider(
                 ThinkingLevel.LOW -> 8192
                 ThinkingLevel.MEDIUM -> 32768
                 ThinkingLevel.HIGH -> minOf(maxTokens, 65536)
-                // [T-android-thinking-level-arch] XHIGH and above all take the
-                // full token budget (already capped to maxTokens below).
-                ThinkingLevel.XHIGH,
-                ThinkingLevel.MAX,
-                ThinkingLevel.ULTRA -> maxTokens
+                // [T-thinking-level-5] MAX takes the full token budget
+                // (already capped to maxTokens below).
+                ThinkingLevel.MAX -> maxTokens
             }
             // Anthropic requires budget_tokens STRICTLY LESS THAN max_tokens; an
             // equal value is a 400 ("thinking.budget_tokens must be less than
@@ -1069,11 +1067,9 @@ class AnthropicProvider(
             ThinkingLevel.LOW -> "low"
             ThinkingLevel.MEDIUM -> "medium"
             ThinkingLevel.HIGH -> "high"
-            // [T-android-thinking-level-arch] Anthropic tops out at "max"; XHIGH
-            // and the new MAX/ULTRA tiers all collapse onto it.
-            ThinkingLevel.XHIGH,
-            ThinkingLevel.MAX,
-            ThinkingLevel.ULTRA -> "max"
+            // [T-thinking-level-5] Anthropic tops out at "max"; MAX is
+            // the honest top of the five-tier scale.
+            ThinkingLevel.MAX -> "max"
         }
     }
 

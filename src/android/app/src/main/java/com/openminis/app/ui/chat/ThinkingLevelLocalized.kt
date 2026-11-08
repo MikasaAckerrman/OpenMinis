@@ -18,10 +18,6 @@ fun ThinkingLevel.localizedName(context: Context): String =
             ThinkingLevel.LOW -> R.string.thinking_level_low
             ThinkingLevel.MEDIUM -> R.string.thinking_level_medium
             ThinkingLevel.HIGH -> R.string.thinking_level_high
-            // [T-android-thinking-level-arch] XHIGH now has its own label; "Max"
-            // moved to the new MAX case, plus ULTRA.
-            ThinkingLevel.XHIGH -> R.string.thinking_level_xhigh
             ThinkingLevel.MAX -> R.string.thinking_level_max
-            ThinkingLevel.ULTRA -> R.string.thinking_level_ultra
         },
     )

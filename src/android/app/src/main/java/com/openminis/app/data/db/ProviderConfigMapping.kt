@@ -246,7 +246,8 @@ fun ProviderConfigSnapshot.toProviderConfig(jsonForBlobs: Json): ProviderConfig 
             // level string a NEWER build persisted (e.g. "MAX"/"ULTRA") can't
             // throw and blow up the whole DB load — which would fall back to the
             // JSON mirror, which fails identically on the same enum value,
-            // wiping all providers/groups from the UI. Unknown → XHIGH.
+            // wiping all providers/groups from the UI. Unknown → HIGH
+            // (the removed-scale names XHIGH/ULTRA decode as aliases).
             defaultThinkingLevel = row.defaultThinkingLevel?.let { ThinkingLevel.decoded(it) },
             contextLimitTokens = row.contextLimitTokens,
             lastContextLimitTokens = row.lastContextLimitTokens,
