@@ -43,6 +43,7 @@ struct Args {
     storage: PathBuf,
     archive_dir: PathBuf,
     tz_offset_secs: i32,
+    workspace: Option<PathBuf>,
     smoke_token: Option<String>,
 }
 
@@ -51,6 +52,7 @@ fn parse_common(args: &[String]) -> Args {
     let mut storage = PathBuf::from(".");
     let mut archive_dir: Option<PathBuf> = None;
     let mut tz_offset_hours = 0i32;
+    let mut workspace: Option<PathBuf> = None;
     let mut smoke_token: Option<String> = None;
     let mut i = 2;
     while i < args.len() {
@@ -80,6 +82,11 @@ fn parse_common(args: &[String]) -> Args {
                 }
                 i += 2;
             }
+            "--workspace" => {
+                let Some(v) = args.get(i + 1) else { fail("--workspace requires a value") };
+                workspace = Some(PathBuf::from(v));
+                i += 2;
+            }
             "--smoke-token" => {
                 let Some(v) = args.get(i + 1) else { fail("--smoke-token requires a value") };
                 smoke_token = Some(v.clone());
@@ -93,6 +100,7 @@ fn parse_common(args: &[String]) -> Args {
         archive_dir: archive_dir.unwrap_or_else(|| storage.join("archive")),
         storage,
         tz_offset_secs: tz_offset_hours * 3_600,
+        workspace,
         smoke_token,
     }
 }
@@ -131,6 +139,7 @@ async fn run_vault(args: Args) -> Result<(), String> {
         storage: args.storage.clone(),
         archive_dir: args.archive_dir.clone(),
         tz_offset_secs: args.tz_offset_secs,
+        workspace: args.workspace.clone(),
     };
 
     // MTProto boot: a failed connect degrades, it never kills the
@@ -195,7 +204,7 @@ fn main() {
         }
         _ => fail(
             "usage: minisd vault [--port <n>] [--storage <dir>] [--archive-dir <dir>] \
-             [--tz-offset-hours <h>] [--smoke-token <secret>]; \
+             [--tz-offset-hours <h>] [--workspace <dir>] [--smoke-token <secret>]; \
              the secret arrives on stdin otherwise. `minisd login --storage <dir>` re-authenticates.",
         ),
     }

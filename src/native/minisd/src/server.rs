@@ -149,6 +149,7 @@ mod tests {
                 storage: std::env::temp_dir().join("minisd-server-test"),
                 archive_dir: std::env::temp_dir().join("minisd-server-test/archive"),
                 tz_offset_secs: 0,
+                workspace: None,
             },
             bearer: bearer.to_string(),
             authorized: false,

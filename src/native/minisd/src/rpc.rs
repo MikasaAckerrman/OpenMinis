@@ -244,12 +244,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tools_list_serves_all_21_schemas() {
+    async fn tools_list_serves_every_schema() {
         let body = br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
         let api = std::sync::Arc::new(crate::telegram::api::MockApi::new());
         let v = dispatch(body, true, &api, &test_ctx()).await;
         let tools = v["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 21);
+        assert_eq!(tools.len(), 22);
     }
 
     #[tokio::test]
@@ -303,6 +303,7 @@ mod tests {
             storage: std::env::temp_dir().join("minisd-rpc-test"),
             archive_dir: std::env::temp_dir().join("minisd-rpc-test/archive"),
             tz_offset_secs: 0,
+            workspace: None,
         }
     }
 }

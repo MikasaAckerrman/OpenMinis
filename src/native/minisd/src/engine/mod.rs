@@ -12,3 +12,4 @@ pub use executor::{execute_dag, ConcurrencyPools};
 pub use keys::{classify_tool, keys_overlap, normalize_resource_path};
 pub use scheduler::plan_reactive;
 pub use types::{ToolCallNode, ToolCallResult, ToolCallSpec, ToolEffect, ToolPool};
+pub mod files;

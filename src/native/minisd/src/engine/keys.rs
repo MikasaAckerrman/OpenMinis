@@ -166,6 +166,30 @@ pub fn classify_tool(tool_name: &str, args_json: &str) -> (Option<Vec<String>>, 
             (Some(vec!["mcp:tg:global_read".to_string()]), ToolEffect::Read, ToolPool::Io)
         }
 
+        // [Опора 2] The macro-tool: ONE call declares EVERY file it
+        // touches — the fan-out is the engine's job, the resource keys
+        // stay per-file so a later write to any of them still orders.
+        "multi_file_read" => {
+            let mut keys = Vec::new();
+            if let Some(arr) = parsed.as_ref().and_then(|v| v.get("paths")).and_then(Value::as_array) {
+                for item in arr {
+                    if let Some(p) = item.as_str() {
+                        let n = normalize_resource_path(p);
+                        if !n.is_empty() && !keys.contains(&format!("fs:{n}")) {
+                            keys.push(format!("fs:{n}"));
+                        }
+                    }
+                }
+            }
+            if keys.is_empty() {
+                // No usable paths declared: the conservative barrier,
+                // same rule as a file_read with a missing path.
+                (None, ToolEffect::GlobalBarrier, ToolPool::Cpu)
+            } else {
+                (Some(keys), ToolEffect::Read, ToolPool::Io)
+            }
+        }
+
         // Memory Store (§3.1)
         "memory_get" | "supermemory_search" | "memory_blocks_view" | "todo_read" => {
             (Some(vec!["mem:store".to_string()]), ToolEffect::Read, ToolPool::Io)

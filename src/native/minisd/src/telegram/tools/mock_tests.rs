@@ -25,8 +25,9 @@ fn ctx(tag: &str) -> ToolCtx {
     let dir = fresh_dir(tag);
     ToolCtx {
         archive_dir: dir.join("archive"),
-        storage: dir,
+        storage: dir.clone(),
         tz_offset_secs: 0,
+        workspace: Some(dir),
     }
 }
 

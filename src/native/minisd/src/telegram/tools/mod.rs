@@ -30,6 +30,11 @@ pub struct ToolCtx {
     /// Fixed UTC offset reproducing the legacy daemon's POSIX TZ
     /// ("LCL-8" on the device → +8h).
     pub tz_offset_secs: i32,
+    /// Host directory serving the guest workspace bind
+    /// (/var/minis/workspace) — the root multi_file_read resolves
+    /// relative paths against. None = the tool answers a per-call
+    /// configuration error instead of guessing.
+    pub workspace: Option<PathBuf>,
 }
 
 pub type ToolResult = Result<Value, ToolError>;
@@ -65,11 +70,12 @@ pub fn schemas() -> Vec<Value> {
         json!({"name": "tg_read_chunked", "description": "One chat read as parallel offset windows.", "inputSchema": {"type": "object", "required": ["chat_id"], "properties": {"chat_id": {"type": "integer"}, "chunk_size": {"type": "integer", "default": 100}, "windows": {"type": "integer", "default": 3}}}}),
         json!({"name": "tg_search_parallel", "description": "Parallel search across chats (<=10 in flight).", "inputSchema": {"type": "object", "required": ["chat_ids", "query"], "properties": {"chat_ids": {"type": "array", "items": {"type": "integer"}}, "query": {"type": "string"}, "limit": {"type": "integer", "default": 10}}}}),
         json!({"name": "tg_analyze_chat", "description": "Top words and senders from archive.db (or a live sample).", "inputSchema": {"type": "object", "required": ["chat_id"], "properties": {"chat_id": {"type": "integer"}, "limit": {"type": "integer", "default": 10}}}}),
+        json!({"name": "multi_file_read", "description": "Read up to 64 files in ONE call: the engine fans out 16 parallel reads under the I/O pool; per-file byte cap with UTF-8-safe truncation; a missing file degrades per-file, never fails the batch.", "inputSchema": {"type": "object", "required": ["paths"], "properties": {"paths": {"type": "array", "items": {"type": "string"}, "description": "file paths, relative to the session workspace (or /var/minis/workspace/...)"}, "max_bytes_per_file": {"type": "integer", "default": 65536}}}}),
     ]
 }
 
 /// Names the dispatcher knows — pinned equal to `schemas()` by a test.
-pub const TOOL_NAMES: [&str; 21] = [
+pub const TOOL_NAMES: [&str; 22] = [
     "tg_whoami",
     "tg_list_chats",
     "tg_read",
@@ -91,6 +97,7 @@ pub const TOOL_NAMES: [&str; 21] = [
     "tg_read_chunked",
     "tg_search_parallel",
     "tg_analyze_chat",
+    "multi_file_read",
 ];
 
 /// The `tools/call` dispatcher. `authorized == false` short-circuits
@@ -131,6 +138,8 @@ pub async fn call<A: TgApi + 'static>(
         "tg_read_chunked" => read::read_chunked(api, ctx, &args).await,
         "tg_search_parallel" => search::search_parallel(api, ctx, &args).await,
         "tg_analyze_chat" => media::analyze_chat(api, ctx, &args).await,
+        // [Опора 2] The read multiplier: one call, the engine fans out.
+        "multi_file_read" => crate::engine::files::multi_file_read(ctx, &args).await,
         other => Err(ToolError(format!("unknown tool: {other}"))),
     }
 }
@@ -197,19 +206,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_registry_and_the_dispatcher_agree_on_all_21_names() {
+    fn the_registry_and_the_dispatcher_agree_on_every_name() {
         let all_schemas = schemas();
         let schema_names: Vec<&str> = all_schemas
             .iter()
             .filter_map(|s| s["name"].as_str())
             .collect();
-        assert_eq!(schema_names.len(), 21);
+        assert_eq!(schema_names.len(), 22);
         assert_eq!(schema_names, TOOL_NAMES.to_vec());
         // Uniqueness: no duplicate tool names in tools/list.
         let mut sorted = schema_names.clone();
         sorted.sort();
         sorted.dedup();
-        assert_eq!(sorted.len(), 21);
+        assert_eq!(sorted.len(), 22);
     }
 
     #[test]

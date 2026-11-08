@@ -463,6 +463,11 @@ class ToolSchedulerHierarchyTest {
  */
 class ToolSchedulerBuilderParityTest {
 
+    private fun planner() = ToolScheduler(
+        resourceKeysOf = ::jsonObjectResourceKeys,
+        maxConcurrent = 8,
+    )
+
     private fun calls() = listOf(
         ToolScheduler.SchedCall("1", "file_read", """{"path":"src/a.rs"}"""),
         ToolScheduler.SchedCall("2", "grep", """{"pattern":"x","path":"src"}"""),
