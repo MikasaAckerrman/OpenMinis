@@ -38,7 +38,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.openminis.app.offload.AgentRunProgress
-import com.openminis.app.ui.theme.ChatColors
 
 /**
  * [B34] The inline ZCode-style card for one `spawn_subagent` call.
@@ -140,6 +139,22 @@ internal fun SubagentToolCard(
 
 /** Status buckets of a subagent card — shared by the card and the detail sheet. */
 internal enum class AgentChip { RUNNING, DONE, ERROR }
+
+/** [B34-UI] The gate verdict a reviewer persona is contracted to emit. */
+internal enum class AgentVerdict { SHIP, SHIP_WITH_FIXES, DO_NOT_SHIP }
+
+/**
+ * [B34-UI] Parse the gate-verdict line out of a settled agent's report.
+ * Longest-first matching: "SHIP_WITH_FIXES" CONTAINS "SHIP", so the order
+ * of the checks is the parser — a plain "SHIP" must not win over its
+ * longer sibling. Pure: pinned by SubagentVerdictBadgeTest.
+ */
+internal fun agentVerdictOf(content: String): AgentVerdict? = when {
+    content.contains("VERDICT: SHIP_WITH_FIXES") -> AgentVerdict.SHIP_WITH_FIXES
+    content.contains("VERDICT: DO_NOT_SHIP") -> AgentVerdict.DO_NOT_SHIP
+    content.contains("VERDICT: SHIP") -> AgentVerdict.SHIP
+    else -> null
+}
 
 internal fun agentChipOf(status: ToolBlockStatus?): AgentChip = when (status) {
     ToolBlockStatus.SUCCESS -> AgentChip.DONE
@@ -273,7 +288,9 @@ internal fun SubagentSessionView(block: AssistantBlock) {
             }
         }
 
-        // ── Task: styled as the user message bubble that commissioned it ──
+        // ── Task: a DIRECTIVE, not a chat bubble (Run Inspector law) — the
+        // same graphite ensemble as the report card: one geometry (12dp),
+        // one border, no chat-colors shouting inside the inspector. ──
         if (task.isNotBlank()) {
             Spacer(Modifier.height(10.dp))
             Text(
@@ -284,14 +301,15 @@ internal fun SubagentSessionView(block: AssistantBlock) {
             )
             Spacer(Modifier.height(4.dp))
             Surface(
-                color = ChatColors.userBubble,
-                shape = RoundedCornerShape(18.dp),
+                color = Color(0xFF1A1E26),
+                shape = RoundedCornerShape(12.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF262A33)),
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text(
                     task,
-                    color = androidx.compose.material3.MaterialTheme.colorScheme.onSurface,
-                    fontSize = 13.5.sp,
+                    color = Color(0xFFD0D4DC),
+                    fontSize = 13.sp,
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                 )
             }
@@ -331,7 +349,8 @@ internal fun SubagentSessionView(block: AssistantBlock) {
             }
         }
 
-        // ── Result: the assistant report card ──
+        // ── Result: the report card, with the gate verdict as a soft pill
+        // on top — the half-second read before any of the text. ──
         if (agentChipSettled(chip)) {
             Spacer(Modifier.height(10.dp))
             Text(
@@ -347,14 +366,32 @@ internal fun SubagentSessionView(block: AssistantBlock) {
                 border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF262A33)),
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text(
-                    block.content.ifBlank {
-                        if (chip == AgentChip.DONE) "Готово (без текстового вывода)" else "Ошибка без деталей"
-                    },
-                    color = Color(0xFFD0D4DC),
-                    fontSize = 13.sp,
-                    modifier = Modifier.padding(12.dp),
-                )
+                Column(Modifier.padding(12.dp)) {
+                    agentVerdictOf(block.content)?.let { verdict ->
+                        val (bg, fg) = when (verdict) {
+                            AgentVerdict.SHIP -> Color(0xFF163B2A) to Color(0xFF3FB950)
+                            AgentVerdict.SHIP_WITH_FIXES -> Color(0xFF3B2E16) to Color(0xFFE3B341)
+                            AgentVerdict.DO_NOT_SHIP -> Color(0xFF3D1F24) to Color(0xFFF85149)
+                        }
+                        Text(
+                            "VERDICT: ${verdict.name}",
+                            color = fg,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier
+                                .background(bg, RoundedCornerShape(8.dp))
+                                .padding(horizontal = 8.dp, vertical = 3.dp),
+                        )
+                        Spacer(Modifier.height(8.dp))
+                    }
+                    Text(
+                        block.content.ifBlank {
+                            if (chip == AgentChip.DONE) "Готово (без текстового вывода)" else "Ошибка без деталей"
+                        },
+                        color = Color(0xFFD0D4DC),
+                        fontSize = 13.sp,
+                    )
+                }
             }
         }
 
