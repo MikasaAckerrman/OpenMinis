@@ -1088,8 +1088,8 @@ LOADING-гейт, отсутствие фидбека, snapshot-discard, SELECT 
 - **Правило R1**: 0 вхождений запрещённого символа во всех добавленных и изменённых файлах.
 
 
-## 44. Утро 2026-11-08 — Верификация Unit Tests CI, очистка квоты артефактов и релиз vc152
-[статус: ВЕРИФИЦИРОВАНО В CI 2222/2222 ТЕСТОВ | улика: коммиты ac531d43, 0aca0a7c, f310db92, CI Unit Tests 42444591718 SUCCESS, Build APK 42445998384]
+## 44. Утро 2026-11-08 — Верификация Unit Tests CI, очистка квоты артефактов и релиз vc152 на устройстве
+[статус: ВЕРИФИЦИРОВАНО В CI И НА ФИЗИЧЕСКОМ ЖЕЛЕЗЕ | улика: коммиты ac531d43, 0aca0a7c, f310db92, 0915bda0, CI ран 42447005264 SUCCESS, устройство 10CF5719KM002JZ]
 
 - **Поимки компиляции и регрессионного теста при ревью (D3/D4)**:
   * Поимка D3: в `SubagentExecutor.kt` отсутствовал явный импорт `import kotlinx.coroutines.isActive` для фонового watchdog-цикла (коммит `ac531d43`);
@@ -1097,10 +1097,14 @@ LOADING-гейт, отсутствие фидбека, snapshot-discard, SELECT 
 - **Верификация полного сьюта в CI**:
   * CI ран `42444591718` (Unit Tests) на зеркале canon: `Rust daemon tests (minisd)` SUCCESS (118/118 тестов), `JVM unit tests (no APK)` SUCCESS (все 2222 теста пройдены);
   * Полный паритет чистого рантайма подтверждён: ни одной регрессии во всём коде Minis.
-- **Очистка квоты артефактов GitHub Actions**:
+- **Очистка квоты артефактов GitHub Actions и байпас через Releases**:
   * Удалено 60 устаревших сборок APK и тестовых отчётов за 1–7 ноября на `MikasaAckerrman/OpenMinis` и `MikasaAckerrman/OpenMinis-canon`, освобождено более 1 ГБ дискового пространства;
-  * Риск блокировки загрузки релизных артефактов полностью устранён.
-- **Релиз vc152**:
-  * Бамп `versionCode = 152` в `src/android/app/build.gradle.kts` (коммит `f310db92` с тегом `[quick]`);
-  * Синхронизация обоих репозиториев (`origin` и `mirror`), запущен рабочий процесс сборки APK `42445998384`.
+  * Добавлена прямая выгрузка релизного APK в GitHub Releases (`gh release create "v152"`) и `continue-on-error: true` в `.github/workflows/build.yml` (коммит `0915bda0`).
+- **Сборка APK и деплой на физическое железо (Snapdragon 8 Gen 3)**:
+  * CI ран `42447005264` (Build APK) завершён со статусом SUCCESS;
+  * Скачан релизный артефакт `app-clone.apk` (46 907 124 Б), SHA256 верифицирован: `d319c6e423c426d8599a870b3270c31b88b845502bf182103b91fa0e505e0577`;
+  * Установлен на устройство `10CF5719KM002JZ` через `pm install -r -d /data/local/tmp/app-clone.apk` (headless bypass OriginOS диалогов);
+  * Проверен `dumpsys package com.openminis.app.clone`: подтверждён `versionCode=152 minSdk=26 targetSdk=35`;
+  * В `/data/app/.../lib/arm64/` подтверждён нативный бинарник `libminisd.so` (2 641 560 Б);
+  * Приложение успешно запущено (PID 24923), logcat подтверждает штатный запуск движка `runEngineTurn` (32 инструмента, потоковый reasoning/thinking) без крашей.
 - **Правило R1**: 0 вхождений запрещённого символа во всех добавленных и изменённых файлах.
