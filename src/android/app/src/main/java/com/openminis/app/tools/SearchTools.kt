@@ -184,9 +184,11 @@ object SearchTools {
         // The honest default is THIS session's workspace: where the
         // model's own files actually live.
         if (abs == "/var/minis" || abs == "/var/minis/") {
-            return resolveSessionHostPath(sessionId, "/var/minis/workspace", context)
+            return com.openminis.app.sandbox.PRootKernel.resolveSessionHostPath(
+                sessionId, "/var/minis/workspace", context)
         }
-        return resolveSessionHostPath(sessionId, abs, context)
+        return com.openminis.app.sandbox.PRootKernel.resolveSessionHostPath(
+            sessionId, abs, context)
     }
 
     private fun finishSearch(out: String, code: Int, tool: String): ToolExecutionResult {
