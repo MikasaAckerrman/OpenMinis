@@ -82,6 +82,10 @@ class ProviderModelGateway(
                 StreamEvent.Failure(
                     message = cause.message ?: cause.javaClass.simpleName,
                     recoverable = true,
+                    // [B42-network-retry] The loop can only retry what it can
+                    // classify — the original throwable dies in this catch,
+                    // so the transport verdict rides the event itself.
+                    transient = NetworkRetryPolicy.isTransientCause(cause),
                 ),
             )
         }

@@ -69,4 +69,25 @@ sealed interface AgentEvent {
 
     /** The turn failed. [recoverable] — a retry may succeed (network class). */
     data class Error(val message: String, val recoverable: Boolean) : AgentEvent
+
+    /**
+     * [B42-network-retry] A transient transport failure killed this round's
+     * stream attempt and the loop is re-opening the gateway stream after
+     * [waitMs] ([NetworkRetryPolicy] ladder). [attempt] is 1-based.
+     *
+     * The consumer reverts the failed attempt's streamed content (the
+     * reducer rolls back to its round baseline) and may surface a
+     * transient status — nothing in the failed attempt is durable, because
+     * the retry precondition guarantees no tool was dispatched in it.
+     */
+    data class RoundRetrying(
+        val attempt: Int,
+        val maxRetries: Int,
+        val waitMs: Long,
+        val cause: String,
+    ) : AgentEvent {
+        /** The one-line status the UI shows during the backoff wait. */
+        val statusText: String
+            get() = "Network glitch, retrying in ${waitMs / 1000}s (attempt $attempt/$maxRetries)..."
+    }
 }

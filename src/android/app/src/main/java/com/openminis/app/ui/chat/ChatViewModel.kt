@@ -13559,6 +13559,10 @@ class ChatViewModel(
         var usageSeen = false
         var usageInputTokens = 0
         var usageOutputTokens = 0
+        // [B42-network-retry] Per-attempt output share: a retried round's
+        // Usage must not double-count — RoundRetrying subtracts the failed
+        // attempt's share before the next attempt accumulates anew.
+        var attemptOutputTokens = 0
         // [T-engine-incremental-persist] engineRowId + upsertEngineRow are
         // declared WITH the reducer above (the queue-interrupt split runs
         // earlier in the source — see the comment there).
@@ -13573,6 +13577,12 @@ class ChatViewModel(
                         AppLogger.info(TAG_STREAM, "[Engine] finished reason=${event.reason} " +
                             "text=${reducer.text.length}ch blocks=${reducer.currentBlocks().size} " +
                             "tools=$toolCalls persistedRows=$persistEffects total=${msSinceSetup()}ms")
+                        // [B42-network-retry] A retried round leaves no trace:
+                        // the transient banner goes when the turn lands (the
+                        // first post-retry TextDelta already cleared it — this
+                        // covers the DeepSeek pattern: retried round with tool
+                        // calls and no text at all).
+                        clearInlineError()
                     }
                     is com.openminis.app.engine.AgentEvent.Error -> {
                         // [T-m12-error-recoverability] The event carries the
@@ -13582,6 +13592,10 @@ class ChatViewModel(
                         // healing). Non-recoverable (content filter, auth)
                         // → RuntimeException: the gate must NOT auto-resume
                         // a turn that can never succeed (3 wasted retries).
+                        // [B42-network-retry] Drop the transient retry banner
+                        // first — what follows is the terminal failure
+                        // surface, not a wait.
+                        clearInlineError()
                         val msg = event.message
                         if (event.recoverable) {
                             throw java.io.IOException(msg)
@@ -13669,13 +13683,38 @@ class ChatViewModel(
                         // again on engine turns.
                         usageSeen = true
                         usageInputTokens = event.inputTokens
+                        attemptOutputTokens = event.outputTokens
                         usageOutputTokens += event.outputTokens
                         publishContextUsage(event.inputTokens, provider)
                         lastStreamActivityMs = System.currentTimeMillis()
                     }
+                    is com.openminis.app.engine.AgentEvent.RoundRetrying -> {
+                        // [B42-network-retry] The engine auto-retried a
+                        // transient stream failure (in-round, no tools
+                        // dispatched — the loop's gate). The reducer rolls
+                        // the streamed attempt back to its round baseline,
+                        // the live bubble re-renders without it, and the
+                        // inline banner carries the status during the
+                        // backoff wait — the exact surface the legacy
+                        // auto-retry countdown uses.
+                        reducer.reduce(event)
+                        usageOutputTokens -= attemptOutputTokens
+                        lastStreamActivityMs = System.currentTimeMillis()
+                        updateAssistantMessage(
+                            assistantId,
+                            reducer.text.toString(),
+                            true,
+                            reducer.currentBlocks(),
+                        )
+                        setTransientInlineError(event.statusText)
+                    }
                     else -> {
                         if (event is com.openminis.app.engine.AgentEvent.TextDelta) {
                             textChars += event.text.length
+                            // [B42-network-retry] The retry produced text —
+                            // the transient banner's job is done. (No-op when
+                            // no banner: the helper early-returns.)
+                            clearInlineError()
                         }
                         reducer.reduce(event)
                             lastStreamActivityMs = System.currentTimeMillis()

@@ -117,8 +117,10 @@ class EngineAgentLoop(
             val reasoningTail = StringBuilder()
             // [T-reasoning-degeneracy] The watch keeps the evidence of the whole
             // stream, so a loop in the middle of the reasoning is still provable
-            // after the tail moved on.
-            val reasoningWatch = ReasoningLoopWatch()
+            // after the tail moved on. [B42-network-retry] var: a round retry
+            // starts a FRESH stream — evidence from the failed attempt must
+            // not taint the loop detection of the retried one.
+            var reasoningWatch = ReasoningLoopWatch()
             // [PARALLEL_TOOL_ENGINE_SPEC Опора 1] Streaming speculative
             // dispatch: a tool call whose args JSON has CLOSED (the
             // provider emits StreamEvent.ToolCall exactly then) launches
@@ -130,127 +132,182 @@ class EngineAgentLoop(
             val pendingCalls = dispatcher.callsInOrder
             var failure: AgentEvent.Error? = null
 
-            // [T-engine-maxtokens-parity] production budget from the driver
-            // (default 8192 for headless callers) — see TurnInput.maxTokens.
-            // coroutineScope joins the speculative coroutines on exit: a
-            // failed stream drains its in-flight tools before the error is
-            // surfaced (await-and-discard — a mid-write cancel would risk
-            // a torn file), and a user STOP cancels them through the same
-            // structured scope ([T-m12-cancel-semantics] preserved).
-            coroutineScope {
-                val scope = this
-                gateway.stream(workingHistory.toList(), schema, maxTokens = input.maxTokens)
-                    .collect { event ->
-                        when (event) {
-                            is StreamEvent.TextDelta -> {
-                                if (failure == null) {
-                                    // [T-output-arrows] Collapse the arrow-run degeneration
-                                    // before it reaches the user and the saved message.
-                                    val clean = OutputSanitizer.sanitizeArrows(event.text)
-                                    turnText.append(clean)
-                                    emit(AgentEvent.TextDelta(clean))
+            // [B42-network-retry] The attempt loop: a transient transport
+            // failure re-opens the gateway stream after the policy backoff
+            // INSTEAD of tearing the turn down to the manual-Resume path.
+            // The gate ([NetworkRetryPolicy.shouldRetry]) refuses when any
+            // tool was dispatched in this round — a retried request may
+            // re-emit those calls and speculative dispatch would execute
+            // them twice — and after MAX_RETRIES the failure surfaces
+            // exactly as it did before this loop existed. A retry is
+            // INVISIBLE to the round counter: it does not burn a round of
+            // maxRounds, and the driver learns of it only through the
+            // RoundRetrying event (revert + transient status).
+            var streamFailure: StreamEvent.Failure? = null
+            var attempt = 0
+            attemptLoop@ while (true) {
+                streamFailure = null
+                // [T-engine-maxtokens-parity] production budget from the driver
+                // (default 8192 for headless callers) — see TurnInput.maxTokens.
+                // coroutineScope joins the speculative coroutines on exit: a
+                // failed stream drains its in-flight tools before the error is
+                // surfaced (await-and-discard — a mid-write cancel would risk
+                // a torn file), and a user STOP cancels them through the same
+                // structured scope ([T-m12-cancel-semantics] preserved).
+                coroutineScope {
+                    val scope = this
+                    gateway.stream(workingHistory.toList(), schema, maxTokens = input.maxTokens)
+                        .collect { event ->
+                            when (event) {
+                                is StreamEvent.TextDelta -> {
+                                    if (streamFailure == null) {
+                                        // [T-output-arrows] Collapse the arrow-run degeneration
+                                        // before it reaches the user and the saved message.
+                                        val clean = OutputSanitizer.sanitizeArrows(event.text)
+                                        turnText.append(clean)
+                                        emit(AgentEvent.TextDelta(clean))
+                                    }
+                                }
+                            // Progressive surfaces pass straight through: the
+                            // consumer renders reasoning/arg-echo UI exactly as
+                            // the ViewModel loop does today — the engine never
+                            // drops a production feature silently.
+                            is StreamEvent.ReasoningDelta -> {
+                                if (streamFailure == null) {
+                                    // [T-reasoning-degeneracy] The text is
+                                    // checked before it is accumulated and
+                                    // before it reaches the screen. A loop is
+                                    // dropped here, so it is stored nowhere and
+                                    // the provider never sees it again.
+                                    reasoningTail.append(event.text)
+                                    if (reasoningTail.length > ReasoningDegeneracy.TAIL_CHARS) {
+                                        reasoningTail.delete(
+                                            0,
+                                            reasoningTail.length - ReasoningDegeneracy.TAIL_CHARS,
+                                        )
+                                    }
+                                    val loop = reasoningWatch.accept(event.text)
+                                    if (loop == null) {
+                                        turnReasoning.append(event.text)
+                                        emit(AgentEvent.ThinkingDelta(event.text))
+                                    } else if (!reasoningDegenerate) {
+                                        reasoningDegenerate = true
+                                        AppLogger.warning(
+                                            "Reasoning",
+                                            "degenerate reasoning dropped: fragment=" +
+                                                "'${loop.fragment}' x${loop.occurrences} " +
+                                                "coverage=${loop.coverage} at ${turnReasoning.length} chars",
+                                        )
+                                        // The UI is told first, so it can say why
+                                        // the turn stops instead of showing an
+                                        // empty answer.
+                                        // The repeated piece is the proof; for a
+                                        // sign flood the proof is the sign
+                                        // itself, which would tell the user
+                                        // nothing. The excerpt is the text
+                                        // itself, so the warning can show what
+                                        // the model actually wrote.
+                                        emit(
+                                            AgentEvent.ThinkingDegenerate(
+                                                reasoningTail.toString()
+                                                    .takeLast(ReasoningDegeneracy.EXCERPT_CHARS),
+                                            ),
+                                        )
+                                        // Stop the generation. CancellationException
+                                        // is the project's own cancellation
+                                        // mechanism: it propagates out of runTurn
+                                        // to the driver's cleanup path, the
+                                        // provider stream is unwound (the OkHttp
+                                        // call is cancelled), and the driver
+                                        // rethrows it - a cancelled turn, not a
+                                        // failed one.
+                                        //
+                                        // The reasoning that was good and already
+                                        // streamed stays visible in the live
+                                        // block; this round's message is not
+                                        // written, exactly like a turn the user
+                                        // stopped by hand.
+                                        throw kotlinx.coroutines.CancellationException(
+                                            "degenerate reasoning: '${loop.fragment}'",
+                                        )
+                                    }
                                 }
                             }
-                        // Progressive surfaces pass straight through: the
-                        // consumer renders reasoning/arg-echo UI exactly as
-                        // the ViewModel loop does today — the engine never
-                        // drops a production feature silently.
-                        is StreamEvent.ReasoningDelta -> {
-                            if (failure == null) {
-                                // [T-reasoning-degeneracy] The text is
-                                // checked before it is accumulated and
-                                // before it reaches the screen. A loop is
-                                // dropped here, so it is stored nowhere and
-                                // the provider never sees it again.
-                                reasoningTail.append(event.text)
-                                if (reasoningTail.length > ReasoningDegeneracy.TAIL_CHARS) {
-                                    reasoningTail.delete(
-                                        0,
-                                        reasoningTail.length - ReasoningDegeneracy.TAIL_CHARS,
-                                    )
+                            is StreamEvent.ToolUseStarted ->
+                                if (streamFailure == null) {
+                                    emit(AgentEvent.ToolUseStarted(event.callId, event.toolName))
                                 }
-                                val loop = reasoningWatch.accept(event.text)
-                                if (loop == null) {
-                                    turnReasoning.append(event.text)
-                                    emit(AgentEvent.ThinkingDelta(event.text))
-                                } else if (!reasoningDegenerate) {
-                                    reasoningDegenerate = true
-                                    AppLogger.warning(
-                                        "Reasoning",
-                                        "degenerate reasoning dropped: fragment=" +
-                                            "'${loop.fragment}' x${loop.occurrences} " +
-                                            "coverage=${loop.coverage} at ${turnReasoning.length} chars",
-                                    )
-                                    // The UI is told first, so it can say why
-                                    // the turn stops instead of showing an
-                                    // empty answer.
-                                    // The repeated piece is the proof; for a
-                                    // sign flood the proof is the sign
-                                    // itself, which would tell the user
-                                    // nothing. The excerpt is the text
-                                    // itself, so the warning can show what
-                                    // the model actually wrote.
-                                    emit(
-                                        AgentEvent.ThinkingDegenerate(
-                                            reasoningTail.toString()
-                                                .takeLast(ReasoningDegeneracy.EXCERPT_CHARS),
-                                        ),
-                                    )
-                                    // Stop the generation. CancellationException
-                                    // is the project's own cancellation
-                                    // mechanism: it propagates out of runTurn
-                                    // to the driver's cleanup path, the
-                                    // provider stream is unwound (the OkHttp
-                                    // call is cancelled), and the driver
-                                    // rethrows it - a cancelled turn, not a
-                                    // failed one.
-                                    //
-                                    // The reasoning that was good and already
-                                    // streamed stays visible in the live
-                                    // block; this round's message is not
-                                    // written, exactly like a turn the user
-                                    // stopped by hand.
-                                    throw kotlinx.coroutines.CancellationException(
-                                        "degenerate reasoning: '${loop.fragment}'",
-                                    )
-                                }
+                            is StreamEvent.ToolInputDelta ->
+                                if (streamFailure == null) emit(AgentEvent.ToolInputDelta(event.callId, event.fragment))
+                            is StreamEvent.ToolCall -> if (streamFailure == null) {
+                                // [Опора 1] The call's args JSON is CLOSED: launch
+                                // it into the gates NOW, while the model keeps
+                                // generating. The "about to run" signal moves to
+                                // dispatch time too — the UI card appears while
+                                // the response is still streaming (preflight/
+                                // schema rejections still surface as
+                                // ToolCallFinished(success=false) below).
+                                emit(
+                                    AgentEvent.ToolCallStarted(
+                                        callId = event.call.id,
+                                        toolName = event.call.name,
+                                        title = event.call.name,
+                                    ),
+                                )
+                                dispatcher.dispatch(scope, event.call)
                             }
+                            is StreamEvent.Usage ->
+                                // [B29-engine-usage] "Accounting is the caller's
+                                // seam" — but the raw StreamEvents END here, so the
+                                // seam went nowhere and engine turns persisted
+                                // token_usage = NULL. Bridge it out instead.
+                                emit(AgentEvent.Usage(event.inputTokens, event.outputTokens))
+                            is StreamEvent.Failure ->
+                                // [B42-network-retry] The gateway completes the
+                                // flow right after this event, so the collect
+                                // ends here; the retry decision runs below on
+                                // the post-scope state.
+                                streamFailure = event
+                            StreamEvent.Done -> Unit
                         }
-                        is StreamEvent.ToolUseStarted ->
-                            if (failure == null) {
-                                emit(AgentEvent.ToolUseStarted(event.callId, event.toolName))
-                            }
-                        is StreamEvent.ToolInputDelta ->
-                            if (failure == null) emit(AgentEvent.ToolInputDelta(event.callId, event.fragment))
-                        is StreamEvent.ToolCall -> if (failure == null) {
-                            // [Опора 1] The call's args JSON is CLOSED: launch
-                            // it into the gates NOW, while the model keeps
-                            // generating. The "about to run" signal moves to
-                            // dispatch time too — the UI card appears while
-                            // the response is still streaming (preflight/
-                            // schema rejections still surface as
-                            // ToolCallFinished(success=false) below).
-                            emit(
-                                AgentEvent.ToolCallStarted(
-                                    callId = event.call.id,
-                                    toolName = event.call.name,
-                                    title = event.call.name,
-                                ),
-                            )
-                            dispatcher.dispatch(scope, event.call)
-                        }
-                        is StreamEvent.Usage ->
-                            // [B29-engine-usage] "Accounting is the caller's
-                            // seam" — but the raw StreamEvents END here, so the
-                            // seam went nowhere and engine turns persisted
-                            // token_usage = NULL. Bridge it out instead.
-                            emit(AgentEvent.Usage(event.inputTokens, event.outputTokens))
-                        is StreamEvent.Failure -> failure = AgentEvent.Error(
-                            event.message, event.recoverable,
-                        )
-                        StreamEvent.Done -> Unit
                     }
                 }
+                val sf = streamFailure
+                if (sf == null) break@attemptLoop
+                if (NetworkRetryPolicy.shouldRetry(
+                        transient = sf.transient,
+                        attempt = attempt,
+                        toolsDispatched = dispatcher.callsInOrder.isNotEmpty(),
+                    )
+                ) {
+                    attempt++
+                    val waitMs = NetworkRetryPolicy.waitMsForAttempt(attempt)
+                    onEngineEvent(
+                        "[Retry] transient stream failure (round=$round, attempt=$attempt/" +
+                            "${NetworkRetryPolicy.MAX_RETRIES}, wait=${waitMs}ms): " +
+                            "${sf.message?.take(160)}",
+                    )
+                    emit(
+                        AgentEvent.RoundRetrying(
+                            attempt = attempt,
+                            maxRetries = NetworkRetryPolicy.MAX_RETRIES,
+                            waitMs = waitMs,
+                            cause = sf.message,
+                        ),
+                    )
+                    // Void the failed attempt's accumulators — the retried
+                    // stream re-produces them from an empty round. The UI
+                    // side mirrors this through the reducer's round baseline.
+                    turnText.setLength(0)
+                    turnReasoning.setLength(0)
+                    reasoningTail.setLength(0)
+                    reasoningDegenerate = false
+                    reasoningWatch = ReasoningLoopWatch()
+                    kotlinx.coroutines.delay(waitMs)
+                    continue@attemptLoop
+                }
+                failure = AgentEvent.Error(sf.message, sf.recoverable)
+                break@attemptLoop
             }
             failure?.let {
                 emit(it)

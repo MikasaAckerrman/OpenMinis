@@ -195,4 +195,64 @@ class ChatTurnReducerTest {
         assertEquals("hello", ui.text)
         assertEquals(1, ui.blocks.size)
     }
+
+    // ── [B42-network-retry] round-baseline rollback ──────────────────
+
+    @Test
+    fun `round retry reverts the streamed attempt`() {
+        val r = reducer()
+        r.reduce(AgentEvent.ThinkingDelta("lost thought "))
+        r.reduce(AgentEvent.TextDelta("Hello wor"))
+        r.reduce(AgentEvent.RoundRetrying(1, 3, 1_500L, "stream idle timeout"))
+        // Nothing of the failed attempt survives — the retry re-streams it.
+        assertEquals("", r.text.toString())
+        assertEquals("", r.thinking.toString())
+        assertTrue(r.currentBlocks().isEmpty())
+        // The retry's content builds on a clean state: one block, no merge.
+        r.reduce(AgentEvent.TextDelta("World"))
+        assertEquals("World", r.text.toString())
+        val blocks = r.currentBlocks()
+        assertEquals(1, blocks.size)
+        assertEquals("World", blocks[0].content)
+    }
+
+    @Test
+    fun `round retry drops a pending tool card but never dispatched work`() {
+        // ToolUseStarted without ToolCall — the args never closed, nothing
+        // was dispatched (the loop's retry gate guarantees that); the
+        // orphaned PENDING card must not ghost into the retried round.
+        val r = reducer()
+        r.reduce(AgentEvent.TextDelta("a"))
+        r.reduce(AgentEvent.ToolUseStarted("c1", "file_read"))
+        r.reduce(AgentEvent.ToolInputDelta("c1", "{\"pa"))
+        r.reduce(AgentEvent.RoundRetrying(1, 3, 1_500L, "connection closed"))
+        assertEquals("", r.text.toString())
+        assertTrue(r.currentBlocks().none { it.kind == "tool_use" })
+    }
+
+    @Test
+    fun `round retry keeps finished rounds and reseals the thinking card`() {
+        val r = reducer()
+        // Round 1: thinking + text + a finished tool.
+        r.reduce(AgentEvent.ThinkingDelta("abc"))
+        r.reduce(AgentEvent.TextDelta("R1"))
+        r.reduce(AgentEvent.ToolUseStarted("c1", "file_read"))
+        r.reduce(AgentEvent.ToolCallStarted("c1", "file_read", "Read"))
+        r.reduce(AgentEvent.ToolCallFinished("c1", "file_read", true, "ok"))
+        // Round 2 attempt fails after streaming its own thinking + text.
+        r.reduce(AgentEvent.ThinkingDelta("XYZ"))
+        r.reduce(AgentEvent.TextDelta("void"))
+        r.reduce(AgentEvent.RoundRetrying(1, 3, 3_000L, "stream idle timeout"))
+        // Round 1's work survives.
+        assertEquals("R1", r.text.toString())
+        assertEquals("abc", r.thinking.toString())
+        val tool = r.currentBlocks().single { it.kind == "tool_use" }
+        assertEquals(ToolBlockStatus.SUCCESS, tool.toolStatus)
+        // The thinking card is the SAME block (born in round 1) with its
+        // content re-synced to the reverted buffer — the failed attempt's
+        // "XYZ" is gone from the card, not just from the buffer.
+        val thinkingBlocks = r.currentBlocks().filter { it.kind == "thinking" }
+        assertEquals(1, thinkingBlocks.size)
+        assertEquals("abc", thinkingBlocks[0].content)
+    }
 }

@@ -59,6 +59,28 @@ class ChatTurnReducer(
     // segment's own text so rounds never merge into one blob.
     private val segText = StringBuilder()
 
+    // [B42-network-retry] Round baseline for the attempt rollback: when the
+    // loop retries a round whose stream died transiently, everything the
+    // failed attempt streamed must vanish. Baseline is captured at the two
+    // round-start moments the reducer can see — construction (round 1) and
+    // ToolCallFinished (every later round opens only after all tools of the
+    // previous one are terminal). The ViewModel replaces the reducer with a
+    // fresh instance at a queue-inject split, so the baseline never goes
+    // stale across rows.
+    private var roundBaseTextLen = 0
+    private var roundBaseThinkingLen = 0
+    private var roundBaseBlocksSize = 0
+
+    private fun markRoundBaseline() {
+        roundBaseTextLen = text.length
+        roundBaseThinkingLen = thinking.length
+        roundBaseBlocksSize = blocks.size
+    }
+
+    init {
+        markRoundBaseline()
+    }
+
     fun currentBlocks(): List<AssistantBlock> = blocks.toList()
 
     /** [T-cancel-stamp] User stop / cancellation: tools that never finished
@@ -270,7 +292,38 @@ class ChatTurnReducer(
                 // instead of merging into the previous round's text.
                 textBlockIdx = -1
                 segText.setLength(0)
+                // [B42-network-retry] The tool results are terminal — the
+                // next stream attempt is a fresh round; its rollback must
+                // stop HERE, not wipe this round's finished work.
+                markRoundBaseline()
                 return listOf(ui(), persist)
+            }
+
+            // [B42-network-retry] The loop re-opens the stream after a
+            // transient transport failure: roll the turn state back to the
+            // round baseline. The loop's gate guarantees no tool was
+            // DISPATCHED in the failed attempt, so everything above the
+            // baseline is revertible stream output: text/thinking deltas
+            // and at most PENDING tool cards (ToolUseStarted whose args
+            // never closed). Blocks born before the baseline — earlier
+            // rounds' text and terminal tools — are untouched.
+            is AgentEvent.RoundRetrying -> {
+                text.setLength(roundBaseTextLen)
+                thinking.setLength(roundBaseThinkingLen)
+                if (blocks.size > roundBaseBlocksSize) {
+                    blocks.subList(roundBaseBlocksSize, blocks.size).clear()
+                }
+                // A thinking card that survived from an earlier round keeps
+                // its block, but its content field was fed by the deltas of
+                // the failed attempt — re-sync it with the reverted buffer.
+                // (One born inside the attempt was just removed above.)
+                val thinkIdx = blocks.indexOfFirst { it.kind == "thinking" }
+                if (thinkIdx >= 0) {
+                    blocks[thinkIdx] = blocks[thinkIdx].copy(content = thinking.toString())
+                }
+                segText.setLength(0)
+                textBlockIdx = -1
+                return listOf(ui())
             }
 
             // the turn's terminal events carry no additional block state

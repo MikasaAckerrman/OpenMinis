@@ -674,4 +674,124 @@ class EngineAgentLoopTest {
         assertTrue((events.last() as AgentEvent.Error).recoverable)
     }
 
+    // ── [B42-network-retry] in-round network auto-retry ──────────────
+
+    @Test
+    fun `transient stream failure retries within the round`() = runTest {
+        val gw = ScriptedGateway(
+            listOf(
+                listOf(
+                    StreamEvent.TextDelta("part"),
+                    StreamEvent.Failure(
+                        "request failed: stream idle timeout",
+                        recoverable = true,
+                        transient = true,
+                    ),
+                ),
+                listOf(StreamEvent.TextDelta("hello"), StreamEvent.Done),
+            ),
+        )
+        val events = EngineAgentLoop(gw, registry()).runTurn(turnInput()).toList()
+        val retry = events.filterIsInstance<AgentEvent.RoundRetrying>()
+        assertEquals(1, retry.size)
+        assertEquals(1, retry[0].attempt)
+        assertEquals(1_500L, retry[0].waitMs)
+        assertTrue(retry[0].statusText.contains("attempt 1/3"))
+        // The failed attempt's deltas were emitted (the driver reverts
+        // them); the retried attempt completes the round normally.
+        assertEquals(
+            listOf("part", "hello"),
+            events.filterIsInstance<AgentEvent.TextDelta>().map { it.text },
+        )
+        assertTrue(events.last() is AgentEvent.TurnFinished)
+    }
+
+    @Test
+    fun `non-transient failure surfaces without a retry`() = runTest {
+        val gw = ScriptedGateway(
+            listOf(
+                listOf(
+                    StreamEvent.Failure(
+                        "[500] provider shape",
+                        recoverable = false,
+                        transient = false,
+                    ),
+                ),
+            ),
+        )
+        val events = EngineAgentLoop(gw, registry()).runTurn(turnInput()).toList()
+        assertEquals(0, events.filterIsInstance<AgentEvent.RoundRetrying>().size)
+        assertTrue(events.last() is AgentEvent.Error)
+    }
+
+    @Test
+    fun `retry is refused once a tool was dispatched`() = runTest {
+        // The double-execution invariant: the call already launched into
+        // execution (speculative dispatch) — re-running the request would
+        // re-emit it and execute it twice. The failure surfaces instead.
+        val gw = ScriptedGateway(
+            listOf(
+                listOf(
+                    StreamEvent.ToolCall(EngineToolCall("c1", "file_read", "{\"path\":\"/a.kt\"}")),
+                    StreamEvent.Failure(
+                        "stream idle timeout",
+                        recoverable = true,
+                        transient = true,
+                    ),
+                ),
+            ),
+        )
+        var executed = 0
+        val loop = EngineAgentLoop(gw, registry()) { _, _ ->
+            executed++
+            EngineAgentLoop.ToolOutcome("body", true)
+        }
+        val events = loop.runTurn(turnInput()).toList()
+        assertEquals(1, executed)
+        assertEquals(0, events.filterIsInstance<AgentEvent.RoundRetrying>().size)
+        assertTrue(events.last() is AgentEvent.Error)
+    }
+
+    @Test
+    fun `three retries on the policy ladder then the failure surfaces`() = runTest {
+        val failureScript = listOf(
+            StreamEvent.Failure(
+                "request failed: stream idle timeout",
+                recoverable = true,
+                transient = true,
+            ),
+        )
+        val gw = ScriptedGateway(
+            listOf(failureScript, failureScript, failureScript, failureScript),
+        )
+        val events = EngineAgentLoop(gw, registry()).runTurn(turnInput()).toList()
+        val retries = events.filterIsInstance<AgentEvent.RoundRetrying>()
+        assertEquals(3, retries.size)
+        assertEquals(listOf(1_500L, 3_000L, 6_000L), retries.map { it.waitMs })
+        assertEquals(listOf(1, 2, 3), retries.map { it.attempt })
+        assertTrue(events.last() is AgentEvent.Error)
+    }
+
+    @Test
+    fun `retry does not consume a round of maxRounds`() = runTest {
+        // A failing-then-succeeding attempt with maxRounds=1: the retried
+        // request must still be allowed to complete the single round.
+        val gw = ScriptedGateway(
+            listOf(
+                listOf(
+                    StreamEvent.Failure(
+                        "connection closed",
+                        recoverable = true,
+                        transient = true,
+                    ),
+                ),
+                listOf(StreamEvent.TextDelta("ok"), StreamEvent.Done),
+            ),
+        )
+        val events = EngineAgentLoop(gw, registry()).runTurn(
+            turnInput().copy(limits = com.openminis.app.engine.LoopLimits(maxRounds = 1)),
+        ).toList()
+        assertTrue(events.last() is AgentEvent.TurnFinished)
+    }
+
 }

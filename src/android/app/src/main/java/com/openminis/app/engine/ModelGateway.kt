@@ -54,7 +54,19 @@ sealed interface StreamEvent {
     data class ToolUseStarted(val callId: String, val toolName: String) : StreamEvent
     data class ToolCall(val call: EngineToolCall) : StreamEvent
     data class Usage(val inputTokens: Int, val outputTokens: Int) : StreamEvent
-    data class Failure(val message: String, val recoverable: Boolean) : StreamEvent
+
+    /**
+     * [B42-network-retry] The stream died. [transient] is the gateway's
+     * cause classification ([NetworkRetryPolicy.isTransientCause]) — the
+     * engine loop auto-retries the round only for the transport class and
+     * only before any tool was dispatched, so the verdict must ride the
+     * event: by the time the loop sees it, the original throwable is gone.
+     */
+    data class Failure(
+        val message: String,
+        val recoverable: Boolean,
+        val transient: Boolean = false,
+    ) : StreamEvent
     object Done : StreamEvent
 }
 
