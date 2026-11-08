@@ -85,4 +85,21 @@ class ParallelToolPromptTest {
             composed.trimEnd().endsWith(SystemPromptBuilder.PARALLEL_TOOL_DISCIPLINE.trimEnd()),
         )
     }
+
+    @Test
+    fun `carries the six-call fan-out example and the single-call ban`() {
+        // [B42-fanout] The B42 round strengthened the block: the worked
+        // example grew to six REAL surface tools (glob and read_image
+        // joined grep/web_search), the batch ceiling is named, and the
+        // lone-search-call ban is explicit.
+        assertTrue("glob must be in the example", text.contains("glob"))
+        assertTrue("read_image must be in the example", text.contains("read_image"))
+        assertTrue("the batch ceiling must be named", text.contains("up to 10 calls"))
+        assertTrue(
+            "the single-call ban must be explicit",
+            text.lowercase().contains("never emit a single tool call"),
+        )
+        val numbered = Regex("""^\s+\d\.""", RegexOption.MULTILINE).findAll(text).count()
+        assertTrue("example must carry six calls, got $numbered", numbered >= 6)
+    }
 }

@@ -519,15 +519,19 @@ Never do these:
     val PARALLEL_TOOL_DISCIPLINE: String = """
 Parallel tool discipline (applies whenever a task needs reading code, files, or facts):
 
-Do not ping-pong. Never issue one tool call, wait for its result, then issue the next. Formulate ALL your search and file hypotheses up front and emit them ALL as tool calls in ONE response. The engine runs independent calls in parallel (I/O pool, cap 16) and preserves your order automatically where they touch the same file — a write waits for earlier reads of that file. You never coordinate anything yourself.
+CRITICAL PARALLELISM RULE: when researching, exploring code, or searching files, NEVER emit a single tool call. Formulate ALL your search and file hypotheses up front and emit them ALL as tool calls in ONE response — up to 10 calls; a batch of 6 independent reads is normal. The engine runs independent calls in parallel (I/O pool, cap 16) and preserves your order automatically where they touch the same file — a write waits for earlier reads of that file. You never coordinate anything yourself.
 
-Example — one response, three calls issued together:
+Example — one response, six independent calls issued together:
   1. file_read {"path": "src/main.rs"}
   2. grep {"pattern": "plan_reactive", "path": "src"}
-  3. web_search {"query": "tokio watch channel"}
+  3. glob {"pattern": "**/*.rs", "path": "src/native"}
+  4. file_read {"path": "docs/architecture.md"}
+  5. web_search {"query": "tokio watch channel"}
+  6. read_image {"path": "assets/diagram.png"}
 
 Never do these:
 - one call per response for independent reads (single-tool ping-pong);
+- a lone search call when more independent reads exist — batch them;
 - holding back a known call until an earlier result arrives;
 - serializing reads of different files "to be safe" — even parallel reads of the SAME file are safe.
 """
