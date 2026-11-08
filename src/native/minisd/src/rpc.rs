@@ -249,7 +249,7 @@ mod tests {
         let api = std::sync::Arc::new(crate::telegram::api::MockApi::new());
         let v = dispatch(body, true, &api, &test_ctx()).await;
         let tools = v["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 22);
+        assert_eq!(tools.len(), 24);
     }
 
     #[tokio::test]

@@ -245,10 +245,13 @@ struct GrepOutcome {
     truncated: bool,
 }
 
-fn grep_sync(root: &Path, needle: &str, ignore_case: bool) -> GrepOutcome {
+fn grep_sync(ws_root: &Path, search_root: &Path, needle: &str, ignore_case: bool) -> GrepOutcome {
+    // Walk the SEARCH root; report paths relative to the WORKSPACE root —
+    // a scoped search ("path":"src") must still return "src/b.rs", or the
+    // follow-up file_read("b.rs") would miss (reviewer, CI 42488108776).
     let needle_lower = needle.to_lowercase();
     let mut files = Vec::new();
-    walk_files(root, &mut files);
+    walk_files(search_root, &mut files);
     // Deterministic output: sort so the model sees a stable order across
     // identical queries (readdir order is arbitrary).
     files.sort();
@@ -286,7 +289,7 @@ fn grep_sync(root: &Path, needle: &str, ignore_case: bool) -> GrepOutcome {
             if matches.len() < GREP_MAX_RESULTS {
                 let display: String = line.chars().take(LINE_DISPLAY_MAX).collect();
                 matches.push(json!({
-                    "file": path.strip_prefix(root).unwrap_or(&path).to_string_lossy(),
+                    "file": path.strip_prefix(ws_root).unwrap_or(&path).to_string_lossy(),
                     "line": idx + 1,
                     "text": display,
                 }));
@@ -324,11 +327,13 @@ pub async fn grep(ctx: &ToolCtx, params: &Value) -> Result<Value, ToolError> {
     }
     let ignore_case = params.get("ignore_case").and_then(Value::as_bool).unwrap_or(false);
     let root_raw = params.get("path").and_then(Value::as_str).unwrap_or("");
-    let root = resolve_search_root(ctx, root_raw).map_err(ToolError)?;
+    let search_root = resolve_search_root(ctx, root_raw).map_err(ToolError)?;
+    let ws_root = ctx.workspace.clone().expect("checked above");
     // Clone before the move-closure: the json! envelope below still needs
     // `pattern` (E0382, CI 42486749610).
     let pat = pattern.clone();
-    let outcome = tokio::task::spawn_blocking(move || grep_sync(&root, &pat, ignore_case))
+    let outcome =
+        tokio::task::spawn_blocking(move || grep_sync(&ws_root, &search_root, &pat, ignore_case))
         .await
         .map_err(|e| ToolError(format!("minisd error: grep join failed: {e}")))?;
     Ok(json!({
@@ -395,11 +400,13 @@ struct GlobOutcome {
     truncated: bool,
 }
 
-fn glob_sync(root: &Path, pattern: &str, limit: usize) -> GlobOutcome {
+fn glob_sync(ws_root: &Path, search_root: &Path, pattern: &str, limit: usize) -> GlobOutcome {
+    // Walk the SEARCH root; report paths relative to the WORKSPACE root
+    // (same contract as grep_sync).
     let pat = pattern.trim_start_matches('/');
     let bytes = pat.as_bytes();
     let mut files = Vec::new();
-    walk_files(root, &mut files);
+    walk_files(search_root, &mut files);
     files.sort();
     let mut matches = Vec::new();
     let mut files_scanned = 0usize;
@@ -410,10 +417,11 @@ fn glob_sync(root: &Path, pattern: &str, limit: usize) -> GlobOutcome {
             truncated = true;
             break;
         }
-        let rel = path.strip_prefix(root).unwrap_or(&path);
+        let rel = path.strip_prefix(ws_root).unwrap_or(&path);
         // A pattern without '/' matches the BASENAME at any depth (the
         // common "find me every Cargo.toml" expectation); a pattern with
-        // '/' matches the path relative to the search root.
+        // '/' matches the path relative to the WORKSPACE root — reported
+        // paths must stay file_read-addressable.
         let target = if pat.contains('/') {
             rel.to_string_lossy().to_string()
         } else {
@@ -452,11 +460,13 @@ pub async fn glob(ctx: &ToolCtx, params: &Value) -> Result<Value, ToolError> {
         .unwrap_or(GLOB_DEFAULT_LIMIT as u64)
         .clamp(1, GLOB_DEFAULT_LIMIT as u64) as usize;
     let root_raw = params.get("path").and_then(Value::as_str).unwrap_or("");
-    let root = resolve_search_root(ctx, root_raw).map_err(ToolError)?;
+    let search_root = resolve_search_root(ctx, root_raw).map_err(ToolError)?;
+    let ws_root = ctx.workspace.clone().expect("checked above");
     // Clone before the move-closure: the json! envelope below still needs
     // `pattern` (E0382, CI 42486749610).
     let pat = pattern.clone();
-    let outcome = tokio::task::spawn_blocking(move || glob_sync(&root, &pat, limit))
+    let outcome =
+        tokio::task::spawn_blocking(move || glob_sync(&ws_root, &search_root, &pat, limit))
         .await
         .map_err(|e| ToolError(format!("minisd error: glob join failed: {e}")))?;
     Ok(json!({
@@ -801,9 +811,9 @@ mod tests {
         // Single '*' never crosses '/'.
         assert!(glob_match(b"*.rs", b"main.rs"));
         assert!(!glob_match(b"*.rs", b"deep/main.rs"));
-        // `?` — exactly one non-'/'.
+        // `?` — exactly one non-'/' (cannot skip zero characters).
         assert!(glob_match(b"m?in.rs", b"main.rs"));
-        assert!(!glob_match(b"m?in.rs", b"miin.rs"));
+        assert!(!glob_match(b"m?in.rs", b"min.rs"));
         // `**/` — zero or more whole directories.
         assert!(glob_match(b"src/**/*.rs", b"src/x.rs"));
         assert!(glob_match(b"src/**/*.rs", b"src/deep/y.rs"));
