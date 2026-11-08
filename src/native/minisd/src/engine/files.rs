@@ -806,6 +806,22 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    // [T-native-grep-glob] THE contract, named: whatever root a search is
+    // scoped to, reported paths stay relative to the WORKSPACE root —
+    // every file path any tool returns must be file_read-addressable.
+    #[tokio::test]
+    async fn scoped_search_reports_workspace_relative_paths() {
+        let root = temp_workspace("grep-contract");
+        let ws = root.join("workspace");
+        std::fs::write(ws.join("src/deep/needle.txt"), "findme\n").unwrap();
+        let ctx = ctx_with_workspace(&root);
+        let g = grep(&ctx, &json!({"pattern": "findme", "path": "src"})).await.unwrap();
+        assert_eq!(g["matches"][0]["file"], json!("src/deep/needle.txt"));
+        let gl = glob(&ctx, &json!({"pattern": "needle.txt", "path": "src"})).await.unwrap();
+        assert_eq!(gl["matches"], json!(["src/deep/needle.txt"]));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     #[test]
     fn glob_matcher_semantics() {
         // Single '*' never crosses '/'.
