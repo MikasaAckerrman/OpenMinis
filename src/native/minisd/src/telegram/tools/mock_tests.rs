@@ -613,11 +613,39 @@ async fn every_tool_short_circuits_on_an_unauthorized_session() {
     let api = Arc::new(channel_api());
     let ctx = ctx("unauth");
     for name in crate::telegram::tools::TOOL_NAMES {
+        if !name.starts_with("tg_") {
+            continue;
+        }
         let err = call(&api, &ctx, false, name, &json!({"arguments": {}}))
             .await
             .unwrap_err();
         assert_eq!(err.0, "not authorized - run send-code/verify first", "{name}");
     }
+}
+
+#[tokio::test]
+async fn multi_file_read_is_accessible_without_telegram_authorization() {
+    let api = Arc::new(channel_api());
+    let ctx = ctx("unauth-files");
+    let ws = ctx.storage.join("ws");
+    std::fs::create_dir_all(&ws).unwrap();
+    std::fs::write(ws.join("hello.txt"), "world").unwrap();
+
+    let mut ctx_ws = ctx.clone();
+    ctx_ws.workspace = Some(ws);
+
+    let res = call(
+        &api,
+        &ctx_ws,
+        false, // NOT authorized in Telegram
+        "multi_file_read",
+        &json!({"paths": ["hello.txt"]}),
+    )
+    .await
+    .expect("multi_file_read must succeed without TG authorization");
+
+    assert_eq!(res["files"][0]["content"], "world");
+    assert_eq!(res["files"][0]["path"], "hello.txt");
 }
 
 #[tokio::test]

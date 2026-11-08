@@ -110,12 +110,18 @@ pub async fn call<A: TgApi + 'static>(
     name: &str,
     params: &Value,
 ) -> ToolResult {
-    if !authorized {
+    // Only Telegram-backed tools require an authorized MTProto session.
+    // Workspace engine tools (e.g. multi_file_read) run offline without Telegram.
+    if name.starts_with("tg_") && !authorized {
         return Err(ToolError(
             "not authorized - run send-code/verify first".into(),
         ));
     }
-    let args = params.get("arguments").cloned().unwrap_or(json!({}));
+    let args = if params.get("arguments").is_some() {
+        params.get("arguments").cloned().unwrap_or(json!({}))
+    } else {
+        params.clone()
+    };
     match name {
         "tg_whoami" => media::whoami(api, ctx).await,
         "tg_list_chats" => channels::list_chats(api, ctx, &args).await,
