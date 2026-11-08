@@ -256,17 +256,6 @@ class ChatViewModel(
         // can be filtered with `adb logcat -s Minis.ChatVMStream:D`.
         // Removed once the retry-state regression is rooted out.
         private const val TAG_STREAM = "ChatVMStream"
-        /**
-         * Hard ceiling on agent loop iterations within a single user turn.
-         * Backstop against runaway tool-call cycles that slip past
-         * [ToolLoopDetector] (e.g. visited args/results vary just enough to
-         * dodge the global circuit breaker). On reaching the limit the loop
-         * finalizes as resumable — see runAgentLoop's tail and
-         * [finalizeAtTurnLimit] — so the user gets an inline explanation +
-         * Resume button rather than a silently stuck "thinking" indicator.
-         * Mirrors iOS AIChatViewModel.maxAgentTurns.
-         */
-        private const val MAX_AGENT_TURNS = 200
         private const val MIN_MAX_TOKENS = 1024
         /**
          * Hard ceiling on max_tokens we ever send to a provider, regardless
@@ -1034,22 +1023,10 @@ class ChatViewModel(
     private val _fallbackTrigger = MutableStateFlow(0)
     val fallbackTrigger: StateFlow<Int> = _fallbackTrigger.asStateFlow()
 
-    /**
-     * [T-engine-default-flip] The engine (new agent loop) leads by default
-     * since 08.10; legacy is the backup. This exposes the live mode for the
-     * chat top-bar engine button (green bolt = engine, amber shield =
-     * legacy) and [toggleEngineMode] is the one-tap manual switch. Takes
-     * effect from the NEXT turn (the swap points read the flag per turn).
-     */
-    private val _engineMode = MutableStateFlow(com.openminis.app.tools.EngineSwapPrefs.isEnabled())
-    val engineMode: StateFlow<Boolean> = _engineMode.asStateFlow()
-
-    fun toggleEngineMode() {
-        val next = !com.openminis.app.tools.EngineSwapPrefs.isEnabled()
-        com.openminis.app.tools.EngineSwapPrefs.setEnabled(next)
-        _engineMode.value = next
-        AppLogger.info(TAG, "[EngineMode] user toggle -> ${if (next) "engine" else "legacy"} (effective next turn)")
-    }
+    // [B39-hygiene] _engineMode/engineMode/toggleEngineMode are GONE with
+    // the legacy loop they switched to: one turn pipeline, one truth. The
+    // EngineSwapPrefs store stays only for the debug RPC (it no longer
+    // routes anything).
 
     private val _activeEntryId = MutableStateFlow<String?>(null)
     val activeEntryId: StateFlow<String?> = _activeEntryId.asStateFlow()
@@ -9677,12 +9654,10 @@ class ChatViewModel(
                 // startTurnHeartbeat(). Stopped in the streamJob finally,
                 // mirroring setInactive below.
                 startTurnHeartbeat()
-                val activeFallbackStrategy = run {
-                    val groupId = _selectedGroupId.value
-                    groupId?.let { providerRepository.config.value.modelGroups.find { g -> g.id == it }?.fallbackStrategy }
-                        ?: com.openminis.app.data.model.FallbackStrategy.default
-                }
-                val fallbackProviders = buildFallbackProviders(launchedProvider)
+                // [B39-hygiene] The turn sites no longer build fallback
+                // lists: the engine pipeline is the only runner and B40
+                // forbids automatic provider switching (compact routes
+                // keep their own buildFallbackProviders use).
                 try {
                     // [B39] The engine chain (registry -> gateway ->
                     // EngineAgentLoop -> reducer) is the ONLY turn pipeline:
@@ -9712,7 +9687,7 @@ class ChatViewModel(
                     // guard — compaction owns the next turn then).
                     maybeAutoContinue()
                     if (!autoModeCompactPending) {
-                        drainQueuedPrompts(launchedProvider, systemPrompt, fallbackProviders, activeFallbackStrategy)
+                        drainQueuedPrompts(launchedProvider, systemPrompt)
                         AppLogger.info(TAG_STREAM, "$label drainQueuedPrompts RETURN")
                     }
                 } catch (e: CancellationException) {
@@ -9867,56 +9842,17 @@ class ChatViewModel(
                             }
                         }
                         is com.openminis.app.data.AutoResumePolicy.Decision.Stop -> {
+                            // [B40-aligned, reviewer verdict 08.11] The
+                            // fallback-engagement block is GONE: the user owns
+                            // the provider choice. A fallbackable failure
+                            // (auth/quota/provider) already surfaced its inline
+                            // error above (setInlineError) — the turn STOPS on
+                            // the chosen provider, and the user switches the
+                            // model MANUALLY and Retries. No automatic binding
+                            // to the next group candidate, no silent re-run on
+                            // a different endpoint.
                             AppLogger.info(TAG_STREAM, "$label auto-resume STOP: ${decision.reason}")
                             _autoResumeAttempt.value = 0
-                            // [T-fallback-engagement] The fallback pipeline was
-                            // fully built (buildFallbackProviders → ordered,
-                            // enabled-only, credential-checked candidates →
-                            // passed into runAgentLoop) but NEVER consumed:
-                            // an InvalidApiKey/QuotaExceeded/ProviderError
-                            // dead-ended the turn with an error sticker — the
-                            // user then retried into the SAME dead provider,
-                            // paying DNS+TLS (~3s, measured 02.10 09:00:01:
-                            // 821ms DNS + 2.1s TLS to a 401 instance) on every
-                            // tap. Engage now: bind the session to the next
-                            // candidate (mirrors resolveProviderFromGroup's
-                            // side effects + persists the binding) and re-run
-                            // the turn through the same stream-tail machinery.
-                            // Bounded: the re-run rebuilds its fallback list
-                            // against the NEW current — a 401 chain walks the
-                            // group one candidate per turn and stops honestly
-                            // when exhausted. Only the CURRENT job may engage
-                            // (stale-job guard): an orphaned catch must not
-                            // hijack a newer turn. Transient errors keep the
-                            // auto-resume path above (same provider, backoff).
-                            val llmErr = e as? com.openminis.app.data.model.LLMError
-                            val next = if (llmErr?.isFallbackable == true) {
-                                fallbackProviders.firstOrNull()
-                            } else null
-                            if (llmErr != null && next != null && streamJob === coroutineContext[Job]) {
-                                AppLogger.info(
-                                    TAG_STREAM,
-                                    "🔧FALLBACK $label: ${llmErr.fallbackReason} → entry=${next.entryId.take(8)} model=${next.provider.model.id} — re-running turn",
-                                )
-                                activateModel(next.provider.model, next.entryId, "group fallback")
-                                _modelName.value = next.provider.model.displayName
-                                currentProvider = next.provider
-                                _selectedGroupId.value?.let { gid ->
-                                    persistBinding(
-                                        """{"type":"group","groupId":"$gid","lastEntryId":"${next.entryId}"}""",
-                                    )
-                                }
-                                com.openminis.app.diagnostics.PerfLongCtx.step(
-                                    activeSessionId,
-                                    "fallback.engaged",
-                                    "${llmErr.fallbackReason} → ${next.provider.model.id}",
-                                )
-                                // _isStreaming is still true here (the finally
-                                // below runs AFTER this branch), and the
-                                // stale-job tail guard skips the reset because
-                                // the nested launch reassigns streamJob first.
-                                runRerunStreamTail(next.provider, label = "fallback", slotClaim = slotClaim)
-                            }
                         }
                     }
                     
@@ -10548,8 +10484,10 @@ class ChatViewModel(
     private suspend fun drainQueuedPrompts(
         provider: LLMProvider,
         systemPrompt: String?,
-        fallbackProviders: List<FallbackCandidate>,
-        fallbackStrategy: com.openminis.app.data.model.FallbackStrategy,
+        // [B39-hygiene, reviewer verdict 08.11] The legacy fallback
+        // parameters are gone: the engine pipeline is the only runner and
+        // B40 forbids automatic provider switching — the drain needs only
+        // the provider and the prompt to run its engine turns.
     ) {
         while (_promptQueue.value.isNotEmpty()) {
             // [T-queue-zombie-window] ORDER IS LOAD-BEARING (07.10, proven
@@ -11252,15 +11190,9 @@ class ChatViewModel(
                     SessionActivityTracker.setActive(activeSessionId, onStop = { cancelStream() })
 
                     // Resolve the active group's fallback strategy
-                    val activeFallbackStrategy = run {
-                        val groupId = _selectedGroupId.value
-                        groupId?.let { providerRepository.config.value.modelGroups.find { g -> g.id == it }?.fallbackStrategy }
-                            ?: com.openminis.app.data.model.FallbackStrategy.default
-                    }
-
-                    // Build full fallback provider list upfront (mirrors iOS triedEntries approach)
-                    val fallbackProviders = buildFallbackProviders(provider)
-
+                    // [B39-hygiene] No fallback list here: the engine
+                    // pipeline is the only runner and B40 forbids automatic
+                    // provider switching (the user switches by hand).
                     try {
                         // [B39] The engine chain is the only turn pipeline on
                         // the send path — the strangler flag and the legacy
@@ -11314,7 +11246,7 @@ class ChatViewModel(
                         // Drain any prompts the user queued while this loop was running.
                         // Skipped on cancel: cancelled job won't reach here.
                         if (!autoModeCompactPending) {
-                            drainQueuedPrompts(provider, systemPrompt, fallbackProviders, activeFallbackStrategy)
+                            drainQueuedPrompts(provider, systemPrompt)
                         }
                         AppLogger.info(TAG_STREAM, "send drainQueuedPrompts RETURN")
                     } catch (e: CancellationException) {
@@ -12344,12 +12276,7 @@ class ChatViewModel(
                     SessionConcurrencyManager.acquireSlot(activeSessionId)
                     AppLogger.debug(TAG_STREAM, "retryLast streamJob slot acquired")
                     SessionActivityTracker.setActive(activeSessionId, onStop = { cancelStream() })
-                    val activeFallbackStrategy = run {
-                        val groupId = _selectedGroupId.value
-                        groupId?.let { providerRepository.config.value.modelGroups.find { g -> g.id == it }?.fallbackStrategy }
-                            ?: com.openminis.app.data.model.FallbackStrategy.default
-                    }
-                    val fallbackProviders = buildFallbackProviders(provider)
+                    // [B39-hygiene] No fallback list here (see the send path).
                     try {
                         // [B39] Retry runs the SAME engine pipeline as the
                         // send path — retrying used to silently drop the turn
@@ -12366,7 +12293,7 @@ class ChatViewModel(
                         // must survive a user-initiated retry, not stall.
                         maybeAutoContinue()
                         if (!autoModeCompactPending) {
-                            drainQueuedPrompts(provider, systemPrompt, fallbackProviders, activeFallbackStrategy)
+                            drainQueuedPrompts(provider, systemPrompt)
                         }
                         AppLogger.info(TAG_STREAM, "retryLast drainQueuedPrompts RETURN")
                     } catch (e: CancellationException) {
@@ -13790,53 +13717,6 @@ class ChatViewModel(
                 }
             }
         }
-    }
-
-    /**
-     * Finalize the current assistant message when [runAgentLoop] hits the
-     * MAX_AGENT_TURNS ceiling. Drops the streaming/awaiting flags so the
-     * "thinking" indicator clears, writes an inline error explaining *why*
-     * we stopped, and arms canResume so the user can continue from here.
-     * Mirrors iOS AIChatViewModel.swift:4922-4929 pattern (canResume + error).
-     */
-    private fun finalizeAtTurnLimit(
-        assistantId: String,
-        text: String,
-        blocks: List<AssistantBlock>,
-    ) {
-        updateAssistantMessage(
-            assistantId, text, false, blocks,
-            isAwaitingModelResponse = false,
-        )
-        // [T-android-thinking-indicator-linger] updateAssistantMessage drains
-        // _streamingById[assistantId] above, but the agent loop ran on
-        // Dispatchers.IO while this finalize hops to Main — a late streaming
-        // delta can re-add the side-channel entry AFTER the drain, and since
-        // the loop has now exited no further isStreaming=false write will ever
-        // clear it. mergeStreamingOverlay (ChatScreen) forces isStreaming=true
-        // on any message with a side-channel entry, so that orphan keeps the
-        // "thinking" row alive forever. Defensively drop the entry here as the
-        // last Main-thread write of this turn.
-        // [T-android-stream-flush-review] Cancel the trailing flush too, so it
-        // can't re-add this orphan entry after we drop it on the error path.
-        clearStreamFlushState(assistantId)
-        if (_streamingById.value.containsKey(assistantId)) {
-            _streamingById.value = _streamingById.value - assistantId
-        }
-        // [T-partial-turn-durability] Loop ceiling hit: every completed round
-        // already persisted (and cleared the export), so this is defensive —
-        // no orphan journal may outlive the loop.
-        liveTurnTextSb = null
-        liveStreamTurnText = ""
-        liveTurnThinkingSb = null
-        liveTurnReasoningBlob = null
-        com.openminis.app.data.StreamHeartbeat.delete(streamHeartbeatDir(), assistantId)
-        setInlineError(
-            "Stopped after $MAX_AGENT_TURNS agent turns to prevent runaway " +
-            "tool use. The model kept calling tools without finishing — tap " +
-            "Resume to continue from here, or send a new message to start over.",
-        )
-        _canResume.value = true
     }
 
     /**
@@ -18015,20 +17895,12 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                     AppLogger.debug(TAG_STREAM, "resumeQueueAfterCancel streamJob slot acquired")
                     SessionActivityTracker.setActive(activeSessionId, onStop = { cancelStream() })
 
-                    val activeFallbackStrategy = run {
-                        val groupId = _selectedGroupId.value
-                        groupId?.let { providerRepository.config.value.modelGroups.find { g -> g.id == it }?.fallbackStrategy }
-                            ?: com.openminis.app.data.model.FallbackStrategy.default
-                    }
-                    val fallbackProviders = buildFallbackProviders(provider)
-
+                    // [B39-hygiene] No fallback list here (see the send path).
                     try {
                         AppLogger.info(TAG_STREAM, "resumeQueueAfterCancel drainQueuedPrompts CALL")
                         drainQueuedPrompts(
                             provider = provider,
                             systemPrompt = systemPrompt,
-                            fallbackProviders = fallbackProviders,
-                            fallbackStrategy = activeFallbackStrategy,
                         )
                         AppLogger.info(TAG_STREAM, "resumeQueueAfterCancel drainQueuedPrompts RETURN")
                     } catch (e: CancellationException) {
@@ -18411,13 +18283,7 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                     SessionConcurrencyManager.acquireSlot(activeSessionId)
                     AppLogger.debug(TAG_STREAM, "resume streamJob slot acquired")
                     SessionActivityTracker.setActive(activeSessionId, onStop = { cancelStream() })
-                    val activeFallbackStrategy = run {
-                        val groupId = _selectedGroupId.value
-                        groupId?.let {
-                            providerRepository.config.value.modelGroups.find { g -> g.id == it }?.fallbackStrategy
-                        } ?: com.openminis.app.data.model.FallbackStrategy.default
-                    }
-                    val fallbackProviders = buildFallbackProviders(provider)
+                    // [B39-hygiene] No fallback list here (see the send path).
                     try {
                         // [B39] Resume continues through the engine pipeline
                         // like every other turn runner site.
@@ -18428,7 +18294,7 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                             systemPrompt = systemPrompt,
                         )
                         AppLogger.info(TAG_STREAM, "resume runEngineTurn RETURN normal")
-                        drainQueuedPrompts(provider, systemPrompt, fallbackProviders, activeFallbackStrategy)
+                        drainQueuedPrompts(provider, systemPrompt)
                         AppLogger.info(TAG_STREAM, "resume drainQueuedPrompts RETURN")
                     } catch (e: CancellationException) {
                         AppLogger.info(TAG_STREAM, "resume runAgentLoop CANCELLED")
