@@ -9841,6 +9841,7 @@ class ChatViewModel(
                             try {
                                 AppLogger.info(TAG_STREAM, "$label auto-resume runEngineTurn CALL")
                                 runEngineTurn(
+                                    placeholderAssistantId = null,
                                     provider = launchedProvider,
                                     systemPrompt = systemPrompt,
                                 )
@@ -12356,6 +12357,7 @@ class ChatViewModel(
                         // tool execution, its own lock regime).
                         AppLogger.info(TAG_STREAM, "retryLast runEngineTurn CALL")
                         runEngineTurn(
+                            placeholderAssistantId = null,
                             provider = provider,
                             systemPrompt = systemPrompt,
                         )
@@ -18421,6 +18423,7 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
                         // like every other turn runner site.
                         AppLogger.info(TAG_STREAM, "resume runEngineTurn CALL")
                         runEngineTurn(
+                            placeholderAssistantId = null,
                             provider = provider,
                             systemPrompt = systemPrompt,
                         )
