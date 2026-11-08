@@ -14197,6 +14197,14 @@ class ChatViewModel(
                                 assistantId,
                                 turnThinking.substring(thbFrom, thbLen),
                             )
+                            // [B36-stall-feed] Reasoning streams file no tool
+                            // events either — the thinking heartbeat's cadence
+                            // is the same liveness proof for the watchdog.
+                            com.openminis.app.tools.AgentNodeBinding.of(
+                                activeSessionId.ifEmpty { sessionId },
+                            )?.let { binding ->
+                                com.openminis.app.offload.AgentRunProgress.touch(binding.taskId)
+                            }
                         }
                         // Update thinking block in UI
                         val thinkIdx = allToolBlocks.indexOfFirst { it.kind == "thinking" && it.id == "thinking_$turn" }
@@ -14313,6 +14321,16 @@ class ChatViewModel(
                                 assistantId,
                                 turnTextSb.substring(hbFrom, hbLen),
                             )
+                            // [B36-stall-feed] A worker mid-generation files no
+                            // tool events, so the batch watchdog would read its
+                            // silence as a stall and kill a healthy agent. The
+                            // durability heartbeat's cadence (gated above, a few
+                            // pulses per stream) doubles as its liveness proof.
+                            com.openminis.app.tools.AgentNodeBinding.of(
+                                activeSessionId.ifEmpty { sessionId },
+                            )?.let { binding ->
+                                com.openminis.app.offload.AgentRunProgress.touch(binding.taskId)
+                            }
                         }
                         val len = turnTextSb.length
                         val unflushed = len - lastFlushedLen

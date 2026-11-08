@@ -191,13 +191,50 @@ object AgentRunProgress {
         )
     }
 
+    /**
+     * [B36-stall-feed] Last time ANY event was filed for the run, wall clock.
+     *
+     * Deliberately OUTSIDE [runs]: the watchdog polls this several times a
+     * second while a batch runs, and a StateFlow write per poll would churn
+     * every progress card in the chat. A plain concurrent map is invisible
+     * to Compose and costs one put per event.
+     */
+    private val lastActivityMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /**
+     * [B36-stall-feed] Record a liveness pulse for [taskId] from OUTSIDE the
+     * registry's own event vocabulary. The worker's text stream is the event
+     * the registry cannot see: a node writing a long answer files no
+     * nodeStarted/nodeTool events, and without this pulse the batch watchdog
+     * would read that silence as a stall and kill a healthy agent.
+     * Call sites: the stream durability heartbeat (gated by StreamDurability,
+     * a few pulses per stream, not per token).
+     */
+    fun touch(taskId: String) {
+        if (!runs.value.containsKey(taskId)) return
+        lastActivityMs[taskId] = System.currentTimeMillis()
+    }
+
+    /**
+     * [B36-stall-feed] Milliseconds since the run's last filed event, or null
+     * when nothing has been filed yet (the watchdog treats unknown as alive —
+     * a child that has not begun its graph is the hard timeout's problem,
+     * not the stall detector's).
+     */
+    fun idleMs(taskId: String): Long? {
+        val last = lastActivityMs[taskId] ?: return null
+        return System.currentTimeMillis() - last
+    }
+
     /** Drop a run's state. Called once the chat has committed the final message. */
     fun clear(taskId: String) {
         runs.value = runs.value - taskId
+        lastActivityMs.remove(taskId)
     }
 
     fun clearAll() {
         runs.value = emptyMap()
+        lastActivityMs.clear()
     }
 
     private fun nodeSettledIn(snap: Snapshot, runtimeId: String, state: NodeState): Snapshot =
@@ -210,9 +247,13 @@ object AgentRunProgress {
     /**
      * Updates for an unknown taskId are dropped rather than creating a partial
      * run: progress without the graph name would render as a nameless card.
+     * Every filed event doubles as a liveness pulse ([B36-stall-feed]) —
+     * node/tool transitions are the activity vocabulary the batch watchdog
+     * reads between the stream heartbeat's pulses.
      */
     private inline fun mutate(taskId: String, transform: (Snapshot) -> Snapshot) {
         val current = runs.value[taskId] ?: return
+        lastActivityMs[taskId] = System.currentTimeMillis()
         runs.value = runs.value + (taskId to transform(current))
     }
 }

@@ -449,9 +449,6 @@ fun ChatScreen(
     // 0.5–1s DB read (no spinner, repeat clicks silently dropped).
     val isLoadingOlder by viewModel.isLoadingOlderMessages.collectAsState()
     val isStreaming by viewModel.isStreaming.collectAsState()
-    // [B6] Hoisted so the detail sheet SURVIVES the card scrolling off-screen
-    // (a sheet owned by the LazyColumn row would die with its row).
-    var agentBatchSheet by remember { mutableStateOf<FlatChatItem.SubagentBatch?>(null) }
     // [T-compact-progress] Live compact card (progress/percent/timer, or the
     // specific failure + retry). Hoisted beside isStreaming.
     val compactProgress by viewModel.compactProgress.collectAsState()
@@ -4167,7 +4164,22 @@ fun ChatScreen(
                                 // branch below) until the turn is expanded.
                                 val turnId = originalMessageId(item.messageId)
                                 val turnExpanded = expandedTurns[turnId] == true
-                                if (item.messageIsStreaming || turnExpanded) {
+                                // [B34] A subagent call renders as a first-class
+                                // ZCode-style dark card IN the stream — role,
+                                // live status, task preview — never a collapsed
+                                // batch table (the B6 aggregation is gone). Tap
+                                // opens the hoisted ToolDetailSheet, which for
+                                // AGENT_TOOL carries the live per-agent preview.
+                                // At rest the card folds under the turn row
+                                // exactly like the other pills do.
+                                if (item.block.toolName == AGENT_TOOL) {
+                                    if (item.messageIsStreaming || turnExpanded) {
+                                        SubagentToolCard(
+                                            block = item.block,
+                                            onOpenDetail = { viewModel.openToolDetail(it) },
+                                        )
+                                    }
+                                } else if (item.messageIsStreaming || turnExpanded) {
                                     ToolCallPill(
                                         block = item.block,
                                         allToolBlocks = item.allToolBlocks,
@@ -4299,12 +4311,6 @@ fun ChatScreen(
                                     TypingIndicator()
                                 }
                             }
-                            // [B6] The compact batch card for a spawn_many run —
-                            // the N per-agent pills collapsed into one summary;
-                            // the per-agent logs live in the detail sheet.
-                            is FlatChatItem.SubagentBatch -> SubagentBatchCard(item) {
-                                agentBatchSheet = item
-                            }
                             is FlatChatItem.AssistantError -> InlineErrorBanner(
                                 error = item.error,
                                 onRetry = {
@@ -4397,11 +4403,6 @@ fun ChatScreen(
                     reverseLayout = true,
                 )
                 MinisMarkdownTextToolbarHost(markdownToolbar)
-                // [B6] The batch detail sheet — screen-level so it survives
-                // the card scrolling out of the lazy viewport.
-                agentBatchSheet?.let { batch ->
-                    SubagentBatchSheet(item = batch, onDismiss = { agentBatchSheet = null })
-                }
                 // MinisTextKit floating toolbar — driven by selectionController.
                 MinisSelectionToolbarHost(
                     controller = selectionController,

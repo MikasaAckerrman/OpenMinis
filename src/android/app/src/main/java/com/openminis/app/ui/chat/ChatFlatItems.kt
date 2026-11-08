@@ -535,26 +535,6 @@ internal sealed class FlatChatItem {
         override val contentType = "agentrun"
     }
 
-    /**
-     * [B6] ONE compact batch card for a run of per-agent rows. Replaces the
-     * maximal CONSECUTIVE run of agent blocks (toolName == spawn_subagent,
-     * see [AGENT_TOOL]) in the flat list — each of those used to render its
-     * own pill, burying the dialog under N subagent logs and costing N
-     * Compose node trees against the 120 FPS target. The card carries the
-     * group's blocks (role, live status, result text, task) so the details
-     * live in the bottom sheet (SubagentBatchCard), while the chat keeps
-     * only the summary — plus the orchestrator's own verdict text.
-     */
-    data class SubagentBatch(
-        val messageId: String,
-        /** The grouped per-agent blocks, in chat order. */
-        val blocks: List<AssistantBlock>,
-        val messageIsStreaming: Boolean = false,
-    ) : FlatChatItem() {
-        override val key = "agentbatch:$messageId:${blocks.firstOrNull()?.id ?: "-"}"
-        override val contentType = "agentbatch"
-    }
-
     data class AssistantError(val messageId: String, val error: String) : FlatChatItem() {
         override val key = "error:$messageId"
         override val contentType = "error"
@@ -819,12 +799,6 @@ internal fun buildFlatChatItems(
             )
             is FlatChatItem.AssistantThinking -> item.copy(messageId = "${item.messageId}#$n")
             is FlatChatItem.AssistantToolUse -> item.copy(messageId = "${item.messageId}#$n")
-            is FlatChatItem.SubagentBatch -> item.copy(
-                messageId = "${item.messageId}#$n",
-                // The key embeds the first block id — remap it too, or a
-                // split-turn continuation would collide with the leader.
-                blocks = item.blocks,
-            )
             is FlatChatItem.AssistantTurnFold -> item.copy(messageId = "${item.messageId}#$n")
             is FlatChatItem.AssistantInfo -> item.copy(messageId = "${item.messageId}#$n")
             is FlatChatItem.AssistantTyping -> item.copy(messageId = "${item.messageId}#$n")
@@ -1213,48 +1187,12 @@ internal fun buildFlatChatItems(
             }
         }
     }
-    return aggregateAgentBatchItems(out)
-}
-
-/**
- * [B6] Collapse maximal CONSECUTIVE runs of per-agent rows into ONE
- * [FlatChatItem.SubagentBatch]. A run is broken by ANY other item — the
- * orchestrator's interleaved commentary stays in place, exactly where the
- * model put it. A run shorter than [MIN_BLOCKS_FOR_BATCH_CARD] (a single
- * `spawn_subagent` call) keeps its own pill: one agent is not a batch.
- * Pure so the aggregation contract is unit-testable without a VM.
- */
-internal const val MIN_BLOCKS_FOR_BATCH_CARD = 2
-
-internal fun aggregateAgentBatchItems(items: List<FlatChatItem>): List<FlatChatItem> {
-    if (items.none { it is FlatChatItem.AssistantToolUse && it.block.toolName == AGENT_TOOL }) {
-        return items
-    }
-    val out = ArrayList<FlatChatItem>(items.size)
-    var run = ArrayList<FlatChatItem.AssistantToolUse>(4)
-    fun flushRun() {
-        if (run.isEmpty()) return
-        if (run.size >= MIN_BLOCKS_FOR_BATCH_CARD) {
-            out.add(
-                FlatChatItem.SubagentBatch(
-                    messageId = run.first().messageId,
-                    blocks = run.map { it.block },
-                    messageIsStreaming = run.any { it.messageIsStreaming },
-                ),
-            )
-        } else {
-            out.addAll(run)
-        }
-        run = ArrayList(4)
-    }
-    for (item in items) {
-        if (item is FlatChatItem.AssistantToolUse && item.block.toolName == AGENT_TOOL) {
-            run.add(item)
-        } else {
-            flushRun()
-            out.add(item)
-        }
-    }
-    flushRun()
     return out
 }
+
+// [B34] The [B6] batch aggregation (aggregateAgentBatchItems +
+// MIN_BLOCKS_FOR_BATCH_CARD + FlatChatItem.SubagentBatch) is REMOVED: the
+// collapsed "Субагенты (X/Y завершено)" card hid the live per-agent state
+// the user asked to see (J9). Each spawn_subagent block now renders its own
+// ZCode-style dark card (SubagentToolCard) and its own detail sheet, in the
+// stream, among the other tools.

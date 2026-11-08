@@ -468,6 +468,10 @@ internal fun ToolDetailSheet(
                     .fillMaxWidth(),
             ) {
                 when (block.toolName) {
+                    // ── [B34] Subagent: live per-agent preview (мини-окно) —
+                    // role + status, the task, the live progress card for a
+                    // running agent, the result text for a settled one. ──
+                    AGENT_TOOL -> SubagentDetailContent(block = block)
                     // ── Shell: black rounded terminal card (mirrors iOS ToolLiveSheet) ──
                     "shell_execute" -> {
                         val command = extractShellCommand(toolArgsObj, block)

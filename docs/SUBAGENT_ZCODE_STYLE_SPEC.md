@@ -103,4 +103,4 @@
 2. **Проверка компиляции и CI**:
    - Локальный прогон `./gradlew testCloneUnitTest`.
    - Пуш с тегом `[test]` и мониторинг GitHub Actions.
-EOF
+
