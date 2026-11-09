@@ -24,8 +24,16 @@ object SubagentWatchdogPolicy {
     const val MIN_TIMEOUT_MS = 30_000L
     const val MAX_TIMEOUT_MS = 180_000L
 
-    /** Total event silence after which a member is pronounced wedged, ms. */
-    const val STALL_TIMEOUT_MS = 30_000L
+    /**
+     * Total event silence after which a member is pronounced wedged, ms.
+     * [B45-stall-pulse] 30s → 60s: the vc158 live report had healthy
+     * batch members killed at 30.001s because TTFT (first tokens from the
+     * provider) took 32-45s under 3-way parallel load. The stall verdict
+     * now also requires the stream to have proven life at least once
+     * (see [shouldStallCancel]) — 60s of silence AFTER that is a real
+     * wedge, 60s of first-token wait is a slow provider.
+     */
+    const val STALL_TIMEOUT_MS = 60_000L
 
     /** How often the watchdog polls the activity registry, ms. */
     const val STALL_CHECK_INTERVAL_MS = 5_000L
@@ -43,9 +51,18 @@ object SubagentWatchdogPolicy {
      * (null — the child has not begun its graph yet) is deliberately alive:
      * the hard ceiling owns that window, the stall detector owns silence
      * AFTER the run announced itself.
+     *
+     * [B45-stall-pulse] TTFT rule: [hasStreamLife] gates the verdict — a
+     * run whose stream has NEVER pulsed is the hard ceiling's problem
+     * (waiting for the first token is not a wedged tool), the stall
+     * detector owns silence after life was proven. Default true keeps the
+     * pure-idle semantics for existing callers/tests.
      */
-    fun shouldStallCancel(idleMs: Long?, stallTimeoutMs: Long = STALL_TIMEOUT_MS): Boolean =
-        idleMs != null && idleMs >= stallTimeoutMs
+    fun shouldStallCancel(
+        idleMs: Long?,
+        stallTimeoutMs: Long = STALL_TIMEOUT_MS,
+        hasStreamLife: Boolean = true,
+    ): Boolean = hasStreamLife && idleMs != null && idleMs >= stallTimeoutMs
 
     /** Section text a timed-out member leaves in the batch result. */
     fun timeoutSection(timeoutMs: Long): String =

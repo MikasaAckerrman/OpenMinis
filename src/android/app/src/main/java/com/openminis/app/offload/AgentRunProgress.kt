@@ -202,16 +202,38 @@ object AgentRunProgress {
     private val lastActivityMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     /**
+     * [B45-stall-pulse] Runs whose STREAM has shown at least one pulse.
+     * Distinct from [lastActivityMs]: a run files nodeStarted the moment a
+     * node begins, so activity exists while the worker is still waiting
+     * for its FIRST token — and the batch watchdog must not read that
+     * TTFT window as a stall (the vc158 live report: TTFT ran 32-45s
+     * under 3-way parallel load and the 30s watchdog killed healthy
+     * agents mid-generation). Before the first pulse the hard ceiling
+     * owns the wait; the stall detector owns silence AFTER life was
+     * proven.
+     */
+    private val streamPulsed = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+
+    /**
+     * [B45-stall-pulse] True once the run's stream has pulsed at least
+     * once. Wired from the worker's stream-event collect (every engine
+     * event) and the tool heartbeat (long tools) — see ChatViewModel.
+     */
+    fun hasStreamLife(taskId: String): Boolean = streamPulsed[taskId] == true
+
+    /**
      * [B36-stall-feed] Record a liveness pulse for [taskId] from OUTSIDE the
      * registry's own event vocabulary. The worker's text stream is the event
      * the registry cannot see: a node writing a long answer files no
      * nodeStarted/nodeTool events, and without this pulse the batch watchdog
      * would read that silence as a stall and kill a healthy agent.
-     * Call sites: the stream durability heartbeat (gated by StreamDurability,
-     * a few pulses per stream, not per token).
+     * Call sites ([B45-stall-pulse] — the B36 design finally wired): the
+     * worker's engine-event collect in ChatViewModel (one put per event)
+     * and the tool heartbeat's 30s ticker (long tools).
      */
     fun touch(taskId: String) {
         if (!runs.value.containsKey(taskId)) return
+        streamPulsed[taskId] = true
         lastActivityMs[taskId] = System.currentTimeMillis()
     }
 
@@ -230,11 +252,13 @@ object AgentRunProgress {
     fun clear(taskId: String) {
         runs.value = runs.value - taskId
         lastActivityMs.remove(taskId)
+        streamPulsed.remove(taskId)
     }
 
     fun clearAll() {
         runs.value = emptyMap()
         lastActivityMs.clear()
+        streamPulsed.clear()
     }
 
     private fun nodeSettledIn(snap: Snapshot, runtimeId: String, state: NodeState): Snapshot =

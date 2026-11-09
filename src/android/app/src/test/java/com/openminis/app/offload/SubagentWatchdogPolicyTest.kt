@@ -40,14 +40,46 @@ class SubagentWatchdogPolicyTest {
 
     @Test
     fun `silence at the threshold cancels, just below does not`() {
-        assertTrue(SubagentWatchdogPolicy.shouldStallCancel(30_000L))
-        assertFalse(SubagentWatchdogPolicy.shouldStallCancel(29_999L))
+        // [B45-stall-pulse] 30s → 60s: the vc158 live report had healthy
+        // batch members killed at 30.001s while their provider spent
+        // 32-45s on the first tokens under 3-way parallel load.
+        assertTrue(SubagentWatchdogPolicy.shouldStallCancel(60_000L))
+        assertFalse(SubagentWatchdogPolicy.shouldStallCancel(59_999L))
+    }
+
+    @Test
+    fun `no stream life means no stall verdict - the TTFT rule`() {
+        // [B45-stall-pulse] A run whose stream has NEVER pulsed (waiting
+        // for the FIRST token) is the hard ceiling's problem: the stall
+        // detector owns silence AFTER life was proven.
+        assertFalse(
+            SubagentWatchdogPolicy.shouldStallCancel(
+                300_000L,
+                hasStreamLife = false,
+            ),
+        )
+        assertTrue(
+            SubagentWatchdogPolicy.shouldStallCancel(
+                60_000L,
+                hasStreamLife = true,
+            ),
+        )
     }
 
     @Test
     fun `a custom stall threshold is honoured`() {
-        assertTrue(SubagentWatchdogPolicy.shouldStallCancel(10_000L, stallTimeoutMs = 10_000L))
-        assertFalse(SubagentWatchdogPolicy.shouldStallCancel(9_999L, stallTimeoutMs = 10_000L))
+        assertTrue(
+            SubagentWatchdogPolicy.shouldStallCancel(
+                10_000L,
+                stallTimeoutMs = 10_000L,
+            ),
+        )
+        assertFalse(
+            SubagentWatchdogPolicy.shouldStallCancel(
+                9_999L,
+                stallTimeoutMs = 10_000L,
+            ),
+        )
     }
 
     @Test
@@ -60,7 +92,7 @@ class SubagentWatchdogPolicyTest {
     @Test
     fun `stall section names the silence threshold`() {
         val text = SubagentWatchdogPolicy.stallSection()
-        assertTrue(text.contains("30s"))
+        assertTrue(text.contains("60s"))
         assertTrue(text.contains("Stalled"))
     }
 

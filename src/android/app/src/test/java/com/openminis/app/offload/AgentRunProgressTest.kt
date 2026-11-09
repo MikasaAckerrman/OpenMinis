@@ -154,4 +154,30 @@ class AgentRunProgressTest {
         assertEquals(AgentRunProgress.NodeState.FAILED, node.state)
         assertNull(node.tool)
     }
+
+    // ── [B45-stall-pulse] Stream-life tracking for the TTFT rule ────────
+
+    @Test
+    fun `a run that never pulsed has no stream life`() {
+        // nodeStarted files activity but NOT stream life: the TTFT window
+        // (waiting for the first token) must not read as a stall.
+        AgentRunProgress.begin("t1", "Light")
+        AgentRunProgress.nodeStarted("t1", "coder", AgentRole.SENIOR_IMPLEMENTER, "Implementer", null, "m")
+        assertFalse(AgentRunProgress.hasStreamLife("t1"))
+    }
+
+    @Test
+    fun `touch proves stream life and clear drops it`() {
+        AgentRunProgress.begin("t1", "Light")
+        AgentRunProgress.touch("t1")
+        assertTrue(AgentRunProgress.hasStreamLife("t1"))
+        AgentRunProgress.clear("t1")
+        assertFalse(AgentRunProgress.hasStreamLife("t1"))
+    }
+
+    @Test
+    fun `touch for an unknown run is ignored`() {
+        AgentRunProgress.touch("ghost")
+        assertFalse(AgentRunProgress.hasStreamLife("ghost"))
+    }
 }

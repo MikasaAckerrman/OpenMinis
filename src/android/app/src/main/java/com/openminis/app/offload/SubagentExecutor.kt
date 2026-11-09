@@ -831,8 +831,18 @@ object SubagentExecutor {
                                             kotlinx.coroutines.delay(
                                                 SubagentWatchdogPolicy.STALL_CHECK_INTERVAL_MS,
                                             )
+                                            // [B45-stall-pulse] The TTFT gate:
+                                            // a run whose stream has never
+                                            // pulsed is the hard ceiling's
+                                            // problem, not the stall
+                                            // detector's — the vc158 live
+                                            // report had healthy members
+                                            // killed at 30.001s while their
+                                            // provider thought about the
+                                            // first tokens.
                                             if (SubagentWatchdogPolicy.shouldStallCancel(
                                                     AgentRunProgress.idleMs(node.id),
+                                                    hasStreamLife = AgentRunProgress.hasStreamLife(node.id),
                                                 )
                                             ) {
                                                 stalledFlag.set(true)

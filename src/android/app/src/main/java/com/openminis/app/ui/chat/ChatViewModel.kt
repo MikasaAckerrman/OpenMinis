@@ -13476,6 +13476,16 @@ class ChatViewModel(
         try {
             loop.runTurn(input).collect { event ->
                 if (firstEventMs < 0) firstEventMs = msSinceSetup()
+                // [B45-stall-pulse] A bound worker's ANY engine event files a
+                // liveness pulse into the agent-run registry: between
+                // nodeStarted and the first tool call the stream is the only
+                // proof of life, and the B36 batch watchdog reads exactly
+                // this registry (the vc158 live report: TTFT 32-45s under
+                // 3-way parallel load, healthy agents killed at 30s).
+                // One concurrent-map put per event — no StateFlow churn.
+                com.openminis.app.tools.AgentNodeBinding.of(sessionId)?.let { binding ->
+                    com.openminis.app.offload.AgentRunProgress.touch(binding.taskId)
+                }
                 when (event) {
                     is com.openminis.app.engine.AgentEvent.TurnFinished -> {
                         reducer.reduce(event)
@@ -13828,13 +13838,21 @@ class ChatViewModel(
      * tick to spare it — and correctly observes silence when the engine
      * itself is dead.
      */
-    private suspend fun <T> withToolHeartbeat(block: suspend () -> T): T =
+    private suspend fun <T> withToolHeartbeat(
+        // [B45-stall-pulse] Optional liveness pulse for the agent-run
+        // registry: a node can sit in ONE tool for minutes and the batch
+        // watchdog would read that silence as a stall — the ticker keeps
+        // the run alive while the tool grinds.
+        progressPulse: (() -> Unit)? = null,
+        block: suspend () -> T,
+    ): T =
         kotlinx.coroutines.coroutineScope {
             val ticker = launch {
                 var tick = 0L
                 while (true) {
                     delay(TOOL_HEARTBEAT_MS)
                     _toolHeartbeat.value = ++tick
+                    progressPulse?.invoke()
                 }
             }
             try {
@@ -13858,7 +13876,15 @@ class ChatViewModel(
         // means every call site is right by construction instead of only the
         // ones that were found and patched.
         policySessionId: String = realSessionId.ifEmpty { sessionId },
-    ): ToolExecutionResult = withToolHeartbeat {
+    ): ToolExecutionResult = withToolHeartbeat(
+        progressPulse = {
+            // [B45-stall-pulse] The same key the nodeTool publisher uses:
+            // a long tool keeps its worker's run registered as alive.
+            com.openminis.app.tools.AgentNodeBinding.of(sessionId)?.let { binding ->
+                com.openminis.app.offload.AgentRunProgress.touch(binding.taskId)
+            }
+        },
+    ) {
         executeToolImpl(name, argsJson, toolId, toolBlocks, assistantId, currentText, policySessionId)
     }
 
