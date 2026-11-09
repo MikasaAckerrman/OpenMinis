@@ -13259,8 +13259,9 @@ class ChatViewModel(
                         // retargets every later persist to row B's id, so
                         // without this row A would go unmapped forever.
                         // (assistantId is STILL row A's id here — the split
-                        // reassignment happens below.)
-                        appendTurnRowToBubble(assistantId, dbIdA)
+                        // reassignment happens below.) persistAssistantTurn
+                        // returns String? — map only on a real row id.
+                        dbIdA?.let { appendTurnRowToBubble(assistantId, it) }
                         agentHistory.add(
                             LLMMessage(
                                 role = LLMMessage.Role.ASSISTANT,
@@ -13628,8 +13629,9 @@ class ChatViewModel(
                     // on empty blocks), so this is its FIRST and only
                     // mapping — appendTurnRowToBubble is idempotent
                     // (sourceDbIds dedupe), the split rows already carry
-                    // their own via the same call.
-                    appendTurnRowToBubble(assistantId, assistantDbId)
+                    // their own via the same call. persistAssistantTurn
+                    // returns String? — map only on a real row id.
+                    assistantDbId?.let { appendTurnRowToBubble(assistantId, it) }
                     if (engineRowId != null) {
                         try {
                             val meta = reducer.currentBlocks()

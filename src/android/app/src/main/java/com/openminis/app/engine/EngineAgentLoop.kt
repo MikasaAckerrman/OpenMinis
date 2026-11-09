@@ -97,7 +97,7 @@ class EngineAgentLoop(
             // runTurn to the driver's cleanup path.
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
             if (round > input.limits.maxRounds) {
-                emit(AgentEvent.TurnFinished("round_limit"))
+                send(AgentEvent.TurnFinished("round_limit"))
                 return@channelFlow
             }
             val turnText = StringBuilder()
@@ -178,7 +178,7 @@ class EngineAgentLoop(
                                         // before it reaches the user and the saved message.
                                         val clean = OutputSanitizer.sanitizeArrows(event.text)
                                         turnText.append(clean)
-                                        emit(AgentEvent.TextDelta(clean))
+                                        send(AgentEvent.TextDelta(clean))
                                     }
                                 }
                             // Progressive surfaces pass straight through: the
@@ -202,7 +202,7 @@ class EngineAgentLoop(
                                     val loop = reasoningWatch.accept(event.text)
                                     if (loop == null) {
                                         turnReasoning.append(event.text)
-                                        emit(AgentEvent.ThinkingDelta(event.text))
+                                        send(AgentEvent.ThinkingDelta(event.text))
                                     } else if (!reasoningDegenerate) {
                                         reasoningDegenerate = true
                                         AppLogger.warning(
@@ -220,7 +220,7 @@ class EngineAgentLoop(
                                         // nothing. The excerpt is the text
                                         // itself, so the warning can show what
                                         // the model actually wrote.
-                                        emit(
+                                        send(
                                             AgentEvent.ThinkingDegenerate(
                                                 reasoningTail.toString()
                                                     .takeLast(ReasoningDegeneracy.EXCERPT_CHARS),
@@ -248,10 +248,10 @@ class EngineAgentLoop(
                             }
                             is StreamEvent.ToolUseStarted ->
                                 if (streamFailure == null) {
-                                    emit(AgentEvent.ToolUseStarted(event.callId, event.toolName))
+                                    send(AgentEvent.ToolUseStarted(event.callId, event.toolName))
                                 }
                             is StreamEvent.ToolInputDelta ->
-                                if (streamFailure == null) emit(AgentEvent.ToolInputDelta(event.callId, event.fragment))
+                                if (streamFailure == null) send(AgentEvent.ToolInputDelta(event.callId, event.fragment))
                             is StreamEvent.ToolCall -> if (streamFailure == null) {
                                 // [Опора 1] The call's args JSON is CLOSED: launch
                                 // it into the gates NOW, while the model keeps
@@ -260,7 +260,7 @@ class EngineAgentLoop(
                                 // the response is still streaming (preflight/
                                 // schema rejections still surface as
                                 // ToolCallFinished(success=false) below).
-                                emit(
+                                send(
                                     AgentEvent.ToolCallStarted(
                                         callId = event.call.id,
                                         toolName = event.call.name,
@@ -274,7 +274,7 @@ class EngineAgentLoop(
                                 // seam" — but the raw StreamEvents END here, so the
                                 // seam went nowhere and engine turns persisted
                                 // token_usage = NULL. Bridge it out instead.
-                                emit(AgentEvent.Usage(event.inputTokens, event.outputTokens))
+                                send(AgentEvent.Usage(event.inputTokens, event.outputTokens))
                             is StreamEvent.Failure ->
                                 // [B42-network-retry] The gateway completes the
                                 // flow right after this event, so the collect
@@ -300,7 +300,7 @@ class EngineAgentLoop(
                             "${NetworkRetryPolicy.MAX_RETRIES}, wait=${waitMs}ms): " +
                             "${sf.message?.take(160)}",
                     )
-                    emit(
+                    send(
                         AgentEvent.RoundRetrying(
                             attempt = attempt,
                             maxRetries = NetworkRetryPolicy.MAX_RETRIES,
@@ -323,12 +323,12 @@ class EngineAgentLoop(
                 break@attemptLoop
             }
             failure?.let {
-                emit(it)
+                send(it)
                 return@channelFlow
             }
 
             if (pendingCalls.isEmpty()) {
-                emit(AgentEvent.TurnFinished("stop"))
+                send(AgentEvent.TurnFinished("stop"))
                 return@channelFlow
             }
 
