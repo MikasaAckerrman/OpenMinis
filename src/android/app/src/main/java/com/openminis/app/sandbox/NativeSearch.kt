@@ -62,16 +62,38 @@ object NativeSearch {
         return runCatching {
             val cmd = listOf(bin.absolutePath) + argv
             val proc = ProcessBuilder(cmd)
-                .redirectErrorStream(false)
+                // [B45-deadlock] stderr MUST be merged into stdout: a
+                // separate stderr pipe nobody drains fills at 64 KiB and
+                // the child blocks on write() forever while the parent
+                // blocks in readBytes() — the classic ProcessBuilder
+                // deadlock (vc157 live report: 4 tools frozen holding
+                // their scheduler permits, the whole round stalls). A
+                // bonus: rg's own error text now reaches the model
+                // instead of vanishing into an undrained pipe.
+                .redirectErrorStream(true)
                 .start()
             try {
-                val out = proc.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
+                // [B45-deadlock] Drain on a side thread: readBytes()
+                // blocks until EOF and EOF never comes from a blocked
+                // child, so waitFor() below would never be reached. The
+                // pattern is TelegramLoginRunner's: side-thread drain +
+                // bounded waitFor + destroyForcibly backstop.
+                var out = ""
+                val reader = kotlin.concurrent.thread(name = "rg-out", isDaemon = true) {
+                    try {
+                        out = proc.inputStream.bufferedReader().readText()
+                    } catch (_: Exception) {
+                        // Stream torn down by the timeout path — nothing to do.
+                    }
+                }
                 val finished = proc.waitFor(timeoutSec.toLong(), TimeUnit.SECONDS)
                 if (!finished) {
                     proc.destroyForcibly()
+                    reader.join(2000)
                     return@runCatching "(rg timed out after ${timeoutSec}s — pattern too " +
                         "expensive or tree too large; narrow it)" to -1
                 }
+                reader.join(2000)
                 // [T-output-cap] Truncate to the tool budget before returning.
                 val text = if (out.length > MAX_OUTPUT_BYTES) {
                     out.take(MAX_OUTPUT_BYTES) + "\n…(rg output truncated at 400KB)"
