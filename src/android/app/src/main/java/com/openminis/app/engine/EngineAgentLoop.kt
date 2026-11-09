@@ -352,7 +352,6 @@ class EngineAgentLoop(
             // What remains here is the MODEL-ORDER result list for the
             // history round; every deferred has settled, so the awaits
             // return instantly.
-            dispatcher.joinSettleWatchers()
             val results = dispatcher.resultsInModelOrder()
             // Canonical tool-protocol order: the assistant round first,
             // its tool results after — appended together at the tail.
@@ -440,11 +439,6 @@ class EngineAgentLoop(
             java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Deferred<ToolOutcome>>()
         private val blocked = java.util.concurrent.ConcurrentHashMap<String, ToolOutcome>()
 
-        /** [B43-race-fix] The settle watcher jobs — joined explicitly by
-         *  [joinSettleWatchers] before the round tail reads the results. */
-        private val settleWatchers =
-            java.util.concurrent.CopyOnWriteArrayList<kotlinx.coroutines.Job>()
-
         /** The calls in model order — the history round is built from
          *  this list, preflight-blocked entries included. */
         val callsInOrder = mutableListOf<EngineToolCall>()
@@ -476,50 +470,33 @@ class EngineAgentLoop(
             }
             val node = dag.add(ToolScheduler.SchedCall(call.id, call.name, call.argsJson))
             val gate = if (ToolConcurrencyClass.isIo(call.name)) ioGate else cpuGate
-            val deferred = scope.async(Dispatchers.Default) {
+            // [B45-flake-hunt] The settle send lives INSIDE the async body,
+            // not in an invokeOnCompletion { scope.launch {} } watcher. That
+            // construct raced: a launch fired from a completion callback can
+            // land in a window where its event never reaches the channel
+            // (the CI flake - 3 of 6 runs, moving between tests: 3 tools
+            // executed, 2 Finished delivered). Now the deferred completes
+            // only AFTER its Finished is in the channel, so "results
+            // awaited" implies "all Finished delivered" by construction -
+            // no watcher jobs, no barrier to remember.
+            // A cancelled tool (user STOP, stream-failure retry) dies
+            // mid-body and settles nothing - the same old cancel semantics.
+            deferreds[call.id] = scope.async(Dispatchers.Default) {
                 node.dependsOn.forEach { depId -> deferreds.getValue(depId).await() }
-                gate.withPermit { runExecutor(call) }
+                val outcome = gate.withPermit { runExecutor(call) }
+                // Settle AFTER the gate releases: a suspended send must not
+                // hold a concurrency slot hostage.
+                settle(call, outcome)
+                outcome
             }
-            deferreds[call.id] = deferred
-            // [B43-per-tool-streaming] The completion watcher: fire the
-            // settle seam the instant THIS tool lands — the watcher is a
-            // child of the same scope, so the attempt's coroutineScope
-            // join (below) still guarantees every Finished event is in
-            // the channel before the round's history is built. A
-            // cancelled deferred (stream failure retry, user STOP) makes
-            // the watcher's await() throw CancellationException — no
-            // Finished event, exactly the old cancel semantics.
-            deferred.invokeOnCompletion {
-                // The Job is tracked: [joinSettleWatchers] turns the
-                // scope-join's "should be drained" into a hard barrier.
-                settleWatchers.add(
-                    scope.launch {
-                        runCatching { settle(call, deferred.await()) }
-                    },
-                )
-            }
-        }
-
-        /**
-         * [B43-race-fix] Hard barrier over the settle watchers. The
-         * coroutineScope join drains the children in the common case, but
-         * a watcher launch racing the scope's completion can slip through
-         * and its Finished event never reaches the channel — a UI card
-         * stuck on "Running" forever (the exact flake the round-limit
-         * test produced once under CI load). Joining the watcher jobs
-         * explicitly makes "every Finished is in the channel" a contract
-         * instead of a timing accident. A cancelled caller (user STOP)
-         * throws CancellationException from join — the old semantics.
-         */
-        suspend fun joinSettleWatchers() {
-            for (w in settleWatchers) w.join()
         }
 
         /**
          * Model order, preflight-blocked entries in place. Every call has
-         * already settled by the time the loop calls this (the scope join
-         * below the stream drained all watchers), so the awaits return
-         * instantly — this builds the HISTORY round, it no longer gates
+         * already settled by the time the loop calls this: [B45-flake-hunt]
+         * each deferred completes only AFTER its Finished is in the
+         * channel, so awaiting the deferreds here implies every event is
+         * delivered — this builds the HISTORY round, it no longer gates
          * the UI.
          */
         suspend fun resultsInModelOrder(): List<Pair<EngineToolCall, ToolOutcome>> =
