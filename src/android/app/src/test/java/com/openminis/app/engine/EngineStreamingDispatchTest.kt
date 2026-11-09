@@ -215,7 +215,19 @@ class EngineStreamingDispatchTest {
             emit(StreamEvent.ToolCall(EngineToolCall("c2", "file_read", """{"path":"/b.kt"}""")))
             emit(StreamEvent.Done)
         }
-        val loop = EngineAgentLoop(gw, registry()) { _, argsJson ->
+        // Disjoint resource keys are LOAD-BEARING here: the default
+        // scheduler serializes undeclared tools behind the GLOBAL lock,
+        // which would make completion order == model order and the pin
+        // meaningless. Production wires jsonObjectResourceKeys — mirror it.
+        val loop = EngineAgentLoop(
+            gw,
+            registry(),
+            toolScheduler = ToolScheduler(
+                resourceKeysOf = { _, argsJson -> setOf("fs:${argsJson.substringAfter("path\":\"").substringBefore("\"")}").filterNot { it == "fs:" } },
+                maxConcurrent = 8,
+                ioMaxConcurrent = 8,
+            ),
+        ) { _, argsJson ->
             if (argsJson.contains("/a.kt")) Thread.sleep(300)
             EngineAgentLoop.ToolOutcome("ok", true)
         }
