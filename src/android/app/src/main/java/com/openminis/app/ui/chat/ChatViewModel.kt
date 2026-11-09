@@ -800,6 +800,46 @@ class ChatViewModel(
     // triggers this; only age + a NEW user message waiting does).
     // (Instance-level: the class already has its one companion object.)
     private val STALE_STREAM_FORCE_DRAIN_MS = 10L * 60_000L
+
+    /**
+     * [B45-force-retry] Inactivity that makes an explicit "Повторить" tap
+     * AUTHORITATIVE: a stream holding the slot but producing nothing
+     * (no tokens, no tool results) for this long is a parked corpse — the
+     * vc157 hang (4 tools frozen in the NativeSearch ProcessBuilder
+     * deadlock) kept _isStreaming=true forever and every retry looked
+     * dead. 15s: far below the send-path's 10-minute drain threshold —
+     * a human pressing the button after a visible hang has already
+     * waited; a LIVE turn never stays silent this long between events.
+     */
+    private val RETRY_STALL_TAKEOVER_MS = 15_000L
+
+    /**
+     * [B45-force-retry] The user's explicit retry against a STALLED
+     * stream takes over: cancel the parked job and free the slot, then
+     * the caller's retry claims it fresh. Same mechanics as the
+     * auto-resume takeover in [retryFromMessage] (the cancelled job's
+     * finally is identity-guarded, so it cannot clobber the new claim).
+     * Unlike [forceCancelStaleStream] the queue is NOT drained — the
+     * retry REPLACES the dead turn; queued prompts drain after it as
+     * usual. Returns true when a takeover happened (the caller proceeds),
+     * false when the stream is live (the caller refuses loudly).
+     */
+    private fun tryTakeoverStalledStream(): Boolean {
+        if (!_isStreaming.value) return false
+        val idleMs = System.currentTimeMillis() - lastStreamActivityMs
+        if (streamJob == null || idleMs <= RETRY_STALL_TAKEOVER_MS) return false
+        AppLogger.warning(
+            TAG_STREAM,
+            "[Retry] takeover: STALLED stream (idleMs=${idleMs}ms) → force cancel, the user pressed Повторить",
+        )
+        runCatching {
+            streamJob?.cancel(CancellationException("user retry takeover (stalled stream)"))
+        }
+        streamJob = null
+        _isStreaming.forceReleaseStreamSlot()
+        return true
+    }
+
     val canResume: StateFlow<Boolean> = _canResume.asStateFlow()
 
     /**
@@ -9262,6 +9302,11 @@ class ChatViewModel(
                 // clear the registry together with the flag, or the fresh
                 // claim below would be rejected by its own takeover.
                 _isStreaming.forceReleaseStreamSlot()
+            } else if (tryTakeoverStalledStream()) {
+                // [B45-force-retry] Streaming with NO countdown, but the
+                // stream is stalled 15s+ (the vc157 hung-tools corpse):
+                // the takeover above cancelled it and freed the slot —
+                // fall through to a real retry instead of refusing.
             } else {
             AppLogger.info(
                 TAG,
@@ -12111,7 +12156,9 @@ class ChatViewModel(
      *     persisted row so a re-load doesn't resurrect the failed turn.
      */
     fun retryLast() {
-        if (_isStreaming.value) return
+        // [B45-force-retry] A stalled stream no longer silently eats the
+        // call: 15s+ of no activity = parked turn → takeover and proceed.
+        if (_isStreaming.value && !tryTakeoverStalledStream()) return
         // T-streaming-side-channel: belt-and-suspenders flush in case any
         // delta survived an earlier abnormal exit; retryLast is gated on
         // !isStreaming so this is normally a no-op.

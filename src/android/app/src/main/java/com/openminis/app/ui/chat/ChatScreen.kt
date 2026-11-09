@@ -3842,8 +3842,13 @@ fun ChatScreen(
                                 // empty tail (nothing exists below it), so
                                 // "repeat" is always safe. An old message's
                                 // tap would amputate everything after it.
-                                // While streaming the item hides (T119).
-                                onRetry = if (isStreaming || item.message.id != lastMessageId) null else ({
+                                // [B45-force-retry] The item STAYS while
+                                // streaming (T119's hide made a stalled
+                                // stream unretryable — the vc157 hang report):
+                                // the ViewModel decides — a 15s-silent stream
+                                // is taken over, a live one is refused with
+                                // an info bubble.
+                                onRetry = if (item.message.id != lastMessageId) null else ({
                                     coroutineScope.launch {
                                         tracedScrollToItem("RETRY-FROM-MSG", 0, 0)
                                     }
