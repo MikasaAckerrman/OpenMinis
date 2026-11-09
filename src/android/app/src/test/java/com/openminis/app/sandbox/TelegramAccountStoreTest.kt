@@ -101,4 +101,56 @@ class TelegramAccountStoreTest {
         store().upsert(TgAccount(dirName = "a"))
         assertEquals(1, store().load().size)
     }
+
+    // ── [B44-multiaccount] priority + participation toggle ──────────
+
+    @Test
+    fun `pre-B44 rows load with legacy-stable defaults`() {
+        // A registry written before priority/isEnabled existed: no keys.
+        tmp.newFile("accounts.json").writeText(
+            """{"version":1,"accounts":[{"dirName":"old1","addedAt":10},
+                {"dirName":"old2","addedAt":5}]}""",
+        )
+        val loaded = store().load()
+        assertEquals(0, loaded.first { it.dirName == "old1" }.priority)
+        assertTrue(loaded.first { it.dirName == "old1" }.isEnabled)
+        // The routing view keeps the legacy relative order (addedAt tie-break).
+        assertEquals(listOf("old2", "old1"), store().orderedForSearch().map { it.dirName })
+    }
+
+    @Test
+    fun `orderedForSearch returns enabled accounts by priority`() {
+        store().upsert(TgAccount(dirName = "c", priority = 2, addedAt = 1))
+        store().upsert(TgAccount(dirName = "a", priority = 0, addedAt = 3))
+        store().upsert(TgAccount(dirName = "off", priority = 0, addedAt = 1, isEnabled = false))
+        store().upsert(TgAccount(dirName = "b", priority = 1, addedAt = 1))
+        assertEquals(
+            listOf("a", "b", "c"),
+            store().orderedForSearch().map { it.dirName },
+        )
+    }
+
+    @Test
+    fun `applyOrder writes drag result as explicit priorities`() {
+        store().upsert(TgAccount(dirName = "x", priority = 5))
+        store().upsert(TgAccount(dirName = "y", priority = 0))
+        store().applyOrder(listOf("y", "x"))
+        val loaded = store().load().associateBy { it.dirName }
+        assertEquals(0, loaded["y"]!!.priority)
+        assertEquals(1, loaded["x"]!!.priority)
+        // And the routing view agrees.
+        assertEquals(listOf("y", "x"), store().orderedForSearch().map { it.dirName })
+    }
+
+    @Test
+    fun `setEnabled is a toggle not an unlink`() {
+        store().upsert(TgAccount(dirName = "acc", username = "me"))
+        store().setEnabled("acc", false)
+        val off = store().load().single()
+        assertFalse(off.isEnabled)
+        assertEquals("me", off.username) // everything else untouched
+        assertTrue(store().orderedForSearch().isEmpty())
+        store().setEnabled("acc", true)
+        assertEquals(1, store().orderedForSearch().size)
+    }
 }

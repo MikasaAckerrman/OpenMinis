@@ -29,6 +29,19 @@ data class TgAccount(
     val avatarPath: String? = null,
     val isActive: Boolean = false,
     val addedAt: Long = 0L,
+    /**
+     * [B44-multiaccount] Search/Read priority: LOWER value = used FIRST
+     * (drag-to-top sets 0..n in UI order). Legacy rows written before the
+     * field existed load with 0 and tie-break by [addedAt], so an old
+     * registry keeps its relative order with zero migration code.
+     */
+    val priority: Int = 0,
+    /**
+     * [B44-multiaccount] Participation switch: a disabled account is
+     * skipped by the search/read routing entirely (the session file and
+     * the registry entry stay untouched — the toggle is not an unlink).
+     */
+    val isEnabled: Boolean = true,
 )
 
 class TelegramAccountStore(private val vaultDir: File) {
@@ -53,6 +66,10 @@ class TelegramAccountStore(private val vaultDir: File) {
                     avatarPath = o.optString("avatarPath").ifBlank { null },
                     isActive = o.optBoolean("isActive", false),
                     addedAt = o.optLong("addedAt"),
+                    // [B44-multiaccount] Missing fields on a pre-B44 row
+                    // degrade to the legacy-stable defaults (0 / true).
+                    priority = o.optInt("priority", 0),
+                    isEnabled = o.optBoolean("isEnabled", true),
                 )
             }.filter { it.dirName.isNotBlank() }
         }
@@ -74,6 +91,8 @@ class TelegramAccountStore(private val vaultDir: File) {
                 put("avatarPath", a.avatarPath ?: "")
                 put("isActive", a.isActive)
                 put("addedAt", a.addedAt)
+                put("priority", a.priority)
+                put("isEnabled", a.isEnabled)
             })
         }
         // tmp + rename: a kill mid-write leaves the previous registry intact.
@@ -118,6 +137,28 @@ class TelegramAccountStore(private val vaultDir: File) {
     }
 
     fun findActive(): TgAccount? = load().firstOrNull { it.isActive }
+
+    /**
+     * [B44-multiaccount] The search/read routing view: enabled accounts
+     * in priority order (drag-to-top = lowest number = first), ties
+     * broken by registration time so a legacy registry keeps its shape.
+     * The daemon mirrors this exact ordering when it walks accounts.
+     */
+    fun orderedForSearch(): List<TgAccount> =
+        load().filter { it.isEnabled }.sortedWith(
+            compareBy({ it.priority }, { it.addedAt }, { it.dirName }),
+        )
+
+    /** UI reorder: write the drag result as explicit priorities 0..n-1. */
+    fun applyOrder(orderedDirNames: List<String>) {
+        val priorityOf = orderedDirNames.withIndex().associate { (i, name) -> name to i }
+        save(load().map { it.copy(priority = priorityOf[it.dirName] ?: it.priority) })
+    }
+
+    /** [B44-multiaccount] The participation toggle — NOT an unlink. */
+    fun setEnabled(dirName: String, enabled: Boolean) {
+        save(load().map { if (it.dirName == dirName) it.copy(isEnabled = enabled) else it })
+    }
 
     /**
      * One-time legacy migration: register the single-account-era session as
