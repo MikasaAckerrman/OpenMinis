@@ -247,6 +247,24 @@ internal object AgentGraphRunner {
                         "artifacts will not be persisted (run continues)",
                 )
             }
+            // [B45-shared-workspace] Every worker of this run binds
+            // /var/minis/workspace to the PARENT's workspace ROOT — the п.1
+            // mount verdict, live-confirmed twice (vc155 experiment +
+            // vc157 spawn test): a worker file_write landed in a spawn
+            // SUBDIR invisible to the orchestrator ("файл a.txt не виден").
+            // Shared root = same-millisecond visibility; distinct-file
+            // writes stay parallel and same-file writes are serialized by
+            // the TaskConflictDetector batch plan. The artifact subdir
+            // keeps its role for checkpoints/board files — this only
+            // changes what the worker's /var/minis/workspace IS.
+            val parentWorkspaceHost = (
+                if (showcaseId != null) {
+                    com.openminis.app.sandbox.PRootKernel
+                        .resolveSessionHostPath(showcaseId, "/var/minis/workspace", context)
+                } else {
+                    com.openminis.app.sandbox.PRootKernel.resolveHostPath("/var/minis/workspace")
+                }
+                )?.also { it.mkdirs() }
 
             // Initialize state
             val state = GraphState(
@@ -775,7 +793,11 @@ internal object AgentGraphRunner {
             modelEntryId = modelEntryId,
             allowedTools = node.allowedTools,
             maxOutputTokens = graph.config.defaultMaxOutputTokens,
-            workspaceHostPath = state.artifactHostDir?.absolutePath,
+            workspaceHostPath = parentWorkspaceHost?.absolutePath
+                // Fallback: no resolvable parent workspace (headless run
+                // without a showcase) — the run artifact dir is still a
+                // shared-per-run root, better than a per-session island.
+                ?: state.artifactHostDir?.absolutePath,
             agentRunId = state.taskId,
             agentRole = node.role.name,
             // [T-worker-write-roots] Node-declared repo ownership widens
