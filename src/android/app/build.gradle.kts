@@ -53,7 +53,11 @@ android {
         // mapping) + B44 multi-account UI + M-R3.1 daemon wiring (vault_impl
         // flag) + M-R3.2 grammers login bridge + B43-race-fix
         // (joinSettleWatchers). 8052193e..b91b28b5, Unit Tests 42668539637.
-        versionCode = 157
+        // vc158: B45 wave — rg stderr deadlock, honest spawn_many parallelism
+        // (dedup off siblings + bare files), shared parent workspace, force
+        // retry (15s takeover), rust status heuristic. b91b28b5..c69a45eb,
+        // Unit Tests 42683913044.
+        versionCode = 158
         // vc69: 97 commits — kotlincheck infra + strict preflight (types/enums,
         // parallel-batch gate) + atomic tool budget + budget footer + symmetric
         // supermemory lifecycle (FPS guard) + thermal telemetry + review fixes
