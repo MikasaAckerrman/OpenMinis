@@ -88,12 +88,15 @@ class MinisdLoginRunnerTest {
 
     @Test
     fun `error tail keeps the last meaningful lines only`() {
+        // The window is the last 3 lines: with 5 lines the first two must
+        // fall out, the error line must stay.
         val t = MinisdLoginRunner.errorTail(
-            "noise line\nmore noise\nminisd: sign-in failed: FLOOD_WAIT_3\n",
+            "line-AAA\nline-BBB\nline-CCC\n" +
+                "minisd: sign-in failed: FLOOD_WAIT_3\nminisd: connect failed: boom\n",
         )
         assertTrue(t.contains("FLOOD_WAIT_3"))
-        // The window is the last 3 lines: noise older than that is gone.
-        assertFalse(t.contains("noise line"))
+        assertFalse(t.contains("AAA"))
+        assertFalse(t.contains("BBB"))
         assertEquals("login failed without output", MinisdLoginRunner.errorTail("   \n\n"))
     }
 
