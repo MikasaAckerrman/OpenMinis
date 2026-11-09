@@ -516,21 +516,37 @@ class EngineAgentLoopTest {
         val loop = EngineAgentLoop(gw, registry()) { _, _ ->
             EngineAgentLoop.ToolOutcome("x", true)
         }
-        val events = loop.runTurn(
-            turnInput().copy(limits = LoopLimits(maxRounds = 3)),
-        ).toList()
-        val finished = events.last() as AgentEvent.TurnFinished
-        assertEquals("round_limit", finished.reason)
-        val finishedCalls = events.filterIsInstance<AgentEvent.ToolCallFinished>()
-        assertEquals(
+        // [B45-flake-hunt] This test has failed twice message-lessly in CI
+        // (short gradle format hides assertion messages). Wrap everything:
+        // ANY failure now carries the full event stream AND the raw
+        // throwable type — the next red run diagnoses itself.
+        try {
+            val events = loop.runTurn(
+                turnInput().copy(limits = LoopLimits(maxRounds = 3)),
+            ).toList()
+            val finished = events.lastOrNull()
+            if (finished !is AgentEvent.TurnFinished) {
+                throw AssertionError("last event must be TurnFinished, got $finished; all=$events")
+            }
+            if (finished.reason != "round_limit") {
+                throw AssertionError(
+                    "reason must be round_limit, got '${finished.reason}'; all=$events",
+                )
+            }
+            val finishedCalls = events.filterIsInstance<AgentEvent.ToolCallFinished>()
             // [B43-race-fix] A settle watcher losing the race to the
             // channel close used to swallow a Finished (a UI card stuck
             // on "Running" forever); joinSettleWatchers made the barrier
             // contractual. One Finished per round, none lost.
-            "one Finished per round, none lost; events=$events",
-            3,
-            finishedCalls.size,
-        )
+            if (finishedCalls.size != 3) {
+                throw AssertionError(
+                    "one Finished per round, none lost; got ${finishedCalls.size}; all=$events",
+                )
+            }
+        } catch (e: Throwable) {
+            if (e is AssertionError) throw e
+            throw AssertionError("round-limit turn blew up: ${e.javaClass.simpleName}: ${e.message}", e)
+        }
     }
 
     // [T-m12-cancel-semantics] The user's STOP must kill the turn, not be

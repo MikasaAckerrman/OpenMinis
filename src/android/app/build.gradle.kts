@@ -271,6 +271,20 @@ tasks.matching {
         (it.name.contains("Debug") || it.name.contains("Clone"))
 }.configureEach { dependsOn(stageDebugSkillAssets) }
 
+// [B45-flake-hunt] The CI console uses gradle's SHORT test-logging format,
+// which drops assertion MESSAGES — a red run shows only
+// "java.lang.AssertionError at File.kt:123" and the diagnosis needs a
+// full local rebuild we forbid. FULL keeps the message (and the events
+// dump the self-diagnosing tests embed) in the console where the CI
+// round actually reads it.
+tasks.withType<Test>().configureEach {
+    testLogging {
+        events("failed", "skipped")
+        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+        showStackTraces = true
+    }
+}
+
 dependencies {
     // Compose BOM
     val composeBom = platform("androidx.compose:compose-bom:2025.09.00")
