@@ -3,6 +3,7 @@ package com.openminis.app.ui.settings
 import android.app.Activity
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -19,9 +20,13 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -29,6 +34,7 @@ import java.io.File
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import com.openminis.app.MinisApp
 import com.openminis.app.sandbox.TelegramAccountStore
 import com.openminis.app.sandbox.TgAccount
@@ -321,14 +327,93 @@ fun TelegramLoginScreen(
         // radio and the user-only unlink button. Deleting an account is
         // deliberately NOT offered to agents — only the user decides that
         // here, behind a confirm dialog.
+        //
+        // [B44-multiaccount] The list is DRAG-REORDERABLE (long-press and
+        // pull — the top position = search priority 1, persisted as
+        // explicit priorities on drop via applyOrder) and every account
+        // carries the participation SWITCH (off = skipped by the search
+        // routing, not unlinked). Disabled cards dim; each enabled card
+        // shows its 1-based search position.
         if (accounts.isNotEmpty()) {
-            Spacer(Modifier.height(16.dp))
-            accounts.forEach { acc ->
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "Долгий тап + тянуть — порядок задаёт приоритет поиска. Тумблер выключает аккаунт из поиска.",
+                color = textSecondary,
+                fontSize = 11.sp,
+            )
+            Spacer(Modifier.height(4.dp))
+            var visualList by remember(accounts) { mutableStateOf(accounts) }
+            var dragDirName by remember { mutableStateOf<String?>(null) }
+            var dragOffsetY by remember { mutableStateOf(0f) }
+            val itemHeights = remember { mutableStateMapOf<String, Int>() }
+
+            fun endDragAndPersist() {
+                if (dragDirName != null) {
+                    accountStore.applyOrder(visualList.map { it.dirName })
+                    accounts = accountStore.load()
+                    visualList = accounts
+                }
+                dragDirName = null
+                dragOffsetY = 0f
+            }
+
+            visualList.forEach { acc ->
+                val isDragging = dragDirName == acc.dirName
+                val disabled = !acc.isEnabled
                 Surface(
                     color = surface,
                     shape = RoundedCornerShape(16.dp),
                     border = androidx.compose.foundation.BorderStroke(1.dp, border),
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp)
+                        .zIndex(if (isDragging) 1f else 0f)
+                        .graphicsLayer { translationY = if (isDragging) dragOffsetY else 0f }
+                        .alpha(if (disabled) 0.45f else 1f)
+                        .onSizeChanged { itemHeights[acc.dirName] = it.height }
+                        .pointerInput(acc.dirName) {
+                            detectDragGesturesAfterLongPress(
+                                onDragStart = {
+                                    dragDirName = acc.dirName
+                                    dragOffsetY = 0f
+                                },
+                                onDrag = { change, amount ->
+                                    change.consume()
+                                    if (dragDirName == acc.dirName) {
+                                        dragOffsetY += amount.y
+                                        // Threshold-swap: crossing half the
+                                        // neighbour's height swaps the dragged
+                                        // account one position and re-bases the
+                                        // offset, so the pull continues smoothly
+                                        // past any number of neighbours.
+                                        val list = visualList.toMutableList()
+                                        var cur = list.indexOfFirst { it.dirName == acc.dirName }
+                                        while (true) {
+                                            if (cur < list.lastIndex &&
+                                                dragOffsetY > (itemHeights[list[cur + 1].dirName] ?: 200) / 2f
+                                            ) {
+                                                val above = list[cur]
+                                                list[cur] = list[cur + 1]
+                                                list[cur + 1] = above
+                                                dragOffsetY -= (itemHeights[list[cur].dirName] ?: 200)
+                                                cur++
+                                            } else if (cur > 0 &&
+                                                dragOffsetY < -(itemHeights[list[cur - 1].dirName] ?: 200) / 2f
+                                            ) {
+                                                val below = list[cur]
+                                                list[cur] = list[cur - 1]
+                                                list[cur - 1] = below
+                                                dragOffsetY += (itemHeights[list[cur].dirName] ?: 200)
+                                                cur--
+                                            } else break
+                                        }
+                                        visualList = list
+                                    }
+                                },
+                                onDragEnd = { endDragAndPersist() },
+                                onDragCancel = { endDragAndPersist() },
+                            )
+                        },
                 ) {
                     Row(
                         modifier = Modifier.padding(12.dp),
@@ -377,7 +462,32 @@ fun TelegramLoginScreen(
                             if (!acc.phone.isNullOrBlank()) {
                                 Text(maskTgPhone(acc.phone), color = textSecondary, fontSize = 12.sp)
                             }
+                            // [B44-multiaccount] The 1-based position among
+                            // ENABLED accounts — what the search routing
+                            // actually walks.
+                            if (acc.isEnabled) {
+                                val searchPos = visualList.filter { it.isEnabled }.indexOf(acc) + 1
+                                if (searchPos > 0) {
+                                    Text(
+                                        "поиск: №$searchPos",
+                                        color = accent,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Medium,
+                                    )
+                                }
+                            } else {
+                                Text("выключен из поиска", color = textSecondary, fontSize = 10.sp)
+                            }
                         }
+                        // [B44-multiaccount] Participation toggle.
+                        Switch(
+                            checked = acc.isEnabled,
+                            onCheckedChange = { on ->
+                                accountStore.setEnabled(acc.dirName, on)
+                                accounts = accountStore.load()
+                                visualList = accounts
+                            },
+                        )
                         IconButton(onClick = { unlinkTarget = acc }) {
                             Icon(
                                 Icons.Default.Delete,
