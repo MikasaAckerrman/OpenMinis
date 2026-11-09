@@ -223,7 +223,11 @@ class EngineStreamingDispatchTest {
             gw,
             registry(),
             toolScheduler = ToolScheduler(
-                resourceKeysOf = { _, argsJson -> setOf("fs:${argsJson.substringAfter("path\":\"").substringBefore("\"")}").filterNot { it == "fs:" } },
+                resourceKeysOf = { _, argsJson ->
+                    setOf("fs:${argsJson.substringAfter("path\":\"").substringBefore("\"")}")
+                        .filterNot { it == "fs:" }
+                        .toSet()
+                },
                 maxConcurrent = 8,
                 ioMaxConcurrent = 8,
             ),
