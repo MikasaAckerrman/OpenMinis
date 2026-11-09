@@ -36,7 +36,6 @@ class DaemonSupervisorTest {
         }
         override fun getInputStream(): InputStream = ByteArrayInputStream(ByteArray(0))
         override fun getErrorStream(): InputStream = ByteArrayInputStream(ByteArray(0))
-        override fun supportsNormalTermination(): Boolean = true
         override fun isAlive() = true
         override fun waitFor(): Int = 0
         override fun waitFor(timeout: Long, unit: TimeUnit?): Boolean = true
