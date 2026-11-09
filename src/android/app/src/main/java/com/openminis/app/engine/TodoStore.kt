@@ -39,6 +39,7 @@ class TodoStore(val maxItems: Int = 50) {
     fun write(sessionId: String, items: List<TodoItem>): List<TodoItem> {
         val bounded = items.take(maxItems)
         if (bounded.isEmpty()) bySession.remove(sessionId) else bySession[sessionId] = bounded
+        notifyObservers(sessionId)
         return bounded
     }
 
@@ -46,6 +47,28 @@ class TodoStore(val maxItems: Int = 50) {
 
     fun clear(sessionId: String) {
         bySession.remove(sessionId)
+        notifyObservers(sessionId)
+    }
+
+    // ── [B46-plan-sheet] Reactive view for the UI ───────────────────────
+
+    /**
+     * Compose-facing view of a session's checklist: the top-bar chip and
+     * the plan sheet collect this, so an agent's `todo_write` updates the
+     * UI on the fly. The engine keeps using [read] — the plain map path.
+     * A flow is created on first observe and STAYS (write to an empty
+     * list on clear), so an observer never freezes on a stale list.
+     */
+    private val observers =
+        java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.flow.MutableStateFlow<List<TodoItem>>>()
+
+    fun observe(sessionId: String): kotlinx.coroutines.flow.StateFlow<List<TodoItem>> =
+        observers.getOrPut(sessionId) {
+            kotlinx.coroutines.flow.MutableStateFlow(read(sessionId))
+        }
+
+    private fun notifyObservers(sessionId: String) {
+        observers[sessionId]?.value = read(sessionId)
     }
 
     companion object {

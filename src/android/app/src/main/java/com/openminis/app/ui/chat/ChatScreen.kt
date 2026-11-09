@@ -739,6 +739,8 @@ fun ChatScreen(
     // [T-mcp-integration-android] MCPs-in-Session sheet visibility.
     var showMcpsSheet by remember { mutableStateOf(false) }
     var showTokenUsageSheet by remember { mutableStateOf(false) }
+    // [B46-plan-sheet] Opened by the top-bar plan chip.
+    var showPlanSheet by remember { mutableStateOf(false) }
     // T185: Move-to-session sheet visibility. Hoisted to the top of
     // ChatScreen so the trigger (capsule inside the composer) and the
     // sheet body (rendered later in the layout tree) share the same
@@ -2357,6 +2359,37 @@ fun ChatScreen(
                     }
                 },
                 actions = {
+                    // [B46-plan-sheet] The working-plan chip: visible while
+                    // the session has a checklist, tap opens the plan sheet.
+                    // Reactive through TodoStore.observe — the agent's
+                    // todo_write updates the counts mid-dialog.
+                    val planItems by remember(sessionId) {
+                        com.openminis.app.engine.TodoStore.shared.observe(sessionId)
+                    }.collectAsState()
+                    if (planItems.isNotEmpty()) {
+                        val planDone = planItems.count { it.status == com.openminis.app.engine.TodoStatus.DONE }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Color(0xFF262A33))
+                                .clickable { showPlanSheet = true }
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                        ) {
+                            Text(
+                                text = "📋",
+                                fontSize = 12.sp,
+                            )
+                            Spacer(Modifier.width(3.dp))
+                            Text(
+                                text = "${planDone}/${planItems.size}",
+                                color = if (planDone == planItems.size) Color(0xFF34C759) else ChatColors.primaryText,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                            )
+                        }
+                    }
                     // Live context pressure. The numerator is the provider's
                     // latest input/context usage; the denominator is the same
                     // effective window used by compaction policy (model window,
@@ -6461,6 +6494,14 @@ fun ChatScreen(
         TokenUsageSheet(
             viewModel = viewModel,
             onDismiss = { showTokenUsageSheet = false },
+        )
+    }
+
+    // [B46-plan-sheet] The session's working checklist, on top of the chat.
+    if (showPlanSheet) {
+        PlanSheet(
+            sessionId = sessionId,
+            onDismiss = { showPlanSheet = false },
         )
     }
 

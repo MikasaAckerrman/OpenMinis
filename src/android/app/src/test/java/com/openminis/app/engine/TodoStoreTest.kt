@@ -66,4 +66,48 @@ class TodoStoreTest {
         assertEquals(TodoStatus.PENDING, TodoStatus.fromString("whatever"))
         assertEquals(TodoStatus.PENDING, TodoStatus.fromString(""))
     }
+
+    // ── [B46-plan-sheet] Reactive view for the UI ───────────────────────
+
+    @Test
+    fun `observe delivers writes to a late subscriber`() {
+        val store = TodoStore()
+        val flow = store.observe("s1") // BEFORE any write: emptyList
+        assertEquals(0, flow.value.size)
+
+        store.write("s1", listOf(TodoItem("step 1", TodoStatus.IN_PROGRESS)))
+        assertEquals(1, flow.value.size)
+        assertEquals(TodoStatus.IN_PROGRESS, flow.value.first().status)
+    }
+
+    @Test
+    fun `the same observer instance sees every write`() {
+        // The sheet collects ONE flow for the session's lifetime: a second
+        // write must land in the SAME StateFlow, not a fresh one.
+        val store = TodoStore()
+        val flow = store.observe("s1")
+        store.write("s1", listOf(TodoItem("a", TodoStatus.PENDING)))
+        store.write("s1", listOf(TodoItem("a", TodoStatus.DONE), TodoItem("b", TodoStatus.PENDING)))
+        assertEquals(2, flow.value.size)
+        assertEquals(TodoStatus.DONE, flow.value.first().status)
+    }
+
+    @Test
+    fun `clear empties the observer instead of freezing it`() {
+        val store = TodoStore()
+        val flow = store.observe("s1")
+        store.write("s1", listOf(TodoItem("a", TodoStatus.PENDING)))
+        store.clear("s1")
+        assertEquals(0, flow.value.size)
+    }
+
+    @Test
+    fun `sessions observe independently`() {
+        val store = TodoStore()
+        val f1 = store.observe("s1")
+        val f2 = store.observe("s2")
+        store.write("s1", listOf(TodoItem("only s1", TodoStatus.PENDING)))
+        assertEquals(1, f1.value.size)
+        assertEquals(0, f2.value.size)
+    }
 }
