@@ -80,10 +80,11 @@ internal object AgentGraphRunner {
         /**
          * [B45-shared-workspace] The PARENT session's workspace ROOT — the
          * host dir every worker of this run binds as /var/minis/workspace.
-         * Null when no showcase session could resolve it (headless run) —
-         * workers fall back to the artifact dir then.
+         * Null (the default) when no showcase session could resolve it
+         * (headless run, test fixtures) — workers fall back to the
+         * artifact dir then.
          */
-        val parentWorkspaceHost: File?,
+        val parentWorkspaceHost: File? = null,
         val input: String,
         /** [T-spawn-many] Tool-initiated run: soft scope guard + lenient handoff. */
         val ephemeral: Boolean = false,
