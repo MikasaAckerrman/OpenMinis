@@ -57,7 +57,11 @@ android {
         // (dedup off siblings + bare files), shared parent workspace, force
         // retry (15s takeover), rust status heuristic. b91b28b5..c69a45eb,
         // Unit Tests 42683913044.
-        versionCode = 158
+        // vc159: B45-stall-pulse (touch wired to the engine collect + tool
+        // heartbeat, TTFT rule, 60s threshold) + flake killed by
+        // construction (settle from the async body; FULL test log format).
+        // c69a45eb..7ae25e92, Unit Tests 42697522885.
+        versionCode = 159
         // vc69: 97 commits — kotlincheck infra + strict preflight (types/enums,
         // parallel-batch gate) + atomic tool budget + budget footer + symmetric
         // supermemory lifecycle (FPS guard) + thermal telemetry + review fixes
