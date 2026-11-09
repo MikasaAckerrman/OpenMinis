@@ -57,6 +57,22 @@ object TaskConflictDetector {
     private val FILE_EXT_REGEX = Regex("""\.[A-Za-z0-9]{1,6}$""")
 
     /**
+     * [B45-bare-files] Bare filenames with a KNOWN extension ("a.txt",
+     * "index.html", "test.py") count as file targets. A bare whitelist
+     * extension is the middle ground the device round demanded: the old
+     * "bare names never match" stance left the spawn_many test blind —
+     * "create a.txt" / "create b.txt" extracted NO paths at all, so two
+     * tasks writing the SAME file ran in parallel on it. A whitelist
+     * (not any ".xx") keeps prose out: "e.g" and "т.д." are not
+     * extensions; "Node.js" matches and over-serializes only in the rare
+     * prose case — a safe direction to err.
+     */
+    private val BARE_FILE_REGEX = Regex(
+        """[\p{L}\p{N}_@+-]+\.(?:kt|java|py|txt|md|rs|toml|json|ya?ml|xml|html?|css|js|jsx|ts|tsx|sh|kts|gradle|properties|csv|tsv|log|ini|cfg|conf|sql|c|h|cpp|hpp|go|rb|php|swift|m|svg|png|jpe?g|gif|webp|pdf|zip|tar|gz|session)\b""",
+        RegexOption.IGNORE_CASE,
+    )
+
+    /**
      * Roots every task mentions for free (the shared workspace, temp dirs).
      * A shared MENTION is not a shared WRITE: without this list two tasks
      * that both name the workspace would serialize for no reason.
@@ -77,7 +93,11 @@ object TaskConflictDetector {
                 val generic = token in IGNORED_EXACT
                 (hasExt || token.count { it == '/' } >= 2) && !generic
             }
-            .toSet()
+            .toSet() +
+            // [B45-bare-files] Bare filenames with a known extension.
+            BARE_FILE_REGEX.findAll(text)
+                .map { it.value.lowercase() }
+                .toSet()
 
     /** Conflict when paths are equal or one sits inside the other's directory. */
     private fun overlapping(a: Set<String>, b: Set<String>): Set<String> {

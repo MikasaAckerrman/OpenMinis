@@ -133,4 +133,50 @@ class TaskConflictDetectorTest {
         assertEquals(1, plan.batches[0].size)
         assertEquals(1, plan.batches[1].size)
     }
+
+    // ── [B45-bare-files] Bare filenames with a known extension ──────────
+
+    @Test
+    fun `bare filenames with known extensions are recognised`() {
+        val paths = TaskConflictDetector.extractPaths("создай a.txt со sleep 9")
+        assertTrue("the bare file must be a target", "a.txt" in paths)
+        val html = TaskConflictDetector.extractPaths("make index.html and test.py")
+        assertTrue("index.html" in html)
+        assertTrue("test.py" in html)
+    }
+
+    @Test
+    fun `distinct bare files stay fully parallel`() {
+        // The exact vc157 live report: three spawn tasks differing only in
+        // the file name were scheduled (after the dedup fix) — they must
+        // land in ONE batch, one batch per file would be a regression.
+        val plan = TaskConflictDetector.plan(
+            listOf(
+                task(0, "A", "создай a.txt со sleep 9"),
+                task(1, "B", "создай b.txt со sleep 12"),
+                task(2, "C", "создай c.txt со sleep 7"),
+            ),
+        )
+        assertEquals("different files = one parallel batch", 1, plan.batches.size)
+        assertEquals(3, plan.batches[0].size)
+    }
+
+    @Test
+    fun `the same bare file serializes two agents`() {
+        val plan = TaskConflictDetector.plan(
+            listOf(
+                task(0, "A", "запиши отчёт в a.txt"),
+                task(1, "B", "допиши строки в a.txt"),
+            ),
+        )
+        assertEquals("same bare file = serialized", 2, plan.batches.size)
+    }
+
+    @Test
+    fun `prose abbreviations are not file targets`() {
+        // The whitelist keeps prose out: "e.g" / "т.д." must not become
+        // phantom write targets that over-serialize honest parallel work.
+        val paths = TaskConflictDetector.extractPaths("use e.g. threads и т.д. for the benchmark")
+        assertTrue("no phantom targets from prose", paths.isEmpty())
+    }
 }

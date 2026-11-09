@@ -665,12 +665,17 @@ object SubagentExecutor {
                     "to spawn '${spec.role}' (delegation matrix policy)."
             }
         }
-        // [T-agent-dedup] Mechanical duplicate gate, checked SEQUENTIALLY
-        // here (airtight — no parallel race): every spec against the team's
-        // ACTIVE board rows and against the EARLIER specs of this same
-        // batch. Two agents must never do the same work in parallel; a
-        // flagged spec is skipped at dispatch (duplicateOf) with an honest
-        // refusal naming the task it duplicates.
+        // [T-agent-dedup][B45-false-dedup] Mechanical duplicate gate
+        // against the team's ACTIVE BOARD rows only. The same-batch
+        // sibling comparison is GONE (device round, vc157): an explicit
+        // spawn_many batch of near-identical task TEMPLATES on distinct
+        // targets ("create a.txt, sleep 9" / "create b.txt, sleep 12")
+        // shares every content word, crossed the 0.70 Jaccard line, and
+        // two of three agents were silently dropped BEFORE the conflict
+        // scheduler ever saw them. Sibling distinctness is the
+        // TaskConflictDetector's job (paths, not prose); the board gate
+        // keeps its anti-loop purpose (a task duplicating an ACTIVE
+        // row is refused with an honest note).
         val boardTaskTexts = if (spawnerSessionId != null) {
             runCatching {
                 com.openminis.app.data.db.ProviderDatabase.getInstance(context)
@@ -681,21 +686,14 @@ object SubagentExecutor {
         } else {
             emptyMap()
         }
-        val batchAccepted = mutableListOf<String>()
         val duplicateRefusalBySpec = HashMap<Int, String>()
         agents.forEachIndexed { specIdx, spec ->
             val dup = TaskDedup.findDuplicate(spec.task, boardTaskTexts)
-                ?: TaskDedup.findDuplicate(
-                    spec.task,
-                    batchAccepted.withIndex().associate { (i, t) -> "batch#$i" to t },
-                )
             if (dup != null) {
                 duplicateRefusalBySpec[specIdx] =
                     "spawn refused: duplicate task — ${dup.first} already covers this exact work " +
                         "(similarity ${(dup.second * 100).toInt()}%). Read its result via task_board/" +
                         "await_result instead of re-spawning, or reword it with a distinct focus."
-            } else {
-                batchAccepted.add(spec.task)
             }
         }
         val tasks = agents.mapIndexed { i, spec -> TaskConflictDetector.Task(i, spec.role, spec.task) }
