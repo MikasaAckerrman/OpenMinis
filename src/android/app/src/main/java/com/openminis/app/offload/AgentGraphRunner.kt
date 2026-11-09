@@ -77,6 +77,13 @@ internal object AgentGraphRunner {
          * which case artifact persistence is skipped rather than fatal.
          */
         val artifactHostDir: File?,
+        /**
+         * [B45-shared-workspace] The PARENT session's workspace ROOT — the
+         * host dir every worker of this run binds as /var/minis/workspace.
+         * Null when no showcase session could resolve it (headless run) —
+         * workers fall back to the artifact dir then.
+         */
+        val parentWorkspaceHost: File?,
         val input: String,
         /** [T-spawn-many] Tool-initiated run: soft scope guard + lenient handoff. */
         val ephemeral: Boolean = false,
@@ -272,6 +279,7 @@ internal object AgentGraphRunner {
                 taskId = taskId,
                 artifactDir = artifactDir,
                 artifactHostDir = artifactHostDir,
+                parentWorkspaceHost = parentWorkspaceHost,
                 input = input,
                 showcaseId = showcaseId,
                 ephemeral = ephemeral,
@@ -793,7 +801,7 @@ internal object AgentGraphRunner {
             modelEntryId = modelEntryId,
             allowedTools = node.allowedTools,
             maxOutputTokens = graph.config.defaultMaxOutputTokens,
-            workspaceHostPath = parentWorkspaceHost?.absolutePath
+            workspaceHostPath = state.parentWorkspaceHost?.absolutePath
                 // Fallback: no resolvable parent workspace (headless run
                 // without a showcase) — the run artifact dir is still a
                 // shared-per-run root, better than a per-session island.
