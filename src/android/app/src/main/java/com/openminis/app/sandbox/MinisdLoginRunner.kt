@@ -173,12 +173,17 @@ object MinisdLoginRunner {
 
     /** The `status` verdict, composed Kotlin-side (the daemon has no
      *  status subcommand and spawning an MTProto connect for a UI probe
-     *  would be the slow path). `has_saved_creds` stays false: the Rust
-     *  flow keeps no driver-side credentials store — the screen's own
-     *  encrypted state pre-fills the fields regardless. */
-    internal fun statusJson(hasGrammers: Boolean, hasAccounts: Boolean, envReady: Boolean): String {
+     *  would be the slow path). [device-round correction]: the ONLY proof
+     *  of authorization on the grammers daemon is the grammers session
+     *  file itself — the legacy pyrogram registry (accounts.json rows
+     *  written by the python era) proves nothing about THIS daemon and
+     *  saying logged-in off it would hide the login form and block the
+     *  whole bridge. `has_saved_creds` stays false: the Rust flow keeps
+     *  no driver-side credentials store — the screen's own encrypted
+     *  state pre-fills the fields regardless. */
+    internal fun statusJson(hasGrammers: Boolean, envReady: Boolean): String {
         val json = JSONObject()
-            .put("logged_in", hasGrammers || hasAccounts)
+            .put("logged_in", hasGrammers)
             .put("env_ready", envReady)
             .put("has_saved_creds", false)
         return "RESULT $json"
@@ -269,7 +274,6 @@ object MinisdLoginRunner {
             when (parsed.step) {
                 "status" -> MinisdLoginResult(0, statusJson(
                     hasGrammers = File(File(context.filesDir, "tg-vault"), "grammers.session").isFile,
-                    hasAccounts = TelegramAccountStore(File(context.filesDir, "tg-vault")).load().isNotEmpty(),
                     envReady = envReady(context),
                 ))
                 "send-code" -> runSendCode(context, parsed, apiId, apiHash, timeoutSec)

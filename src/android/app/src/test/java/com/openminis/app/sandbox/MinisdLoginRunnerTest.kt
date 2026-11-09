@@ -120,12 +120,26 @@ class MinisdLoginRunnerTest {
     @Test
     fun `status json mirrors the screen contract`() {
         val json = JSONObject(
-            MinisdLoginRunner.statusJson(hasGrammers = true, hasAccounts = false, envReady = false)
+            MinisdLoginRunner.statusJson(hasGrammers = true, envReady = false)
                 .removePrefix("RESULT "),
         )
         assertTrue(json.optBoolean("logged_in"))
         assertFalse(json.optBoolean("env_ready"))
         assertFalse(json.optBoolean("has_saved_creds"))
+    }
+
+    @Test
+    fun `legacy registry rows do not count as logged in on the grammers daemon`() {
+        // [device-round correction] The pyrogram-era accounts.json proved
+        // nothing about the rust daemon: saying logged-in off it hid the
+        // login form and blocked the whole bridge (authorized=false on the
+        // live device). Only the grammers session file counts.
+        val json = JSONObject(
+            MinisdLoginRunner.statusJson(hasGrammers = false, envReady = true)
+                .removePrefix("RESULT "),
+        )
+        assertFalse(json.optBoolean("logged_in"))
+        assertTrue(json.optBoolean("env_ready"))
     }
 
     // ── await mechanics on REAL processes ───────────────────────────────
