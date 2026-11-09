@@ -1,7 +1,9 @@
 package com.openminis.app.daemon
 
+import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.InputStream
 import java.io.OutputStream
 import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertEquals
@@ -32,6 +34,9 @@ class DaemonSupervisorTest {
             override fun write(b: ByteArray) = stdin.write(b)
             override fun write(b: ByteArray, off: Int, len: Int) = stdin.write(b, off, len)
         }
+        override fun getInputStream(): InputStream = ByteArrayInputStream(ByteArray(0))
+        override fun getErrorStream(): InputStream = ByteArrayInputStream(ByteArray(0))
+        override fun supportsNormalTermination(): Boolean = true
         override fun isAlive() = true
         override fun waitFor(): Int = 0
         override fun waitFor(timeout: Long, unit: TimeUnit?): Boolean = true
