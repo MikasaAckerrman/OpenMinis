@@ -86,8 +86,16 @@ sealed interface AgentEvent {
         val waitMs: Long,
         val cause: String,
     ) : AgentEvent {
-        /** The one-line status the UI shows during the backoff wait. */
+        /**
+         * The one-line status the UI shows during the backoff wait.
+         * [B43-banner] Integer division turned the 1500ms first wait into
+         * "retrying in 1s" on the live banner — show the honest 1.5.
+         */
         val statusText: String
-            get() = "Network glitch, retrying in ${waitMs / 1000}s (attempt $attempt/$maxRetries)..."
+            get() {
+                val secs = waitMs / 1000.0
+                val pretty = if (secs % 1.0 == 0.0) "${secs.toLong()}" else "$secs"
+                return "Network glitch, retrying in ${pretty}s (attempt $attempt/$maxRetries)..."
+            }
     }
 }
