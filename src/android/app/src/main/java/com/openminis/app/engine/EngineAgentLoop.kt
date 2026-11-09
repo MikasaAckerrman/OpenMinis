@@ -2,12 +2,13 @@ package com.openminis.app.engine
 
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
-import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.Dispatchers
 import com.openminis.app.logging.AppLogger
 
@@ -71,7 +72,7 @@ class EngineAgentLoop(
         val success: Boolean,
     )
 
-    override fun runTurn(input: TurnInput): Flow<AgentEvent> = flow {
+    override fun runTurn(input: TurnInput): Flow<AgentEvent> = channelFlow {
         // [T-m10-user-turn-seed] The input's userText is THIS turn's
         // prompt: the prior conversation arrives in history, the new
         // message must lead the request — round 1 without it would send
@@ -97,7 +98,7 @@ class EngineAgentLoop(
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
             if (round > input.limits.maxRounds) {
                 emit(AgentEvent.TurnFinished("round_limit"))
-                return@flow
+                return@channelFlow
             }
             val turnText = StringBuilder()
             // [T-m10-reasoning-echo] Reasoning deltas accumulate per round;
@@ -128,7 +129,19 @@ class EngineAgentLoop(
             // generating the rest of its response. The dispatcher owns
             // the calls in model order (the history round is built from
             // this list) and the two concurrency gates.
-            val dispatcher = BatchDispatcher(schema)
+            // [B43-per-tool-streaming] The settle seam sends straight into
+            // the channel: a Finished event leaves the moment its tool
+            // lands, while slower siblings keep running.
+            val dispatcher = BatchDispatcher(schema) { call, outcome ->
+                send(
+                    AgentEvent.ToolCallFinished(
+                        callId = call.id,
+                        toolName = call.name,
+                        success = outcome.success,
+                        summary = outcome.output.take(200),
+                    ),
+                )
+            }
             val pendingCalls = dispatcher.callsInOrder
             var failure: AgentEvent.Error? = null
 
@@ -311,12 +324,12 @@ class EngineAgentLoop(
             }
             failure?.let {
                 emit(it)
-                return@flow
+                return@channelFlow
             }
 
             if (pendingCalls.isEmpty()) {
                 emit(AgentEvent.TurnFinished("stop"))
-                return@flow
+                return@channelFlow
             }
 
             // [Scheduler] observability rides the same seam as before —
@@ -329,20 +342,17 @@ class EngineAgentLoop(
                     "$immediate immediate, ${planned.size - immediate} chained on resource deps",
             )
 
-            // Results surface in model order; awaiting call k does not
-            // hold back an EARLIER call that already finished, so finished
-            // events land progressively as each await returns.
-            val results = dispatcher.awaitAll()
-            results.forEach { (call, outcome) ->
-                emit(
-                    AgentEvent.ToolCallFinished(
-                        callId = call.id,
-                        toolName = call.name,
-                        success = outcome.success,
-                        summary = outcome.output.take(200),
-                    ),
-                )
-            }
+            // [B43-per-tool-streaming] The Finished events ALREADY streamed:
+            // each call settled into `send` the moment it completed (the
+            // dispatcher's watchers live inside the coroutineScope above,
+            // which joins them before we get here). The old awaitAll +
+            // forEach burst held every card open until the SLOWEST tool of
+            // the batch drained, then closed them all in one tick — the
+            // vc155/156 live report ("тулы заканчивают в одно время").
+            // What remains here is the MODEL-ORDER result list for the
+            // history round; every deferred has settled, so the awaits
+            // return instantly.
+            val results = dispatcher.resultsInModelOrder()
             // Canonical tool-protocol order: the assistant round first,
             // its tool results after — appended together at the tail.
             workingHistory.add(
@@ -404,6 +414,16 @@ class EngineAgentLoop(
      */
     private inner class BatchDispatcher(
         private val schema: List<com.openminis.app.data.model.AgentToolDefinition>,
+        /**
+         * [B43-per-tool-streaming] The settle seam: invoked the moment a
+         * call reaches its terminal outcome — blocked calls at dispatch
+         * time, executed calls at completion. The loop wires it to the
+         * channelFlow channel (a plain `flow {}` forbids emission from
+         * child coroutines, and THAT restriction is exactly why Finished
+         * events used to burst: the loop could only emit after awaiting
+         * the whole batch).
+         */
+        private val settle: suspend (EngineToolCall, ToolOutcome) -> Unit,
     ) {
         // [P1-io-concurrency] Two gates, one per tool class. The CPU gate
         // keeps its subagent-sized cap (a spawn is a live model stream +
@@ -423,7 +443,7 @@ class EngineAgentLoop(
          *  this list, preflight-blocked entries included. */
         val callsInOrder = mutableListOf<EngineToolCall>()
 
-        fun dispatch(scope: kotlinx.coroutines.CoroutineScope, call: EngineToolCall) {
+        suspend fun dispatch(scope: kotlinx.coroutines.CoroutineScope, call: EngineToolCall) {
             callsInOrder.add(call)
             val def = schema.firstOrNull { it.name == call.name }
             if (def == null) {
@@ -433,27 +453,51 @@ class EngineAgentLoop(
                 // here is what keeps a subagent restricted to file_read from
                 // reaching file_write through a name the model invented or
                 // replayed from an earlier turn.
-                blocked[call.id] = ToolOutcome(
+                val outcome = ToolOutcome(
                     "Tool not available in this session: ${call.name}",
                     success = false,
                 )
+                blocked[call.id] = outcome
+                settle(call, outcome)
                 return
             }
             val reason = preflightArgs(call, def)
             if (reason != null) {
-                blocked[call.id] = ToolOutcome(reason, success = false)
+                val outcome = ToolOutcome(reason, success = false)
+                blocked[call.id] = outcome
+                settle(call, outcome)
                 return
             }
             val node = dag.add(ToolScheduler.SchedCall(call.id, call.name, call.argsJson))
             val gate = if (ToolConcurrencyClass.isIo(call.name)) ioGate else cpuGate
-            deferreds[call.id] = scope.async(Dispatchers.Default) {
+            val deferred = scope.async(Dispatchers.Default) {
                 node.dependsOn.forEach { depId -> deferreds.getValue(depId).await() }
                 gate.withPermit { runExecutor(call) }
             }
+            deferreds[call.id] = deferred
+            // [B43-per-tool-streaming] The completion watcher: fire the
+            // settle seam the instant THIS tool lands — the watcher is a
+            // child of the same scope, so the attempt's coroutineScope
+            // join (below) still guarantees every Finished event is in
+            // the channel before the round's history is built. A
+            // cancelled deferred (stream failure retry, user STOP) makes
+            // the watcher's await() throw CancellationException — no
+            // Finished event, exactly the old cancel semantics.
+            deferred.invokeOnCompletion {
+                scope.launch {
+                    runCatching { settle(call, deferred.await()) }
+                }
+            }
         }
 
-        /** Model order, preflight-blocked entries in place. */
-        suspend fun awaitAll(): List<Pair<EngineToolCall, ToolOutcome>> =
+        /**
+         * Model order, preflight-blocked entries in place. Every call has
+         * already settled by the time the loop calls this (the scope join
+         * below the stream drained all watchers), so the awaits return
+         * instantly — this builds the HISTORY round, it no longer gates
+         * the UI.
+         */
+        suspend fun resultsInModelOrder(): List<Pair<EngineToolCall, ToolOutcome>> =
             callsInOrder.map { call ->
                 call to (
                     blocked[call.id]

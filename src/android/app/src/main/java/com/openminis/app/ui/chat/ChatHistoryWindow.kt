@@ -145,9 +145,23 @@ object ChatHistoryWindow {
     fun preserveInMemoryTail(
         current: List<ChatMessage>,
         installedDbIds: Set<String>,
+        /**
+         * [B43-background-answer] The ids the LIVE stream is currently
+         * writing to (`_streamingById` keys — the overlay is updated by
+         * every streaming flush of the active turn, engine and legacy
+         * alike). A row whose id is here is rescued UNCONDITIONALLY:
+         * flag-based rescue alone loses the turn when `isStreaming`
+         * flickers between the wipe's read and the stream's next write
+         * (the "only my prompt remains; re-entering the session shows
+         * everything" report — the placeholder is not in the DB yet, so
+         * once dropped, every subsequent updateAssistantMessage write
+         * maps onto nothing until the turn's final DB persist).
+         */
+        activeStreamIds: Set<String> = emptySet(),
     ): List<ChatMessage> = current.filter { m ->
         m.id !in installedDbIds && (
-            m.isQueued || m.queuedPromptId != null ||
+            m.id in activeStreamIds ||
+                m.isQueued || m.queuedPromptId != null ||
                 m.id.startsWith("queued_msg_") || m.id.startsWith("pending_") ||
                 m.isStreaming || m.isAwaitingModelResponse ||
                 (m.role == "system" && m.toolBlocks.firstOrNull()?.toolName != "compact")

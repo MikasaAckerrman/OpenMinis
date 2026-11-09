@@ -199,4 +199,30 @@ class EngineStreamingDispatchTest {
         assertTrue(err.recoverable)
         assertTrue(events.none { it is AgentEvent.TurnFinished })
     }
+
+    @Test
+    fun `finished events stream in completion order not model order`() = runTest {
+        // [B43-per-tool-streaming] The live report (vc155/156): cards
+        // stayed "Running" until the whole batch drained, then collapsed
+        // in one tick — the loop awaited every deferred before emitting
+        // ANY Finished (model order). The settle seam inverts that: each
+        // Finished is sent the moment ITS tool lands. c1 is dispatched
+        // FIRST but sleeps 300ms; c2 lands instantly — the Finished
+        // order must be c2, c1 (the old code emitted c1, c2).
+        val gw = singleRoundGateway {
+            emit(StreamEvent.ToolCall(EngineToolCall("c1", "file_read", """{"path":"/a.kt"}""")))
+            Thread.sleep(60)
+            emit(StreamEvent.ToolCall(EngineToolCall("c2", "file_read", """{"path":"/b.kt"}""")))
+            emit(StreamEvent.Done)
+        }
+        val loop = EngineAgentLoop(gw, registry()) { _, argsJson ->
+            if (argsJson.contains("/a.kt")) Thread.sleep(300)
+            EngineAgentLoop.ToolOutcome("ok", true)
+        }
+        val events = loop.runTurn(turnInput()).toList()
+        val finishedIds = events.filterIsInstance<AgentEvent.ToolCallFinished>().map { it.callId }
+        assertEquals(listOf("c2", "c1"), finishedIds)
+        // The round still converges normally after the slowest call.
+        assertTrue(events.last() is AgentEvent.TurnFinished)
+    }
 }

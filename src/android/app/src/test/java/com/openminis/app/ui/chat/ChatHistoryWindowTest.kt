@@ -266,4 +266,37 @@ class ChatHistoryWindowTest {
         val tail = ChatHistoryWindow.preserveInMemoryTail(current, installedDbIds = setOf("db1", "db2"))
         assertEquals(emptyList<ChatMessage>(), tail)
     }
+
+    @Test
+    fun `active stream id is rescued even with flickered flags`() {
+        // [B43-background-answer] The live turn's placeholder is not in the
+        // DB yet; if isStreaming/isAwaitingModelResponse flicker between the
+        // wipe's read and the stream's next write, flag-based rescue drops
+        // it and every later updateAssistantMessage maps onto nothing —
+        // "only my prompt remains" until re-entry. The overlay key set
+        // rescues it unconditionally.
+        val current = listOf(
+            msg("user1"),
+            msg("assistant_pre_42"), // flags all false — the flicker
+        )
+        val tail = ChatHistoryWindow.preserveInMemoryTail(
+            current,
+            installedDbIds = setOf("user1"),
+            activeStreamIds = setOf("assistant_pre_42"),
+        )
+        assertEquals(listOf("assistant_pre_42"), tail.map { it.id })
+    }
+
+    @Test
+    fun `active stream rescue does not resurrect db-window ghosts`() {
+        // The window stays the authority on what the DB holds: an id in the
+        // installed window is never rescued, stream set or not.
+        val current = listOf(msg("db1"), msg("assistant_pre_42"))
+        val tail = ChatHistoryWindow.preserveInMemoryTail(
+            current,
+            installedDbIds = setOf("db1", "assistant_pre_42"),
+            activeStreamIds = setOf("assistant_pre_42"),
+        )
+        assertEquals(emptyList<ChatMessage>(), tail)
+    }
 }

@@ -7978,6 +7978,10 @@ class ChatViewModel(
             val inMemoryTail = ChatHistoryWindow.preserveInMemoryTail(
                 current = _messages.value,
                 installedDbIds = windowToInstall.mapTo(HashSet()) { it.id },
+                // [B43-background-answer] The live turn's row survives the
+                // window re-publish even when its streaming flags flicker:
+                // the overlay keys ARE the live write targets.
+                activeStreamIds = _streamingById.value.keys,
             )
             _messages.value = finalizedWindow + inMemoryTail
 
@@ -13063,9 +13067,18 @@ class ChatViewModel(
                 val sid = realSessionId.ifEmpty { sessionId }
                 val existing = engineRowId
                 if (existing == null) {
-                    engineRowId = chatRepository.appendMessage(
+                    val newRowId = chatRepository.appendMessage(
                         sid, "assistant", json, null, reasoningContent = null,
                     ).id
+                    engineRowId = newRowId
+                    // [B43-surgery-mapping] B39 regression fix: the legacy
+                    // loop's persist site was the ONLY caller of
+                    // appendTurnRowToBubble — demolished with it, the live
+                    // bubble's sourceDbIds stayed EMPTY on the engine path
+                    // and every delete/rewrite resolved zero DB rows
+                    // ("сообщения не удаляются"). Map the incremental row
+                    // the moment it exists; accumulate, never replace.
+                    appendTurnRowToBubble(assistantId, newRowId)
                 } else {
                     chatRepository.dao.updateMessageParts(existing, json)
                 }
@@ -13241,6 +13254,13 @@ class ChatViewModel(
                                 .filter { it.kind == "tool_use" }
                                 .associateBy { it.id },
                         )
+                        // [B43-surgery-mapping] Row A's bubble keeps its
+                        // delete/rewrite mapping after the split — the split
+                        // retargets every later persist to row B's id, so
+                        // without this row A would go unmapped forever.
+                        // (assistantId is STILL row A's id here — the split
+                        // reassignment happens below.)
+                        appendTurnRowToBubble(assistantId, dbIdA)
                         agentHistory.add(
                             LLMMessage(
                                 role = LLMMessage.Role.ASSISTANT,
@@ -13602,6 +13622,14 @@ class ChatViewModel(
                             .filter { it.kind == "tool_use" }
                             .associateBy { it.id },
                     )
+                    // [B43-surgery-mapping] Map the terminal row into the
+                    // live bubble as well: a no-tool text-only turn never
+                    // had an incremental row (upsertEngineRow returns early
+                    // on empty blocks), so this is its FIRST and only
+                    // mapping — appendTurnRowToBubble is idempotent
+                    // (sourceDbIds dedupe), the split rows already carry
+                    // their own via the same call.
+                    appendTurnRowToBubble(assistantId, assistantDbId)
                     if (engineRowId != null) {
                         try {
                             val meta = reducer.currentBlocks()
