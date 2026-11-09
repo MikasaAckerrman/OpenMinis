@@ -128,6 +128,15 @@ class TelegramAccountStore(private val vaultDir: File) {
         if (dirName == "pending") {
             File(vaultDir, "tg_session.session").delete()
         }
+        // [M-R3.2] The Rust era keeps the single live grammers session at
+        // the vault root; when the REMOVED account is the active one, that
+        // session is its credential — unlinking must take it too, or the
+        // next boot resurrects the identity the user just removed. In the
+        // single-account rust model (M-R3.2) the active account is always
+        // the session owner; the per-account layout arrives with M-R3.4.
+        if (target.isActive) {
+            File(vaultDir, "grammers.session").delete()
+        }
         return true
     }
 

@@ -180,6 +180,13 @@ fun TelegramLoginScreen(
     LaunchedEffect(loggedIn) {
         if (loggedIn == true) {
             loginStore.clear()
+            // [M-R3.2] The vault server must see the credential it never
+            // had at boot: the Rust daemon fixes its session state at start
+            // and restarts here (the python path is unchanged — its file
+            // was swept right after login).
+            withContext(Dispatchers.IO) {
+                com.openminis.app.sandbox.TelegramVaultManager.onLoginCompleted(context)
+            }
             // [T-tg-accounts] A new account just signed in: refresh the cards
             // (the profile fills via tg_whoami on the server side).
             addingAccount = false
@@ -192,8 +199,17 @@ fun TelegramLoginScreen(
         // [T-tg-login-host] The driver runs in a host-owned PRoot instance
         // (TelegramLoginRunner) — the app process itself has no python3 and
         // no /var/minis, so a bare ProcessBuilder here could never work.
+        // [M-R3.2] Under the Rust flag the status is composed Kotlin-side
+        // (MinisdLoginRunner): the python driver would report the pyrogram
+        // session, which the grammers daemon cannot read.
+        val isRust = com.openminis.app.sandbox.TelegramVaultManager
+            .activeVaultImpl(vaultDir) == com.openminis.app.sandbox.TelegramVaultManager.IMPL_RUST
         val r = withContext(Dispatchers.IO) {
-            TelegramLoginRunner.run(context, listOf("status"), timeoutSec = 30).output
+            if (isRust) {
+                com.openminis.app.sandbox.MinisdLoginRunner.run(context, listOf("status"), timeoutSec = 15).output
+            } else {
+                TelegramLoginRunner.run(context, listOf("status"), timeoutSec = 30).output
+            }
         }
         val json = driverJson(r)
         loggedIn = json.optBoolean("logged_in", false)
@@ -217,16 +233,32 @@ fun TelegramLoginScreen(
             }
             argList.addAll(args)
             val result = withContext(Dispatchers.IO) {
-                val r = TelegramLoginRunner.run(
-                    context,
-                    argList,
-                    apiId = apiId.trim().takeIf { apiId.isNotBlank() },
-                    apiHash = apiHash.trim().takeIf { apiHash.isNotBlank() },
-                )
-                // The session Pyrogram may have written agent-side is moved
-                // into the vault right away; a no-op when nothing appeared.
-                TelegramLoginRunner.sweepSessionIntoVault(context)
-                r
+                // [M-R3.2] The vault_impl flag picks the login transport:
+                // rust drives the interactive `minisd login` session
+                // (grammers), python keeps the pyrogram driver. Both speak
+                // the same RESULT {json} step contract.
+                if (com.openminis.app.sandbox.TelegramVaultManager
+                        .activeVaultImpl(vaultDir) == com.openminis.app.sandbox.TelegramVaultManager.IMPL_RUST
+                ) {
+                    com.openminis.app.sandbox.MinisdLoginRunner.run(
+                        context,
+                        argList,
+                        apiId = apiId.trim().takeIf { apiId.isNotBlank() },
+                        apiHash = apiHash.trim().takeIf { apiHash.isNotBlank() },
+                    )
+                } else {
+                    val r = TelegramLoginRunner.run(
+                        context,
+                        argList,
+                        apiId = apiId.trim().takeIf { apiId.isNotBlank() },
+                        apiHash = apiHash.trim().takeIf { apiHash.isNotBlank() },
+                    )
+                    // The session Pyrogram may have written agent-side is
+                    // moved into the vault right away; a no-op when nothing
+                    // appeared.
+                    TelegramLoginRunner.sweepSessionIntoVault(context)
+                    r
+                }
             }
             busy = false
             val json = driverJson(result.output)

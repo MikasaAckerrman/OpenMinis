@@ -255,6 +255,33 @@ object TelegramVaultManager {
     }
 
     /**
+     * [M-R3.2] A login just completed. The Rust daemon fixes its session
+     * state at boot (VaultState.live/dead), so a freshly written
+     * grammers.session is invisible to the RUNNING process — the daemon
+     * must restart to pick it up. No-op for the python impl: its server
+     * gets the swept pyrogram session the way it always did.
+     */
+    fun onLoginCompleted(context: Context) {
+        if (activeVaultImpl(vaultDir(context)) != IMPL_RUST) return
+        val supervisor = synchronized(this) { rustSupervisor } ?: return
+        thread(name = "minisd-restart") {
+            try {
+                supervisor.stop()
+                // SIGTERM + the 2s stop-backstop must land before the
+                // replacement process can re-bind 7824.
+                Thread.sleep(2500)
+                if (supervisor.start()) {
+                    Log.i(TAG, "minisd restarted after login (log: minisd.log)")
+                } else {
+                    Log.e(TAG, "minisd restart after login failed (see minisd.log)")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "minisd restart failed: ${e.message}")
+            }
+        }
+    }
+
+    /**
      * [T-vault-auth] Publish the gate secret to the only configured HTTP
      * callers: every MCP entry pointed at the vault port receives an
      * Authorization header in servers.json (the CLI's http transport reads
