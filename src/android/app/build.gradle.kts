@@ -49,7 +49,11 @@ android {
         // native minisd grep/glob + PIP subagent capsule (8ca2685f..e9c13805).
         // vc156: SearchTools path resolver fix (rg exit 2 resolved,
         // 6a10047e..4b56eec2, Unit Tests 42509488780 green).
-        versionCode = 156
+        // vc157: B43 wave (per-tool streaming + background rescue + surgery
+        // mapping) + B44 multi-account UI + M-R3.1 daemon wiring (vault_impl
+        // flag) + M-R3.2 grammers login bridge + B43-race-fix
+        // (joinSettleWatchers). 8052193e..b91b28b5, Unit Tests 42668539637.
+        versionCode = 157
         // vc69: 97 commits — kotlincheck infra + strict preflight (types/enums,
         // parallel-batch gate) + atomic tool budget + budget footer + symmetric
         // supermemory lifecycle (FPS guard) + thermal telemetry + review fixes
