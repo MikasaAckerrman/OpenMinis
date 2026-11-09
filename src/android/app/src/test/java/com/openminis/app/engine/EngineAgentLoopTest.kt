@@ -521,7 +521,16 @@ class EngineAgentLoopTest {
         ).toList()
         val finished = events.last() as AgentEvent.TurnFinished
         assertEquals("round_limit", finished.reason)
-        assertEquals(3, events.filterIsInstance<AgentEvent.ToolCallFinished>().size)
+        val finishedCalls = events.filterIsInstance<AgentEvent.ToolCallFinished>()
+        assertEquals(
+            // [B43-race-fix] A settle watcher losing the race to the
+            // channel close used to swallow a Finished (a UI card stuck
+            // on "Running" forever); joinSettleWatchers made the barrier
+            // contractual. One Finished per round, none lost.
+            "one Finished per round, none lost; events=$events",
+            3,
+            finishedCalls.size,
+        )
     }
 
     // [T-m12-cancel-semantics] The user's STOP must kill the turn, not be

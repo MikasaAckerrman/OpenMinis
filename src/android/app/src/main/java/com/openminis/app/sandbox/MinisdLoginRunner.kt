@@ -139,11 +139,15 @@ object MinisdLoginRunner {
      *  argparse flags the screen prepends are ignored: the daemon takes
      *  its credentials from the environment. */
     internal fun parseArgs(args: List<String>): StepArgs {
-        var step = args.firstOrNull()?.takeIf { it != "--api-id" } ?: ""
+        // The screen may PREPEND the python argparse pair (--api-id <v>
+        // --api-hash <v>) before the step token, so the step is the first
+        // POSITIONAL argument, never args[0]. Walking pairs by flag keeps
+        // the position independent of the prepend.
+        var step = ""
         var phone: String? = null
         var code: String? = null
         var password: String? = null
-        var i = 1
+        var i = 0
         while (i < args.size) {
             when (args[i]) {
                 "--phone" -> { phone = args.getOrNull(i + 1); i += 2 }
@@ -151,7 +155,10 @@ object MinisdLoginRunner {
                 "--password" -> { password = args.getOrNull(i + 1); i += 2 }
                 // --api-id/--api-hash (and their values) are python-only.
                 "--api-id", "--api-hash" -> i += 2
-                else -> i += 1
+                else -> {
+                    if (step.isEmpty()) step = args[i]
+                    i += 1
+                }
             }
         }
         return StepArgs(step, phone, code, password)

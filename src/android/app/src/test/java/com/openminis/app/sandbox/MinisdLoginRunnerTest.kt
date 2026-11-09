@@ -88,9 +88,12 @@ class MinisdLoginRunnerTest {
 
     @Test
     fun `error tail keeps the last meaningful lines only`() {
-        val t = MinisdLoginRunner.errorTail("noise line\nminisd: sign-in failed: FLOOD_WAIT_3\n")
+        val t = MinisdLoginRunner.errorTail(
+            "noise line\nmore noise\nminisd: sign-in failed: FLOOD_WAIT_3\n",
+        )
         assertTrue(t.contains("FLOOD_WAIT_3"))
-        assertFalse(t.contains("noise"))
+        // The window is the last 3 lines: noise older than that is gone.
+        assertFalse(t.contains("noise line"))
         assertEquals("login failed without output", MinisdLoginRunner.errorTail("   \n\n"))
     }
 
@@ -151,7 +154,12 @@ class MinisdLoginRunnerTest {
     @Test
     fun `a dying process is reported as an exit with its code`() {
         // The missing-credentials refusal of main.rs: eprintln + exit 2.
-        val p = ProcessBuilder("/bin/sh", "-c", "echo 'minisd: login requires TG_API_ID and TG_API_HASH in the environment' >&2; exit 2").start()
+        // redirectErrorStream mirrors LoginSession's own wiring — the
+        // daemon's stderr is the tail the verdicts read.
+        val p = ProcessBuilder(
+            "/bin/sh", "-c",
+            "echo 'minisd: login requires TG_API_ID and TG_API_HASH in the environment' >&2; exit 2",
+        ).apply { redirectErrorStream(true) }.start()
         val s = MinisdLoginRunner.LoginSession(p)
         val a = s.await(listOf(MinisdLoginRunner.M_CODE), 5)
         assertEquals(2, (a as MinisdLoginRunner.Await.Exit).code)
