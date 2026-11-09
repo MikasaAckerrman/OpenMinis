@@ -8,6 +8,14 @@ import java.io.File
 import org.json.JSONObject
 
 /**
+ * The runner speaks the python driver's EXACT result type: the login
+ * screen's runLogin branches between the two transports, and one type
+ * keeps the joined result's `.output` / `.exitCode` resolved (two
+ * same-named data classes would erase to Any at the if/else join).
+ */
+internal typealias MinisdLoginResult = TelegramLoginRunner.Result
+
+/**
  * [M-R3.2] The Kotlin half of the grammers login bridge — reviewer verdict:
  * variant (a). The interactive `minisd login` process (one stdin/stdout
  * session: phone → code → optional 2FA password, client.rs run_login)
@@ -39,9 +47,6 @@ import org.json.JSONObject
  */
 object MinisdLoginRunner {
     private const val TAG = "MinisdLogin"
-
-    /** Same shape as TelegramLoginRunner.Result. */
-    data class Result(val exitCode: Int, val output: String)
 
     // Exact prompt/save markers of client.rs (prompt_stdin + run_login).
     internal const val M_PHONE = "minisd login: enter phone (international format):"
@@ -179,7 +184,9 @@ object MinisdLoginRunner {
      * stderr+stdout into a buffer; the steps await markers against it.
      */
     internal class LoginSession(private val proc: Process) {
-        private val lock = Any()
+        // java.lang.Object explicitly: Kotlin's Any hides wait/notifyAll,
+        // and the marker await lives on this monitor.
+        private val lock: java.lang.Object = java.lang.Object()
         private val buf = StringBuilder()
         @Volatile private var exited = false
         @Volatile private var exitCode = -1
@@ -220,8 +227,7 @@ object MinisdLoginRunner {
                     if (exited) return Await.Exit(exitCode)
                     val left = deadline - System.currentTimeMillis()
                     if (left <= 0) return Await.Timeout
-                    @Suppress("PLATFORM_CLASS_MAPPED_TO_KOTLIN")
-                    (lock as Object).wait(minOf(left, 250))
+                    lock.wait(minOf(left, 250))
                 }
             }
         }
@@ -250,22 +256,22 @@ object MinisdLoginRunner {
         apiId: String? = null,
         apiHash: String? = null,
         timeoutSec: Long = 90,
-    ): Result = synchronized(sessionLock) {
+    ): MinisdLoginResult = synchronized(sessionLock) {
         val parsed = parseArgs(args)
         try {
             when (parsed.step) {
-                "status" -> Result(0, statusJson(
+                "status" -> MinisdLoginResult(0, statusJson(
                     hasGrammers = File(File(context.filesDir, "tg-vault"), "grammers.session").isFile,
                     hasAccounts = TelegramAccountStore(File(context.filesDir, "tg-vault")).load().isNotEmpty(),
                     envReady = envReady(context),
                 ))
                 "send-code" -> runSendCode(context, parsed, apiId, apiHash, timeoutSec)
                 "verify" -> runVerify(context, parsed, timeoutSec)
-                else -> Result(2, "RESULT " + JSONObject().put("error", "unknown step: ${parsed.step}"))
+                else -> MinisdLoginResult(2, "RESULT " + JSONObject().put("error", "unknown step: ${parsed.step}"))
             }
         } catch (e: Exception) {
             Log.e(TAG, "step ${parsed.step} failed: ${e.message}")
-            Result(-3, "RESULT " + JSONObject().put("error", "login step failed: ${e.message}"))
+            MinisdLoginResult(-3, "RESULT " + JSONObject().put("error", "login step failed: ${e.message}"))
         }
     }
 
@@ -275,16 +281,16 @@ object MinisdLoginRunner {
         apiId: String?,
         apiHash: String?,
         timeoutSec: Long,
-    ): Result {
+    ): MinisdLoginResult {
         val phone = parsed.phone?.trim().orEmpty()
         if (phone.isBlank()) {
-            return Result(2, "RESULT " + JSONObject().put("error", "phone is required"))
+            return MinisdLoginResult(2, "RESULT " + JSONObject().put("error", "phone is required"))
         }
         // A new phone = a new flow: the old session's code token is void.
         session?.kill()
         session = null
         val fresh = spawnSession(context, apiId, apiHash)
-            ?: return Result(-1, "RESULT " + JSONObject().put(
+            ?: return MinisdLoginResult(-1, "RESULT " + JSONObject().put(
                 "error", "libminisd.so not available — the daemon binary is missing"))
         session = fresh
         // The pipe buffers the line until the daemon's first read — no
@@ -294,11 +300,11 @@ object MinisdLoginRunner {
         return finishStep("send-code", PH_AWAIT_CODE, fresh, outcome)
     }
 
-    private fun runVerify(context: Context, parsed: StepArgs, timeoutSec: Long): Result {
+    private fun runVerify(context: Context, parsed: StepArgs, timeoutSec: Long): MinisdLoginResult {
         val current = session
         if (current == null || !current.alive) {
             session = null
-            return Result(-1, "RESULT " + JSONObject().put(
+            return MinisdLoginResult(-1, "RESULT " + JSONObject().put(
                 "error", "login session is gone — tap Send code to start over"))
         }
         val code = parsed.code?.trim().orEmpty()
@@ -312,11 +318,11 @@ object MinisdLoginRunner {
             return finishStep("verify-pw", PH_AWAIT_PASSWORD, current, outcome)
         }
         if (currentPhase == PH_AWAIT_PASSWORD) {
-            return Result(2, "RESULT " + JSONObject().put(
+            return MinisdLoginResult(2, "RESULT " + JSONObject().put(
                 "error", "the code was accepted — enter the 2FA password"))
         }
         if (code.isBlank()) {
-            return Result(2, "RESULT " + JSONObject().put("error", "code is required"))
+            return MinisdLoginResult(2, "RESULT " + JSONObject().put("error", "code is required"))
         }
         current.writeLine(code)
         val outcome = current.await(listOf(M_PASSWORD, M_SAVED), timeoutSec)
@@ -334,7 +340,7 @@ object MinisdLoginRunner {
     // serializes its steps behind `busy`. Guarded by sessionLock.
     @Volatile private var sessionPhase: String = PH_DONE
 
-    private fun finishStep(step: String, phaseBefore: String, s: LoginSession, outcome: Await): Result {
+    private fun finishStep(step: String, phaseBefore: String, s: LoginSession, outcome: Await): MinisdLoginResult {
         val verdict = verdictFor(step, phaseBefore, outcome, s.tail())
         sessionPhase = verdict.phase
         if (verdict.phase == PH_DONE) {
@@ -344,7 +350,7 @@ object MinisdLoginRunner {
             session = null
         }
         val exit = (outcome as? Await.Exit)?.code ?: 0
-        return Result(exit, "RESULT ${verdict.json}")
+        return MinisdLoginResult(exit, "RESULT ${verdict.json}")
     }
 
     private fun spawnSession(context: Context, apiId: String?, apiHash: String?): LoginSession? {
