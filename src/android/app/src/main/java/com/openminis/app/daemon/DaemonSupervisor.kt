@@ -14,13 +14,20 @@ import java.util.concurrent.atomic.AtomicReference
  * graceful stop, and the crash-backoff bookkeeping
  * ([SupervisorBackoffPolicy]).
  *
- * M-R1 scope decision (flagged for the audit): NOTHING calls this class
- * yet. MinisApp does not spawn the daemon — the echo skeleton binding
- * 7824 on every app start would fight the live python vault for the
- * port (the `vault_impl` flag is an M-R3 deliverable per the migration
- * spec). The class ships tested-and-compiled; the restart loop that
- * consumes [nextRestartDelayMs] and the MinisApp wiring arrive with the
- * vault implementation in M-R2/M-R3.
+ * M-R3.1 update: the class is now WIRED — TelegramVaultManager.ensureStarted
+ * spawns the daemon when the `vault_impl` flag selects rust (the python
+ * vault remains the default until the device-acceptance verdict; the flag
+ * file is the spec's rollback contour, flip + app restart, no rebuild).
+ * The restart loop consuming [nextRestartDelayMs] still waits for M-R3.3
+ * (it belongs together with the session-switch workspace restart policy).
+ *
+ * Secret hand-off, per the reviewer's M-R1 plan: one line on the
+ * child's stdin ("no secret, no service" — the daemon exits on stdin
+ * EOF). The supervisor ALWAYS closes the child's stdin after the
+ * optional write so a misconfigured start fails fast at the daemon
+ * instead of hanging. The fd-3 design of the spec §2.1 needs the JNI
+ * fork helper (ProcessBuilder closes non-standard fds) and is deferred
+ * to M-R2.
  *
  * Secret hand-off, per the reviewer's M-R1 plan: one line on the
  * child's stdin ("no secret, no service" — the daemon exits on stdin
@@ -34,6 +41,13 @@ class DaemonSupervisor(
     private val nativeLibraryDir: String,
     private val mode: String = MODE_VAULT,
     private val port: Int = 7824,
+    /**
+     * [M-R3.1] Optional `--storage` directory — the grammers session home
+     * (`<storage>/grammers.session`). Without it the daemon defaults to
+     * its CWD, which on Android is the app data dir — never what we want;
+     * the vault wiring always passes filesDir/tg-vault.
+     */
+    private val storage: File? = null,
     private val secretProvider: () -> String? = { null },
     private val starter: (List<String>) -> Process = { command ->
         ProcessBuilder(command).start()
@@ -78,7 +92,11 @@ class DaemonSupervisor(
     fun start(): Boolean {
         if (isAlive()) return true
         if (!isAvailable()) return false
-        val command = listOf(binaryFile().absolutePath, mode, "--port", port.toString())
+        val command = mutableListOf(binaryFile().absolutePath, mode, "--port", port.toString())
+        storage?.let {
+            command.add("--storage")
+            command.add(it.absolutePath)
+        }
         val p = runCatching { starter(command) }.getOrNull() ?: return false
         // One-shot pipe write (≤64 KiB by contract — cannot block), then
         // close stdin unconditionally: the daemon reads one line, and a

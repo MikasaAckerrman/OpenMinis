@@ -62,4 +62,43 @@ class TelegramVaultManagerTest {
         assertFalse("stale agent-visible copy must be deleted", stale.exists())
         assertEquals("AUTHORITATIVE", File(vault, "tg_session.session").readText())
     }
+
+    // ── [M-R3.1] vault_impl flag ────────────────────────────────────────
+
+    @Test
+    fun `missing flag file defaults to the python vault`() {
+        val vault = tmp.newFolder("tg-vault")
+        // The default keeps a logged-in user's surface alive: the in-app
+        // login still produces a pyrogram session, and the Rust daemon
+        // reads only grammers (spec §2.3 — no converter exists).
+        assertEquals("python", TelegramVaultManager.activeVaultImpl(vault))
+    }
+
+    @Test
+    fun `flag file rust selects the daemon`() {
+        val vault = tmp.newFolder("tg-vault")
+        File(vault, "vault_impl").writeText("rust")
+        assertEquals("rust", TelegramVaultManager.activeVaultImpl(vault))
+    }
+
+    @Test
+    fun `flag parsing is whitespace and case tolerant, deny-by-default`() {
+        assertEquals("rust", TelegramVaultManager.parseVaultImpl("rust"))
+        assertEquals("rust", TelegramVaultManager.parseVaultImpl(" RUST\n"))
+        assertEquals("python", TelegramVaultManager.parseVaultImpl("python"))
+        // Anything else — garbage, typos, an empty file, null — stays on
+        // the legacy path: a half-flipped switch must not flip the server.
+        assertEquals("python", TelegramVaultManager.parseVaultImpl("rus"))
+        assertEquals("python", TelegramVaultManager.parseVaultImpl("rust python"))
+        assertEquals("python", TelegramVaultManager.parseVaultImpl(""))
+        assertEquals("python", TelegramVaultManager.parseVaultImpl(null))
+    }
+
+    @Test
+    fun `unreadable flag file degrades to python instead of crashing boot`() {
+        val vault = tmp.newFolder("tg-vault")
+        // A directory where the flag file should be: readText() throws.
+        File(vault, "vault_impl").mkdir()
+        assertEquals("python", TelegramVaultManager.activeVaultImpl(vault))
+    }
 }

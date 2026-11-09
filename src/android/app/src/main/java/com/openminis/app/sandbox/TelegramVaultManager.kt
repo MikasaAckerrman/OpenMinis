@@ -2,6 +2,7 @@ package com.openminis.app.sandbox
 
 import android.content.Context
 import android.util.Log
+import com.openminis.app.daemon.DaemonSupervisor
 import java.io.File
 import java.net.Socket
 import kotlin.concurrent.thread
@@ -29,6 +30,12 @@ import kotlin.concurrent.thread
  * The move is one-way and idempotent: once the session lives in the vault,
  * the agent-visible copy is gone; a stale copy left behind by a crashed
  * move is removed on the next start.
+ *
+ * [M-R3.1] Which implementation serves the port is the `vault_impl` flag:
+ * `python` (this PRoot launcher — the default until the device-acceptance
+ * verdict) or `rust` (the native minisd daemon via [DaemonSupervisor]).
+ * Exactly ONE owner binds 7824 — the loser would die EADDRINUSE, so the
+ * flag branch excludes the other starter, it does not layer them.
  */
 object TelegramVaultManager {
     private const val TAG = "TgVault"
@@ -50,6 +57,39 @@ object TelegramVaultManager {
     private fun vaultDir(context: Context): File = File(context.filesDir, "tg-vault")
     private fun srcSrvDir(context: Context): File =
         File(context.filesDir, "minis-global/mcp-servers/srv")
+
+    // ── [M-R3.1] vault_impl: rust | python ─────────────────────────────
+
+    /**
+     * The flag file name inside the vault dir. Flip protocol: the clone
+     * build is debuggable, so
+     *   adb shell run-as com.openminis.app.clone sh -c \
+     *     'echo -n rust > files/tg-vault/vault_impl'
+     * + an app restart switches the 7824 server WITHOUT a rebuild. This is
+     * the migration spec's rollback contour: python stays until the
+     * device-acceptance verdict, then the flag, the python launcher and
+     * its rootfs dependencies are deleted together (no eternal fallbacks).
+     */
+    private const val FLAG_FILE = "vault_impl"
+    internal const val IMPL_PYTHON = "python"
+    internal const val IMPL_RUST = "rust"
+
+    /**
+     * Deny-by-default: anything but exactly "rust" (whitespace/case
+     * tolerant) keeps the legacy python path. A HALF-wired daemon must
+     * not become the default just because a file holds garbage.
+     */
+    internal fun parseVaultImpl(raw: String?): String =
+        if (raw?.trim()?.lowercase() == IMPL_RUST) IMPL_RUST else IMPL_PYTHON
+
+    /** The active impl for this app run: read the flag file once per
+     *  start. An unreadable file degrades to python (the safe default). */
+    internal fun activeVaultImpl(vaultDir: File): String = try {
+        parseVaultImpl(File(vaultDir, FLAG_FILE).takeIf { it.exists() }?.readText())
+    } catch (e: Exception) {
+        Log.w(TAG, "vault_impl flag unreadable: ${e.message}")
+        IMPL_PYTHON
+    }
 
     /**
      * [T-vault-auth] The bearer secret of the vault HTTP gate: generated once
@@ -124,6 +164,12 @@ object TelegramVaultManager {
             TelegramAccountStore(vaultDir(context))
                 .migrateLegacyIfNeeded(File(vaultDir(context), "tg_session.session"))
         }.onFailure { Log.w(TAG, "accounts migration failed: ${it.message}") }
+        // [M-R3.1] The flag selects exactly ONE owner of 7824 — the loser
+        // would die EADDRINUSE, so the branch excludes the other starter.
+        if (activeVaultImpl(vaultDir(context)) == IMPL_RUST) {
+            ensureRustStarted(context)
+            return
+        }
         if (isAlive(context)) return
         thread(name = "tg-vault-start") {
             try {
@@ -132,6 +178,103 @@ object TelegramVaultManager {
                 Log.e(TAG, "vault start failed: ${e.message}")
             }
         }
+    }
+
+    /**
+     * [M-R3.1] The native daemon path: no PRoot, no python — `libminisd.so`
+     * exec'd straight from nativeLibraryDir (the only exec-allowed
+     * directory on API 29+, the libproot/librg precedent). Same port, same
+     * bearer secret, same probe contract: rpc.rs answers `initialize` with
+     * serverInfo.name="telegram", so [isAlive] and every existing caller
+     * (login screen, profile sync, agent CLI) work against BOTH impls
+     * unchanged. `--workspace` is deliberately NOT passed yet: it must
+     * match the ACTIVE session's workspace, which changes across sessions
+     * — the restart-on-session-switch policy lands with M-R3.3 (SearchTools
+     * routing); until then the workspace-rooted tools answer the daemon's
+     * honest per-call "workspace root is not configured" error.
+     */
+    @Volatile private var rustSupervisor: DaemonSupervisor? = null
+
+    private fun ensureRustStarted(context: Context) {
+        val vault = vaultDir(context)
+        val supervisor = synchronized(this) {
+            rustSupervisor ?: DaemonSupervisor(
+                nativeLibraryDir = context.applicationInfo.nativeLibraryDir,
+                secretProvider = { authSecret(context).ifEmpty { null } },
+                storage = vault,
+                starter = { command ->
+                    val pb = ProcessBuilder(command).apply {
+                        // [M-R3] Observability per the spec: the daemon log
+                        // next to the python vault's server.log. The error
+                        // stream is merged, so EADDRINUSE and the stdin
+                        // secret-refusal land in the file, not in limbo.
+                        redirectErrorStream(true)
+                        redirectOutput(File(vault, "minisd.log"))
+                    }
+                    try {
+                        val repo = com.openminis.app.data.repository.EnvVarRepository(context)
+                        repo.getValue("TG_API_ID")?.let { pb.environment()["TG_API_ID"] = it }
+                        repo.getValue("TG_API_HASH")?.let { pb.environment()["TG_API_HASH"] = it }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "env-var read failed (daemon serves the session-error surface): ${e.message}")
+                    }
+                    pb.start()
+                },
+            ).also { rustSupervisor = it }
+        }
+        if (supervisor.isAlive()) return
+        if (!supervisor.isAvailable()) {
+            Log.w(TAG, "libminisd.so not in nativeLibraryDir — daemon start skipped")
+            return
+        }
+        thread(name = "minisd-start") {
+            try {
+                // Impl-agnostic self-heal: both impls serve the same port
+                // and the same bearer contract, so the servers.json header
+                // publish is not a python-only concern.
+                publishAuthHeader(context)
+                val ok = supervisor.start()
+                if (!ok) {
+                    Log.e(TAG, "minisd spawn failed (see minisd.log)")
+                    return@thread
+                }
+                // Give a fast-failing bind (EADDRINUSE against a foreign
+                // server left on 7824) a beat to surface, then report the
+                // port truthfully instead of guessing.
+                Thread.sleep(600)
+                if (supervisor.isAlive()) {
+                    Log.i(TAG, "minisd daemon started on 127.0.0.1:$PORT (log: minisd.log)")
+                } else {
+                    Log.e(TAG, "minisd exited immediately; 7824 held by: " +
+                        (if (isAlive(context)) "another server (foreign/other impl)" else "nothing"))
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "minisd start failed: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * [T-vault-auth] Publish the gate secret to the only configured HTTP
+     * callers: every MCP entry pointed at the vault port receives an
+     * Authorization header in servers.json (the CLI's http transport reads
+     * server.headers verbatim). The agent CAN read servers.json —
+     * acceptable by design: the vault surface is read-only, and the threat
+     * model here is OTHER PHONE APPS, which never see filesDir. Runs for
+     * BOTH impls (same port, same secret, same 401 semantics).
+     */
+    private fun publishAuthHeader(context: Context) {
+        val auth = authSecret(context)
+        if (auth.isEmpty()) return
+        runCatching {
+            val repo = com.openminis.app.data.repository.MCPRepository(context)
+            repo.servers.value
+                .filter { it.url?.contains(":$PORT") == true }
+                .filter { it.headers["Authorization"] != "Bearer $auth" }
+                .forEach { stale ->
+                    repo.update(stale.copy(headers = stale.headers + ("Authorization" to "Bearer $auth")))
+                }
+        }.onFailure { Log.w(TAG, "vault auth header publish failed: ${it.message}") }
     }
 
     private fun startLocked(context: Context) {
@@ -148,26 +291,7 @@ object TelegramVaultManager {
             return
         }
         vault.mkdirs()
-
-        // [T-vault-auth] Arm the gate AND publish the secret to the only
-        // configured callers: every HTTP MCP entry pointed at this vault
-        // port receives an Authorization header in servers.json (the CLI's
-        // http transport reads server.headers verbatim and supports $VAR
-        // expansion). The agent CAN read servers.json — acceptable by
-        // design: the vault surface is read-only, and the threat model here
-        // is OTHER PHONE APPS, which never see filesDir.
-        val auth = authSecret(context)
-        if (auth.isNotEmpty()) {
-            runCatching {
-                val repo = com.openminis.app.data.repository.MCPRepository(context)
-                repo.servers.value
-                    .filter { it.url?.contains(":$PORT") == true }
-                    .filter { it.headers["Authorization"] != "Bearer $auth" }
-                    .forEach { stale ->
-                        repo.update(stale.copy(headers = stale.headers + ("Authorization" to "Bearer $auth")))
-                    }
-            }.onFailure { Log.w(TAG, "vault auth header publish failed: ${it.message}") }
-        }
+        publishAuthHeader(context)
 
         // 1. Keep the vault server code in sync with the maintained copy
         //    (the agent-side /var/minis/mcp-servers/srv/telegram.py stays
@@ -222,6 +346,7 @@ object TelegramVaultManager {
         // [T-vault-auth] Arm the python-side gate; empty secret = no gate
         // (see authSecret) — the server keeps today's behaviour instead of
         // 401-ing every caller.
+        val auth = authSecret(context)
         if (auth.isNotEmpty()) env["TG_VAULT_AUTH"] = auth
         env["TG_SESSION_DIR"] = "/vault"
         // API credentials come from the encrypted env-var store via the
