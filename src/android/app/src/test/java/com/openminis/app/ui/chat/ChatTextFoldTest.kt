@@ -188,8 +188,12 @@ class ChatTextFoldTest {
         assertEquals(3, fold.toolBlocks.size)
         // One toggle drives both segments' pills.
         assertEquals(listOf("mA", "mB"), fold.memberIds)
-        // A's pills are internal — they hide under the group row at rest.
-        assertTrue(items.filterIsInstance<FlatChatItem.AssistantToolUse>().all { it.isTurnInternal })
+        // [B47-split-leader-visible] A's own cards are NEVER turn-internal
+        // (the leader emits no row — hiding them wiped them off screen).
+        // Only B's own block hides under the group row at rest.
+        val pills = items.filterIsInstance<FlatChatItem.AssistantToolUse>()
+        assertTrue(pills.filter { it.messageId == "mA" }.none { it.isTurnInternal })
+        assertTrue(pills.filter { it.messageId == "mB" }.all { it.isTurnInternal })
         // The single row rides directly before B's trailing answer; A
         // contributes pills only (no row of its own). Note: two CONSECUTIVE
         // assistant messages merge their header (neighbor lookback
@@ -202,9 +206,11 @@ class ChatTextFoldTest {
             kinds,
         )
         // The group filter: folded at rest, both keys flip together.
+        // [B47-split-leader-visible] A's two cards stay on screen at rest;
+        // only B's own block is folded under the single group row.
         val visible = filterTurnInternalItems(items, emptyMap())
         assertEquals(
-            listOf("header", "turnfold", "mdblock"),
+            listOf("header", "tool", "tool", "turnfold", "mdblock"),
             visible.map { it.contentType },
         )
         val expanded = filterTurnInternalItems(items, mapOf("mA" to true, "mB" to true))

@@ -412,7 +412,9 @@ class ToolSchedulerHierarchyTest {
             ),
         )
         assertEquals(setOf("r1"), depsOf(nodes, "sh"))
-        assertEquals(setOf("sh"), depsOf(nodes, "w"))
+        // The WRITE waits for ALL earlier overlapping uses (WAR + WAW),
+        // not just the nearest one — the same rule file_write follows.
+        assertEquals(setOf("r1", "sh"), depsOf(nodes, "w"))
     }
 
     @Test
