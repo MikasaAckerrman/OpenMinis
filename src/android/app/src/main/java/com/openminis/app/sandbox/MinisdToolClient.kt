@@ -30,6 +30,14 @@ object MinisdToolClient {
     private const val TIMEOUT_MS = 3_000
 
     /**
+     * The transport's last failure, "class: message" — a diagnostic the
+     * same way PersistentShell.startFailure is: production logs the same
+     * line, and the wire test asserts WITH this in the message so a red
+     * CI run names its cause instead of a bare NPE.
+     */
+    @Volatile internal var lastFailure: String? = null
+
+    /**
      * Blocking tools/call against the live daemon. Returns the parsed MCP
      * payload (the `content[0].text` JSON object), or null on transport
      * failure / unparseable answer / business error envelope. Call from
@@ -112,6 +120,7 @@ object MinisdToolClient {
                 s.getInputStream().bufferedReader().use { it.readText() }
             }
         } catch (e: Exception) {
+            lastFailure = "${e.javaClass.simpleName}: ${e.message}"
             Log.w(TAG, "minisd tools/call($tool) failed: ${e.message}")
             null
         }

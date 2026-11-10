@@ -5,6 +5,7 @@ import kotlin.concurrent.thread
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -87,60 +88,80 @@ class MinisdToolClientTest {
     fun `raw wire carries bearer, path and content-length exactly`() {
         // One-shot loopback gate: pins the request shape the bearer check
         // validates and proves the transport round-trip on a real socket.
+        // SELF-DIAGNOSING (the EngineAgentLoopTest precedent): both sides
+        // record their failure cause, and the assertion message carries
+        // them — a red CI run names the exception instead of a bare NPE.
         val server = ServerSocket(0)
         val seen = StringBuilder()
+        val serverError = java.util.concurrent.atomic.AtomicReference<String?>()
+        val gateReady = java.util.concurrent.CountDownLatch(1)
         thread(name = "minisd-fake-gate") {
-            server.accept().use { client ->
-                val reader = client.getInputStream().bufferedReader()
-                val headers = StringBuilder()
-                var contentLength = 0
-                while (true) {
-                    val line = reader.readLine() ?: break
-                    if (line.isEmpty()) {
-                        headers.append('\n') // the blank line that ends the headers
-                        break
+            try {
+                gateReady.countDown() // bound at construction; signal the accept entry
+                server.accept().use { client ->
+                    val reader = client.getInputStream().bufferedReader()
+                    val headers = StringBuilder()
+                    var contentLength = 0
+                    while (true) {
+                        val line = reader.readLine() ?: break
+                        if (line.isEmpty()) {
+                            headers.append('\n') // the blank line that ends the headers
+                            break
+                        }
+                        if (line.startsWith("Content-Length:")) {
+                            contentLength = line.substringAfter(":").trim().toInt()
+                        }
+                        headers.append(line).append('\n')
                     }
-                    if (line.startsWith("Content-Length:")) {
-                        contentLength = line.substringAfter(":").trim().toInt()
+                    val bodyChars = CharArray(contentLength)
+                    var off = 0
+                    while (off < contentLength) {
+                        val n = reader.read(bodyChars, off, contentLength - off)
+                        if (n < 0) break
+                        off += n
                     }
-                    headers.append(line).append('\n')
+                    synchronized(seen) { seen.append(headers).append(String(bodyChars, 0, off)) }
+                    val resp = envelopeWith("""{"ok":true}""")
+                    val respBytes = resp.toByteArray(Charsets.UTF_8)
+                    client.getOutputStream().apply {
+                        write(
+                            ("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n" +
+                                "Content-Length: ${respBytes.size}\r\nConnection: close\r\n\r\n")
+                                .toByteArray(Charsets.UTF_8),
+                        )
+                        write(respBytes)
+                        flush()
+                    }
                 }
-                val bodyChars = CharArray(contentLength)
-                var off = 0
-                while (off < contentLength) {
-                    val n = reader.read(bodyChars, off, contentLength - off)
-                    if (n < 0) break
-                    off += n
-                }
-                seen.append(headers).append(String(bodyChars, 0, off))
-                val resp = envelopeWith("""{"ok":true}""")
-                val respBytes = resp.toByteArray(Charsets.UTF_8)
-                client.getOutputStream().apply {
-                    write(
-                        ("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n" +
-                            "Content-Length: ${respBytes.size}\r\nConnection: close\r\n\r\n")
-                            .toByteArray(Charsets.UTF_8),
-                    )
-                    write(respBytes)
-                    flush()
-                }
+                server.close()
+            } catch (e: Throwable) {
+                serverError.set("${e.javaClass.simpleName}: ${e.message}")
             }
-            server.close()
         }
         try {
+            assertTrue(
+                "fake gate thread died before accepting: ${serverError.get()}",
+                gateReady.await(2, java.util.concurrent.TimeUnit.SECONDS),
+            )
             // The RESPONSE side goes through the real envelope: the raw
             // body carries JSON-escaped inner quotes, so string-matching
             // it would pin an implementation detail — parse it instead.
             val payload = MinisdToolClient.toolsCallVia(
                 { tool, argsJson ->
+                    MinisdToolClient.lastFailure = null
                     MinisdToolClient.rawCall("test-secret", tool, argsJson, port = server.localPort)
                 },
                 "grep",
                 JSONObject("""{"pattern":"needle"}"""),
-            )!!
-            assertTrue(payload.optBoolean("ok"))
+            )
+            assertNotNull(
+                "transport returned null; client failure: ${MinisdToolClient.lastFailure}; " +
+                    "server failure: ${serverError.get()}",
+                payload,
+            )
+            assertTrue(payload!!.optBoolean("ok"))
 
-            val request = seen.toString()
+            val request = synchronized(seen) { seen.toString() }
             val wireBody = request.substringAfter("\n\n")
             assertTrue(request.startsWith("POST /mcp HTTP/1.1\n"))
             assertTrue(request.contains("Authorization: Bearer test-secret\n"))
