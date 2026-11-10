@@ -942,12 +942,16 @@ internal fun buildFlatChatItems(
         val turnToolBlocks = if (turnFolds) blocks.filter { it.kind == "tool_use" } else emptyList()
         // [T-inject-attach-group] Split-turn fold GROUP (user report 09.10
         // "две кнопки — мусор"): after an inject split the turn is two DB
-        // rows, and each used to render its OWN fold row. Now the leader
-        // row A suppresses its own row entirely (its tools join the group
-        // row's totals) and the continuation row B renders THE single row
-        // for the whole turn, right before the final answer:
-        //   [pills A hidden] [USER msg] [pills B hidden] [⚙ row A+B] [answer]
-        // One toggle (memberIds) flips both segments' pills in place.
+        // rows, and each used to render its OWN fold row. The leader
+        // row A suppresses its own row entirely (no second button) and the
+        // continuation row B renders THE single fold row, right before the
+        // final answer:
+        //   [cards A visible] [USER msg] [pills B hidden] [⚙ row A+B] [answer]
+        // [B47-split-leader-visible] A's own blocks are NEVER turn-internal
+        // (see the emission sites below): hiding them under a row that A
+        // never emits wiped them off screen while the work was still
+        // running — the leader's cards stay visible in every status, and
+        // the group row's toggle expands/collapses only B's segment.
         // Suffix-build safety: the leader is NOT re-walked here (frozen
         // prefix) — its tool blocks are looked up in the FULL messages
         // list this function always receives.
@@ -1069,7 +1073,17 @@ internal fun buildFlatChatItems(
                                 isLastBlockOfMessage = isLastText && message.isStreaming,
                                 messageIsStreaming = message.isStreaming && isLastText,
                                 messageMarkdown = joinedMarkdown,
-                                isTurnInternal = turnFolds && index <= lastNonTextIdx,
+                                // [B47-split-leader-visible] The split
+                                // leader never hides its own blocks: it
+                                // suppresses its fold ROW (the group row
+                                // under B stays the single toggle), so
+                                // hiding content under a row that is
+                                // never emitted wiped it off screen —
+                                // the device report's "every tool card
+                                // vanishes the moment the user sends a
+                                // message mid-run".
+                                isTurnInternal = turnFolds &&
+                                    index <= lastNonTextIdx && !isSplitLeader,
                                 parentMessageIsStreaming = message.isStreaming,
                             )))
                         } else {
@@ -1083,7 +1097,8 @@ internal fun buildFlatChatItems(
                                     isLastBlockOfMessage = isLastText && isLastFragOfText,
                                     messageIsStreaming = message.isStreaming && isLastText,
                                     messageMarkdown = joinedMarkdown,
-                                    isTurnInternal = turnFolds && index <= lastNonTextIdx,
+                                    isTurnInternal = turnFolds &&
+                                        index <= lastNonTextIdx && !isSplitLeader,
                                     parentMessageIsStreaming = message.isStreaming,
                                 )))
                             }
@@ -1097,7 +1112,8 @@ internal fun buildFlatChatItems(
                     messageIsStreaming = message.isStreaming,
                     messageThinkingLevel = message.thinkingLevel,
                     isLastBlockOverall = block.id == lastBlockId,
-                    isTurnInternal = turnFolds && index <= lastNonTextIdx,
+                    isTurnInternal = turnFolds &&
+                        index <= lastNonTextIdx && !isSplitLeader,
                 )))
                 "info" -> out.add(dedupe(FlatChatItem.AssistantInfo(
                     messageId = message.id,
@@ -1118,7 +1134,14 @@ internal fun buildFlatChatItems(
                     // [T-zcode-turn-fold] Every tool of a folding turn hides
                     // at rest under the message's single AssistantTurnFold
                     // row (see AssistantTurnFold).
-                    isTurnInternal = turnFolds,
+                    // [B47-split-leader-visible] EXCEPT the split leader:
+                    // it suppresses its own row (the group row under B
+                    // stays the single toggle), so marking its tools
+                    // turn-internal hid them under a row that is never
+                    // emitted — the cards vanished the moment the user
+                    // sent a message mid-run. The leader's cards stay on
+                    // screen in every status (RUNNING or COMPLETED).
+                    isTurnInternal = turnFolds && !isSplitLeader,
                 )))
             }
         }
