@@ -103,7 +103,7 @@ class SplitTurnToolVisibilityTest {
         val visible = filterTurnInternalItems(items, emptyMap())
         assertEquals(
             "a finished non-split turn's tools hide at rest",
-            emptyList(),
+            emptyList<String>(),
             visible.filterIsInstance<FlatChatItem.AssistantToolUse>().map { it.block.id },
         )
     }

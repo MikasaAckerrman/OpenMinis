@@ -1,5 +1,6 @@
 package com.openminis.app.engine
 
+import com.openminis.app.tools.jsonObjectResourceKeys
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
