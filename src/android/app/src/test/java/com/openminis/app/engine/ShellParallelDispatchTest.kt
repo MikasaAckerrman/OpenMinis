@@ -99,3 +99,73 @@ class ShellParallelDispatchTest {
         assertEquals(emptySet<String>(), depsOf(nodes, "r2"))
     }
 }
+
+/**
+ * [B48-session-shell] The session-scoped key the production wiring
+ * (ChatViewModel's resourceKeysOf lambda) adds to every shell: one key per
+ * SESSION, so same-session shells take turns on the DAG instead of racing
+ * the executor's per-session mutex while holding CPU-gate slots, and
+ * cross-session shells (worker sessions) stay parallel. The file-conflict
+ * keys ride underneath unchanged.
+ */
+class SessionShellKeyTest {
+
+    /** The production wiring shape: base keys + the session-shell key. */
+    private fun sessionPlanner(sid: String) = ToolScheduler(
+        resourceKeysOf = { name, argsJson ->
+            val base = jsonObjectResourceKeys(name, argsJson)
+            if (name == "shell_execute") {
+                (base ?: emptySet()) + "session-shell:$sid"
+            } else base
+        },
+        maxConcurrent = 8,
+    )
+
+    private fun shell(id: String, command: String) =
+        ToolScheduler.SchedCall(id, "shell_execute", """{"command":"$command"}""")
+
+    private fun fileWrite(id: String, path: String) =
+        ToolScheduler.SchedCall(id, "file_write", """{"path":"$path"}""")
+
+    private fun depsOf(nodes: List<ToolScheduler.ReactiveNode>, id: String) =
+        nodes.first { it.call.id == id }.dependsOn
+
+    @Test
+    fun `two same-session shells take turns on the dag`() {
+        val nodes = sessionPlanner("s1").planReactive(
+            listOf(
+                shell("a", "ls -la"),
+                shell("b", "cat /etc/hostname"),
+            ),
+        )
+        // Same session, one /bin/sh: the second waits for the first on the
+        // session key instead of queueing at the executor's mutex with a
+        // held CPU-gate slot.
+        assertEquals(setOf("a"), depsOf(nodes, "b"))
+    }
+
+    @Test
+    fun `a lone shell in its own session waits on nothing`() {
+        // Cross-session parallelism is architectural: every session runs
+        // its OWN EngineAgentLoop with its OWN scheduler, so two worker
+        // sessions never land in one DAG. Each session's lone shell —
+        // stamped session-shell:<sid> by the wiring — starts immediately.
+        val s1Nodes = sessionPlanner("s1").planReactive(listOf(shell("a", "ls -la")))
+        val s2Nodes = sessionPlanner("s2").planReactive(listOf(shell("b", "ls -la")))
+        assertEquals(emptySet<String>(), depsOf(s1Nodes, "a"))
+        assertEquals(emptySet<String>(), depsOf(s2Nodes, "b"))
+    }
+
+    @Test
+    fun `the session key does not weaken file-conflict ordering`() {
+        val nodes = sessionPlanner("s1").planReactive(
+            listOf(
+                shell("a", "echo x > out.txt"),
+                fileWrite("w", "out.txt"),
+            ),
+        )
+        // The file key rides UNDERNEATH the session key: the write still
+        // waits for the shell that redirects into the same file.
+        assertEquals(setOf("a"), depsOf(nodes, "w"))
+    }
+}

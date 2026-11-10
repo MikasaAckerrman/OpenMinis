@@ -13420,7 +13420,25 @@ class ChatViewModel(
             gateway,
             registry,
             toolScheduler = com.openminis.app.engine.ToolScheduler(
-                resourceKeysOf = ::jsonObjectResourceKeys,
+                // [B48-session-shell] Every shell of THIS session carries a
+                // session-scoped key, read the same way the executor reads
+                // its dispatch sid ([activeSessionId]). The per-session
+                // mutex already serializes same-session shells on ONE
+                // /bin/sh (cd continuity) — two dispatched shells racing
+                // that mutex used to burn CPU-gate slots while WAITING
+                // (the vc162 incident: three shells queued at the mutex
+                // while the batch starved). The DAG now orders them
+                // directly: same-session shells take turns, cross-session
+                // shells (worker sessions) stay parallel, file-conflict
+                // keys ride unchanged underneath.
+                resourceKeysOf = { name, argsJson ->
+                    val base = jsonObjectResourceKeys(name, argsJson)
+                    if (name == "shell_execute") {
+                        (base ?: emptySet()) + "session-shell:$activeSessionId"
+                    } else {
+                        base
+                    }
+                },
                 // [T-parallel-agents] The same ceiling the executor uses.
                 maxConcurrent = com.openminis.app.engine.AgentConcurrency.parallel,
                 // [P1-io-concurrency] Disk/network tools outrun the subagent
