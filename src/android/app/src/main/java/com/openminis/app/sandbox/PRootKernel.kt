@@ -647,8 +647,14 @@ object PRootKernel {
         cmd.add("/sys")
 
         // Working directory
+        // [M-R3.3] The agent shell lands in the workspace bind (the M-R3
+        // norm: shell cwd /var/minis/workspace) — /root was the python-era
+        // default that made every relative path the model emits resolve
+        // OUTSIDE its own workspace. The bind is registered per-session
+        // before any exec; if it is ever absent, proot just falls back to
+        // the guest root, it does not fail.
         cmd.add("-w")
-        cmd.add("/root")
+        cmd.add("/var/minis/workspace")
 
         // User bind mounts
         for ((linuxPath, hostPath) in bindMounts) {

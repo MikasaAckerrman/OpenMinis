@@ -310,7 +310,10 @@ class PersistentShell(
         cmd.add("-b"); cmd.add("/dev")
         cmd.add("-b"); cmd.add("/proc")
         cmd.add("-b"); cmd.add("/sys")
-        cmd.add("-w"); cmd.add("/root")
+        // [M-R3.3] Agent shell cwd = the workspace bind (the M-R3 norm;
+        // see PRootKernel.buildProotCommand). The user-facing terminal
+        // keeps its own /root home.
+        cmd.add("-w"); cmd.add("/var/minis/workspace")
 
         // Apply this session's bind mounts (session-specific, not global)
         for ((linuxPath, hostPath) in sessionBindMounts) {
