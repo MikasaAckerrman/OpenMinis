@@ -266,9 +266,9 @@ object SearchTools {
     }
 
     /**
-     * Same gate for glob: the daemon matcher implements `*`/`?`/`**/` but
-     * NOT braces (`*.{kt,java}`) or bracket classes — those patterns stay
-     * on rg, which does expand them.
+     * Same gate for glob: the daemon matcher implements the star, question
+     * and double-star forms but NOT braces (`*.{kt,java}`) or bracket
+     * classes — those patterns stay on rg, which does expand them.
      */
     internal fun globRpcEligible(args: JSONObject): Boolean {
         val pattern = args.optString("pattern", "")
