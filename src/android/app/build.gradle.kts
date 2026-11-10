@@ -68,7 +68,11 @@ android {
         // loopback RPC (no rg fork), --workspace + lazy restart on session
         // switch, agent shell cwd = /var/minis/workspace.
         // 7ec22019..50c4f5dd, Unit Tests 42864018744.
-        versionCode = 161
+        // vc162: B47 — shell_execute declares its file surface (the false
+        // global barrier is gone; independent commands parallel under the
+        // CPU gate), split-leader cards never vanish on mid-run inject.
+        // 50c4f5dd..db1d6fa9, Unit Tests 42885836735.
+        versionCode = 162
         // vc69: 97 commits — kotlincheck infra + strict preflight (types/enums,
         // parallel-batch gate) + atomic tool budget + budget footer + symmetric
         // supermemory lifecycle (FPS guard) + thermal telemetry + review fixes
