@@ -121,6 +121,32 @@ object SearchTools {
                         "(search inside /var/minis/workspace)", false)
             }
 
+            // [M-R3.3] Daemon path first: the rust daemon greps the session
+            // workspace in-memory — no fork, no pipes (the B45 deadlock
+            // class). The output is re-rendered into the rg shape, so the
+            // model sees ONE format whichever path answered. Anything the
+            // daemon cannot serve (not eligible, daemon down, wrong
+            // workspace, business error) falls through to the local fork.
+            if (grepRpcEligible(args)) {
+                val rel = workspaceRelative(guestPath)
+                if (rel != null &&
+                    com.openminis.app.sandbox.TelegramVaultManager
+                        .ensureWorkspaceFor(sessionId, context)
+                ) {
+                    val filesOnly = args.optBoolean("files_with_matches", false)
+                    val rpcArgs = org.json.JSONObject()
+                        .put("pattern", pattern)
+                        .put("ignore_case", !args.optBoolean("case_sensitive", false))
+                    if (rel.isNotEmpty()) rpcArgs.put("path", rel)
+                    val envelope = com.openminis.app.sandbox.MinisdToolClient
+                        .toolsCall(context, GREP_NAME, rpcArgs)
+                    if (envelope != null) {
+                        return@withContext ToolExecutionResult(
+                            formatGrepResult(envelope, maxResults, filesOnly), true)
+                    }
+                }
+            }
+
             val argv = mutableListOf<String>()
             if (!args.optBoolean("case_sensitive", false)) argv.add("-i")
             if (args.optBoolean("files_with_matches", false)) argv.add("-l")
@@ -161,6 +187,26 @@ object SearchTools {
                         "(search inside /var/minis/workspace)", false)
             }
 
+            // [M-R3.3] Daemon path first — same contract as grep's route
+            // above (eligibility gate, workspace-relative translation,
+            // rg-shaped output, local fork fallback).
+            if (globRpcEligible(args)) {
+                val rel = workspaceRelative(guestPath)
+                if (rel != null &&
+                    com.openminis.app.sandbox.TelegramVaultManager
+                        .ensureWorkspaceFor(sessionId, context)
+                ) {
+                    val rpcArgs = org.json.JSONObject().put("pattern", pattern)
+                    if (rel.isNotEmpty()) rpcArgs.put("path", rel)
+                    val envelope = com.openminis.app.sandbox.MinisdToolClient
+                        .toolsCall(context, GLOB_NAME, rpcArgs)
+                    if (envelope != null) {
+                        return@withContext ToolExecutionResult(
+                            formatGlobResult(envelope, maxResults), true)
+                    }
+                }
+            }
+
             val argv = mutableListOf<String>()
             argv += listOf("--files", "--glob", pattern)
             argv += listOf("-m", maxResults.toString())
@@ -199,5 +245,99 @@ object SearchTools {
             code == 124 -> ToolExecutionResult(body, false)
             else -> ToolExecutionResult("rg error (exit $code):\n$body", false)
         }
+    }
+
+    // ── [M-R3.3] RPC routing helpers ────────────────────────────────────
+    // Pure, unit-pinned decision + rendering logic for the daemon path.
+
+    /**
+     * True when the args shape maps 1:1 onto the daemon's grep contract:
+     * the daemon search is a LITERAL substring scan with a fixed 200-hit
+     * cap — regex syntax, context lines and the glob pre-filter have no
+     * daemon equivalent, and routing them would silently change results.
+     * `case_sensitive` and `files_with_matches` map cleanly (ignore_case
+     * inversion / file dedupe in the formatter).
+     */
+    internal fun grepRpcEligible(args: JSONObject): Boolean {
+        if (args.optInt("context", 0) > 0) return false
+        if (args.optBoolean("pcre", false)) return false
+        if (!args.optString("glob", "").isBlank()) return false
+        return isLiteralPattern(args.optString("pattern", ""))
+    }
+
+    /**
+     * Same gate for glob: the daemon matcher implements `*`/`?`/`**/` but
+     * NOT braces (`*.{kt,java}`) or bracket classes — those patterns stay
+     * on rg, which does expand them.
+     */
+    internal fun globRpcEligible(args: JSONObject): Boolean {
+        val pattern = args.optString("pattern", "")
+        if (pattern.isEmpty()) return false
+        return !pattern.any { it in "{}[]" }
+    }
+
+    /** A regex metachar in the pattern means rg semantics, not substring. */
+    internal fun isLiteralPattern(pattern: String): Boolean =
+        pattern.none { it in "\\^$.|?*+()[]{}" }
+
+    /**
+     * Guest path → daemon workspace-relative path. The daemon resolves
+     * relative args against ITS ONE --workspace root, which IS the session
+     * workspace — so only guest paths inside /var/minis/workspace (plus
+     * the bare /var/minis default, which [resolveHost] already maps to the
+     * workspace) are servable; everything else keeps the local rg path
+     * with the exact pre-M-R3.3 semantics.
+     */
+    internal fun workspaceRelative(guestPath: String): String? {
+        val abs = (if (guestPath.startsWith("/")) guestPath else "/var/minis/$guestPath")
+            .trimEnd('/')
+        if (abs == "/var/minis" || abs.isEmpty() || abs == "/var/minis/workspace") return ""
+        if (abs.startsWith("/var/minis/workspace/")) {
+            return abs.removePrefix("/var/minis/workspace/")
+        }
+        return null
+    }
+
+    /**
+     * Daemon grep envelope → the rg-shaped text the model has always
+     * seen: `file:line:text` lines (paths are workspace-relative, exactly
+     * what a follow-up file_read wants). `files_with_matches` dedupes to
+     * the `-l` shape. The daemon's 200-hit cap surfaces as an explicit
+     * truncation note instead of a silent cut.
+     */
+    internal fun formatGrepResult(envelope: JSONObject, maxResults: Int, filesOnly: Boolean): String {
+        val matches = envelope.optJSONArray("matches") ?: return "(no matches)"
+        if (matches.length() == 0) return "(no matches)"
+        val truncated = envelope.optBoolean("truncated", false)
+        if (filesOnly) {
+            val files = LinkedHashSet<String>()
+            for (i in 0 until matches.length()) {
+                matches.optJSONObject(i)?.let { files.add(it.optString("file")) }
+            }
+            val head = files.take(maxResults).joinToString("\n")
+            return if (truncated) {
+                "$head\n(more files contain matches; refine the pattern)"
+            } else head
+        }
+        val lines = ArrayList<String>(matches.length())
+        for (i in 0 until matches.length()) {
+            val m = matches.optJSONObject(i) ?: continue
+            lines.add("${m.optString("file")}:${m.optInt("line")}:${m.optString("text")}")
+        }
+        val head = lines.take(maxResults).joinToString("\n")
+        return if (truncated) {
+            "$head\n(more matches exist; refine the pattern or narrow the path)"
+        } else head
+    }
+
+    /** Daemon glob envelope → newline-joined workspace-relative paths. */
+    internal fun formatGlobResult(envelope: JSONObject, maxResults: Int): String {
+        val matches = envelope.optJSONArray("matches") ?: return "(no matches)"
+        if (matches.length() == 0) return "(no matches)"
+        val paths = (0 until matches.length()).mapNotNull { matches.optString(it) }
+        val head = paths.take(maxResults).joinToString("\n")
+        return if (envelope.optBoolean("truncated", false)) {
+            "$head\n(more paths match; refine the pattern)"
+        } else head
     }
 }

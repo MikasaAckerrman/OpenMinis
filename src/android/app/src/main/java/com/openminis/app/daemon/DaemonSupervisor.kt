@@ -48,6 +48,16 @@ class DaemonSupervisor(
      * the vault wiring always passes filesDir/tg-vault.
      */
     private val storage: File? = null,
+    /**
+     * [M-R3.3] Optional `--workspace` host directory — the root the
+     * workspace-rooted engine tools (multi_file_read/grep/glob) resolve
+     * relative paths against. None = those tools answer the daemon's
+     * honest per-call "workspace root is not configured" error. The vault
+     * wiring starts WITHOUT it (the active session is unknown at boot)
+     * and binds it lazily through [TelegramVaultManager.ensureWorkspaceFor],
+     * which restarts the daemon when the session's workspace changes.
+     */
+    private val workspace: File? = null,
     private val secretProvider: () -> String? = { null },
     private val starter: (List<String>) -> Process = { command ->
         ProcessBuilder(command).start()
@@ -97,6 +107,10 @@ class DaemonSupervisor(
             command.add("--storage")
             command.add(it.absolutePath)
         }
+        workspace?.let {
+            command.add("--workspace")
+            command.add(it.absolutePath)
+        }
         val p = runCatching { starter(command) }.getOrNull() ?: return false
         // One-shot pipe write (≤64 KiB by contract — cannot block), then
         // close stdin unconditionally: the daemon reads one line, and a
@@ -138,6 +152,30 @@ class DaemonSupervisor(
 
     /** Delay to wait before the next restart, from the last death. */
     fun nextRestartDelayMs(): Long = lastRestartDelayMs.get()
+
+    /**
+     * [M-R3.3] Bounded SYNCHRONOUS stop for the workspace restart: the
+     * replacement daemon binds the SAME port, so the caller must be sure
+     * the old process is gone before spawning it — the async [stop]
+     * leaves a window where 7824 is still held and the new start dies
+     * EADDRINUSE. Caller-thread destroy/waitFor is the PersistentShell
+     * 3.4s-freeze lesson — this must stay OFF main; the only intended
+     * caller is the workspace sync on Dispatchers.IO. Bound: SIGTERM,
+     * 2 s backstop, SIGKILL, 500 ms reaping.
+     */
+    @Synchronized
+    fun stopAndWait() {
+        val p = processRef.getAndSet(null) ?: return
+        startedAtMs.set(0)
+        runCatching {
+            p.destroy() // SIGTERM
+            if (!p.waitFor(STOP_BACKSTOP_MS, TimeUnit.MILLISECONDS)) {
+                p.destroyForcibly() // SIGKILL
+                p.waitFor(500, TimeUnit.MILLISECONDS)
+            }
+        }
+        backoff.onCleanStop()
+    }
 
     private fun recordDeath(p: Process) {
         runCatching { p.exitValue() } // reap the child so it does not linger as a zombie

@@ -195,6 +195,30 @@ object TelegramVaultManager {
      */
     @Volatile private var rustSupervisor: DaemonSupervisor? = null
 
+    /**
+     * The rust daemon starter factory — one builder, two owners (boot
+     * start and the [M-R3.3] workspace restart): merged stderr, daemon
+     * log next to the python vault's server.log, TG env credentials.
+     */
+    private fun rustStarter(context: Context, vault: File): (List<String>) -> Process = { command ->
+        val pb = ProcessBuilder(command).apply {
+            // [M-R3] Observability per the spec: the daemon log
+            // next to the python vault's server.log. The error
+            // stream is merged, so EADDRINUSE and the stdin
+            // secret-refusal land in the file, not in limbo.
+            redirectErrorStream(true)
+            redirectOutput(File(vault, "minisd.log"))
+        }
+        try {
+            val repo = com.openminis.app.data.repository.EnvVarRepository(context)
+            repo.getValue("TG_API_ID")?.let { pb.environment()["TG_API_ID"] = it }
+            repo.getValue("TG_API_HASH")?.let { pb.environment()["TG_API_HASH"] = it }
+        } catch (e: Exception) {
+            Log.w(TAG, "env-var read failed (daemon serves the session-error surface): ${e.message}")
+        }
+        pb.start()
+    }
+
     private fun ensureRustStarted(context: Context) {
         val vault = vaultDir(context)
         val supervisor = synchronized(this) {
@@ -202,24 +226,7 @@ object TelegramVaultManager {
                 nativeLibraryDir = context.applicationInfo.nativeLibraryDir,
                 secretProvider = { authSecret(context).ifEmpty { null } },
                 storage = vault,
-                starter = { command ->
-                    val pb = ProcessBuilder(command).apply {
-                        // [M-R3] Observability per the spec: the daemon log
-                        // next to the python vault's server.log. The error
-                        // stream is merged, so EADDRINUSE and the stdin
-                        // secret-refusal land in the file, not in limbo.
-                        redirectErrorStream(true)
-                        redirectOutput(File(vault, "minisd.log"))
-                    }
-                    try {
-                        val repo = com.openminis.app.data.repository.EnvVarRepository(context)
-                        repo.getValue("TG_API_ID")?.let { pb.environment()["TG_API_ID"] = it }
-                        repo.getValue("TG_API_HASH")?.let { pb.environment()["TG_API_HASH"] = it }
-                    } catch (e: Exception) {
-                        Log.w(TAG, "env-var read failed (daemon serves the session-error surface): ${e.message}")
-                    }
-                    pb.start()
-                },
+                starter = rustStarter(context, vault),
             ).also { rustSupervisor = it }
         }
         if (supervisor.isAlive()) return
@@ -251,6 +258,64 @@ object TelegramVaultManager {
             } catch (e: Exception) {
                 Log.e(TAG, "minisd start failed: ${e.message}")
             }
+        }
+    }
+
+    /**
+     * [M-R3.3] The host workspace the running rust daemon was last given
+     * via --workspace (null = running without one, or the restart failed).
+     * Only this process spawns the daemon, so in-process state is
+     * authoritative — no contract extension needed to query it.
+     */
+    @Volatile private var rustWorkspacePath: String? = null
+
+    /**
+     * [M-R3.3] Make the daemon's --workspace match THIS session's host
+     * workspace, lazily: the first workspace-rooted tool call after a
+     * session switch pays the restart, not the switch itself (a restart
+     * at switch time would fire on every background session touch).
+     *
+     * True = the daemon is alive with the right workspace; false = keep
+     * the caller on its local fallback path (search degrades to rg, it
+     * never degrades to a wrong-session answer — a stale workspace would
+     * grep ANOTHER session's files, the one outcome this must not have).
+     *
+     * Off main: stopAndWait bounds at ~2.5 s, plus the same 600 ms bind
+     * settle [ensureRustStarted] uses.
+     */
+    fun ensureWorkspaceFor(sessionId: String, context: Context): Boolean {
+        if (activeVaultImpl(vaultDir(context)) != IMPL_RUST) return false
+        val host = com.openminis.app.sandbox.PRootKernel.resolveSessionHostPath(
+            sessionId, "/var/minis/workspace", context,
+        ) ?: return false
+        runCatching { host.mkdirs() }
+        val path = host.absolutePath
+        if (rustWorkspacePath == path && rustSupervisor?.isAlive() == true) return true
+        synchronized(this) {
+            if (rustWorkspacePath == path && rustSupervisor?.isAlive() == true) return true
+            // Graceful-stop the current owner of 7824 SYNCHRONOUSLY: the
+            // replacement binds the same port, an async stop leaves a
+            // window where the old process still holds it.
+            rustSupervisor?.stopAndWait()
+            val supervisor = DaemonSupervisor(
+                nativeLibraryDir = context.applicationInfo.nativeLibraryDir,
+                secretProvider = { authSecret(context).ifEmpty { null } },
+                storage = vaultDir(context),
+                workspace = host,
+                starter = rustStarter(context, vaultDir(context)),
+            ).also { rustSupervisor = it }
+            val started = supervisor.start()
+            // Same settle contract as ensureRustStarted: let a fast
+            // bind failure surface before the caller trusts the port.
+            if (started) Thread.sleep(600)
+            val alive = started && supervisor.isAlive()
+            rustWorkspacePath = if (alive) path else null
+            if (alive) {
+                Log.i(TAG, "minisd workspace bound: $path")
+            } else {
+                Log.w(TAG, "minisd workspace restart failed; workspace-rooted search falls back to rg")
+            }
+            return alive
         }
     }
 

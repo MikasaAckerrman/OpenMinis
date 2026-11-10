@@ -54,10 +54,16 @@ class DaemonSupervisorTest {
             File(dir, DaemonSupervisor.BINARY_NAME).writeText("ELF-PLACEHOLDER")
         }
 
-    private fun supervisor(libDir: File, storage: File?, secret: String?): DaemonSupervisor =
+    private fun supervisor(
+        libDir: File,
+        storage: File?,
+        secret: String?,
+        workspace: File? = null,
+    ): DaemonSupervisor =
         DaemonSupervisor(
             nativeLibraryDir = libDir.absolutePath,
             storage = storage,
+            workspace = workspace,
             secretProvider = { secret },
             starter = { command ->
                 lastCommand = command
@@ -115,5 +121,45 @@ class DaemonSupervisorTest {
             starter = { throw IllegalStateException("starter must never be reached") },
         )
         assertFalse(sup.start())
+    }
+
+    @Test
+    fun `workspace restart command carries the workspace directory after storage`() {
+        // [M-R3.3] The workspace swap restarts the daemon with the session
+        // workspace — the flag must ride the SAME command shape the vault
+        // wiring pins above, ordered after --storage.
+        val libDir = nativeLibDir()
+        val storage = tmp.newFolder("tg-vault")
+        val workspace = tmp.newFolder("workspace")
+        assertTrue(supervisor(libDir, storage, "secret-hex", workspace).start())
+
+        assertEquals(
+            listOf(
+                File(libDir, DaemonSupervisor.BINARY_NAME).absolutePath,
+                "vault",
+                "--port", "7824",
+                "--storage", storage.absolutePath,
+                "--workspace", workspace.absolutePath,
+            ),
+            lastCommand,
+        )
+    }
+
+    @Test
+    fun `stopAndWait frees the supervisor synchronously for the port swap`() {
+        // [M-R3.3] The workspace restart binds the SAME port: stopAndWait
+        // must null the tracked process BEFORE returning — the async stop()
+        // would leave a window where the replacement start races a corpse
+        // still holding 7824.
+        val sup = supervisor(nativeLibDir(), tmp.newFolder("tg-vault"), "secret-hex")
+        assertTrue(sup.start())
+        assertTrue(sup.isAlive())
+
+        sup.stopAndWait()
+
+        assertFalse(sup.isAlive())
+        // The restart path depends on a fresh start after the swap.
+        assertTrue(sup.start())
+        assertTrue(sup.isAlive())
     }
 }
