@@ -25,20 +25,26 @@ import org.junit.Test
  */
 class MinisdToolClientTest {
 
+    /** The bare JSON-RPC envelope — the BODY the fake wire server sends
+     *  (a full HTTP response must never be nested inside another one: the
+     *  parser splits at the FIRST \r\n\r\n and would see the inner
+     *  preamble instead of JSON — the exact bug runs 3-5 caught). */
+    private fun jsonEnvelope(text: String): String =
+        JSONObject()
+            .put("jsonrpc", "2.0")
+            .put("id", 7)
+            .put(
+                "result",
+                JSONObject().put(
+                    "content",
+                    JSONArray().put(JSONObject().put("type", "text").put("text", text)),
+                ),
+            )
+            .toString()
+
     /** A canned HTTP 200 response carrying [text] as result.content[0].text. */
     private fun envelopeWith(text: String): String =
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n" +
-            JSONObject()
-                .put("jsonrpc", "2.0")
-                .put("id", 7)
-                .put(
-                    "result",
-                    JSONObject().put(
-                        "content",
-                        JSONArray().put(JSONObject().put("type", "text").put("text", text)),
-                    ),
-                )
-                .toString()
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n" + jsonEnvelope(text)
 
     @Test
     fun `envelope parse walks the headers to result content text`() {
@@ -121,7 +127,9 @@ class MinisdToolClientTest {
                         off += n
                     }
                     synchronized(seen) { seen.append(headers).append(String(bodyChars, 0, off)) }
-                    val resp = envelopeWith("""{"ok":true}""")
+                    // The BODY is the bare envelope — headers ride the
+                    // server's own write below, never nested.
+                    val resp = jsonEnvelope("""{"ok":true}""")
                     val respBytes = resp.toByteArray(Charsets.UTF_8)
                     client.getOutputStream().apply {
                         write(
