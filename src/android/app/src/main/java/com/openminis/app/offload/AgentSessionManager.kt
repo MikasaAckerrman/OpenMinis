@@ -108,7 +108,23 @@ internal object AgentSessionManager {
         )
     }
 
-    /** Delete a session and its messages. */
+    /**
+     * Delete a session and EVERY resource it owns. [B48-worker-cleanup]
+     * completed the teardown: the store clears and the DB row existed, but
+     * the session's OS-level and cache-level resources leaked forever —
+     * every ephemeral worker that had run one shell_execute kept its
+     * libproot process, its /bin/sh child, the PersistentShell-reader
+     * thread and the shells/mutexes registry entries; the cached
+     * ChatViewModel stayed in HeadlessChatRunner.providers; the
+     * filesDir/minis-sessions/<sid> directory tree (workspace, artifacts)
+     * stayed on disk. The device incident vc162 found 1552 such leftover
+     * directories draining RAM and flash.
+     *
+     * Order matters: the shell terminates FIRST (its process may still be
+     * streaming output into a ViewModel that is invalidated next), then
+     * the ViewModel cache releases (refuses only if a stream is somehow
+     * still live — that caller logs the refusal), then the on-disk tree.
+     */
     suspend fun deleteSession(
         context: Context,
         sessionId: String,
@@ -119,6 +135,26 @@ internal object AgentSessionManager {
         AgentRuntimePolicyStore.clear(sessionId)
         AgentWorkspaceStore.clear(sessionId)
         com.openminis.app.tools.AgentWritePolicyStore.clear(sessionId)
+        // [B48-worker-cleanup] OS-level teardown: proot process, /bin/sh
+        // child, reader thread, shells/mutexes/lastInjectedKeys entries.
+        com.openminis.app.sandbox.ExecutionCoordinator.sessionDidTerminate(sessionId)
+        // Cache-level teardown: the headless provider and the process-wide
+        // ViewModel store drop this session's instance (no-op when absent;
+        // refuses and keeps the cache while a stream is somehow live).
+        val released = HeadlessChatRunner.invalidateViewModel(sessionId)
+        if (!released) {
+            android.util.Log.w(
+                "AgentSessionManager",
+                "[$sessionId] ViewModel cache not released - a stream was live; shell already terminated",
+            )
+        }
+        // Disk teardown: the session directory tree (workspace + artifacts).
+        runCatching {
+            java.io.File(context.filesDir, "minis-sessions/$sessionId")
+                .deleteRecursively()
+        }.onFailure {
+            android.util.Log.w("AgentSessionManager", "[$sessionId] dir cleanup failed: ${it.message}")
+        }
         val app = context.applicationContext as com.openminis.app.MinisApp
         app.chatRepository.deleteSession(sessionId)
     }
