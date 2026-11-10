@@ -64,7 +64,11 @@ android {
         // vc160: B46-plan-sheet ships in the APK — top-bar plan chip
         // [n/total] + PlanSheet bottom sheet, reactive via
         // TodoStore.observe. 7ae25e92..7ec22019, Unit Tests 42704091253.
-        versionCode = 160
+        // vc161: M-R3.3 — grep/glob route to the minisd daemon over
+        // loopback RPC (no rg fork), --workspace + lazy restart on session
+        // switch, agent shell cwd = /var/minis/workspace.
+        // 7ec22019..50c4f5dd, Unit Tests 42864018744.
+        versionCode = 161
         // vc69: 97 commits — kotlincheck infra + strict preflight (types/enums,
         // parallel-batch gate) + atomic tool budget + budget footer + symmetric
         // supermemory lifecycle (FPS guard) + thermal telemetry + review fixes
