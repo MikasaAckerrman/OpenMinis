@@ -72,6 +72,11 @@ object DeviceGuard {
 
     private fun apply(thermalStatus: Int, lowRam: Boolean) {
         val divider = dividerFor(thermalStatus, lowRam)
+        // [B48-thermal-steps] The raw status feeds the stepped ceilings in
+        // AgentConcurrency (SEVERE -> 1 worker, MODERATE -> 2, background
+        // single-filed) — division alone left three workers on a throttling
+        // chip in the vc162 incident.
+        AgentConcurrency.thermalStatus = thermalStatus
         if (divider != AgentConcurrency.thermalDivider) {
             AgentConcurrency.thermalDivider = divider
             Log.w(

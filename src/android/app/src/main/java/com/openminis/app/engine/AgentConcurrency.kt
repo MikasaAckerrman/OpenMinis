@@ -28,6 +28,18 @@ object AgentConcurrency {
     @Volatile
     var thermalDivider: Int = 1
 
+    /**
+     * [B48-thermal-steps] The raw PowerManager thermal status, published
+     * by [DeviceGuard.apply] — the vc162 incident showed divider division
+     * alone left THREE workers running at THERMAL_STATUS_MODERATE (6/2=3):
+     * the ptrace storm saturated every core and the device throttled
+     * harder. The ceilings now step on the STATUS itself (literals keep
+     * this file JVM-pinnable): SEVERE(4)+ -> one foreground worker,
+     * MODERATE(2)+ -> two, background work single-filed at MODERATE+.
+     */
+    @Volatile
+    var thermalStatus: Int = 0
+
     /** How many subagents may run in the foreground at the same time. */
     fun parallelCeiling(cores: Int): Int = when {
         cores >= 8 -> 6
@@ -45,13 +57,21 @@ object AgentConcurrency {
     /** The cores of the device the app runs on. */
     fun deviceCores(): Int = Runtime.getRuntime().availableProcessors()
 
-    /** Foreground ceiling for this device, thermal-clamped. */
+    /** Foreground ceiling for this device, thermal-stepped. */
     val parallel: Int
-        get() = (parallelCeiling(deviceCores()) / thermalDivider).coerceAtLeast(1)
+        get() = when {
+            thermalStatus >= 4 -> 1 // PowerManager.THERMAL_STATUS_SEVERE and up
+            thermalStatus >= 2 -> 2 // PowerManager.THERMAL_STATUS_MODERATE and up
+            else -> (parallelCeiling(deviceCores()) / thermalDivider).coerceAtLeast(1)
+        }
 
-    /** Background ceiling for this device, thermal-clamped. */
+    /** Background ceiling for this device, thermal-stepped: no parallel
+     *  background work at all while the chip is above moderate. */
     val background: Int
-        get() = (backgroundCeiling(deviceCores()) / thermalDivider).coerceAtLeast(1)
+        get() = when {
+            thermalStatus >= 2 -> 1
+            else -> (backgroundCeiling(deviceCores()) / thermalDivider).coerceAtLeast(1)
+        }
 
     /**
      * [P1-io-concurrency] Ceiling for DISK/NETWORK tools (file_read,

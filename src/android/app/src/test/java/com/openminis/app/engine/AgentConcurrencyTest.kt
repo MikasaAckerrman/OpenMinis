@@ -48,6 +48,34 @@ class AgentConcurrencyTest {
         assertTrue("background=$background parallel=$parallel", background < parallel)
     }
 
+    // [B48-thermal-steps] The vc162 incident: divider division alone left
+    // three workers running at THERMAL_STATUS_MODERATE. The ceilings now
+    // step on the raw status — each pin restores the previous status so
+    // test-order changes cannot poison the range pins above.
+    @Test
+    fun `moderate thermal means two workers and single-filed background`() {
+        val prev = AgentConcurrency.thermalStatus
+        try {
+            AgentConcurrency.thermalStatus = 2 // THERMAL_STATUS_MODERATE
+            assertEquals(2, AgentConcurrency.parallel)
+            assertEquals(1, AgentConcurrency.background)
+        } finally {
+            AgentConcurrency.thermalStatus = prev
+        }
+    }
+
+    @Test
+    fun `severe thermal means one worker`() {
+        val prev = AgentConcurrency.thermalStatus
+        try {
+            AgentConcurrency.thermalStatus = 4 // THERMAL_STATUS_SEVERE
+            assertEquals(1, AgentConcurrency.parallel)
+            assertEquals(1, AgentConcurrency.background)
+        } finally {
+            AgentConcurrency.thermalStatus = prev
+        }
+    }
+
     @Test
     fun `io ceiling outruns the agent ceiling on every device`() {
         assertEquals(16, AgentConcurrency.ioParallelCeiling(8))
