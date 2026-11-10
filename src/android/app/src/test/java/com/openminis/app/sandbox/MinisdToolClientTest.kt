@@ -128,20 +128,26 @@ class MinisdToolClientTest {
             server.close()
         }
         try {
-            val body = MinisdToolClient.rawCall(
-                "test-secret", "grep", """{"pattern":"needle"}""",
-                port = server.localPort,
+            // The RESPONSE side goes through the real envelope: the raw
+            // body carries JSON-escaped inner quotes, so string-matching
+            // it would pin an implementation detail — parse it instead.
+            val payload = MinisdToolClient.toolsCallVia(
+                { tool, argsJson ->
+                    MinisdToolClient.rawCall("test-secret", tool, argsJson, port = server.localPort)
+                },
+                "grep",
+                JSONObject("""{"pattern":"needle"}"""),
             )!!
-            assertTrue(body.contains("\"ok\":true"))
+            assertTrue(payload.optBoolean("ok"))
 
             val request = seen.toString()
-            val payload = request.substringAfter("\n\n")
+            val wireBody = request.substringAfter("\n\n")
             assertTrue(request.startsWith("POST /mcp HTTP/1.1\n"))
             assertTrue(request.contains("Authorization: Bearer test-secret\n"))
             assertTrue(request.contains("Connection: close\n"))
-            assertTrue(request.contains("Content-Length: ${payload.toByteArray(Charsets.UTF_8).size}\n"))
-            assertTrue(payload.contains("\"name\":\"grep\""))
-            assertTrue(payload.contains("\"pattern\":\"needle\""))
+            assertTrue(request.contains("Content-Length: ${wireBody.toByteArray(Charsets.UTF_8).size}\n"))
+            assertTrue(wireBody.contains("\"name\":\"grep\""))
+            assertTrue(wireBody.contains("\"pattern\":\"needle\""))
         } finally {
             server.close()
         }
