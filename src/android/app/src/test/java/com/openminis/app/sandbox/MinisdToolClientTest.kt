@@ -146,17 +146,22 @@ class MinisdToolClientTest {
             // The RESPONSE side goes through the real envelope: the raw
             // body carries JSON-escaped inner quotes, so string-matching
             // it would pin an implementation detail — parse it instead.
+            val rawBody = java.util.concurrent.atomic.AtomicReference<String?>()
             val payload = MinisdToolClient.toolsCallVia(
                 { tool, argsJson ->
                     MinisdToolClient.lastFailure = null
-                    MinisdToolClient.rawCall("test-secret", tool, argsJson, port = server.localPort)
+                    val body = MinisdToolClient.rawCall(
+                        "test-secret", tool, argsJson, port = server.localPort,
+                    )
+                    rawBody.set(body?.take(400))
+                    body
                 },
                 "grep",
                 JSONObject("""{"pattern":"needle"}"""),
             )
             assertNotNull(
                 "transport returned null; client failure: ${MinisdToolClient.lastFailure}; " +
-                    "server failure: ${serverError.get()}",
+                    "server failure: ${serverError.get()}; raw body head: <${rawBody.get()}>",
                 payload,
             )
             assertTrue(payload!!.optBoolean("ok"))
