@@ -382,7 +382,11 @@ class ToolSchedulerHierarchyTest {
     }
 
     @Test
-    fun `a global shell still hermetically separates the reactive graph`() {
+    fun `an independent shell no longer seals the reactive graph`() {
+        // [B47-shell-parallel] "ls" declares an EMPTY key set: no deps in
+        // either direction. The shells' old GLOBAL barrier serialized
+        // every batch that contained one (the device report: "one tool
+        // works, the others never even start").
         val nodes = realPlanner().planReactive(
             listOf(
                 fileRead("r1", "a.rs"),
@@ -390,8 +394,25 @@ class ToolSchedulerHierarchyTest {
                 fileRead("r2", "b.rs"),
             ),
         )
+        assertEquals(emptySet<String>(), depsOf(nodes, "sh"))
+        assertEquals(emptySet<String>(), depsOf(nodes, "r2"))
+    }
+
+    @Test
+    fun `a shell writing a file still serializes with file tools on it`() {
+        // [B47-shell-parallel] The safety half of the directive: the
+        // command's redirect target declares fs:a.rs, the shell is a
+        // WRITE on it — the earlier read and the later write keep their
+        // model-order edges.
+        val nodes = realPlanner().planReactive(
+            listOf(
+                fileRead("r1", "a.rs"),
+                call("sh", "shell_execute", """{"command":"echo x > a.rs"}"""),
+                fileWrite("w", "a.rs"),
+            ),
+        )
         assertEquals(setOf("r1"), depsOf(nodes, "sh"))
-        assertEquals(setOf("sh"), depsOf(nodes, "r2"))
+        assertEquals(setOf("sh"), depsOf(nodes, "w"))
     }
 
     @Test
@@ -489,8 +510,8 @@ class ToolSchedulerBuilderParityTest {
         calls().forEach { builder.add(it) }
         val nodes = builder.build()
         assertEquals(nodes.size, builder.size)
-        // read + grep are immediate; shell is the hermetic barrier; the
-        // write chains on read+grep; the last read chains on the shell.
-        assertEquals(2, nodes.count { it.dependsOn.isEmpty() })
+        // [B47-shell-parallel] read, grep, the shell (empty surface) and
+        // the last read are immediate; the write chains on read+grep.
+        assertEquals(4, nodes.count { it.dependsOn.isEmpty() })
     }
 }

@@ -75,12 +75,22 @@ class ToolScheduler(
                 "todo_write",
             ) -> Effect.WRITE
 
+            // [B47-shell-parallel] A shell can write anything, but its
+            // command text now DECLARES its file surface
+            // (jsonObjectResourceKeys -> shellResourceKeys): independent
+            // commands run parallel under the CPU gate, while a shell and
+            // a file tool naming the same extracted path still serialize.
+            // The old undeclared GLOBAL lock serialized every shell
+            // against everything — the device report's "one tool works,
+            // the others never even start".
+            toolName == "shell_execute" -> Effect.WRITE
+
             toolName in setOf(
                 "ask_user", "plan_submit", "subagent_task",
                 "bg_steer", "turn_timer",
             ) -> Effect.META
 
-            else -> Effect.GLOBAL // shell_execute, bg_run, browser_use, mcp,
+            else -> Effect.GLOBAL // bg_run, browser_use, mcp,
             // root_shell, spawn_*, run_graph, session_gc, anything unknown
         }
 
@@ -105,6 +115,9 @@ class ToolScheduler(
             // the memory tier: one shared store key, reads and writes.
             "memory_get", "supermemory_search", "memory_blocks_view",
             "todo_read", "memory_write", "memory_blocks_edit", "todo_write",
+            // [B47-shell-parallel] the command text declares its file
+            // surface (shellResourceKeys) — possibly an EMPTY set.
+            "shell_execute",
             // + every "tg_*" name (prefix rule in the extractor).
         )
 

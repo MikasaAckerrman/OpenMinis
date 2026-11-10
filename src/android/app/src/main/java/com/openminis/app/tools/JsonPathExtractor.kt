@@ -103,9 +103,90 @@ internal fun jsonObjectResourceKeys(toolName: String, argsJson: String): Set<Str
         // The Telegram vault surface (MCP over 127.0.0.1:7824).
         toolName.startsWith("tg_") -> tgResourceKeys(args)
 
+        // [B47-shell-parallel] A shell declares its own text's file
+        // surface instead of the old undeclared GLOBAL lock — see
+        // [shellResourceKeys]. Missing/blank command: empty set (the call
+        // is schedulable and touches nothing the platform can see).
+        toolName == "shell_execute" ->
+            args.optString("command", "").takeIf { it.isNotBlank() }
+                ?.let { shellResourceKeys(it) }
+                ?: emptySet()
+
         else -> null
     }
 }.getOrNull() ?: null
+
+// ── [B47-shell-parallel] The shell command's file surface ───────────────
+
+/** Absolute paths (2+ segments) and relative paths with a slash — the
+ *  same shape TaskConflictDetector walks for task text, verbatim. */
+private val SHELL_PATH_REGEX = Regex(
+    """(?:/[\p{L}\p{N}_@.+-]+){2,}|[\p{L}\p{N}_@.+-]+(?:/[\p{L}\p{N}_@.+-]+)+""",
+)
+
+/** [B45-bare-files] Bare filenames with a whitelist extension ("a.txt",
+ *  "test.py") — prose stays out the same way the task-text extractor
+ *  keeps it out. */
+private val SHELL_BARE_FILE_REGEX = Regex(
+    """[\p{L}\p{N}_@+-]+\.(?:kt|java|py|txt|md|rs|toml|json|ya?ml|xml|html?|css|js|jsx|ts|tsx|sh|kts|gradle|properties|csv|tsv|log|ini|cfg|conf|sql|c|h|cpp|hpp|go|rb|php|swift|m|svg|png|jpe?g|gif|webp|pdf|zip|tar|gz|session)\b""",
+    RegexOption.IGNORE_CASE,
+)
+
+/** `> target` / `>> target` with a word boundary BEFORE the arrow, so
+ *  `2>/dev/null` (fd redirect, no leading space) is not captured. */
+private val SHELL_REDIRECT_REGEX = Regex("""\s(>>?)\s*([^\s;|&"']+)""")
+
+/** Roots whose mention is not a file surface (prose, system pseudo-dirs). */
+private val SHELL_IGNORED_EXACT = setOf(
+    "/var/minis", "/var/minis/workspace", "/var/minis/shared",
+    "/var/minis/attachments", "/var/minis/offloads", "/var/minis/memory",
+    "/var/minis/skills", "/tmp", "/data/data", "/var", "/etc", "/usr",
+    "/bin", "/system", "/proc", "/sys", "/dev", ".",
+)
+
+private val SHELL_EXT_REGEX = Regex("""\.[A-Za-z0-9]{1,6}$""")
+
+/**
+ * [B47-shell-parallel] The resource keys ONE shell command touches, best
+ * effort: redirect targets (its WRITE surface), absolute/relative paths,
+ * bare whitelisted filenames. The old behavior left shell_execute
+ * UNDECLARED, and the scheduler turned that into a GLOBAL barrier — every
+ * shell serialized against EVERYTHING (the device report: "one tool
+ * works, the others never even start"). Now independent commands run
+ * parallel under the CPU gate while a shell and a file tool naming the
+ * SAME extracted path still serialize (the shell is a WRITE on its
+ * keys). The residual risk — a path too clever for the regexes (quoting,
+ * variables) escapes the conflict net — is the Claude Code bash trade:
+ * parallel-independent-shell semantics over total hermetic
+ * serialization, per the reviewer's directive.
+ */
+internal fun shellResourceKeys(command: String): Set<String> {
+    val keys = LinkedHashSet<String>()
+    SHELL_REDIRECT_REGEX.findAll(command).forEach { m ->
+        val target = m.groupValues[2].trim('"', '\'')
+        val ignored = target.startsWith("/dev/") || target.all { it.isDigit() }
+        if (target.isNotEmpty() && !ignored) {
+            keys.add("fs:${normalizeResourcePath(target)}")
+        }
+    }
+    SHELL_PATH_REGEX.findAll(command).forEach { m ->
+        val token = m.value.trim('.', ',', ';', ')', ']', '"', '\'')
+        val hasExt = SHELL_EXT_REGEX.containsMatchIn(token.substringAfterLast('/'))
+        val generic = token in SHELL_IGNORED_EXACT
+        if ((hasExt || token.count { it == '/' } >= 2) && !generic && !token.startsWith("/dev/")) {
+            keys.add("fs:${normalizeResourcePath(token)}")
+        }
+    }
+    SHELL_BARE_FILE_REGEX.findAll(command).forEach { m ->
+        val bare = m.value
+        // A bare name already covered as the last segment of an extracted
+        // path adds no surface — "a.txt" inside
+        // /var/minis/workspace/a.txt is the same file.
+        val covered = keys.any { it.endsWith("/$bare") }
+        if (!covered) keys.add("fs:${normalizeResourcePath(bare)}")
+    }
+    return keys
+}
 
 /** Memory-tier reads (spec §3.1): one shared store key, READ effect. */
 internal val MEMORY_READ_TOOLS: Set<String> = setOf(

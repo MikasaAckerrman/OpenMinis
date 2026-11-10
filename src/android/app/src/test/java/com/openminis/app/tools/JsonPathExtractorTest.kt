@@ -118,9 +118,45 @@ class JsonPathExtractorTaxonomyTest {
     }
 
     @Test
-    fun `shell and browser stay undeclared - the hermetic barrier`() {
-        assertNull(jsonObjectResourceKeys("shell_execute", """{"command":"ls"}"""))
+    fun `shell declares its file surface, browser and graph stay undeclared`() {
+        // [B47-shell-parallel] A command with no visible file surface
+        // declares an EMPTY key set (parallel-eligible under the CPU
+        // gate), not the old undeclared GLOBAL lock that serialized every
+        // shell against everything.
+        assertEquals(
+            emptySet<String>(),
+            jsonObjectResourceKeys("shell_execute", """{"command":"ls"}"""),
+        )
         assertNull(jsonObjectResourceKeys("browser_use", "{}"))
         assertNull(jsonObjectResourceKeys("run_graph", "{}"))
+    }
+
+    @Test
+    fun `shell keys extract redirect targets and mentioned files`() {
+        assertEquals(
+            setOf("fs:notes.md", "fs:out.txt"),
+            jsonObjectResourceKeys(
+                "shell_execute",
+                """{"command":"cat notes.md > out.txt"}""",
+            ),
+        )
+        assertEquals(
+            setOf("fs:/var/minis/workspace/a.txt"),
+            jsonObjectResourceKeys(
+                "shell_execute",
+                """{"command":"echo hi >> /var/minis/workspace/a.txt"}""",
+            ),
+        )
+    }
+
+    @Test
+    fun `dev-null and fd redirects are not file surfaces`() {
+        assertEquals(
+            emptySet<String>(),
+            jsonObjectResourceKeys(
+                "shell_execute",
+                """{"command":"ls > /dev/null 2>&1"}""",
+            ),
+        )
     }
 }
