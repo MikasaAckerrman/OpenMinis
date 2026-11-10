@@ -226,6 +226,26 @@ class MinisApp : Application(), ImageLoaderFactory {
                     .onFailure {
                         Log.w("MinisApp", "deleted-archive maintenance failed: ${it.message}")
                     }
+                // [B48-db-vacuum] At most ONE VACUUM per 24h: the sweeps above
+                // free rows, but SQLite never returns the pages to the OS —
+                // minis.db sat at ~390 MB on the vc162 device, inflating the
+                // page cache and starving the UI thread through GC pauses
+                // (75-frame jank bursts, then the NavHost IndexOutOfBounds
+                // crash). VACUUM rewrites the file; it is IO-bound and safe
+                // to run while the app serves reads, but far too expensive to
+                // do per launch — the prefs gate makes it a daily chore.
+                runCatching {
+                    val prefs = getSharedPreferences("minis_maintenance", MODE_PRIVATE)
+                    val last = prefs.getLong("last_vacuum_at", 0L)
+                    val now = System.currentTimeMillis()
+                    if (now - last > 24 * 60 * 60 * 1000L) {
+                        prefs.edit().putLong("last_vacuum_at", now).apply()
+                        database.openHelper.writableDatabase.execSQL("VACUUM")
+                        Log.i("MinisApp", "daily VACUUM complete")
+                    }
+                }.onFailure {
+                    Log.w("MinisApp", "vacuum failed: ${it.message}")
+                }
             }
         }
     }
