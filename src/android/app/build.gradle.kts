@@ -61,7 +61,10 @@ android {
         // heartbeat, TTFT rule, 60s threshold) + flake killed by
         // construction (settle from the async body; FULL test log format).
         // c69a45eb..7ae25e92, Unit Tests 42697522885.
-        versionCode = 159
+        // vc160: B46-plan-sheet ships in the APK — top-bar plan chip
+        // [n/total] + PlanSheet bottom sheet, reactive via
+        // TodoStore.observe. 7ae25e92..7ec22019, Unit Tests 42704091253.
+        versionCode = 160
         // vc69: 97 commits — kotlincheck infra + strict preflight (types/enums,
         // parallel-batch gate) + atomic tool budget + budget footer + symmetric
         // supermemory lifecycle (FPS guard) + thermal telemetry + review fixes
