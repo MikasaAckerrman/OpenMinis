@@ -81,7 +81,12 @@ android {
         // sweep for the pre-B48 minis-sessions leftovers (1550 on vc163,
         // creation-window-guarded, SafeDir-listed).
         // fa556510..27adbaba, Unit Tests 43073335984.
-        versionCode = 164
+        // vc165: B50 — SpawnGate device-truth lines: one admission-chain line
+        // per spawn_many batch (cpuCeiling, llmStreams, pacing) + one
+        // slot-acquire stamp per child, so slot serialization is provable
+        // on-device (app concurrent vs relay sequential).
+        // 27adbaba..8f07b060, Unit Tests 43092106195.
+        versionCode = 165
         // vc69: 97 commits — kotlincheck infra + strict preflight (types/enums,
         // parallel-batch gate) + atomic tool budget + budget footer + symmetric
         // supermemory lifecycle (FPS guard) + thermal telemetry + review fixes
