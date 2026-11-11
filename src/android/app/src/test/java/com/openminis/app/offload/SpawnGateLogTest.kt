@@ -18,19 +18,34 @@ class SpawnGateLogTest {
     fun `batch line states the admission chain`() {
         val line = SubagentExecutor.spawnGateBatchLine(
             batchSize = 3, serial = false,
-            cpuCeiling = 6, llmStreams = 32, pacingEnabled = false,
+            cpuCeiling = 6, thermalStatus = 0, llmStreams = 32, pacingEnabled = false,
         )
         assertTrue(line.startsWith("[SpawnGate] "))
         assertTrue("batch=3" in line)
         assertTrue("serial=false" in line)
         assertTrue("cpuCeiling=6" in line)
+        assertTrue("thermal=0" in line)
         assertTrue("llmStreams=32" in line)
         assertTrue("pacing=off" in line)
     }
 
     @Test
+    fun `thermal moderate pins the why behind a ceiling of two`() {
+        // [B50-spawn-gate] The vc165 device truth: cpuCeiling=2 with three
+        // children meant the third waited 180s for a cutoff-freed slot —
+        // and the cause was thermal MODERATE, invisible until this field
+        // rode the line itself.
+        val line = SubagentExecutor.spawnGateBatchLine(
+            batchSize = 3, serial = false,
+            cpuCeiling = 2, thermalStatus = 2, llmStreams = 32, pacingEnabled = false,
+        )
+        assertTrue("cpuCeiling=2" in line)
+        assertTrue("thermal=2" in line)
+    }
+
+    @Test
     fun `pacing enabled flips the flag, not the shape`() {
-        val line = SubagentExecutor.spawnGateBatchLine(2, true, 2, 32, true)
+        val line = SubagentExecutor.spawnGateBatchLine(2, true, 2, 2, 32, true)
         assertTrue("pacing=on" in line)
         assertTrue("serial=true" in line)
     }

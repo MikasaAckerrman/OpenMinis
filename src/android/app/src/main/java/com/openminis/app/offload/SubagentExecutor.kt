@@ -602,17 +602,22 @@ object SubagentExecutor {
      * batch whose per-child "after=<ms>" values cluster within ~1s proves the
      * app fires concurrently — any stagger downstream is the relay's, not
      * ours. Formatters extracted pure so the device-grep contract is pinned
-     * by a test, and one batch line carries the whole admission chain.
+     * by a test, and one batch line carries the whole admission chain —
+     * including the raw thermal status, since the vc165 device truth showed
+     * the ceiling's WHY (MODERATE -> 2 slots) is the first question any
+     * reader asks: the line must answer it itself.
      */
     internal fun spawnGateBatchLine(
         batchSize: Int,
         serial: Boolean,
         cpuCeiling: Int,
+        thermalStatus: Int,
         llmStreams: Int,
         pacingEnabled: Boolean,
     ): String =
         "[SpawnGate] batch=$batchSize serial=$serial cpuCeiling=$cpuCeiling " +
-            "llmStreams=$llmStreams pacing=${if (pacingEnabled) "on" else "off"}"
+            "thermal=$thermalStatus llmStreams=$llmStreams " +
+            "pacing=${if (pacingEnabled) "on" else "off"}"
 
     internal fun spawnGateChildLine(index: Int, batchSize: Int, role: String, afterMs: Long): String =
         "[SpawnGate] child ${index + 1}/$batchSize role=$role acquired slot after=${afterMs}ms"
@@ -792,6 +797,7 @@ object SubagentExecutor {
                     spawnGateBatchLine(
                         batch.size, serial,
                         com.openminis.app.engine.AgentConcurrency.parallel,
+                        com.openminis.app.engine.AgentConcurrency.thermalStatus,
                         com.openminis.app.provider.LlmDispatchGate.maxConcurrentStreams,
                         com.openminis.app.provider.LlmDispatchGate.pacingEnabled,
                     ),
