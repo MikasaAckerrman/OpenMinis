@@ -594,6 +594,29 @@ object SubagentExecutor {
      *  3. One tool result carries ALL answers, numbered, so the orchestrator
      *     sees the batch as a single decision point.
      */
+    /**
+     * [B50-spawn-gate] Device-truth for the slot-serialization question. The
+     * app side was exonerated in code (DynamicGate re-reads its ceiling on
+     * every acquire; LlmDispatchGate caps 32 app-wide streams with pacing
+     * DISABLED in the shipped default; no OkHttp Dispatcher overrides), so a
+     * batch whose per-child "after=<ms>" values cluster within ~1s proves the
+     * app fires concurrently — any stagger downstream is the relay's, not
+     * ours. Formatters extracted pure so the device-grep contract is pinned
+     * by a test, and one batch line carries the whole admission chain.
+     */
+    internal fun spawnGateBatchLine(
+        batchSize: Int,
+        serial: Boolean,
+        cpuCeiling: Int,
+        llmStreams: Int,
+        pacingEnabled: Boolean,
+    ): String =
+        "[SpawnGate] batch=$batchSize serial=$serial cpuCeiling=$cpuCeiling " +
+            "llmStreams=$llmStreams pacing=${if (pacingEnabled) "on" else "off"}"
+
+    internal fun spawnGateChildLine(index: Int, batchSize: Int, role: String, afterMs: Long): String =
+        "[SpawnGate] child ${index + 1}/$batchSize role=$role acquired slot after=${afterMs}ms"
+
     suspend fun spawnMany(
         context: Context,
         agents: List<SpawnSpec>,
@@ -760,10 +783,34 @@ object SubagentExecutor {
                 val timeoutMs = SubagentWatchdogPolicy.effectiveTimeoutMs(
                     timeoutArgMs ?: timeoutOverrideMs,
                 )
+                // [B50-spawn-gate] t0 anchors the per-child acquire stamps;
+                // the batch line states the whole admission chain so a device
+                // log is self-contained evidence.
+                val spawnGateT0 = System.currentTimeMillis()
+                com.openminis.app.logging.AppLogger.info(
+                    "SpawnGate",
+                    spawnGateBatchLine(
+                        batch.size, serial,
+                        com.openminis.app.engine.AgentConcurrency.parallel,
+                        com.openminis.app.provider.LlmDispatchGate.maxConcurrentStreams,
+                        com.openminis.app.provider.LlmDispatchGate.pacingEnabled,
+                    ),
+                )
                 batch.map { task ->
                     val spec = agents[task.index]
                     async(kotlinx.coroutines.Dispatchers.IO) {
                         parallelLimiter.withPermit {
+                            // [B50-spawn-gate] The device-truth line: several of
+                            // these clustering within ~1s = the app dispatched
+                            // the batch concurrently; stagger afterwards is
+                            // upstream (relay), not a gate.
+                            com.openminis.app.logging.AppLogger.info(
+                                "SpawnGate",
+                                spawnGateChildLine(
+                                    task.index, batch.size, spec.role,
+                                    System.currentTimeMillis() - spawnGateT0,
+                                ),
+                            )
                             // [T-agent-dedup] Flagged duplicates never start:
                             // honest refusal in their section. No onAgentDone —
                             // no line was ever started for a refused agent.
