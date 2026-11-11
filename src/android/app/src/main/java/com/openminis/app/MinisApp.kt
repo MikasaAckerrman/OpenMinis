@@ -260,10 +260,11 @@ class MinisApp : Application(), ImageLoaderFactory {
                         prefs.edit().putLong("last_orphan_sweep_at", now).apply()
                         // [SafeDir] platform File.listFiles aborts the process
                         // on non-BMP file names — the listing goes through the
-                        // SafeDir wrapper (SafeDirSourceGuardTest enforces it).
-                        val dirs = com.openminis.app.util.SafeDir
-                            .listFiles(java.io.File(filesDir, "minis-sessions"))
-                            ?.toList().orEmpty()
+                        // SafeDir wrapper (SafeDirSourceGuardTest enforces it;
+                        // its lookbehind is line-local, so no line wrap here).
+                        val dirs =
+                            com.openminis.app.util.SafeDir.listFiles(java.io.File(filesDir, "minis-sessions"))
+                                ?.toList().orEmpty()
                         if (dirs.isNotEmpty()) {
                             val live = chatRepository.dao.allSessionIds().toSet()
                             val orphans = com.openminis.app.offload.AgentSessionManager
