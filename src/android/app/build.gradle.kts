@@ -86,7 +86,11 @@ android {
         // slot-acquire stamp per child, so slot serialization is provable
         // on-device (app concurrent vs relay sequential).
         // 27adbaba..8f07b060, Unit Tests 43092106195.
-        versionCode = 165
+        // vc166: B50 — the SpawnGate batch line carries the raw thermal
+        // status next to the ceiling (vc165 device truth: ceiling 2 came
+        // from thermal MODERATE; the line now explains its own why).
+        // 857a49f0..6d86dcaf, Unit Tests 43102406691.
+        versionCode = 166
         // vc69: 97 commits — kotlincheck infra + strict preflight (types/enums,
         // parallel-batch gate) + atomic tool budget + budget footer + symmetric
         // supermemory lifecycle (FPS guard) + thermal telemetry + review fixes
