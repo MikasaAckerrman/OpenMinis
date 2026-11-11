@@ -80,10 +80,11 @@ object AgentWorkerPrompt {
             "array of task ids) makes the spawn wait for board tasks; unmet deps are " +
             "refused with the wait-set named.",
         "spawn_many" to
-            "- spawn_many: batch of INDEPENDENT subtasks, up to 3 concurrently. " +
-            "Tasks touching the same file are serialized automatically; state it in " +
-            "the texts anyway. The result header includes the team's CROSS-TURN " +
-            "history — re-delegate failed tails instead of redoing the plan.",
+            "- spawn_many: batch of INDEPENDENT subtasks, running under the engine's " +
+            "concurrency gate (2-6 by device, thermals shrink it). Tasks touching the " +
+            "same file are serialized automatically; state it in the texts anyway. " +
+            "The result header includes the team's CROSS-TURN history — re-delegate " +
+            "failed tails instead of redoing the plan.",
         "task_board" to
             "- task_board: view this team's durable board — every spawn this chat " +
             "ever made, statuses, results, unmet deps, dependency cycles. READ it " +
@@ -140,6 +141,22 @@ object AgentWorkerPrompt {
             appendLine("Your tools (the schema contains ONLY these — nothing else is callable):")
             notes.forEach { appendLine(it) }
         }
+        // [B49-worker-parallel] Workers never saw PARALLEL_TOOL_DISCIPLINE —
+        // it appends to the GENERAL prompt only (ChatViewModel), while for a
+        // standalone worker THIS build() is the whole system prompt. A worker
+        // without it issues one call per response and pays TTFT + thinking
+        // per call — the spawn_many ping-pong the vc163 report showed.
+        // Compact block (~130 tokens), static head placement, so the same
+        // cache-stability argument as the SoulStore block applies.
+        appendLine()
+        appendLine(
+            "Parallel discipline: when your part needs reading files or gathering facts, do NOT " +
+                "issue one tool call per response. Formulate ALL your reads and searches up front " +
+                "and emit them as MULTIPLE tool calls in ONE response — a batch of 3-6 independent " +
+                "reads is normal. The engine runs independent calls in parallel and preserves the " +
+                "order where they touch the same file; you coordinate nothing. Go one call at a " +
+                "time only when the next call truly depends on the previous result.",
+        )
         if (workspaceDir != null) {
             appendLine()
             appendLine(

@@ -102,6 +102,35 @@ class AgentWorkerPromptTest {
     }
 
     @Test
+    fun `workers get the parallel batching discipline`() {
+        // [B49-worker-parallel] The standalone worker prompt REPLACES the
+        // general prompt entirely, so PARALLEL_TOOL_DISCIPLINE never reached
+        // workers: they issued one tool call per response and paid TTFT +
+        // thinking on every one — the spawn_many ping-pong.
+        val p = build()
+        assertTrue(p.contains("Parallel discipline"))
+        assertTrue(p.contains("MULTIPLE tool calls in ONE response"))
+        // Batching, not coordination — the engine owns ordering; the block
+        // must also precede the role contract (static head, cache-stable).
+        assertTrue(
+            "discipline must precede the role contract",
+            p.indexOf("Parallel discipline") < p.indexOf("YOUR ROLE"),
+        )
+    }
+
+    @Test
+    fun `tool notes no longer promise a fixed concurrency`() {
+        // [B49-worker-parallel] "up to 3 concurrently" was false: the gate is
+        // AgentConcurrency.parallel (2-6 by device, thermal-stepped) — a
+        // lying prompt teaches the model wrong expectations.
+        val p = build(
+            tools = listOf("shell_execute", "file_read", "spawn_subagent", "spawn_many"),
+        )
+        assertFalse(p.contains("up to 3 concurrently"))
+        assertTrue(p.contains("concurrency gate"))
+    }
+
+    @Test
     fun `unrestricted worker gets no tool dump`() {
         // Empty allowlist means "no restriction" elsewhere in the code; emitting
         // every tool's docs here would reintroduce the cost this class removes.
