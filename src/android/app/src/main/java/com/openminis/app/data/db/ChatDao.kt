@@ -462,6 +462,10 @@ interface ChatDao {
     @Query("DELETE FROM deleted_messages WHERE session_id NOT IN (SELECT id FROM sessions)")
     suspend fun purgeOrphanDeletedMessages(): Int
 
+    /** [B49-orphan-sweep] Every live session id — the orphan sweep's allowlist. */
+    @Query("SELECT id FROM sessions")
+    suspend fun allSessionIds(): List<String>
+
     /** Retention ceiling: rows archived before [cutoffMs] are gone. */
     @Query("DELETE FROM deleted_messages WHERE deleted_at < :cutoffMs")
     suspend fun purgeDeletedMessagesOlderThan(cutoffMs: Long): Int

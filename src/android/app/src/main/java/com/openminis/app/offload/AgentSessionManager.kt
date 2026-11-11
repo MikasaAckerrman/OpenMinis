@@ -27,6 +27,23 @@ internal object AgentSessionManager {
     )
 
     /**
+     * [B49-orphan-sweep] A minis-sessions dir whose sid has NO row in the
+     * sessions table and whose mtime is older than [ORPHAN_MIN_AGE_MS].
+     * The age guard closes the creation-window race: a spawn writes its
+     * tree BEFORE the sessions row commits, so a brand-new live dir must
+     * never read as orphaned. Pure decision, unit-tested; MinisApp wires
+     * the I/O around it.
+     */
+    const val ORPHAN_MIN_AGE_MS: Long = 30L * 60 * 1000
+
+    fun orphanedSessionDirs(
+        dirs: List<java.io.File>,
+        liveIds: Set<String>,
+        nowMs: Long,
+    ): List<java.io.File> =
+        dirs.filter { it.name !in liveIds && nowMs - it.lastModified() > ORPHAN_MIN_AGE_MS }
+
+    /**
      * Create a session and bind it to [modelEntryId] in one call.
      * Returns the new session id.
      *

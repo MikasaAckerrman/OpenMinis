@@ -246,6 +246,35 @@ class MinisApp : Application(), ImageLoaderFactory {
                 }.onFailure {
                     Log.w("MinisApp", "vacuum failed: ${it.message}")
                 }
+                // [B49-orphan-sweep] Leftover minis-sessions dirs: [B48-worker-
+                // cleanup] stopped the leak at the source, but the 1550 pre-B48
+                // orphans remain on flash. Only dirs whose sid has NO sessions
+                // row AND whose mtime is past the creation-window guard go;
+                // live work is untouchable by construction. Daily gate, same
+                // chore cadence as the VACUUM above.
+                runCatching {
+                    val prefs = getSharedPreferences("minis_maintenance", MODE_PRIVATE)
+                    val last = prefs.getLong("last_orphan_sweep_at", 0L)
+                    val now = System.currentTimeMillis()
+                    if (now - last > 24 * 60 * 60 * 1000L) {
+                        prefs.edit().putLong("last_orphan_sweep_at", now).apply()
+                        val dirs = java.io.File(filesDir, "minis-sessions")
+                            .listFiles()?.toList().orEmpty()
+                        if (dirs.isNotEmpty()) {
+                            val live = chatRepository.dao.allSessionIds().toSet()
+                            val orphans = com.openminis.app.offload.AgentSessionManager
+                                .orphanedSessionDirs(dirs, live, now)
+                            orphans.forEach { runCatching { it.deleteRecursively() } }
+                            Log.i(
+                                "MinisApp",
+                                "orphan sweep: ${orphans.size}/${dirs.size} removed, " +
+                                    "${dirs.size - orphans.size} kept",
+                            )
+                        }
+                    }
+                }.onFailure {
+                    Log.w("MinisApp", "orphan sweep failed: ${it.message}")
+                }
             }
         }
     }
