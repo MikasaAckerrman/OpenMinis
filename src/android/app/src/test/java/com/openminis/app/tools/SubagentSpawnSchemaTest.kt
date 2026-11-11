@@ -18,7 +18,9 @@ class SubagentSpawnSchemaTest {
     @Test
     fun `spawn_many exposes the timeout knob`() {
         assertTrue("timeout" in def.parameters)
-        assertTrue(def.propertyOrdering.contains("timeout"))
+        // propertyOrdering is nullable in the model (only some tools set it);
+        // this definition always does — orEmpty() keeps the pin honest.
+        assertTrue(def.propertyOrdering.orEmpty().contains("timeout"))
         assertTrue(def.parameters.getValue("timeout").type == "integer")
     }
 
