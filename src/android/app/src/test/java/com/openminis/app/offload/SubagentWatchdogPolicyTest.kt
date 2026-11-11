@@ -97,6 +97,22 @@ class SubagentWatchdogPolicyTest {
     }
 
     @Test
+    fun `tool timeout arg converts seconds and clamps`() {
+        // [B49-spawn-timeout] The schema arg is seconds; the policy is ms.
+        assertEquals(120_000L, SubagentWatchdogPolicy.fromToolArgSeconds(120))
+        assertEquals(180_000L, SubagentWatchdogPolicy.fromToolArgSeconds(500))
+        assertEquals(30_000L, SubagentWatchdogPolicy.fromToolArgSeconds(10))
+    }
+
+    @Test
+    fun `absent or nonsense timeout arg keeps the default`() {
+        // A model sending 0 or a negative (or omitting the field) must NOT
+        // shrink the ceiling to the 30s floor — null means "no override".
+        assertEquals(null, SubagentWatchdogPolicy.fromToolArgSeconds(0))
+        assertEquals(null, SubagentWatchdogPolicy.fromToolArgSeconds(-5))
+    }
+
+    @Test
     fun `the stall sentinel never reads like a result`() {
         // The executor swaps it for stallSection before anything is emitted;
         // the sentinel must not be a plausible agent answer prefix.

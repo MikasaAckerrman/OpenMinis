@@ -178,7 +178,7 @@ object SubagentTools {
             "SAFETY (automatic): file paths mentioned in task texts are cross-checked — tasks that " +
             "touch the same file or directory are serialized automatically (run one after another, " +
             "not in parallel), so two agents can never corrupt the same file. Independent tasks run " +
-            "concurrently (max 3 at once on this phone). " +
+            "concurrently under the engine's concurrency gate (2-6 by device; thermals shrink it). " +
             "YOUR job before calling: make the tasks genuinely independent — different files, different " +
             "questions, no shared output. If two tasks MUST touch the same file, that is fine — the " +
             "engine will serialize them, but state it in the task texts. " +
@@ -203,6 +203,13 @@ object SubagentTools {
                     "serial: run all one-by-one in array order (use when every task depends on the previous).",
                 enumValues = listOf("auto", "serial"),
             ),
+            "timeout" to AgentToolParam(
+                "integer",
+                "Optional hard ceiling for EACH subagent in this batch, in seconds " +
+                    "(clamped to 30-180; default 90). Raise for slow reasoning models — " +
+                    "deep thinking alone can approach the default, and a timed-out member " +
+                    "returns a 'Timeout' note instead of its work.",
+            ),
             "synthesize" to AgentToolParam(
                 "boolean",
                 "false (default). true = after all agents finish, one synthesizer agent reads the " +
@@ -226,7 +233,9 @@ object SubagentTools {
             ),
         ),
         required = listOf("tool_title", "agents"),
-        propertyOrdering = listOf("tool_title", "agents", "mode", "synthesize", "review", "gate"),
+        propertyOrdering = listOf(
+            "tool_title", "agents", "mode", "timeout", "synthesize", "review", "gate",
+        ),
     )
 
     fun runGraphDefinition(): AgentToolDefinition = AgentToolDefinition(

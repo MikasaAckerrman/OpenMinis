@@ -607,6 +607,15 @@ object SubagentExecutor {
          * code. It fixes nothing itself.
          */
         gate: Boolean = false,
+        /**
+         * [B49-spawn-timeout] Batch-wide ceiling for EVERY member, from the
+         * spawn_many `timeout` argument (already clamped through
+         * [SubagentWatchdogPolicy.fromToolArgSeconds]). Absent -> the
+         * internal test seam ([timeoutOverrideMs]) -> the 90s default.
+         * A distinct name on purpose: shadowing the seam var would make a
+         * default-null param silently ignore it.
+         */
+        timeoutArgMs: Long? = null,
         /** [T-subagent-nesting] Depth cap — see spawn(spawnerSessionId). */
         spawnerSessionId: String? = null,
         /**
@@ -748,7 +757,9 @@ object SubagentExecutor {
                 val settled = kotlinx.coroutines.channels.Channel<Pair<Int, String>>(
                     kotlinx.coroutines.channels.Channel.UNLIMITED,
                 )
-                val timeoutMs = SubagentWatchdogPolicy.effectiveTimeoutMs(timeoutOverrideMs)
+                val timeoutMs = SubagentWatchdogPolicy.effectiveTimeoutMs(
+                    timeoutArgMs ?: timeoutOverrideMs,
+                )
                 batch.map { task ->
                     val spec = agents[task.index]
                     async(kotlinx.coroutines.Dispatchers.IO) {

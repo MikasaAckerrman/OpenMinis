@@ -15433,6 +15433,11 @@ class ChatViewModel(
         // [T-review-gate] The last checkpoint of the batch: a gatekeeper
         // decides whether the work may be called done and names the blockers.
         val gate = args.optBoolean("gate", false)
+        // [B49-spawn-timeout] The batch-wide ceiling override, seconds from
+        // the schema (already clamped by the policy). Absent -> null -> the
+        // executor's 90s default.
+        val timeoutOverrideMs = com.openminis.app.offload.SubagentWatchdogPolicy
+            .fromToolArgSeconds(args.optInt("timeout", -1))
         // [T-subagent-block-live] One line per agent, in the same shape
         // as a tool call. The reader sees which agents are working at
         // the same time, and each line stops when ITS agent stops.
@@ -15443,6 +15448,8 @@ class ChatViewModel(
 
         val result = com.openminis.app.offload.SubagentExecutor.spawnMany(
             context, specs, serial, synthesize, review, gate,
+            // [B49-spawn-timeout] Batch-wide ceiling; null keeps the default.
+            timeoutArgMs = timeoutOverrideMs,
             // [T-subagent-nesting] Depth cap — see spawn(spawnerSessionId).
             spawnerSessionId = activeSessionId,
             onAgentDone = { index, agentRole, agentResult, ok ->

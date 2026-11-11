@@ -47,6 +47,17 @@ object SubagentWatchdogPolicy {
         (overrideMs ?: DEFAULT_TIMEOUT_MS).coerceIn(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS)
 
     /**
+     * [B49-spawn-timeout] The spawn_many `timeout` schema argument (seconds,
+     * model-facing) as an override in ms. Absent or nonsense (0, negative)
+     * returns null — the caller keeps [DEFAULT_TIMEOUT_MS]; the model must
+     * never be able to SHRINK the ceiling to the 30s floor by sending 0.
+     * Everything clamps through [effectiveTimeoutMs], so a request for 10s
+     * or 500s lands in the same 30-180s envelope a settings override would.
+     */
+    fun fromToolArgSeconds(seconds: Int): Long? =
+        if (seconds >= 1) effectiveTimeoutMs(seconds * 1000L) else null
+
+    /**
      * Stall verdict: KNOWN activity aged past the threshold. An unknown age
      * (null — the child has not begun its graph yet) is deliberately alive:
      * the hard ceiling owns that window, the stall detector owns silence
