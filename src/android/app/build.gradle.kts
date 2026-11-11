@@ -75,7 +75,13 @@ android {
         // vc163: B48 — worker teardown (proot+VM cache+tree delete), session-scoped
         // shell DAG keys, thermal concurrency clamps, daily DB VACUUM.
         // 2df8754a..2b43812f, Unit Tests 42914733806.
-        versionCode = 163
+        // vc164: B49 — worker parallel discipline (the spawn_many ping-pong:
+        // standalone workers never saw PARALLEL_TOOL_DISCIPLINE), spawn_many
+        // timeout argument (clamp 30-180s, default 90 intact), daily orphan
+        // sweep for the pre-B48 minis-sessions leftovers (1550 on vc163,
+        // creation-window-guarded, SafeDir-listed).
+        // fa556510..27adbaba, Unit Tests 43073335984.
+        versionCode = 164
         // vc69: 97 commits — kotlincheck infra + strict preflight (types/enums,
         // parallel-batch gate) + atomic tool budget + budget footer + symmetric
         // supermemory lifecycle (FPS guard) + thermal telemetry + review fixes
