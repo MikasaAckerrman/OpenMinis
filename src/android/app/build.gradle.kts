@@ -72,7 +72,10 @@ android {
         // global barrier is gone; independent commands parallel under the
         // CPU gate), split-leader cards never vanish on mid-run inject.
         // 50c4f5dd..db1d6fa9, Unit Tests 42885836735.
-        versionCode = 162
+        // vc163: B48 — worker teardown (proot+VM cache+tree delete), session-scoped
+        // shell DAG keys, thermal concurrency clamps, daily DB VACUUM.
+        // 2df8754a..2b43812f, Unit Tests 42914733806.
+        versionCode = 163
         // vc69: 97 commits — kotlincheck infra + strict preflight (types/enums,
         // parallel-batch gate) + atomic tool budget + budget footer + symmetric
         // supermemory lifecycle (FPS guard) + thermal telemetry + review fixes
