@@ -18,7 +18,7 @@ import org.junit.Test
  */
 class PRootGateTest {
 
-    private fun withThermal(status: Int, block: () -> Unit) {
+    private suspend fun withThermal(status: Int, block: suspend () -> Unit) {
         val saved = AgentConcurrency.thermalStatus
         AgentConcurrency.thermalStatus = status
         try {
