@@ -225,6 +225,13 @@ internal object AgentGraphRunner {
         // first node, for the same reason the showcase is created first: an event
         // arriving for an unknown taskId is dropped, so a late begin() would lose
         // the entry node's start.
+        // [B51-timeout-cleanup] The finally below must be able to release the
+        // ephemeral worker sessions on ANY exit path, so the state reference
+        // is captured here: `state` itself is born inside the try, and a
+        // cancellation (spawn_many's 180s ceiling) unwinds past the normal
+        // post-success cleanup at :322.
+        var leakedState: GraphState? = null
+        var ephemeralReleased = false
         try {
             AgentRunProgress.begin(taskId, graph.name)
 
@@ -285,6 +292,7 @@ internal object AgentGraphRunner {
                 showcaseId = showcaseId,
                 ephemeral = ephemeral,
             )
+            leakedState = state
 
             // Initialize all nodes as PENDING
             for (node in graph.nodes) {
@@ -338,6 +346,11 @@ internal object AgentGraphRunner {
                 com.openminis.app.tools.AgentNodeBinding.unbind(sid)
                 com.openminis.app.tools.AgentToolBudgetStore.clear(sid)
             }
+            // [B51-timeout-cleanup] The normal path released the sessions; the
+            // finally below must not redo the DB deletes for them.
+            if (ephemeral) {
+                ephemeralReleased = true
+            }
 
             // Write trace
             if (graph.config.enableTracing) {
@@ -383,6 +396,27 @@ internal object AgentGraphRunner {
             // so it cannot mask the exception that is on its way out.
             if (ephemeral) {
                 AgentRunProgress.clear(taskId)
+                // [B51-timeout-cleanup] THE vc162/vc166 freeze complement: the
+                // post-success cleanup above is SKIPPED when executeGraph
+                // throws — and spawn_many's 180s ceiling cancels every
+                // timed-out member exactly that way. Each skipped cleanup
+                // left the worker's proot + /bin/sh pair alive forever
+                // (deleteSession is the only caller of
+                // sessionDidTerminate): an accumulating zombie pool that
+                // burns CPU while the device is idle. Release on every exit
+                // path — under NonCancellable, because THIS finally runs
+                // inside an already-cancelled coroutine and a bare suspend
+                // call would die before doing any work.
+                val st = leakedState
+                if (!ephemeralReleased && st != null) {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+                        for (sid in st.sessionMap.values + st.sessionByGroup.values) {
+                            runCatching { AgentSessionManager.deleteSession(context, sid) }
+                            runCatching { com.openminis.app.tools.AgentNodeBinding.unbind(sid) }
+                            runCatching { com.openminis.app.tools.AgentToolBudgetStore.clear(sid) }
+                        }
+                    }
+                }
             }
         }
     }

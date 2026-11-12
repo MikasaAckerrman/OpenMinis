@@ -8,6 +8,7 @@ import com.openminis.app.data.model.GraphConfig
 import com.openminis.app.data.model.GraphRunResult
 import com.openminis.app.data.model.RunStatus
 import com.openminis.app.MinisApp
+import com.openminis.app.sandbox.PRootGate
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -805,178 +806,188 @@ object SubagentExecutor {
                 batch.map { task ->
                     val spec = agents[task.index]
                     async(kotlinx.coroutines.Dispatchers.IO) {
-                        parallelLimiter.withPermit {
-                            // [B50-spawn-gate] The device-truth line: several of
-                            // these clustering within ~1s = the app dispatched
-                            // the batch concurrently; stagger afterwards is
-                            // upstream (relay), not a gate.
-                            com.openminis.app.logging.AppLogger.info(
-                                "SpawnGate",
-                                spawnGateChildLine(
-                                    task.index, batch.size, spec.role,
-                                    System.currentTimeMillis() - spawnGateT0,
-                                ),
-                            )
-                            // [T-agent-dedup] Flagged duplicates never start:
-                            // honest refusal in their section. No onAgentDone —
-                            // no line was ever started for a refused agent.
-                            val refusal = duplicateRefusalBySpec[task.index]
-                            if (refusal != null) {
-                                settled.send(task.index to refusal)
-                                return@withPermit
-                            }
-                            val stalledFlag = java.util.concurrent.atomic.AtomicBoolean(false)
-                            val failedFlag = java.util.concurrent.atomic.AtomicBoolean(false)
-                            // [B36-graceful-partial] The hard per-agent ceiling:
-                            // a wedged or over-long member degrades into ITS
-                            // OWN section while the siblings' results survive —
-                            // the batch is no longer hostage to its slowest
-                            // member (J12), and the wait for the tail is
-                            // bounded instead of endless.
-                            val ranOutcome = kotlinx.coroutines.withTimeoutOrNull(timeoutMs) {
-                                // [T-spawn-crash + event-matrix fix] EVERYTHING
-                                // fallible is inside runCatching: buildGraphFor
-                                // reads agent FILES (IOException possible) and used
-                                // to sit OUTSIDE the guard — one file-read throw
-                                // failed the async, cancelled every sibling and
-                                // threw away the whole batch (the exact class the
-                                // saveAgentGraph fix below was made for). One bad
-                                // agent stays one bad agent.
-                                runCatching {
-                                    // [T-subagent-nesting] spawnMany resolves the
-                                    // depth cap ONCE per batch (the spawner is
-                                    // fixed): workers spawned from a worker
-                                    // session get the delegation tools stripped,
-                                    // same rule as spawn().
-                                    // [B8] The child's nesting right is NOT the
-                                    // matrix verdict: only an ORCHESTRATOR hired
-                                    // from the main chat nests. A custom: target
-                                    // (resolveRole == null) keeps the A8xA3
-                                    // single/batch parity — a custom agent hired
-                                    // from MAIN delegates, hired from a worker
-                                    // session it does not.
-                                    val targetRole = resolveRole(spec.role)
-                                    val childCanNest = if (targetRole == null) {
-                                        spawnerRole == null
-                                    } else {
-                                        targetRole == AgentRole.ORCHESTRATOR && spawnerRole == null
-                                    }
-                                    val pair = buildGraphFor(
-                                        context, spec.role, spec.task,
-                                        childCanNest,
-                                    )
-                                        ?: return@runCatching "No custom agent '${spec.role.removePrefix("custom:")}' " +
-                                            "in ${AgentFileStore.SANDBOX_DIR} (call list_agents)."
-                                    val (graph, node) = pair
-                                    // [T-spawn-crash] Save INSIDE the same guard:
-                                    // a failed saveAgentGraph (DB hiccup) used to
-                                    // fail the async, cancel every sibling in the
-                                    // batch and throw away ALL results.
-                                    app.providerRepository.saveAgentGraph(graph)
-                                    // [T-agent-cancel-scope] The batch child runs
-                                    // under its OWN cancellable Job (child of this
-                                    // async), registered under its spawn id BEFORE
-                                    // the board row goes RUNNING inside runSingle:
-                                    // a scope=all cancel that learned the id from
-                                    // the board can never miss a live child. The
-                                    // async's own job is never cancelled — its
-                                    // await must stay usable for the siblings.
-                                    val childJob = Job(kotlin.coroutines.coroutineContext[Job])
-                                    foregroundRuns[node.id] = childJob
-                                    // [B36-stall-detector] 5s polls against the
-                                    // run's activity registry (AgentRunProgress:
-                                    // node/tool events + the stream heartbeat's
-                                    // pulses). 30s of TOTAL silence cancels THIS
-                                    // child only — the async itself survives, so
-                                    // the siblings and the collector are
-                                    // untouched.
-                                    val watchdog = launch(kotlinx.coroutines.Dispatchers.Default) {
-                                        while (isActive) {
-                                            kotlinx.coroutines.delay(
-                                                SubagentWatchdogPolicy.STALL_CHECK_INTERVAL_MS,
-                                            )
-                                            // [B45-stall-pulse] The TTFT gate:
-                                            // a run whose stream has never
-                                            // pulsed is the hard ceiling's
-                                            // problem, not the stall
-                                            // detector's — the vc158 live
-                                            // report had healthy members
-                                            // killed at 30.001s while their
-                                            // provider thought about the
-                                            // first tokens.
-                                            if (SubagentWatchdogPolicy.shouldStallCancel(
-                                                    AgentRunProgress.idleMs(node.id),
-                                                    hasStreamLife = AgentRunProgress.hasStreamLife(node.id),
+                        // [B51-proot-gate] One worker slot per batch member,
+                        // taken BEFORE the LLM slot so the [SpawnGate]
+                        // after=<ms> stamps keep meaning "admitted to
+                        // actually run". Ceiling 2 (1 at SEVERE): the
+                        // ptrace-pair bound — see PRootGate.
+                        PRootGate.beginWorkerSlot()
+                        try {
+                            parallelLimiter.withPermit {
+                                // [B50-spawn-gate] The device-truth line: several of
+                                // these clustering within ~1s = the app dispatched
+                                // the batch concurrently; stagger afterwards is
+                                // upstream (relay), not a gate.
+                                com.openminis.app.logging.AppLogger.info(
+                                    "SpawnGate",
+                                    spawnGateChildLine(
+                                        task.index, batch.size, spec.role,
+                                        System.currentTimeMillis() - spawnGateT0,
+                                    ),
+                                )
+                                // [T-agent-dedup] Flagged duplicates never start:
+                                // honest refusal in their section. No onAgentDone —
+                                // no line was ever started for a refused agent.
+                                val refusal = duplicateRefusalBySpec[task.index]
+                                if (refusal != null) {
+                                    settled.send(task.index to refusal)
+                                    return@withPermit
+                                }
+                                val stalledFlag = java.util.concurrent.atomic.AtomicBoolean(false)
+                                val failedFlag = java.util.concurrent.atomic.AtomicBoolean(false)
+                                // [B36-graceful-partial] The hard per-agent ceiling:
+                                // a wedged or over-long member degrades into ITS
+                                // OWN section while the siblings' results survive —
+                                // the batch is no longer hostage to its slowest
+                                // member (J12), and the wait for the tail is
+                                // bounded instead of endless.
+                                val ranOutcome = kotlinx.coroutines.withTimeoutOrNull(timeoutMs) {
+                                    // [T-spawn-crash + event-matrix fix] EVERYTHING
+                                    // fallible is inside runCatching: buildGraphFor
+                                    // reads agent FILES (IOException possible) and used
+                                    // to sit OUTSIDE the guard — one file-read throw
+                                    // failed the async, cancelled every sibling and
+                                    // threw away the whole batch (the exact class the
+                                    // saveAgentGraph fix below was made for). One bad
+                                    // agent stays one bad agent.
+                                    runCatching {
+                                        // [T-subagent-nesting] spawnMany resolves the
+                                        // depth cap ONCE per batch (the spawner is
+                                        // fixed): workers spawned from a worker
+                                        // session get the delegation tools stripped,
+                                        // same rule as spawn().
+                                        // [B8] The child's nesting right is NOT the
+                                        // matrix verdict: only an ORCHESTRATOR hired
+                                        // from the main chat nests. A custom: target
+                                        // (resolveRole == null) keeps the A8xA3
+                                        // single/batch parity — a custom agent hired
+                                        // from MAIN delegates, hired from a worker
+                                        // session it does not.
+                                        val targetRole = resolveRole(spec.role)
+                                        val childCanNest = if (targetRole == null) {
+                                            spawnerRole == null
+                                        } else {
+                                            targetRole == AgentRole.ORCHESTRATOR && spawnerRole == null
+                                        }
+                                        val pair = buildGraphFor(
+                                            context, spec.role, spec.task,
+                                            childCanNest,
+                                        )
+                                            ?: return@runCatching "No custom agent '${spec.role.removePrefix("custom:")}' " +
+                                                "in ${AgentFileStore.SANDBOX_DIR} (call list_agents)."
+                                        val (graph, node) = pair
+                                        // [T-spawn-crash] Save INSIDE the same guard:
+                                        // a failed saveAgentGraph (DB hiccup) used to
+                                        // fail the async, cancel every sibling in the
+                                        // batch and throw away ALL results.
+                                        app.providerRepository.saveAgentGraph(graph)
+                                        // [T-agent-cancel-scope] The batch child runs
+                                        // under its OWN cancellable Job (child of this
+                                        // async), registered under its spawn id BEFORE
+                                        // the board row goes RUNNING inside runSingle:
+                                        // a scope=all cancel that learned the id from
+                                        // the board can never miss a live child. The
+                                        // async's own job is never cancelled — its
+                                        // await must stay usable for the siblings.
+                                        val childJob = Job(kotlin.coroutines.coroutineContext[Job])
+                                        foregroundRuns[node.id] = childJob
+                                        // [B36-stall-detector] 5s polls against the
+                                        // run's activity registry (AgentRunProgress:
+                                        // node/tool events + the stream heartbeat's
+                                        // pulses). 30s of TOTAL silence cancels THIS
+                                        // child only — the async itself survives, so
+                                        // the siblings and the collector are
+                                        // untouched.
+                                        val watchdog = launch(kotlinx.coroutines.Dispatchers.Default) {
+                                            while (isActive) {
+                                                kotlinx.coroutines.delay(
+                                                    SubagentWatchdogPolicy.STALL_CHECK_INTERVAL_MS,
                                                 )
-                                            ) {
-                                                stalledFlag.set(true)
-                                                childJob.cancel()
-                                                break
+                                                // [B45-stall-pulse] The TTFT gate:
+                                                // a run whose stream has never
+                                                // pulsed is the hard ceiling's
+                                                // problem, not the stall
+                                                // detector's — the vc158 live
+                                                // report had healthy members
+                                                // killed at 30.001s while their
+                                                // provider thought about the
+                                                // first tokens.
+                                                if (SubagentWatchdogPolicy.shouldStallCancel(
+                                                        AgentRunProgress.idleMs(node.id),
+                                                        hasStreamLife = AgentRunProgress.hasStreamLife(node.id),
+                                                    )
+                                                ) {
+                                                    stalledFlag.set(true)
+                                                    childJob.cancel()
+                                                    break
+                                                }
+                                            }
+                                        }
+                                        try {
+                                            withContext(childJob) {
+                                                runSingle(
+                                                    context, app, graph, node, spec.role,
+                                                    TaskBoard.inject(spec.task, snapshot),
+                                                    teamId = spawnerSessionId,
+                                                    onStarted = { taskId ->
+                                                        onAgentStarted?.invoke(task.index, taskId)
+                                                    },
+                                                )
+                                            }
+                                        } finally {
+                                            watchdog.cancel()
+                                            foregroundRuns.remove(node.id, childJob)
+                                        }
+                                    }.getOrElse { e ->
+                                        // [B36] The timeout's own cancellation must
+                                        // stay recognisable: rethrow so
+                                        // withTimeoutOrNull converts it into the
+                                        // null that maps to the timeout section. A
+                                        // stall arrives as a childJob cancellation
+                                        // and carries its marker; a plain
+                                        // cancellation (user abort) keeps the
+                                        // historical swallow — it degrades to an
+                                        // error section exactly as it always did.
+                                        when {
+                                            e is kotlinx.coroutines.TimeoutCancellationException -> throw e
+                                            stalledFlag.get() &&
+                                                e is kotlinx.coroutines.CancellationException ->
+                                                SubagentWatchdogPolicy.STALL_SENTINEL
+                                            else -> {
+                                                failedFlag.set(true)
+                                                "Subagent (${spec.role.lowercase()}) error: ${e.message}"
                                             }
                                         }
                                     }
-                                    try {
-                                        withContext(childJob) {
-                                            runSingle(
-                                                context, app, graph, node, spec.role,
-                                                TaskBoard.inject(spec.task, snapshot),
-                                                teamId = spawnerSessionId,
-                                                onStarted = { taskId ->
-                                                    onAgentStarted?.invoke(task.index, taskId)
-                                                },
-                                            )
-                                        }
-                                    } finally {
-                                        watchdog.cancel()
-                                        foregroundRuns.remove(node.id, childJob)
-                                    }
-                                }.getOrElse { e ->
-                                    // [B36] The timeout's own cancellation must
-                                    // stay recognisable: rethrow so
-                                    // withTimeoutOrNull converts it into the
-                                    // null that maps to the timeout section. A
-                                    // stall arrives as a childJob cancellation
-                                    // and carries its marker; a plain
-                                    // cancellation (user abort) keeps the
-                                    // historical swallow — it degrades to an
-                                    // error section exactly as it always did.
-                                    when {
-                                        e is kotlinx.coroutines.TimeoutCancellationException -> throw e
-                                        stalledFlag.get() &&
-                                            e is kotlinx.coroutines.CancellationException ->
-                                            SubagentWatchdogPolicy.STALL_SENTINEL
-                                        else -> {
-                                            failedFlag.set(true)
-                                            "Subagent (${spec.role.lowercase()}) error: ${e.message}"
-                                        }
-                                    }
                                 }
+                                // [B36] Terminal section of THIS member: the
+                                // ceiling, the stall, a plain error or the result.
+                                // if/else (not a subjectless when) — the else
+                                // branch's non-null smart cast is then guaranteed,
+                                // not compiler-version-dependent.
+                                val text: String
+                                val ok: Boolean
+                                if (ranOutcome == null) {
+                                    // withTimeoutOrNull nulls out on the ceiling.
+                                    text = SubagentWatchdogPolicy.timeoutSection(timeoutMs)
+                                    ok = false
+                                } else if (ranOutcome == SubagentWatchdogPolicy.STALL_SENTINEL) {
+                                    text = SubagentWatchdogPolicy.stallSection()
+                                    ok = false
+                                } else {
+                                    text = ranOutcome
+                                    ok = !failedFlag.get()
+                                }
+                                // [T-subagent-block-live] This agent is done with
+                                // ITS line; say so now, not when the whole batch is
+                                // through. Timeout and stall endings close their
+                                // line here too — before, a cancelled agent had no
+                                // terminal callback and its line spun on.
+                                onAgentDone(task.index, spec.role, text, ok)
+                                settled.send(task.index to text)
                             }
-                            // [B36] Terminal section of THIS member: the
-                            // ceiling, the stall, a plain error or the result.
-                            // if/else (not a subjectless when) — the else
-                            // branch's non-null smart cast is then guaranteed,
-                            // not compiler-version-dependent.
-                            val text: String
-                            val ok: Boolean
-                            if (ranOutcome == null) {
-                                // withTimeoutOrNull nulls out on the ceiling.
-                                text = SubagentWatchdogPolicy.timeoutSection(timeoutMs)
-                                ok = false
-                            } else if (ranOutcome == SubagentWatchdogPolicy.STALL_SENTINEL) {
-                                text = SubagentWatchdogPolicy.stallSection()
-                                ok = false
-                            } else {
-                                text = ranOutcome
-                                ok = !failedFlag.get()
-                            }
-                            // [T-subagent-block-live] This agent is done with
-                            // ITS line; say so now, not when the whole batch is
-                            // through. Timeout and stall endings close their
-                            // line here too — before, a cancelled agent had no
-                            // terminal callback and its line spun on.
-                            onAgentDone(task.index, spec.role, text, ok)
-                            settled.send(task.index to text)
+                        } finally {
+                            PRootGate.endWorkerSlot()
                         }
                     }
                 }
