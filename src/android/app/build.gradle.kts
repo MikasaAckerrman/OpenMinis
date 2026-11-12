@@ -90,7 +90,12 @@ android {
         // status next to the ceiling (vc165 device truth: ceiling 2 came
         // from thermal MODERATE; the line now explains its own why).
         // 857a49f0..6d86dcaf, Unit Tests 43102406691.
-        versionCode = 166
+        // vc167: B51 — the freeze class closed: D1 (timeout releases the
+        // ephemeral worker sessions under NonCancellable — no more zombie
+        // proot pairs) + PRootGate (worker shells capped at 2, SEVERE → 1,
+        // main/vault bypass). Reviewed line-by-line in the worktree, PASS.
+        // b974a142..f3138495, Unit Tests 43263144138.
+        versionCode = 167
         // vc69: 97 commits — kotlincheck infra + strict preflight (types/enums,
         // parallel-batch gate) + atomic tool budget + budget footer + symmetric
         // supermemory lifecycle (FPS guard) + thermal telemetry + review fixes
