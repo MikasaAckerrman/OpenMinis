@@ -834,6 +834,16 @@ object SubagentExecutor {
                                     ) {
                                         pick
                                     } else {
+                                        // [B53-parallel-pool] Plan A3: the stale
+                                        // fallback must be VISIBLE — without this
+                                        // line a device-log reader cannot tell
+                                        // "pool off" from "entry died".
+                                        com.openminis.app.logging.AppLogger.info(
+                                            "SpawnGate",
+                                            "pool entry ${pick.modelEntryId} is not a " +
+                                                "visible model entry - member falls back " +
+                                                "to the standard resolve",
+                                        )
                                         null
                                     }
                                 }
