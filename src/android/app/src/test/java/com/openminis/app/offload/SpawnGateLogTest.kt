@@ -57,6 +57,23 @@ class SpawnGateLogTest {
         assertTrue("child 1/3" in line)
         assertTrue("role=SENIOR_IMPLEMENTER" in line)
         assertTrue("after=137ms" in line)
+        // No pool pick → no model token (the old grep contract stays intact).
+        assertTrue("model=" !in line)
+    }
+
+    @Test
+    fun `child line names the pool model when one is pinned`() {
+        // [B53-parallel-pool] The device-proof of distribution: the line shows
+        // which pool model the member runs on, so a round-robin across hosts
+        // is verifiable in the log without trust.
+        val line = SubagentExecutor.spawnGateChildLine(1, 3, "SENIOR_IMPLEMENTER", 4L, "glm-fast")
+        assertTrue("child 2/3" in line)
+        assertTrue("model=glm-fast " in line)
+        assertTrue(
+            "model must precede the stamp",
+            line.indexOf("model=glm-fast") < line.indexOf("after="),
+        )
+        assertTrue("after=4ms" in line)
     }
 
     @Test

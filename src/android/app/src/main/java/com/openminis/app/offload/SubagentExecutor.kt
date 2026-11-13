@@ -8,6 +8,7 @@ import com.openminis.app.data.model.GraphConfig
 import com.openminis.app.data.model.GraphRunResult
 import com.openminis.app.data.model.RunStatus
 import com.openminis.app.MinisApp
+import com.openminis.app.data.ParallelPoolStore
 import com.openminis.app.sandbox.PRootGate
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -620,8 +621,16 @@ object SubagentExecutor {
             "thermal=$thermalStatus llmStreams=$llmStreams " +
             "pacing=${if (pacingEnabled) "on" else "off"}"
 
-    internal fun spawnGateChildLine(index: Int, batchSize: Int, role: String, afterMs: Long): String =
-        "[SpawnGate] child ${index + 1}/$batchSize role=$role acquired slot after=${afterMs}ms"
+    internal fun spawnGateChildLine(
+        index: Int,
+        batchSize: Int,
+        role: String,
+        afterMs: Long,
+        model: String? = null,
+    ): String =
+        "[SpawnGate] child ${index + 1}/$batchSize role=$role " +
+            (model?.let { "model=$it " } ?: "") +
+            "acquired slot after=${afterMs}ms"
 
     suspend fun spawnMany(
         context: Context,
@@ -814,6 +823,20 @@ object SubagentExecutor {
                         PRootGate.beginWorkerSlot()
                         try {
                             parallelLimiter.withPermit {
+                                // [B53-parallel-pool] Round-robin pick BEFORE the
+                                // stamp: the line reports the model the member
+                                // will actually run on. A stale entry (deleted
+                                // or hidden since the plaque added it) falls
+                                // back to the standard resolve chain.
+                                val poolModel = ParallelPoolStore.pickFor(task.index)?.let { pick ->
+                                    if (app.providerRepository.config.value.modelEntries
+                                            .any { it.id == pick.modelEntryId && !it.isHidden }
+                                    ) {
+                                        pick
+                                    } else {
+                                        null
+                                    }
+                                }
                                 // [B50-spawn-gate] The device-truth line: several of
                                 // these clustering within ~1s = the app dispatched
                                 // the batch concurrently; stagger afterwards is
@@ -823,6 +846,7 @@ object SubagentExecutor {
                                     spawnGateChildLine(
                                         task.index, batch.size, spec.role,
                                         System.currentTimeMillis() - spawnGateT0,
+                                        poolModel?.displayName,
                                     ),
                                 )
                                 // [T-agent-dedup] Flagged duplicates never start:
@@ -875,7 +899,28 @@ object SubagentExecutor {
                                         )
                                             ?: return@runCatching "No custom agent '${spec.role.removePrefix("custom:")}' " +
                                                 "in ${AgentFileStore.SANDBOX_DIR} (call list_agents)."
-                                        val (graph, node) = pair
+                                        // [B53-parallel-pool] Pin the pool model:
+                                        // an explicit modelEntryId wins over
+                                        // modelRole in the runner (the MODEL
+                                        // trace logs it), and the copy keeps the
+                                        // node id — edges, traces and the board
+                                        // row stay intact. Pinning mutates the
+                                        // EPHEMERAL graph only; the standard
+                                        // resolve chain is untouched when the
+                                        // pool is off or empty.
+                                        var graph: AgentGraph
+                                        var node: AgentNode
+                                        if (poolModel != null) {
+                                            val pinned = pair.second.copy(
+                                                modelEntryId = poolModel.modelEntryId,
+                                                modelRole = "",
+                                            )
+                                            node = pinned
+                                            graph = pair.first.copy(nodes = listOf(pinned))
+                                        } else {
+                                            node = pair.second
+                                            graph = pair.first
+                                        }
                                         // [T-spawn-crash] Save INSIDE the same guard:
                                         // a failed saveAgentGraph (DB hiccup) used to
                                         // fail the async, cancel every sibling in the

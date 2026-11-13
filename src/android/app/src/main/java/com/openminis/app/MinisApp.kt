@@ -433,6 +433,9 @@ class MinisApp : Application(), ImageLoaderFactory {
         // [T-subagent-gate] Subagents are opt-in (default OFF) — primed
         // here so makeAgentTools can gate the tool schema context-free.
         com.openminis.app.data.SubagentPrefs.prime(this)
+        // [B53-parallel-pool] The user-curated worker pool — primed before
+        // any spawn path can read it; owner-only, no tool or config path.
+        com.openminis.app.data.ParallelPoolStore.prime(this)
         // [T-letta-core-memory] Core-memory blocks (4th history layer + the
         // memory_blocks_* tools): gate primed for context-free schema checks;
         // store primed so the request path and the tools share one cached
