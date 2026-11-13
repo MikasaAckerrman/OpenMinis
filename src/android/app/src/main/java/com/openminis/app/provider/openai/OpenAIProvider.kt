@@ -575,6 +575,8 @@ class OpenAIProvider private constructor(
         tools: List<AgentToolDefinition>,
         thinkingLevel: ThinkingLevel,
     ): Flow<LLMStreamChunk> = callbackFlow {
+        // [Э4-round-cost] The window starts here: budget+plan+message-tree.
+        val bodyBuildStart = System.currentTimeMillis()
         val body = if (isCodexImageModel) {
             // [T-gpt-image2-codex-backend-route-android] gpt-image-2 on an
             // OpenAI OAuth (Codex) instance is driven through the Codex backend
@@ -604,12 +606,19 @@ class OpenAIProvider private constructor(
         } else {
             buildResponsesAPIBody(messages, systemPrompt, maxTokens, stream = true, tools = tools, thinkingLevel = thinkingLevel)
         }
+        // [Э4-round-cost] Phase timings for the round-turnaround window (the
+        // gap between the previous round's last log and "→ REQ"): budget+plan
+        // +message-tree = buildMs, the 248KB-class toString = toStringMs. The
+        // next device run attributes the measured 2.18s median precisely.
+        val buildMs = System.currentTimeMillis() - bodyBuildStart
         // T302: serialize the request body exactly once. Pre-T302 we called
         // body.toString() three times per request (debug log + OAuth byte
         // build + non-OAuth RequestBody), each materialising a fresh 30+ MB
         // string for long agent loops with heavy tool outputs. Stacked, that
         // pushed memory-tight devices (HONOR PTP-AN00) past the OOM line.
+        val toStringStart = System.currentTimeMillis()
         val bodyStr = body.toString()
+        val toStringMs = System.currentTimeMillis() - toStringStart
         val request = buildRequest(bodyStr)
         val headerMap = mutableMapOf<String, String>()
         for (name in request.headers.names()) {
@@ -640,7 +649,8 @@ class OpenAIProvider private constructor(
                 "[T321] → REQ url=${request.url} model=${model.id} stream=${body.optBoolean("stream", false)} " +
                     "headerKeys=${request.headers.names()} authPresent=$authPresent " +
                     "messages=$msgsLen tools=$toolsLen temp=$temp maxTokens=$maxTok hasSystem=$hasSystem " +
-                    "useResponsesAPI=${!usesChatCompletionsAPI} bodyLen=${bodyStr.length}"
+                    "useResponsesAPI=${!usesChatCompletionsAPI} bodyLen=${bodyStr.length} " +
+                    "buildMs=$buildMs toStringMs=$toStringMs"
             )
         }
 
@@ -1633,7 +1643,9 @@ class OpenAIProvider private constructor(
         // "fits" verdict a lie before this existed.
         val overhead = com.openminis.app.data.RequestBudget.estimateOverheadBytes(
             systemPrompt = systemPrompt,
-            toolsJsonBytes = tools.sumOf { it.toOpenAIJson().toString().toByteArray().size },
+            // [Э4-round-cost] Serialized once per distinct tool list —
+            // ToolWireCache, not per round.
+            toolsJsonBytes = ToolWireCache.wire(tools).totalBytes,
             legacyImageParts = imageParts,
         )
         val budgeted = com.openminis.app.data.RequestBudget.plan(
@@ -1693,11 +1705,9 @@ class OpenAIProvider private constructor(
 
         // Tools
         if (tools.isNotEmpty()) {
-            val toolsArray = JSONArray()
-            for (tool in tools) {
-                toolsArray.put(tool.toOpenAIJson())
-            }
-            body.put("tools", toolsArray)
+            // [Э4-round-cost] Shared read-only cached array — serialized once
+            // per distinct tool list, reused across rounds.
+            body.put("tools", ToolWireCache.wire(tools).schemas)
             body.put("tool_choice", "auto")
         }
 
@@ -2624,7 +2634,8 @@ class OpenAIProvider private constructor(
         // imageParts parameter — attachments ride in contentParts here.)
         val overhead = com.openminis.app.data.RequestBudget.estimateOverheadBytes(
             systemPrompt = systemPrompt,
-            toolsJsonBytes = tools.sumOf { it.toOpenAIJson().toString().toByteArray().size },
+            // [Э4-round-cost] Same cache as the chat-completions path.
+            toolsJsonBytes = ToolWireCache.wire(tools).totalBytes,
         )
         val budgeted = com.openminis.app.data.RequestBudget.plan(
             messages = messages,
